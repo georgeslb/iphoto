@@ -63,6 +63,12 @@ function App() {
     if (res.ok) { setSelectionMode(false); setSelectedIds([]); fetchPhotos(0, true); }
   }
 
+  const handlePermanentDelete = async (ids) => {
+    if (!window.confirm(`Permanently delete ${ids.length} item(s)? This cannot be undone.`)) return
+    const res = await fetch('/api/photos/garbage/permanent', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ids) })
+    if (res.ok) { setSelectionMode(false); setSelectedIds([]); fetchPhotos(0, true); }
+  }
+
   const handleUpload = async (e) => {
     const files = Array.from(e.target.files || [])
     if (!files.length) return
@@ -73,7 +79,7 @@ function App() {
       try {
         const res = await fetch('/api/upload', { method: 'POST', body: fd })
         const data = await res.json()
-        setUploadQueue(q => q.map(it => it.name === file.name ? { ...it, status: 'PENDING', taskId: data.taskId } : it))
+        setUploadQueue(q => q.map(it => it.name === file.name ? { ...it, status: 'PROCESSING', taskId: data.taskId } : it))
         const interval = setInterval(async () => {
           try {
             const tRes = await fetch(`/api/tasks/${data.taskId}`)
@@ -145,7 +151,14 @@ function App() {
             <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flex: 1 }}>
                <button className="btn" onClick={() => { setSelectionMode(false); setSelectedIds([]) }}><X size={18}/> Cancel</button>
                <span style={{fontWeight: 600}}>{selectedIds.length} selected</span>
-               <button className="btn" style={{color: '#ff3b30', marginLeft: 'auto'}} onClick={() => handleMoveToGarbage(selectedIds)} disabled={selectedIds.length === 0}><Trash2 size={18}/> Move to Garbage</button>
+               {activeTab === 'garbage' ?
+                 <>
+                   <button className="btn" style={{color: '#34c759', marginLeft: 'auto'}} onClick={() => handleRestore(selectedIds)} disabled={selectedIds.length === 0}><RotateCcw size={18}/> Restore</button>
+                   <button className="btn" style={{color: '#ff3b30'}} onClick={() => handlePermanentDelete(selectedIds)} disabled={selectedIds.length === 0}><Trash2 size={18}/> Delete Permanently</button>
+                 </>
+                 :
+                 <button className="btn" style={{color: '#ff3b30', marginLeft: 'auto'}} onClick={() => handleMoveToGarbage(selectedIds)} disabled={selectedIds.length === 0}><Trash2 size={18}/> Move to Garbage</button>
+               }
             </div>
           ) : (
             <div style={{ display: 'flex', gap: '12px' }}>
@@ -171,23 +184,10 @@ function App() {
         )}
       </main>
 
-      {/* RESTORED UPLOAD QUEUE */}
       {uploadQueue.length > 0 && (
         <div className="upload-queue">
-          <div className="upload-queue-header">
-            <span>Progress</span>
-            <X size={16} onClick={() => setUploadQueue([])} style={{cursor: 'pointer', opacity: 0.5}}/>
-          </div>
-          <div className="upload-list">
-            {uploadQueue.map(item => (
-              <div key={item.id} className="upload-item">
-                <div className="upload-item-info">
-                  <span className="upload-item-name">{item.name}</span>
-                  <span className={`status-text ${item.status?.replace(/\s/g, '')}`}>{item.status}</span>
-                </div>
-              </div>
-            ))}
-          </div>
+          <div className="upload-queue-header"><span>Progress</span><X size={16} onClick={() => setUploadQueue([])} style={{cursor: 'pointer', opacity: 0.5}}/></div>
+          <div className="upload-list">{uploadQueue.map(item => (<div key={item.id} className="upload-item"><div className="upload-item-info"><span className="upload-item-name">{item.name}</span><span className={`status-text ${item.status?.replace(/\s/g, '')}`}>{item.status}</span></div></div>))}</div>
         </div>
       )}
 
@@ -197,9 +197,14 @@ function App() {
             <div className="lightbox-content">
               {selectedPhoto.contentType?.startsWith('video') ? <video src={`/api/photos/${selectedPhoto.id}/stream`} controls autoPlay /> : <img src={`/api/photos/${selectedPhoto.id}/original`} />}
               {activeTab === 'garbage' ? (
-                <button className="btn" style={{position: 'absolute', bottom: '20px', left: '20px', background: '#34c759', color: 'white', border: 'none'}} onClick={() => { handleRestore([selectedPhoto.id]); setSelectedPhoto(null); }}>
-                  <RotateCcw size={18}/> Restore Asset
-                </button>
+                <>
+                  <button className="btn" style={{position: 'absolute', bottom: '20px', left: '20px', background: '#34c759', color: 'white', border: 'none'}} onClick={() => { handleRestore([selectedPhoto.id]); setSelectedPhoto(null); }}>
+                    <RotateCcw size={18}/> Restore Asset
+                  </button>
+                  <button className="btn" style={{position: 'absolute', bottom: '20px', left: '180px', background: '#ff3b30', color: 'white', border: 'none'}} onClick={() => { handlePermanentDelete([selectedPhoto.id]); setSelectedPhoto(null); }}>
+                    <Trash2 size={18}/> Delete Permanently
+                  </button>
+                </>
               ) : (
                 <button className="btn" style={{position: 'absolute', bottom: '20px', left: '20px', background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none'}} onClick={() => { handleMoveToGarbage([selectedPhoto.id]); setSelectedPhoto(null); }}>
                   <Trash2 size={18}/> Move to Garbage
@@ -211,10 +216,13 @@ function App() {
               <div className="sidebar-scroll-content">
                 <div className="metadata-group"><label>File Name</label><p>{selectedPhoto.title}</p></div>
                 <div className="metadata-group"><label><Calendar size={14} /> Date Taken</label><p>{selectedPhoto.date}</p></div>
+                <div className="metadata-group"><label><Info size={14} /> Basic Details</label><p>{selectedPhoto.resolution} • {selectedPhoto.size}</p></div>
                 {extMetadata && (
                   <div className="extended-meta">
                     <div className="meta-divider">Technical</div>
-                    {extMetadata.aperture && <div className="metadata-group"><label><Zap size={14}/> Exposure</label><p>{extMetadata.aperture} • {extMetadata.shutterSpeed}</p></div>}
+                    {extMetadata.aperture && <div className="metadata-group"><label><Zap size={14}/> Exposure</label><p>{extMetadata.aperture} • {extMetadata.shutterSpeed} • ISO {extMetadata.iso}</p></div>}
+                    {extMetadata.lensModel && <div className="metadata-group"><label><Camera size={14}/> Lens</label><p>{extMetadata.lensModel}</p></div>}
+                    {extMetadata.codec && <div className="metadata-group"><label><Clock size={14}/> Video Info</label><p>{extMetadata.codec} • {extMetadata.frameRate} fps</p></div>}
                     {extMetadata.latitude && <div className="metadata-group"><label><MapPin size={14}/> Location</label><p>{extMetadata.latitude.toFixed(4)}, {extMetadata.longitude.toFixed(4)}</p></div>}
                   </div>
                 )}

@@ -58,6 +58,12 @@ public class PhotoController {
         return ResponseEntity.ok().build();
     }
 
+    @DeleteMapping("/garbage/permanent")
+    public ResponseEntity<Void> permanentDeleteAssets(@RequestBody List<UUID> ids) throws IOException {
+        photoService.permanentDeleteAssets(ids);
+        return ResponseEntity.noContent().build();
+    }
+
     @GetMapping("/{id}/metadata")
     public ResponseEntity<PhotoMetadataEntity> getMetadata(@PathVariable UUID id) {
         return metadataRepository.findById(id).map(ResponseEntity::ok).orElse(ResponseEntity.notFound().build());

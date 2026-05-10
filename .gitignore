@@ -39,3 +39,5 @@ build/
 .DS_Store
 /frontend/dist/
 /frontend/node_modules/
+/.idea/
+/frontend/dist/

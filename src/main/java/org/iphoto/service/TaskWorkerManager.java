@@ -4,7 +4,6 @@ import com.drew.imaging.ImageMetadataReader;
 import com.drew.metadata.Directory;
 import com.drew.metadata.Metadata;
 import com.drew.metadata.Tag;
-import com.drew.metadata.exif.ExifIFD0Directory;
 import com.drew.metadata.exif.ExifSubIFDDirectory;
 import com.drew.metadata.exif.GpsDirectory;
 import com.drew.metadata.jpeg.JpegDirectory;
@@ -13,7 +12,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import jakarta.persistence.EntityManager;
 import org.bytedeco.javacv.FFmpegFrameGrabber;
-import org.iphoto.model.*;
+import org.iphoto.SpringContext;
+import org.iphoto.model.PhotoEntity;
+import org.iphoto.model.PhotoMetadataEntity;
+import org.iphoto.model.TaskEntity;
+import org.iphoto.model.TaskStatus;
 import org.iphoto.repository.PhotoMetadataRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.repository.TaskRepository;
@@ -36,11 +39,7 @@ import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
-import java.util.HashMap;
-import java.util.HexFormat;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -60,7 +59,8 @@ public class TaskWorkerManager {
     @Value("${iphoto.storage.photos}")
     private String photoStoragePath;
 
-    public TaskWorkerManager(TaskRepository taskRepository, PhotoRepository photoRepository, 
+    public TaskWorkerManager(TaskRepository taskRepository, 
+                             PhotoRepository photoRepository, 
                              PhotoMetadataRepository metadataRepository, ThumbnailService thumbnailService, 
                              ObjectMapper objectMapper, PlatformTransactionManager transactionManager, EntityManager entityManager) {
         this.taskRepository = taskRepository;
@@ -104,7 +104,7 @@ public class TaskWorkerManager {
                         task.setStatus(TaskStatus.COMPLETED);
                     }
                 } else if ("PERMANENT_DELETE".equals(task.getTaskType())) {
-                    handlePermanentDelete(task);
+                    handlePermanentDelete(task); // This is now the delayed permanent delete
                     task.setStatus(TaskStatus.COMPLETED);
                 }
             } catch (Exception e) {
@@ -144,12 +144,11 @@ public class TaskWorkerManager {
 
         PhotoEntity photo = new PhotoEntity(task.getId(), payload.get("originalFileName"), finalPath.toString(), thumbPath, hash, Files.size(finalPath), contentType);
         photo.setDateTaken(LocalDateTime.now());
-        photo.setNew(true); // Tell Hibernate this IS a new entity
+        photo.setNew(true);
 
         PhotoMetadataEntity metadataEntity = new PhotoMetadataEntity(photo);
-        // PhotoMetadataEntity constructor already sets it as new
-
         Map<String, String> rawMetadata = new HashMap<>();
+
         if (contentType != null) {
             if (contentType.startsWith("image")) extractImageMetadata(finalPath.toFile(), photo, metadataEntity, rawMetadata);
             else if (contentType.startsWith("video")) extractVideoMetadata(finalPath.toFile(), photo, metadataEntity, rawMetadata);
@@ -157,22 +156,23 @@ public class TaskWorkerManager {
 
         metadataEntity.setRawMetadataJson(objectMapper.writeValueAsString(rawMetadata));
         
-        // Save using repository to trigger Persistable logic
         photoRepository.save(photo);
         metadataRepository.save(metadataEntity);
         
         return false;
     }
 
+    // This method is now ONLY for the delayed permanent deletion
     private void handlePermanentDelete(TaskEntity task) throws Exception {
         Map<String, String> payload = objectMapper.readValue(task.getPayload(), new TypeReference<>() {});
         UUID photoId = UUID.fromString(payload.get("photoId"));
-        PhotoEntity photo = photoRepository.findById(photoId).orElse(null);
-        if (photo == null) return;
-        Files.deleteIfExists(Paths.get(photo.getOriginalPath()));
-        if (photo.getThumbnailPath() != null) Files.deleteIfExists(Paths.get(photo.getThumbnailPath()));
-        metadataRepository.deleteById(photoId);
-        photoRepository.delete(photo);
+        
+        // Use PhotoService to perform the actual deletion logic
+        // This ensures consistency and proper cleanup
+        // Note: PhotoService.permanentDeleteAssets expects a list, so wrap it
+        PhotoService photoService = (PhotoService) SpringContext.getBean("photoService"); // Access PhotoService via SpringContext
+        photoService.permanentDeleteAssets(List.of(photoId));
+        log.info("Asset {} permanently removed by scheduled task.", photoId);
     }
 
     private void extractImageMetadata(File file, PhotoEntity photo, PhotoMetadataEntity meta, Map<String, String> raw) {
@@ -207,6 +207,7 @@ public class TaskWorkerManager {
 
     private void extractVideoMetadata(File file, PhotoEntity photo, PhotoMetadataEntity meta, Map<String, String> raw) {
         try (FFmpegFrameGrabber grabber = new FFmpegFrameGrabber(file)) {
+            grabber.setOption("autorotate", "1");
             grabber.start();
             photo.setWidth(grabber.getImageWidth());
             photo.setHeight(grabber.getImageHeight());
