@@ -1,9 +1,12 @@
 package org.iphoto.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.iphoto.model.ChunkUploadRequest;
 import org.iphoto.model.TaskEntity;
 import org.iphoto.model.UploadResponse;
 import org.iphoto.repository.TaskRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
@@ -21,40 +24,78 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api/upload")
 public class UploadController {
+    private static final Logger log = LoggerFactory.getLogger(UploadController.class);
 
     private final TaskRepository taskRepository;
     private final ObjectMapper objectMapper;
 
     @Value("${iphoto.storage.temp}")
     private String tempStoragePath;
+    
+    @Value("${iphoto.storage.chunks}") // New property for chunk storage
+    private String chunkStoragePath;
 
     public UploadController(TaskRepository taskRepository, ObjectMapper objectMapper) {
         this.taskRepository = taskRepository;
         this.objectMapper = objectMapper;
     }
 
-    @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public UploadResponse uploadFile(@RequestParam("file") MultipartFile file) throws IOException {
-        Path tempPath = Paths.get(tempStoragePath);
-        if (!Files.exists(tempPath)) {
-            Files.createDirectories(tempPath);
+    // Endpoint to receive individual file chunks
+    @PostMapping(value = "/chunk", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public Map<String, String> uploadChunk(
+            @RequestParam("uploadId") String uploadId,
+            @RequestParam("fileName") String fileName,
+            @RequestParam("fileSize") long fileSize,
+            @RequestParam("chunkIndex") int chunkIndex,
+            @RequestParam("totalChunks") int totalChunks,
+            @RequestParam("contentType") String contentType,
+            @RequestParam("chunk") MultipartFile chunk) throws IOException {
+
+        log.info("Received chunk {}/{} for uploadId: {} - fileName: {}", chunkIndex, totalChunks, uploadId, fileName);
+
+        Path chunkDir = Paths.get(chunkStoragePath, uploadId);
+        if (!Files.exists(chunkDir)) {
+            Files.createDirectories(chunkDir);
         }
 
-        String tempFileName = UUID.randomUUID() + "_" + file.getOriginalFilename();
-        File tempFile = tempPath.resolve(tempFileName).toFile();
-        file.transferTo(tempFile);
+        Path chunkFilePath = chunkDir.resolve(fileName + ".chunk" + chunkIndex);
+        chunk.transferTo(chunkFilePath);
 
-        Map<String, String> payload = new HashMap<>();
-        payload.put("tempFilePath", tempFile.getAbsolutePath());
-        payload.put("originalFileName", file.getOriginalFilename());
-        payload.put("contentType", file.getContentType());
+        // Check if all chunks have been received
+        if (chunkIndex == totalChunks - 1) {
+            log.info("All chunks received for uploadId: {}. Reassembling file.", uploadId);
+            Path finalTempFilePath = Paths.get(tempStoragePath, uploadId + "_" + fileName);
+            
+            try (var outputStream = Files.newOutputStream(finalTempFilePath)) {
+                for (int i = 0; i < totalChunks; i++) {
+                    Path currentChunkPath = chunkDir.resolve(fileName + ".chunk" + i);
+                    Files.copy(currentChunkPath, outputStream);
+                }
+            }
+            
+            // Clean up chunk directory
+            Files.walk(chunkDir)
+                 .sorted(java.util.Comparator.reverseOrder())
+                 .map(Path::toFile)
+                 .forEach(File::delete);
+            Files.deleteIfExists(chunkDir);
 
-        TaskEntity task = new TaskEntity();
-        task.setTaskType("PROCESS_UPLOAD");
-        task.setPayload(objectMapper.writeValueAsString(payload));
-        
-        taskRepository.save(task);
+            // Create task for processing the reassembled file
+            Map<String, String> payload = new HashMap<>();
+            payload.put("tempFilePath", finalTempFilePath.toAbsolutePath().toString());
+            payload.put("originalFileName", fileName);
+            payload.put("contentType", contentType);
+            payload.put("fileSize", String.valueOf(fileSize)); // Pass original file size
 
-        return new UploadResponse("Upload received, processing started", task.getId());
+            TaskEntity task = new TaskEntity();
+            task.setTaskType("PROCESS_UPLOAD");
+            task.setPayload(objectMapper.writeValueAsString(payload));
+            taskRepository.save(task);
+
+            log.info("Reassembled file {} and created task {}.", fileName, task.getId());
+            return Map.of("status", "completed", "taskId", task.getId().toString());
+        }
+
+        return Map.of("status", "progress", "chunkIndex", String.valueOf(chunkIndex));
     }
 }

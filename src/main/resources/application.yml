@@ -31,4 +31,6 @@ iphoto:
     photos: D:\temp\storage\originals
     thumbnails: D:\temp\storage\thumbnails
     temp: D:\temp\storage\temp
+    chunks: D:\temp\storage\chunks
+
 

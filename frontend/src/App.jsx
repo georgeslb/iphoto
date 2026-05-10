@@ -13,6 +13,8 @@ import markerShadow from 'leaflet/dist/images/marker-shadow.png'
 let DefaultIcon = L.icon({ iconUrl: markerIcon, shadowUrl: markerShadow, iconSize: [25, 41], iconAnchor: [12, 41] })
 L.Marker.prototype.options.icon = DefaultIcon
 
+const CHUNK_SIZE = 1024 * 1024 * 5; // 5MB chunks
+
 function App() {
   const [photos, setPhotos] = useState([])
   const [page, setPage] = useState(0)
@@ -72,29 +74,88 @@ function App() {
   const handleUpload = async (e) => {
     const files = Array.from(e.target.files || [])
     if (!files.length) return
-    const newEntries = files.map(f => ({ id: Math.random().toString(36).substr(2, 9), name: f.name, status: 'UPLOADING' }))
-    setUploadQueue(prev => [...newEntries, ...prev])
-    for (const file of files) {
-      const fd = new FormData(); fd.append('file', file)
-      try {
-        const res = await fetch('/api/upload', { method: 'POST', body: fd })
-        const data = await res.json()
-        setUploadQueue(q => q.map(it => it.name === file.name ? { ...it, status: 'PROCESSING', taskId: data.taskId } : it))
-        const interval = setInterval(async () => {
-          try {
-            const tRes = await fetch(`/api/tasks/${data.taskId}`)
-            const task = await tRes.json()
-            if (['COMPLETED', 'FAILED', 'IGNORED'].includes(task.status)) {
-              clearInterval(interval)
-              const finalStatus = task.status === 'IGNORED' ? 'ALREADY IMPORTED' : task.status
-              setUploadQueue(q => q.map(it => it.name === file.name ? { ...it, status: finalStatus } : it))
-              if (task.status === 'COMPLETED' && activeTab === 'library') fetchPhotos(0, true)
-            }
-          } catch (err) { clearInterval(interval) }
-        }, 3000)
-      } catch (e) { setUploadQueue(q => q.map(it => it.name === file.name ? { ...it, status: 'FAILED' } : it)) }
+
+    const newUploads = files.map(file => ({
+      id: Math.random().toString(36).substr(2, 9),
+      uploadId: L.Util.stamp(file), // Unique ID for this file upload session
+      name: file.name,
+      status: 'UPLOADING',
+      progress: 0,
+      fileSize: file.size,
+      contentType: file.type,
+      totalChunks: Math.ceil(file.size / CHUNK_SIZE),
+      uploadedChunks: 0,
+      taskId: null
+    }));
+
+    setUploadQueue(prev => [...newUploads, ...prev]);
+
+    for (const uploadItem of newUploads) {
+      const file = files.find(f => L.Util.stamp(f) === uploadItem.uploadId);
+      if (!file) continue;
+
+      let start = 0;
+      let chunkIndex = 0;
+
+      while (start < file.size) {
+        const chunk = file.slice(start, start + CHUNK_SIZE);
+        const formData = new FormData();
+        formData.append('uploadId', uploadItem.uploadId);
+        formData.append('fileName', file.name);
+        formData.append('fileSize', file.size);
+        formData.append('chunkIndex', chunkIndex);
+        formData.append('totalChunks', uploadItem.totalChunks);
+        formData.append('contentType', file.type);
+        formData.append('chunk', chunk);
+
+        try {
+          const res = await fetch('/api/upload/chunk', { method: 'POST', body: formData });
+          const data = await res.json();
+
+          if (data.status === 'completed') {
+            setUploadQueue(prev => prev.map(item =>
+              item.uploadId === uploadItem.uploadId ? { ...item, status: 'PROCESSING', taskId: data.taskId, uploadedChunks: item.totalChunks, progress: 100 } : item
+            ));
+            pollTaskStatus(uploadItem.uploadId, data.taskId);
+          } else {
+            setUploadQueue(prev => prev.map(item =>
+              item.uploadId === uploadItem.uploadId ? { ...item, uploadedChunks: item.uploadedChunks + 1, progress: Math.round(((item.uploadedChunks + 1) / item.totalChunks) * 100) } : item
+            ));
+          }
+        } catch (err) {
+          console.error("Chunk upload failed:", err);
+          setUploadQueue(prev => prev.map(item =>
+            item.uploadId === uploadItem.uploadId ? { ...item, status: 'FAILED', error: 'Chunk upload failed' } : item
+          ));
+          break; // Stop uploading chunks for this file
+        }
+
+        start += CHUNK_SIZE;
+        chunkIndex++;
+      }
     }
-  }
+  };
+
+  const pollTaskStatus = (uploadId, taskId) => {
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/tasks/${taskId}`);
+        const task = await res.json();
+
+        if (['COMPLETED', 'FAILED', 'IGNORED'].includes(task.status)) {
+          clearInterval(interval);
+          const finalStatus = task.status === 'IGNORED' ? 'ALREADY IMPORTED' : task.status;
+          setUploadQueue(prev => prev.map(item =>
+            item.uploadId === uploadId ? { ...item, status: finalStatus, error: task.errorMessage } : item
+          ));
+          if (task.status === 'COMPLETED' && activeTab === 'library') fetchPhotos(0, true);
+        }
+      } catch (err) {
+        clearInterval(interval);
+        console.error("Polling failed:", err);
+      }
+    }, 3000);
+  };
 
   const renderGrid = () => {
     const groups = {}
@@ -186,8 +247,20 @@ function App() {
 
       {uploadQueue.length > 0 && (
         <div className="upload-queue">
-          <div className="upload-queue-header"><span>Progress</span><X size={16} onClick={() => setUploadQueue([])} style={{cursor: 'pointer', opacity: 0.5}}/></div>
-          <div className="upload-list">{uploadQueue.map(item => (<div key={item.id} className="upload-item"><div className="upload-item-info"><span className="upload-item-name">{item.name}</span><span className={`status-text ${item.status?.replace(/\s/g, '')}`}>{item.status}</span></div></div>))}</div>
+          <div className="upload-queue-header">
+            <span>Progress</span>
+            <X size={16} onClick={() => setUploadQueue([])} style={{cursor: 'pointer', opacity: 0.5}}/>
+          </div>
+          <div className="upload-list">
+            {uploadQueue.map(item => (
+              <div key={item.id} className="upload-item">
+                <div className="upload-item-info">
+                  <span className="upload-item-name">{item.name}</span>
+                  <span className={`status-text ${item.status?.replace(/\s/g, '')}`}>{item.status} ({item.progress}%)</span>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -195,7 +268,10 @@ function App() {
         <div className="lightbox-overlay" onClick={() => setSelectedPhoto(null)}>
           <div className="lightbox-container" onClick={e => e.stopPropagation()}>
             <div className="lightbox-content">
-              {selectedPhoto.contentType?.startsWith('video') ? <video src={`/api/photos/${selectedPhoto.id}/stream`} controls autoPlay /> : <img src={`/api/photos/${selectedPhoto.id}/original`} />}
+              {selectedPhoto.contentType?.startsWith('video') ?
+                <video src={`/api/photos/${selectedPhoto.id}/stream`} controls autoPlay /> :
+                <img src={`/api/photos/${selectedPhoto.id}/original`} />
+              }
               {activeTab === 'garbage' ? (
                 <>
                   <button className="btn" style={{position: 'absolute', bottom: '20px', left: '20px', background: '#34c759', color: 'white', border: 'none'}} onClick={() => { handleRestore([selectedPhoto.id]); setSelectedPhoto(null); }}>
