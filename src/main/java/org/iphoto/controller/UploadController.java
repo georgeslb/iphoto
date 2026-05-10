@@ -1,15 +1,16 @@
 package org.iphoto.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.iphoto.model.ChunkUploadRequest;
 import org.iphoto.model.TaskEntity;
-import org.iphoto.model.UploadResponse;
 import org.iphoto.repository.TaskRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
@@ -19,7 +20,6 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/upload")
@@ -62,7 +62,7 @@ public class UploadController {
         chunk.transferTo(chunkFilePath);
 
         // Check if all chunks have been received
-        if (chunkIndex == totalChunks - 1) {
+        if (chunkIndex == totalChunks - 1) { // This is the last chunk
             log.info("All chunks received for uploadId: {}. Reassembling file.", uploadId);
             Path finalTempFilePath = Paths.get(tempStoragePath, uploadId + "_" + fileName);
             
@@ -96,6 +96,6 @@ public class UploadController {
             return Map.of("status", "completed", "taskId", task.getId().toString());
         }
 
-        return Map.of("status", "progress", "chunkIndex", String.valueOf(chunkIndex));
+        return Map.of("status", "AWAITING_CHUNKS", "chunkIndex", String.valueOf(chunkIndex));
     }
 }

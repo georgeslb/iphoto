@@ -57,8 +57,7 @@ public class PhotoService {
             entity.setGarbageAt(null);
             photoRepository.save(entity);
 
-            // Find and cancel any pending PERMANENT_DELETE tasks for this photo
-            List<TaskEntity> pendingDeletes = taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), LocalDateTime.now().plusYears(1)); // Search far into future
+            List<TaskEntity> pendingDeletes = taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), LocalDateTime.now().plusYears(1));
             for (TaskEntity task : pendingDeletes) {
                 try {
                     Map<String, String> payload = objectMapper.readValue(task.getPayload(), new TypeReference<>() {});
@@ -68,7 +67,6 @@ public class PhotoService {
                         taskRepository.save(task);
                     }
                 } catch (IOException e) {
-                    // Log error, but don't stop the restore process
                     System.err.println("Error parsing task payload for task " + task.getId() + ": " + e.getMessage());
                 }
             }
@@ -100,23 +98,20 @@ public class PhotoService {
             PhotoEntity entity = photoRepository.findById(id).orElse(null);
             if (entity == null) continue;
 
-            // Delete physical files
             Files.deleteIfExists(Paths.get(entity.getOriginalPath()));
             if (entity.getThumbnailPath() != null) {
                 Files.deleteIfExists(Paths.get(entity.getThumbnailPath()));
             }
 
-            // Delete DB records
-            metadataRepository.deleteById(id); // Delete metadata first due to foreign key
+            metadataRepository.deleteById(id);
             photoRepository.delete(entity);
 
-            // Find and delete any associated PERMANENT_DELETE tasks
             List<TaskEntity> pendingDeletes = taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), LocalDateTime.now().plusYears(1));
             for (TaskEntity task : pendingDeletes) {
                 try {
                     Map<String, String> payload = objectMapper.readValue(task.getPayload(), new TypeReference<>() {});
                     if ("PERMANENT_DELETE".equals(task.getTaskType()) && id.toString().equals(payload.get("photoId"))) {
-                        taskRepository.delete(task); // Directly delete the task
+                        taskRepository.delete(task);
                     }
                 } catch (IOException e) {
                     System.err.println("Error parsing task payload for task " + task.getId() + ": " + e.getMessage());
@@ -133,17 +128,23 @@ public class PhotoService {
 
     private Photo convertToDto(PhotoEntity entity) {
         DateTimeFormatter mainDateFmt = DateTimeFormatter.ofPattern("MMM dd, yyyy");
+        DateTimeFormatter fullDateTimeFmt = DateTimeFormatter.ofPattern("MMM dd, yyyy HH:mm:ss");
         DateTimeFormatter groupDateFmt = DateTimeFormatter.ofPattern("EEEE, MMM dd, yyyy");
+        
         String dateTaken = entity.getDateTaken() != null ? entity.getDateTaken().format(mainDateFmt) : "Unknown Date";
+        String fullDateTime = entity.getDateTaken() != null ? entity.getDateTaken().format(fullDateTimeFmt) : "Unknown Date/Time";
         String groupDate = entity.getDateTaken() != null ? entity.getDateTaken().format(groupDateFmt) : "Unknown Date";
-        String res = (entity.getWidth() != null) ? entity.getWidth() + "x" + entity.getHeight() : "Unknown";
+        String yearMonth = entity.getDateTaken() != null ? entity.getDateTaken().format(DateTimeFormatter.ofPattern("MMMM yyyy")) : "Other";
+        
+        String res = (entity.getWidth() != null && entity.getHeight() != null) ? entity.getWidth() + "x" + entity.getHeight() : "Unknown";
         
         return new Photo(
                 entity.getId().toString(),
                 entity.getFileName(),
                 "/api/photos/" + entity.getId() + "/thumbnail",
                 dateTaken,
-                entity.getDateTaken() != null ? entity.getDateTaken().format(DateTimeFormatter.ofPattern("MMMM yyyy")) : "Other",
+                fullDateTime, // New field
+                yearMonth,
                 groupDate,
                 entity.getFileSize() != null ? String.format("%.2f MB", entity.getFileSize() / (1024.0 * 1024.0)) : null,
                 res,
@@ -152,7 +153,8 @@ public class PhotoService {
                 entity.getContentType(),
                 entity.getFileHash(),
                 entity.getWidth(),
-                entity.getHeight()
+                entity.getHeight(),
+                entity.getFileSystemCreationDate()
         );
     }
 }

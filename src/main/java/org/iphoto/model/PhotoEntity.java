@@ -2,6 +2,7 @@ package org.iphoto.model;
 
 import jakarta.persistence.*;
 import org.springframework.data.domain.Persistable;
+
 import java.time.LocalDateTime;
 import java.util.UUID;
 
@@ -27,6 +28,7 @@ public class PhotoEntity implements Persistable<UUID> {
     private Long fileSize;
     private String contentType;
     private LocalDateTime dateTaken;
+    private LocalDateTime fileSystemCreationDate; // New field for fallback
     private Integer width;
     private Integer height;
     private Long duration;
@@ -102,6 +104,8 @@ public class PhotoEntity implements Persistable<UUID> {
     public void setContentType(String contentType) { this.contentType = contentType; }
     public LocalDateTime getDateTaken() { return dateTaken; }
     public void setDateTaken(LocalDateTime dateTaken) { this.dateTaken = dateTaken; }
+    public LocalDateTime getFileSystemCreationDate() { return fileSystemCreationDate; }
+    public void setFileSystemCreationDate(LocalDateTime fileSystemCreationDate) { this.fileSystemCreationDate = fileSystemCreationDate; }
     public Integer getWidth() { return width; }
     public void setWidth(Integer width) { this.width = width; }
     public Integer getHeight() { return height; }

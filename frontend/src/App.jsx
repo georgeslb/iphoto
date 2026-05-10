@@ -291,7 +291,7 @@ function App() {
               <div className="sidebar-header"><h3>Information</h3><X size={20} onClick={() => setSelectedPhoto(null)} style={{cursor: 'pointer', opacity: 0.6}} /></div>
               <div className="sidebar-scroll-content">
                 <div className="metadata-group"><label>File Name</label><p>{selectedPhoto.title}</p></div>
-                <div className="metadata-group"><label><Calendar size={14} /> Date Taken</label><p>{selectedPhoto.date}</p></div>
+                <div className="metadata-group"><label><Calendar size={14} /> Date Taken</label><p>{selectedPhoto.fullDateTime}</p></div>
                 <div className="metadata-group"><label><Info size={14} /> Basic Details</label><p>{selectedPhoto.resolution} • {selectedPhoto.size}</p></div>
                 {extMetadata && (
                   <div className="extended-meta">
@@ -300,6 +300,12 @@ function App() {
                     {extMetadata.lensModel && <div className="metadata-group"><label><Camera size={14}/> Lens</label><p>{extMetadata.lensModel}</p></div>}
                     {extMetadata.codec && <div className="metadata-group"><label><Clock size={14}/> Video Info</label><p>{extMetadata.codec} • {extMetadata.frameRate} fps</p></div>}
                     {extMetadata.latitude && <div className="metadata-group"><label><MapPin size={14}/> Location</label><p>{extMetadata.latitude.toFixed(4)}, {extMetadata.longitude.toFixed(4)}</p></div>}
+                  </div>
+                )}
+                {selectedPhoto.fileSystemCreationDate && (
+                  <div className="metadata-group">
+                    <label><Calendar size={14} /> File System Date</label>
+                    <p>{new Date(selectedPhoto.fileSystemCreationDate).toLocaleString()}</p>
                   </div>
                 )}
               </div>
