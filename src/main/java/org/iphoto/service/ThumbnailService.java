@@ -47,45 +47,11 @@ public class ThumbnailService {
         return thumbnailFile.getAbsolutePath();
     }
 
-    private String generateVideoThumbnail(String videoPath, File thumbnailFile) throws IOException {
+    private String generateVideoThumbnail(String videoPath, File thumbnailFile) {
         try (FFmpegFrameGrabber grabber = new FFmpegFrameGrabber(videoPath);
              Java2DFrameConverter converter = new Java2DFrameConverter()) {
             grabber.start(); // Start first to read metadata
-
-            String rotateMetadata = grabber.getVideoMetadata("rotate");
-            log.debug("Video rotation metadata for {}: {}", videoPath, rotateMetadata);
-
-            // Apply FFmpeg filters based on rotation metadata
-            // Note: FFmpeg filters are applied sequentially.
-            // The 'transpose' filter handles rotation and flipping.
-            // We need to apply the inverse rotation to get the correct orientation.
-            // FFmpeg transpose filter options:
-            // 0 = 90CounterCLockwise and Vertical Flip (default)
-            // 1 = 90Clockwise
-            // 2 = 90CounterCLockwise
-            // 3 = 90Clockwise and Vertical Flip
-            // We want to rotate the image so it appears upright.
-            // If video is 90 CW (rotate=90), we need to apply transpose=1 (90 CW) to make it upright.
-            // If video is 270 CW (rotate=270), we need to apply transpose=2 (90 CCW) to make it upright.
-            // If video is 180 CW (rotate=180), we need to apply vflip,hflip.
-
-            String filterString = null;
-            if (rotateMetadata != null) {
-                int rotation = 0;
-                try {
-                    rotation = Integer.parseInt(rotateMetadata);
-                } catch (NumberFormatException e) {
-                    log.warn("Invalid rotation metadata: {}", rotateMetadata);
-                }
-
-                if (rotation == 90) { // Video is 90 deg clockwise, need to rotate 90 deg clockwise to make it upright
-                    filterString = "transpose=1";
-                } else if (rotation == 270 || rotation == -90) { // Video is 270 deg clockwise, need to rotate 90 deg counter-clockwise to make it upright
-                    filterString = "transpose=2";
-                } else if (rotation == 180 || rotation == -180) { // Video is 180 deg
-                    filterString = "vflip,hflip"; // Flip horizontally and vertically
-                }
-            }
+            String filterString = fixRotationArgument(grabber);
 
             if (filterString != null) {
                 grabber.setVideoOption("vf", filterString);
@@ -110,5 +76,33 @@ public class ThumbnailService {
             log.error("Native video thumbnail generation failed for {}: {}", videoPath, e.getMessage());
             return null;
         }
+    }
+
+    private static String fixRotationArgument(FFmpegFrameGrabber grabber) {
+        double videoRotation = grabber.getDisplayRotation();
+
+
+        // Apply FFmpeg filters based on rotation metadata
+        // Note: FFmpeg filters are applied sequentially.
+        // The 'transpose' filter handles rotation and flipping.
+        // We need to apply the inverse rotation to get the correct orientation.
+        // FFmpeg transpose filter options:
+        // 0 = 90CounterCLockwise and Vertical Flip (default)
+        // 1 = 90Clockwise
+        // 2 = 90CounterCLockwise
+        // 3 = 90Clockwise and Vertical Flip
+        // We want to rotate the image so it appears upright.
+        // If video is 90 CW (rotate=90), we need to apply transpose=1 (90 CW) to make it upright.
+        // If video is 270 CW (rotate=270), we need to apply transpose=2 (90 CCW) to make it upright.
+        // If video is 180 CW (rotate=180), we need to apply vflip,hflip.
+
+        if (videoRotation == 90) { // Video is 90 deg clockwise, need to rotate 90 deg clockwise to make it upright
+            return "transpose=1";
+        } else if (videoRotation == 270 || videoRotation == -90) { // Video is 270 deg clockwise, need to rotate 90 deg counter-clockwise to make it upright
+            return "transpose=2";
+        } else if (videoRotation == 180 || videoRotation == -180) { // Video is 180 deg
+            return "vflip,hflip"; // Flip horizontally and vertically
+        }
+        return null;
     }
 }

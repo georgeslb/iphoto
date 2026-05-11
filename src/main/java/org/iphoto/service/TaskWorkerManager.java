@@ -53,7 +53,6 @@ public class TaskWorkerManager {
     private final ThumbnailService thumbnailService;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
-    private final EntityManager entityManager;
     private final ExecutorService executorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
 
     @Value("${iphoto.storage.photos}")
@@ -69,19 +68,16 @@ public class TaskWorkerManager {
         this.thumbnailService = thumbnailService;
         this.objectMapper = objectMapper;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
-        this.entityManager = entityManager;
     }
 
     @Scheduled(fixedDelay = 5000)
     public void pollPendingTasks() {
-        List<UUID> taskIdsToProcess = transactionTemplate.execute(status -> {
-            return taskRepository.findExecutableTasks(TaskStatus.PENDING, LocalDateTime.now())
-                    .stream().map(task -> {
-                        task.setStatus(TaskStatus.PROCESSING);
-                        taskRepository.save(task);
-                        return task.getId();
-                    }).toList();
-        });
+        List<UUID> taskIdsToProcess = transactionTemplate.execute(status -> taskRepository.findExecutableTasks(TaskStatus.PENDING, LocalDateTime.now())
+                .stream().map(task -> {
+                    task.setStatus(TaskStatus.PROCESSING);
+                    taskRepository.save(task);
+                    return task.getId();
+                }).toList());
 
         if (taskIdsToProcess != null) {
             for (UUID taskId : taskIdsToProcess) {
@@ -207,10 +203,14 @@ public class TaskWorkerManager {
 
     private void extractVideoMetadata(File file, PhotoEntity photo, PhotoMetadataEntity meta, Map<String, String> raw) {
         try (FFmpegFrameGrabber grabber = new FFmpegFrameGrabber(file)) {
-            grabber.setOption("autorotate", "1");
             grabber.start();
+            double videoRotation = grabber.getDisplayRotation();
             photo.setWidth(grabber.getImageWidth());
             photo.setHeight(grabber.getImageHeight());
+            if (Math.abs(videoRotation) == 90 || Math.abs(videoRotation) == 270) {
+                photo.setWidth(grabber.getImageHeight());
+                photo.setHeight(grabber.getImageWidth());
+            }
             photo.setDuration(grabber.getLengthInTime() / 1000);
             meta.setCodec(grabber.getVideoCodecName());
             String creationTime = grabber.getMetadata().get("creation_time");
