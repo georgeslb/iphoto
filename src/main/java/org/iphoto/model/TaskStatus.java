@@ -5,5 +5,5 @@ public enum TaskStatus {
     PROCESSING,
     COMPLETED,
     FAILED,
-    IGNORED
+    IGNORED, TRASHED
 }

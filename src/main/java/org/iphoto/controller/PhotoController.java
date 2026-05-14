@@ -1,5 +1,7 @@
 package org.iphoto.controller;
 
+import org.iphoto.entities.PhotoEntity;
+import org.iphoto.entities.PhotoMetadataEntity;
 import org.iphoto.model.*;
 import org.iphoto.repository.PhotoMetadataRepository;
 import org.iphoto.repository.PhotoRepository;
@@ -101,7 +103,7 @@ public class PhotoController {
 
     private ResourceRegion resourceRegion(Resource video, HttpHeaders headers) throws IOException {
         long len = video.contentLength();
-        HttpRange range = headers.getRange().isEmpty() ? null : headers.getRange().get(0);
+        HttpRange range = headers.getRange().isEmpty() ? null : headers.getRange().getFirst();
         if (range != null) {
             long start = range.getRangeStart(len);
             long end = range.getRangeEnd(len);

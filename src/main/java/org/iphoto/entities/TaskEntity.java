@@ -1,11 +1,19 @@
-package org.iphoto.model;
+package org.iphoto.entities;
 
 import jakarta.persistence.*;
+import lombok.Data;
+import lombok.EqualsAndHashCode;
+import lombok.NoArgsConstructor;
+import org.iphoto.model.TaskStatus;
+
 import java.time.LocalDateTime;
 import java.util.UUID;
 
 @Entity
 @Table(name = "tasks")
+@Data
+@EqualsAndHashCode(callSuper = false)
+@NoArgsConstructor
 public class TaskEntity {
 
     @Id
@@ -32,8 +40,6 @@ public class TaskEntity {
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
-    public TaskEntity() {}
-
     @PrePersist
     protected void onCreate() {
         createdAt = LocalDateTime.now();
@@ -48,12 +54,6 @@ public class TaskEntity {
         updatedAt = LocalDateTime.now();
     }
 
-    // Getters and Setters
-    public UUID getId() { return id; }
-    public void setId(UUID id) { this.id = id; }
-
-    public String getTaskType() { return taskType; }
-    public void setTaskType(String taskType) { this.taskType = taskType; }
 
     // Logic for Status using the Enum internally but String in DB
     public TaskStatus getStatus() { 
@@ -62,19 +62,4 @@ public class TaskEntity {
     public void setStatus(TaskStatus status) { 
         this.status = status != null ? status.name() : TaskStatus.PENDING.name(); 
     }
-
-    public String getPayload() { return payload; }
-    public void setPayload(String payload) { this.payload = payload; }
-
-    public String getErrorMessage() { return errorMessage; }
-    public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }
-
-    public String getStackTrace() { return stackTrace; }
-    public void setStackTrace(String stackTrace) { this.stackTrace = stackTrace; }
-
-    public LocalDateTime getExecuteAt() { return executeAt; }
-    public void setExecuteAt(LocalDateTime executeAt) { this.executeAt = executeAt; }
-
-    public LocalDateTime getCreatedAt() { return createdAt; }
-    public LocalDateTime getUpdatedAt() { return updatedAt; }
 }

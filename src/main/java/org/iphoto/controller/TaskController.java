@@ -1,6 +1,6 @@
 package org.iphoto.controller;
 
-import org.iphoto.model.TaskEntity;
+import org.iphoto.entities.TaskEntity;
 import org.iphoto.repository.TaskRepository;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;

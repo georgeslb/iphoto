@@ -1,6 +1,7 @@
 package org.iphoto.repository;
 
-import org.iphoto.model.PhotoEntity;
+import org.iphoto.entities.AlbumEntity;
+import org.iphoto.entities.PhotoEntity;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -24,4 +25,11 @@ public interface PhotoRepository extends JpaRepository<PhotoEntity, UUID> {
     List<String> findDuplicateHashes();
     
     List<PhotoEntity> findByFileHashInAndIsGarbageFalse(List<String> hashes);
+
+    Page<PhotoEntity> findByIsGarbageFalseAndAlbums(AlbumEntity album, Pageable pageable);
+
+    long countByIsGarbageFalseAndAlbums(AlbumEntity album);
+
+
+
 }

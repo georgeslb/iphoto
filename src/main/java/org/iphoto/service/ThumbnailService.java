@@ -9,6 +9,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import javax.imageio.ImageIO;
+import java.awt.*;
+import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
@@ -51,20 +53,16 @@ public class ThumbnailService {
         try (FFmpegFrameGrabber grabber = new FFmpegFrameGrabber(videoPath);
              Java2DFrameConverter converter = new Java2DFrameConverter()) {
             grabber.start(); // Start first to read metadata
-            String filterString = fixRotationArgument(grabber);
-
-            if (filterString != null) {
-                grabber.setVideoOption("vf", filterString);
-                log.info("Applied FFmpeg filter '{}' for video: {}", filterString, videoPath);
-            }
-
             long totalFrames = grabber.getLengthInFrames();
             grabber.setFrameNumber((int) Math.min(totalFrames / 10, 30));
 
 
             BufferedImage bi = converter.convert(grabber.grabImage());
-
+            double rotate = grabber.getDisplayRotation();
+            int angle = (int) rotate;
+// save thumbnail
             if (bi != null) {
+                bi = rotateImage(bi, -angle);
                 ImageIO.write(bi, "jpg", thumbnailFile);
                 grabber.stop();
                 return thumbnailFile.getAbsolutePath();
@@ -78,31 +76,35 @@ public class ThumbnailService {
         }
     }
 
-    private static String fixRotationArgument(FFmpegFrameGrabber grabber) {
-        double videoRotation = grabber.getDisplayRotation();
+    private static BufferedImage rotateImage(BufferedImage img, int angle) {
+        double rads = Math.toRadians(angle);
 
+        double sin = Math.abs(Math.sin(rads));
+        double cos = Math.abs(Math.cos(rads));
 
-        // Apply FFmpeg filters based on rotation metadata
-        // Note: FFmpeg filters are applied sequentially.
-        // The 'transpose' filter handles rotation and flipping.
-        // We need to apply the inverse rotation to get the correct orientation.
-        // FFmpeg transpose filter options:
-        // 0 = 90CounterCLockwise and Vertical Flip (default)
-        // 1 = 90Clockwise
-        // 2 = 90CounterCLockwise
-        // 3 = 90Clockwise and Vertical Flip
-        // We want to rotate the image so it appears upright.
-        // If video is 90 CW (rotate=90), we need to apply transpose=1 (90 CW) to make it upright.
-        // If video is 270 CW (rotate=270), we need to apply transpose=2 (90 CCW) to make it upright.
-        // If video is 180 CW (rotate=180), we need to apply vflip,hflip.
+        int w = img.getWidth();
+        int h = img.getHeight();
 
-        if (videoRotation == 90) { // Video is 90 deg clockwise, need to rotate 90 deg clockwise to make it upright
-            return "transpose=1";
-        } else if (videoRotation == 270 || videoRotation == -90) { // Video is 270 deg clockwise, need to rotate 90 deg counter-clockwise to make it upright
-            return "transpose=2";
-        } else if (videoRotation == 180 || videoRotation == -180) { // Video is 180 deg
-            return "vflip,hflip"; // Flip horizontally and vertically
-        }
-        return null;
+        int newWidth = (int) Math.floor(w * cos + h * sin);
+        int newHeight = (int) Math.floor(h * cos + w * sin);
+
+        BufferedImage rotated = new BufferedImage(
+                newWidth,
+                newHeight,
+                img.getType()
+        );
+
+        Graphics2D g2d = rotated.createGraphics();
+
+        AffineTransform at = new AffineTransform();
+
+        at.translate((double) (newWidth - w) / 2, (double) (newHeight - h) / 2);
+        at.rotate(rads, w / 2.0, h / 2.0);
+
+        g2d.setTransform(at);
+        g2d.drawImage(img, 0, 0, null);
+        g2d.dispose();
+
+        return rotated;
     }
 }

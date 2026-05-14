@@ -1,6 +1,6 @@
 package org.iphoto.repository;
 
-import org.iphoto.model.TaskEntity;
+import org.iphoto.entities.TaskEntity;
 import org.iphoto.model.TaskStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;

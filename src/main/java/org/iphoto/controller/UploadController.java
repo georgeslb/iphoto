@@ -1,7 +1,7 @@
 package org.iphoto.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.iphoto.model.TaskEntity;
+import org.iphoto.entities.TaskEntity;
 import org.iphoto.repository.TaskRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,6 +20,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.stream.Stream;
 
 @RestController
 @RequestMapping("/api/upload")
@@ -74,11 +75,12 @@ public class UploadController {
             }
             
             // Clean up chunk directory
-            Files.walk(chunkDir)
-                 .sorted(java.util.Comparator.reverseOrder())
-                 .map(Path::toFile)
-                 .forEach(File::delete);
-            Files.deleteIfExists(chunkDir);
+            try (Stream<Path> walk = Files.walk(chunkDir)) {
+                walk.sorted(java.util.Comparator.reverseOrder())
+                        .map(Path::toFile)
+                        .forEach(File::delete);
+                Files.deleteIfExists(chunkDir);
+            }
 
             // Create task for processing the reassembled file
             Map<String, String> payload = new HashMap<>();
