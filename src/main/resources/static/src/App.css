@@ -113,6 +113,7 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 }
 
 .album-card {
+  position: relative;
   background: #f9f9fb;
   border-radius: 12px;
   overflow: hidden;
@@ -125,6 +126,16 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   transform: translateY(-5px);
   box-shadow: 0 8px 25px rgba(0,0,0,0.1);
 }
+
+.album-card.selected {
+  outline: 4px solid var(--primary-color);
+  outline-offset: -4px;
+}
+
+.album-card:hover .select-overlay, .album-card.selected .select-overlay {
+  opacity: 1;
+}
+
 
 .album-cover {
   width: 100%;

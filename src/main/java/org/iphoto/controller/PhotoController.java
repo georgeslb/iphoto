@@ -20,7 +20,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -78,9 +77,6 @@ public class PhotoController {
                 .map(m -> new LocationDTO(m.getId(), m.getLatitude(), m.getLongitude(), m.getPhoto().getFileName(), "/api/photos/" + m.getId() + "/thumbnail"))
                 .collect(Collectors.toList());
     }
-
-    @GetMapping("/duplicates")
-    public Map<String, List<Photo>> getDuplicates() { return photoService.getDuplicates(); }
 
     @GetMapping("/{id}/thumbnail")
     public ResponseEntity<Resource> getThumbnail(@PathVariable UUID id) {

@@ -22,7 +22,6 @@ public class PhotoEntity implements Persistable<UUID> {
 
     @Id
     @ToString.Include
-    @EqualsAndHashCode.Include
     private UUID id;
 
     @Column(nullable = false)
@@ -37,6 +36,8 @@ public class PhotoEntity implements Persistable<UUID> {
     private String thumbnailPath;
 
     @Column(unique = true)
+    @ToString.Include
+    @EqualsAndHashCode.Include
     private String fileHash;
     
     private Long fileSize;
@@ -49,13 +50,19 @@ public class PhotoEntity implements Persistable<UUID> {
     private Long duration;
     private String cameraModel;
     private String location;
-    
+
     @Column(nullable = false)
     private Boolean isFavorite = false;
 
     @Column(nullable = false)
     private Boolean isGarbage = false;
-    
+
+    @Column(columnDefinition = "BYTEA")
+    private byte[] phash;
+
+    @Column(columnDefinition = "BYTEA")
+    private byte[] mhash;
+
     private LocalDateTime garbageAt;
     private LocalDateTime createdAt;
 
@@ -64,6 +71,7 @@ public class PhotoEntity implements Persistable<UUID> {
 
     @Transient
     private boolean isNew = true;
+
 
 
     public PhotoEntity(UUID id, String fileName, String originalPath, String thumbnailPath, String fileHash, Long fileSize, String contentType) {
@@ -95,5 +103,4 @@ public class PhotoEntity implements Persistable<UUID> {
         if (isFavorite == null) isFavorite = false;
         if (isGarbage == null) isGarbage = false;
     }
-
 }

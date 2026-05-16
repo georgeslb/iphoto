@@ -20,7 +20,12 @@ const CHUNK_SIZE = 1024 * 1024 * 5; // 5MB chunks
 
 function App() {
   const [photos, setPhotos] = useState([])
-  const [duplicates, setDuplicates] = useState({})
+  
+  // Duplicates State
+  const [duplicatesPage, setDuplicatesPage] = useState(0);
+  const [currentDuplicateGroup, setCurrentDuplicateGroup] = useState(null);
+  const [isLastDuplicateGroup, setIsLastDuplicateGroup] = useState(false);
+
   const [albums, setAlbums] = useState([])
   const [page, setPage] = useState(0)
   const [hasMore, setHasMore] = useState(true)
@@ -74,6 +79,49 @@ function App() {
     } catch (err) { console.error("Fetch albums failed:", err); }
   }, []);
 
+  const fetchDuplicates = useCallback(async (pageNum) => {
+    try {
+      const res = await fetch(`/api/photos/duplicates?page=${pageNum}&size=1`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.content && data.content.length > 0) {
+          const group = data.content[0];
+          setCurrentDuplicateGroup(group);
+          setDuplicatesPage(pageNum);
+          setIsLastDuplicateGroup(data.last === undefined ? true : data.last);
+          window.history.replaceState(null, '', `/duplicates/${group.hash}`);
+        } else if (pageNum > 0) {
+          // If this page is now empty (e.g. resolved a duplicate) but it wasn't page 0, fetch previous page
+          fetchDuplicates(pageNum - 1);
+        } else {
+          setCurrentDuplicateGroup(null);
+          setIsLastDuplicateGroup(true);
+          setDuplicatesPage(0);
+          window.history.replaceState(null, '', `/duplicates`);
+        }
+      }
+    } catch(err) { console.error("Fetch duplicates failed", err); }
+  }, []);
+
+  const handleFinishComparison = async () => {
+    if (!currentDuplicateGroup) return;
+    try {
+      const res = await fetch('/api/photos/duplicates/finishChanges', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hash: currentDuplicateGroup.hash })
+      });
+      if (res.ok) {
+        // The current group is closed, so we fetch the same page number to get the next open group
+        await fetchDuplicates(duplicatesPage);
+      } else {
+        throw new Error('Failed to finish comparison');
+      }
+    } catch (err) {
+      alert(`Error: ${err.message}`);
+    }
+  };
+
   const refreshAndMaintainScroll = useCallback(async () => {
     const scrollPosition = mainContentRef.current?.scrollTop;
     const currentPage = page;
@@ -81,6 +129,11 @@ function App() {
     // Use background location if active so we refresh the correct view underneath the lightbox
     const effectivePath = backgroundLocation?.pathname || location.pathname;
     
+    if (effectivePath.startsWith('/duplicates')) {
+       await fetchDuplicates(duplicatesPage);
+       return;
+    }
+
     const type = effectivePath === '/garbage' ? 'garbage' : (effectivePath.startsWith('/albums/') ? 'album' : 'library');
     const albumId = type === 'album' ? effectivePath.split('/').pop() : null;
 
@@ -119,7 +172,7 @@ function App() {
             }
         });
     }
-  }, [page, location.pathname, backgroundLocation, fetchAlbums]);
+  }, [page, location.pathname, backgroundLocation, fetchAlbums, duplicatesPage, fetchDuplicates]);
 
   useEffect(() => {
     // Determine effective path for fetching data
@@ -135,12 +188,15 @@ function App() {
     if (effectivePath === '/') fetchPhotos(0, true, 'library');
     else if (effectivePath === '/garbage') fetchPhotos(0, true, 'garbage');
     else if (effectivePath === '/map') fetch('/api/photos/locations').then(r => r.json()).then(setMapAssets);
-    else if (effectivePath === '/duplicates') fetch('/api/photos/duplicates').then(r => r.json()).then(setDuplicates);
+    else if (effectivePath.startsWith('/duplicates')) {
+      setDuplicatesPage(0);
+      fetchDuplicates(0);
+    }
     
     if (effectivePath.startsWith('/albums')) fetchAlbums();
 
     if (albumMatch) fetchPhotos(0, true, 'album', albumMatch[1]);
-  }, [backgroundLocation?.pathname, location.pathname, fetchPhotos, fetchAlbums])
+  }, [backgroundLocation?.pathname, location.pathname, fetchPhotos, fetchAlbums, fetchDuplicates])
 
   useEffect(() => { 
     if (page > 0) {
@@ -174,8 +230,12 @@ function App() {
       // If we land on a direct URL and photos are loaded, set it
       const photo = photos.find(p => p.id === assetMatch[1]);
       if (photo) setSelectedPhoto(photo);
+    } else if (!selectedPhoto && currentDuplicateGroup) {
+      // If we land on a direct URL inside duplicates
+      const photo = currentDuplicateGroup.photos.find(p => p.id === assetMatch[1]);
+      if (photo) setSelectedPhoto(photo);
     }
-  }, [location.pathname, photos, selectedPhoto]);
+  }, [location.pathname, photos, selectedPhoto, currentDuplicateGroup]);
 
   const handlePhotoClick = (photo) => {
     setSelectedPhoto(photo);
@@ -189,6 +249,7 @@ function App() {
 
   const handleMoveToGarbage = async (ids) => {
     if (!window.confirm(`Trash ${ids.length} item(s)?`)) return
+    
     const res = await fetch('/api/photos/garbage', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ids) })
     if (res.ok) { setSelectedIds([]); await refreshAndMaintainScroll(); }
   }
@@ -202,6 +263,21 @@ function App() {
     if (!window.confirm(`Permanently delete ${ids.length} item(s)? This cannot be undone.`)) return
     const res = await fetch('/api/photos/garbage/permanent', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ids) })
     if (res.ok) { setSelectedIds([]); await refreshAndMaintainScroll(); }
+  }
+
+  const handleDeleteAlbums = async (ids) => {
+    if (!window.confirm(`Delete ${ids.length} album(s)? The photos inside them will not be deleted.`)) return;
+
+    try {
+      const deletePromises = ids.map(id => fetch(`/api/albums/${id}`, { method: 'DELETE' }));
+      const responses = await Promise.all(deletePromises);
+      if (responses.every(r => r.ok)) {
+        setSelectedIds([]);
+        await fetchAlbums();
+      } else {
+        throw new Error("One or more albums failed to delete");
+      }
+    } catch (err) { alert(`Error deleting albums: ${err.message}`); }
   }
 
   const handleUpload = async (e) => {
@@ -319,17 +395,42 @@ function App() {
   const renderAlbums = () => (
     <div className="content-body">
       <div className="album-grid">
-        {albums.map(album => (
-          <div key={album.id} className="album-card" onClick={() => navigate(`/albums/${album.id}`)}>
-            <div className="album-cover">
-              {album.coverPhoto ? <img src={album.coverPhoto.url} alt={album.name} /> : <div className="album-placeholder"><ImageIcon size={48} color="#888" /></div>}
+        {albums.map(album => {
+          const isSelected = selectedIds.includes(album.id);
+          return (
+            <div 
+              key={album.id} 
+              className={`album-card ${isSelected ? 'selected' : ''}`} 
+              onClick={() => {
+                if (selectedIds.length > 0) {
+                  setSelectedIds(v => v.includes(album.id) ? v.filter(i => i !== album.id) : [...v, album.id]);
+                } else {
+                  navigate(`/albums/${album.id}`);
+                }
+              }}
+            >
+              <div 
+                className="select-overlay" 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSelectedIds(v => v.includes(album.id) ? v.filter(i => i !== album.id) : [...v, album.id]);
+                }}
+              >
+                <div className={`check-circle ${isSelected ? 'checked' : ''}`}>
+                  {isSelected && <Check size={14} />}
+                </div>
+              </div>
+              
+              <div className="album-cover">
+                {album.coverPhoto ? <img src={album.coverPhoto.url} alt={album.name} /> : <div className="album-placeholder"><ImageIcon size={48} color="#888" /></div>}
+              </div>
+              <div className="album-info">
+                <h3>{album.name}</h3>
+                <p>{album.photoCount} photos</p>
+              </div>
             </div>
-            <div className="album-info">
-              <h3>{album.name}</h3>
-              <p>{album.photoCount} photos</p>
-            </div>
-          </div>
-        ))}
+          );
+        })}
         {albums.length === 0 && <div style={{textAlign: 'center', padding: '50px', color: '#888', gridColumn: '1/-1'}}>No albums created yet. Click "Create Album" to get started!</div>}
       </div>
     </div>
@@ -462,7 +563,7 @@ function App() {
     const routeAlbumId = effectivePath.startsWith('/albums/') && effectivePath !== '/albums' ? effectivePath.split('/').pop() : null;
     
     const singleSelectedPhoto = (selectedIds.length === 1) 
-      ? photos.find(p => p.id === selectedIds[0]) 
+      ? photos.find(p => p.id === selectedIds[0]) || currentDuplicateGroup?.photos?.find(p => p.id === selectedIds[0])
       : null;
     const canSetCoverPhoto = singleSelectedPhoto && !singleSelectedPhoto.contentType.startsWith('video');
 
@@ -481,7 +582,11 @@ function App() {
         albumId={routeAlbumId}
         canSetCoverPhoto={canSetCoverPhoto}
         handleSetCoverPhoto={handleSetCoverPhoto}
+        handleDeleteAlbums={handleDeleteAlbums}
         navigate={navigate}
+        duplicatesPage={duplicatesPage}
+        fetchDuplicates={fetchDuplicates}
+        isLastDuplicateGroup={isLastDuplicateGroup}
       />
     );
   };
@@ -512,19 +617,51 @@ function App() {
               </MapContainer>
             </div>
           } />
-          <Route path="/duplicates" element={
-            <div className="content-body">
-              {Object.keys(duplicates).length > 0 ? Object.entries(duplicates).map(([hash, dupePhotos]) => (
-                <div key={hash} className="duplicate-group">
-                  <h3>Duplicate Group ({dupePhotos.length} items)</h3>
-                  <div className="photo-grid">
-                    {dupePhotos.map(p => {
+          <Route path="/duplicates/*" element={
+            <div className="content-body" style={{ textAlign: 'center', paddingTop: '40px' }}>
+              {currentDuplicateGroup ? (
+                <div className="duplicate-group">
+                  <h3 style={{ marginBottom: '30px' }}>Duplicate Group ({currentDuplicateGroup.photos.length} items)</h3>
+                  <div className="photo-grid" style={{ justifyContent: 'center' }}>
+                    {currentDuplicateGroup.photos.map(p => {
                       const aspectRatio = (p.width && p.height) ? (p.width / p.height) : 1;
-                      return <div key={p.id} className="photo-card" style={{ flexBasis: `${aspectRatio * 220}px` }} onClick={() => handlePhotoClick(p)}><img src={p.url} loading="lazy" /></div>
+                      const isSelected = selectedIds.includes(p.id);
+                      return (
+                        <div 
+                          key={p.id} 
+                          className={`photo-card ${isSelected ? 'selected' : ''}`} 
+                          style={{ flexBasis: `${aspectRatio * 400}px`, height: '400px', flexGrow: 0, maxWidth: '100%' }} 
+                          onClick={() => {
+                            if (selectedIds.length > 0) {
+                              setSelectedIds(v => v.includes(p.id) ? v.filter(i => i !== p.id) : [...v, p.id]);
+                            } else {
+                              handlePhotoClick(p);
+                            }
+                          }}
+                        >
+                          <div 
+                            className="select-overlay" 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedIds(v => v.includes(p.id) ? v.filter(i => i !== p.id) : [...v, p.id]);
+                            }}
+                          >
+                            <div className={`check-circle ${isSelected ? 'checked' : ''}`}>
+                              {isSelected && <Check size={14} />}
+                            </div>
+                          </div>
+                          <img src={p.url} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#e0e0e5' }} />
+                        </div>
+                      )
                     })}
                   </div>
+                  <div style={{ display: 'flex', justifyContent: 'center', gap: '20px', marginTop: '40px' }}>
+                     <button className="btn" onClick={() => fetchDuplicates(duplicatesPage - 1)} disabled={duplicatesPage === 0}>Previous Group</button>
+                     <button className="btn" style={{color: '#007aff', borderColor: '#007aff'}} onClick={handleFinishComparison}>Finish Comparison</button>
+                     <button className="btn btn-primary" onClick={() => fetchDuplicates(duplicatesPage + 1)} disabled={isLastDuplicateGroup}>Next Group</button>
+                  </div>
                 </div>
-              )) : <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>No duplicates found.</div>}
+              ) : <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>No duplicates found. All clean!</div>}
             </div>
           } />
           <Route path="/albums" element={renderAlbums()} />

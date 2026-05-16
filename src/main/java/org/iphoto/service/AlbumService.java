@@ -1,6 +1,7 @@
 package org.iphoto.service;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.iphoto.mappers.PhotoMapper;
 import org.iphoto.model.AlbumCreateRequest;
 import org.iphoto.model.AlbumDTO;
@@ -21,6 +22,7 @@ import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class AlbumService {
 
     private final AlbumRepository albumRepository;
@@ -163,11 +165,13 @@ public class AlbumService {
 
     private void selectANewPhotoAsCover(AlbumEntity album) {
         long photoInAlbumCount = photoRepository.countByIsGarbageFalseAndAlbums(album);
-        Pageable pageable = PageRequest.of(0, 50);
-        photoRepository.findByIsGarbageFalseAndAlbums(album, pageable)
-                .stream().filter(photoEntity -> photoEntity.getContentType().startsWith("image"))
-                .skip(ThreadLocalRandom.current().nextInt((int) Math.min(photoInAlbumCount, 50)))
-                .findAny().ifPresent(album::setCoverPhoto);
+        if (photoInAlbumCount > 0) {
+            Pageable pageable = PageRequest.of(0, 50);
+            photoRepository.findByIsGarbageFalseAndAlbums(album, pageable)
+                    .stream().filter(photoEntity -> photoEntity.getContentType().startsWith("image"))
+                    .skip(ThreadLocalRandom.current().nextInt((int) Math.min(photoInAlbumCount, 50)))
+                    .findAny().ifPresent(album::setCoverPhoto);
+        }
     }
 
     private AlbumDTO updateAlbumAndGetDto(AlbumEntity album) {

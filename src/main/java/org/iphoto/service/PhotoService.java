@@ -1,6 +1,5 @@
 package org.iphoto.service;
 
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -9,6 +8,7 @@ import org.iphoto.entities.TaskEntity;
 import org.iphoto.mappers.PhotoMapper;
 import org.iphoto.model.Photo;
 import org.iphoto.model.TaskStatus;
+import org.iphoto.model.TaskType;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.repository.TaskRepository;
 import org.springframework.data.domain.Page;
@@ -21,7 +21,6 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.util.*;
-import java.util.stream.Collectors;
 
 @Service
 @AllArgsConstructor
@@ -34,6 +33,8 @@ public class PhotoService {
     private final PhotoMapper photoMapper;
     private final AlbumService albumService;
     private final PhotoDeletionService photoDeletionService;
+    private final TaskManagerService taskManagerService;
+    private final DuplicationService duplicationService;
 
 
     public Page<Photo> getPhotos(Pageable pageable) {
@@ -55,20 +56,16 @@ public class PhotoService {
             photo.setGarbageAt(null);
             photoRepository.save(photo);
 
-            List<TaskEntity> pendingDeletes = taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), LocalDateTime.now().plusYears(1));
+            List<TaskEntity> pendingDeletes = taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), LocalDateTime.now().plusYears(1), ids);
             for (TaskEntity task : pendingDeletes) {
-                try {
-                    Map<String, String> payload = objectMapper.readValue(task.getPayload(), new TypeReference<>() {});
-                    if ("PERMANENT_DELETE".equals(task.getTaskType()) && photo.getId() !=null && photo.getId().toString().equals(payload.get("photoId"))) {
-                        task.setStatus(TaskStatus.IGNORED);
-                        task.setErrorMessage("Asset was restored by user, permanent delete task cancelled.");
-                        taskRepository.save(task);
-                    }
-                } catch (IOException e) {
-                    System.err.println("Error parsing task payload for task " + task.getId() + ": " + e.getMessage());
+                if ("PERMANENT_DELETE".equals(task.getTaskType()) && photo.getId() != null ) {
+                    task.setStatus(TaskStatus.IGNORED);
+                    task.setErrorMessage("Asset was restored by user, permanent delete task cancelled.");
+                    taskManagerService.updateTask(task);
                 }
             }
         }
+        duplicationService.restoreFromGarbage(photos);
     }
 
     @Transactional
@@ -82,12 +79,10 @@ public class PhotoService {
             photoRepository.save(photo);
 
             Map<String, String> payload = Map.of("photoId", photo.getId().toString());
-            TaskEntity deleteTask = new TaskEntity();
-            deleteTask.setTaskType("PERMANENT_DELETE");
-            deleteTask.setPayload(objectMapper.writeValueAsString(payload));
-            deleteTask.setExecuteAt(LocalDateTime.now().plusDays(30));
-            taskRepository.save(deleteTask);
+            taskManagerService
+                    .createTaskEntity(TaskType.PERMANENT_DELETE, photo.getId(), objectMapper.writeValueAsString(payload), LocalDateTime.now().plusDays(30));
         }
+        duplicationService.processMovingToGarbage(photos);
         photos.stream().map(PhotoEntity::getAlbums).flatMap(Collection::stream)
                 .forEach(album -> albumService.removePhotosFromAlbum(album.getId(), ids));
     }
@@ -115,7 +110,6 @@ public class PhotoService {
 
                 }
 
-
             } catch (IOException e) {
                 log.error("can't delete photo with id {}", photoId, e);
             }
@@ -123,11 +117,7 @@ public class PhotoService {
 
     }
 
-    public Map<String, List<Photo>> getDuplicates() {
-        List<String> duplicateHashes = photoRepository.findDuplicateHashes();
-        List<PhotoEntity> entities = photoRepository.findByFileHashInAndIsGarbageFalse(duplicateHashes);
-        return entities.stream().map(photoMapper::photoEntityToPhoto).collect(Collectors.groupingBy(Photo::fileHash));
-    }
+
 
 
 }

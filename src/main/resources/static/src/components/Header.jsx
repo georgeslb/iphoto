@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Upload, Plus, Trash2, RotateCcw, ImageIcon, ArrowLeft } from 'lucide-react';
+import { X, Upload, Plus, Trash2, RotateCcw, ImageIcon, ArrowLeft, ChevronLeft, ChevronRight } from 'lucide-react';
 
 export default function Header({
   selectedIds,
@@ -15,9 +15,15 @@ export default function Header({
   albumId,
   canSetCoverPhoto,
   handleSetCoverPhoto,
-  navigate
+  navigate,
+  duplicatesPage,
+  fetchDuplicates,
+  isLastDuplicateGroup,
+  handleDeleteAlbums
 }) {
   const selectionMode = selectedIds.length > 0;
+  const isDuplicatesPage = pathname.startsWith('/duplicates');
+  const isAlbumsMainPage = pathname === '/albums';
 
   return (
     <header className="header">
@@ -46,24 +52,37 @@ export default function Header({
                 )}
                 <button className="btn" style={{color: '#ff3b30'}} onClick={() => handleRemovePhotosFromAlbum(albumId)} disabled={selectedIds.length === 0}><Trash2 size={18}/> Remove from Album</button>
               </>
+            ) : isAlbumsMainPage ? (
+              <>
+                <button className="btn" style={{color: '#ff3b30'}} onClick={() => handleDeleteAlbums(selectedIds)} disabled={selectedIds.length === 0}><Trash2 size={18}/> Delete Album(s)</button>
+              </>
             ) : (
               <>
                 <button className="btn" style={{color: '#ff3b30'}} onClick={() => handleMoveToGarbage(selectedIds)} disabled={selectedIds.length === 0}><Trash2 size={18}/> Move to Garbage</button>
-                <button className="btn btn-primary" onClick={() => setShowAddToAlbumModal(true)} disabled={selectedIds.length === 0}><Plus size={18}/> Add to Album</button>
+                {pathname === '/' && (
+                  <button className="btn btn-primary" onClick={() => setShowAddToAlbumModal(true)} disabled={selectedIds.length === 0}><Plus size={18}/> Add to Album</button>
+                )}
               </>
             )}
           </>
         ) : (
           <>
+            {isDuplicatesPage && (
+              <>
+                <button className="btn" onClick={() => fetchDuplicates(duplicatesPage - 1)} disabled={duplicatesPage === 0}><ChevronLeft size={18}/> Prev Group</button>
+                <button className="btn btn-primary" onClick={() => fetchDuplicates(duplicatesPage + 1)} disabled={isLastDuplicateGroup}>Next Group <ChevronRight size={18}/></button>
+              </>
+            )}
+
             {pathname === '/albums' && !albumId ? (
               <button className="btn btn-primary" onClick={() => setShowCreateAlbumModal(true)}><Plus size={18} /> Create Album</button>
             ) : pathname.startsWith('/albums/') && albumId ? (
               <button className="btn btn-primary" onClick={() => document.getElementById('fIn').click()}><Upload size={18} /> Upload</button>
-            ) : (
+            ) : !isDuplicatesPage ? (
               <>
                 <button className="btn btn-primary" onClick={() => document.getElementById('fIn').click()}><Upload size={18} /> Upload</button>
               </>
-            )}
+            ) : null}
           </>
         )}
       </div>

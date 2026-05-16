@@ -15,6 +15,7 @@ import java.util.UUID;
 public class PhotoMetadataEntity implements Persistable<UUID> {
 
     @Id
+    @EqualsAndHashCode.Include
     private UUID id;
 
     @OneToOne

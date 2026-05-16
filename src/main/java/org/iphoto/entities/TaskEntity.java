@@ -20,6 +20,9 @@ public class TaskEntity {
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
+    @Column()
+    private UUID photoId;
+
     @Column(nullable = false)
     private String taskType;
 

@@ -1,0 +1,18 @@
+package org.iphoto.repository;
+
+import org.iphoto.entities.DuplicateEntity;
+import org.iphoto.model.DuplicateStatus;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Slice;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import java.util.List;
+import java.util.UUID;
+
+@Repository
+public interface DuplicateRepository extends JpaRepository<DuplicateEntity, UUID> {
+    List<DuplicateEntity> findByPhotosIdIn(List<UUID> ids);
+
+    Slice<DuplicateEntity> findByStatus(DuplicateStatus duplicateStatus, Pageable pageable);
+}

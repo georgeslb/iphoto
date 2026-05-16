@@ -1,11 +1,12 @@
 package org.iphoto.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.TaskEntity;
-import org.iphoto.repository.TaskRepository;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
+import org.iphoto.model.TaskType;
+import org.iphoto.properties.IPhotoProperties;
+import org.iphoto.service.TaskManagerService;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -20,26 +21,19 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
 import java.util.stream.Stream;
 
 @RestController
 @RequestMapping("/api/upload")
+@Slf4j
+@RequiredArgsConstructor
 public class UploadController {
-    private static final Logger log = LoggerFactory.getLogger(UploadController.class);
 
-    private final TaskRepository taskRepository;
+    private final TaskManagerService taskManagerService;
     private final ObjectMapper objectMapper;
+    private final IPhotoProperties iPhotoProperties;
 
-    @Value("${iphoto.storage.temp}")
-    private String tempStoragePath;
-    
-    @Value("${iphoto.storage.chunks}") // New property for chunk storage
-    private String chunkStoragePath;
-
-    public UploadController(TaskRepository taskRepository, ObjectMapper objectMapper) {
-        this.taskRepository = taskRepository;
-        this.objectMapper = objectMapper;
-    }
 
     // Endpoint to receive individual file chunks
     @PostMapping(value = "/chunk", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -54,10 +48,12 @@ public class UploadController {
 
         log.info("Received chunk {}/{} for uploadId: {} - fileName: {}", chunkIndex, totalChunks, uploadId, fileName);
 
-        Path chunkDir = Paths.get(chunkStoragePath, uploadId);
+        Path chunkDir = Paths.get(iPhotoProperties.getStorage().getChunks(), uploadId);
         if (!Files.exists(chunkDir)) {
             Files.createDirectories(chunkDir);
         }
+
+
 
         Path chunkFilePath = chunkDir.resolve(fileName + ".chunk" + chunkIndex);
         chunk.transferTo(chunkFilePath);
@@ -65,7 +61,7 @@ public class UploadController {
         // Check if all chunks have been received
         if (chunkIndex == totalChunks - 1) { // This is the last chunk
             log.info("All chunks received for uploadId: {}. Reassembling file.", uploadId);
-            Path finalTempFilePath = Paths.get(tempStoragePath, uploadId + "_" + fileName);
+            Path finalTempFilePath = Paths.get(iPhotoProperties.getStorage().getTemp(), uploadId + "_" + fileName);
             
             try (var outputStream = Files.newOutputStream(finalTempFilePath)) {
                 for (int i = 0; i < totalChunks; i++) {
@@ -87,12 +83,13 @@ public class UploadController {
             payload.put("tempFilePath", finalTempFilePath.toAbsolutePath().toString());
             payload.put("originalFileName", fileName);
             payload.put("contentType", contentType);
-            payload.put("fileSize", String.valueOf(fileSize)); // Pass original file size
+            payload.put("fileSize", String.valueOf(fileSize));
 
-            TaskEntity task = new TaskEntity();
-            task.setTaskType("PROCESS_UPLOAD");
-            task.setPayload(objectMapper.writeValueAsString(payload));
-            taskRepository.save(task);
+            // generate photo UUID and add a new task
+            TaskEntity task = taskManagerService
+                    .createTaskEntity(TaskType.PROCESS_UPLOAD, UUID.randomUUID(), objectMapper.writeValueAsString(payload), null);
+
+
 
             log.info("Reassembled file {} and created task {}.", fileName, task.getId());
             return Map.of("status", "completed", "taskId", task.getId().toString());
