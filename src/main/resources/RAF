@@ -4,6 +4,7 @@ Miniature video -> done
 carte ne s'affiche pas
 calcul data taken incorrecte -> done
 selection date -> done
+When moving one duplicated asset to garbage it consider if CLOSED even when having two other photos
 
 
 

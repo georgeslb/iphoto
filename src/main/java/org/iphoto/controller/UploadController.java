@@ -44,6 +44,7 @@ public class UploadController {
             @RequestParam("chunkIndex") int chunkIndex,
             @RequestParam("totalChunks") int totalChunks,
             @RequestParam("contentType") String contentType,
+            @RequestParam(value = "albumId", required = false) UUID albumId,
             @RequestParam("chunk") MultipartFile chunk) throws IOException {
 
         log.info("Received chunk {}/{} for uploadId: {} - fileName: {}", chunkIndex, totalChunks, uploadId, fileName);
@@ -53,15 +54,13 @@ public class UploadController {
             Files.createDirectories(chunkDir);
         }
 
-
-
         Path chunkFilePath = chunkDir.resolve(fileName + ".chunk" + chunkIndex);
         chunk.transferTo(chunkFilePath);
 
         // Check if all chunks have been received
         if (chunkIndex == totalChunks - 1) { // This is the last chunk
             log.info("All chunks received for uploadId: {}. Reassembling file.", uploadId);
-            Path finalTempFilePath = Paths.get(iPhotoProperties.getStorage().getTemp(), uploadId + "_" + fileName);
+            Path finalTempFilePath = Paths.get(iPhotoProperties.getStorage().getTemp(), uploadId);
             
             try (var outputStream = Files.newOutputStream(finalTempFilePath)) {
                 for (int i = 0; i < totalChunks; i++) {
@@ -84,6 +83,9 @@ public class UploadController {
             payload.put("originalFileName", fileName);
             payload.put("contentType", contentType);
             payload.put("fileSize", String.valueOf(fileSize));
+            if (albumId != null) {
+                payload.put("albumId", albumId.toString());
+            }
 
             // generate photo UUID and add a new task
             TaskEntity task = taskManagerService

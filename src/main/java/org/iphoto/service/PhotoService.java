@@ -117,7 +117,13 @@ public class PhotoService {
 
     }
 
-
-
+    @Transactional
+    public Photo updatePhotoDate(UUID id, LocalDateTime newDate) {
+        PhotoEntity photoEntity = photoRepository.findById(id)
+                .orElseThrow(() -> new NoSuchElementException("Photo not found with ID: " + id));
+        photoEntity.setDateTaken(newDate);
+        photoRepository.save(photoEntity);
+        return photoMapper.photoEntityToPhoto(photoEntity);
+    }
 
 }

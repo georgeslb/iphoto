@@ -45,6 +45,7 @@ public class PhotoDeletionService {
             List<DuplicateEntity> duplicateEntities = duplicateRepository.findByPhotosIdIn(List.of(photo.getId()));
             for (DuplicateEntity duplicateEntity : duplicateEntities) {
                 if ( duplicateEntity.getPhotos().size() <= 2) {
+                    duplicateEntity.getPhotos().clear();
                     duplicateRepository.delete(duplicateEntity);
                 } else {
                     duplicateEntity.getPhotos().remove(photo);

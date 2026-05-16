@@ -2,6 +2,7 @@ package org.iphoto.controller;
 
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.PhotoMetadataEntity;
+import org.iphoto.mappers.PhotoMapper;
 import org.iphoto.model.*;
 import org.iphoto.repository.PhotoMetadataRepository;
 import org.iphoto.repository.PhotoRepository;
@@ -20,6 +21,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -30,16 +32,36 @@ public class PhotoController {
     private final PhotoService photoService;
     private final PhotoRepository photoRepository;
     private final PhotoMetadataRepository metadataRepository;
+    private final PhotoMapper photoMapper;
 
-    public PhotoController(PhotoService photoService, PhotoRepository photoRepository, PhotoMetadataRepository metadataRepository) {
+    public PhotoController(PhotoService photoService, PhotoRepository photoRepository, PhotoMetadataRepository metadataRepository, PhotoMapper photoMapper) {
         this.photoService = photoService;
         this.photoRepository = photoRepository;
         this.metadataRepository = metadataRepository;
+        this.photoMapper = photoMapper;
     }
 
     @GetMapping
     public PageResponse<Photo> getPhotos(@PageableDefault(size = 50, sort = "dateTaken", direction = Sort.Direction.DESC) Pageable pageable) {
         return PageResponse.from(photoService.getPhotos(pageable));
+    }
+
+    @GetMapping("/{id}")
+    public ResponseEntity<Photo> getPhoto(@PathVariable UUID id) {
+        return photoRepository.findById(id)
+                .map(photoMapper::photoEntityToPhoto)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    @PatchMapping("/{id}/date")
+    public ResponseEntity<Photo> updatePhotoDate(@PathVariable UUID id, @RequestBody UpdatePhotoDateRequest request) {
+        try {
+            Photo photo = photoService.updatePhotoDate(id, request.newDate());
+            return ResponseEntity.ok(photo);
+        } catch (NoSuchElementException e) {
+            return ResponseEntity.notFound().build();
+        }
     }
 
     @GetMapping("/garbage")
@@ -60,7 +82,7 @@ public class PhotoController {
     }
 
     @DeleteMapping("/garbage/permanent")
-    public ResponseEntity<Void> permanentDeleteAssets(@RequestBody List<UUID> ids) throws IOException {
+    public ResponseEntity<Void> permanentDeleteAssets(@RequestBody List<UUID> ids) {
         photoService.permanentDeleteAssets(ids);
         return ResponseEntity.noContent().build();
     }
@@ -80,21 +102,21 @@ public class PhotoController {
 
     @GetMapping("/{id}/thumbnail")
     public ResponseEntity<Resource> getThumbnail(@PathVariable UUID id) {
-        return photoRepository.findById(id).map(PhotoEntity::getThumbnailPath).map(this::serveFile).orElse(ResponseEntity.notFound().build());
+        return photoRepository.findById(id).map(photo -> this.serveFile(photo, true)).orElse(ResponseEntity.notFound().build());
     }
 
     @GetMapping("/{id}/original")
     public ResponseEntity<Resource> getOriginal(@PathVariable UUID id) {
-        return photoRepository.findById(id).map(PhotoEntity::getOriginalPath).map(this::serveFile).orElse(ResponseEntity.notFound().build());
+        return photoRepository.findById(id).map(photo -> this.serveFile(photo, false)).orElse(ResponseEntity.notFound().build());
     }
 
     @GetMapping("/{id}/stream")
     public ResponseEntity<ResourceRegion> streamVideo(@PathVariable UUID id, @RequestHeader HttpHeaders headers) throws IOException {
-        PhotoEntity entity = photoRepository.findById(id).orElse(null);
-        if (entity == null || entity.getOriginalPath() == null) return ResponseEntity.notFound().build();
-        Path path = Paths.get(entity.getOriginalPath());
+        PhotoEntity photo = photoRepository.findById(id).orElse(null);
+        if (photo == null || photo.getOriginalPath() == null) return ResponseEntity.notFound().build();
+        Path path = Paths.get(photo.getOriginalPath());
         Resource video = new FileSystemResource(path);
-        return ResponseEntity.status(HttpStatus.PARTIAL_CONTENT).contentType(MediaType.parseMediaType(Files.probeContentType(path))).body(resourceRegion(video, headers));
+        return ResponseEntity.status(HttpStatus.PARTIAL_CONTENT).contentType(MediaType.parseMediaType(photo.getContentType())).body(resourceRegion(video, headers));
     }
 
     private ResourceRegion resourceRegion(Resource video, HttpHeaders headers) throws IOException {
@@ -108,11 +130,20 @@ public class PhotoController {
         return new ResourceRegion(video, 0, Math.min(1024 * 1024L, len));
     }
 
-    private ResponseEntity<Resource> serveFile(String filePath) {
+    private ResponseEntity<Resource> serveFile(PhotoEntity photo, boolean isThumbnail) {
+        String filePath = photo.getOriginalPath();
+        if (isThumbnail) {
+           filePath = photo.getThumbnailPath();
+        }
         if (filePath == null) return ResponseEntity.notFound().build();
         Path path = Paths.get(filePath);
         if (!Files.exists(path)) return ResponseEntity.notFound().build();
         Resource resource = new FileSystemResource(path);
-        try { return ResponseEntity.ok().contentType(MediaType.parseMediaType(Files.probeContentType(path))).body(resource); } catch (IOException e) { return ResponseEntity.ok().contentType(MediaType.IMAGE_JPEG).body(resource); }
+        try {
+            return ResponseEntity.ok().contentType(MediaType.parseMediaType(photo.getContentType())).body(resource);
+        } catch (Exception e) {
+            return ResponseEntity.ok().contentType(MediaType.IMAGE_PNG).body(resource);
+
+        }
     }
 }

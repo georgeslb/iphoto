@@ -33,10 +33,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -54,12 +51,13 @@ public class PhotoUploadService {
     private final IPhotoProperties iPhotoProperties;
     private final ObjectMapper objectMapper;
     private final TaskManagerService taskManagerService;
+    private final AlbumService albumService;
 
     public UploadStatus processNewAsset(TaskEntity task, Map<String, String> payload, File tempFile, String hash) throws IOException {
         String contentType = payload.get("contentType");
         Path storageDir = Paths.get(iPhotoProperties.getStorage().getPhotos());
         if (!Files.exists(storageDir)) Files.createDirectories(storageDir);
-        Path finalPath = storageDir.resolve(task.getPhotoId() + "_" + payload.get("originalFileName"));
+        Path finalPath = storageDir.resolve(task.getPhotoId().toString());
         Files.move(tempFile.toPath(), finalPath);
 
         String thumbPath = thumbnailService.generateThumbnail(finalPath.toString(), task.getPhotoId().toString(), contentType);
@@ -77,11 +75,14 @@ public class PhotoUploadService {
                 extractVideoMetadata(finalPath.toFile(), photo, metadataEntity);
         }
 
+
         metadataEntity.setRawMetadataJson(objectMapper.writeValueAsString(rawMetadata));
 
         photoRepository.save(photo);
         metadataRepository.save(metadataEntity);
-
+        if (payload.get("albumId") != null) {
+            albumService.addPhotosToAlbum(UUID.fromString(payload.get("albumId")), List.of(photo.getId()));
+        }
         taskManagerService.createTaskEntity(TaskType.HASH_IMAGE, photo.getId(), objectMapper.writeValueAsString(Map.of("photoId", photo.getId().toString())),  LocalDateTime.now().plusMinutes(2));
 
         return SUCCESS;

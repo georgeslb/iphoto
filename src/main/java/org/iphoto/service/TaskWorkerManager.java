@@ -91,7 +91,8 @@ public class TaskWorkerManager {
     }
 
     private void processUpload(TaskEntity task) throws Exception {
-        switch (handleUploadTask(task)) {
+        UploadStatus uploadStatus = handleUploadTask(task);
+        switch (uploadStatus) {
             case DUPLICATED -> {
                 task.setStatus(TaskStatus.IGNORED);
                 task.setErrorMessage("Duplicate asset detected");

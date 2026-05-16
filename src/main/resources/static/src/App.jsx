@@ -44,9 +44,11 @@ function App() {
   const navigate = useNavigate();
   const location = useLocation();
   const mainContentRef = useRef(null);
+  const prevSectionRef = useRef(null);
 
   // Background location to keep grid mounted when showing lightbox over it
   const backgroundLocation = location.state?.backgroundLocation;
+  const effectivePath = backgroundLocation?.pathname || location.pathname;
 
   const fetchPhotos = useCallback(async (pageNum, reset = false, type = 'library', albumId = null) => {
     try {
@@ -89,7 +91,7 @@ function App() {
           setCurrentDuplicateGroup(group);
           setDuplicatesPage(pageNum);
           setIsLastDuplicateGroup(data.last === undefined ? true : data.last);
-          window.history.replaceState(null, '', `/duplicates/${group.hash}`);
+          window.history.replaceState(null, '', `/duplicates/${group.hash}?page=${pageNum}`);
         } else if (pageNum > 0) {
           // If this page is now empty (e.g. resolved a duplicate) but it wasn't page 0, fetch previous page
           fetchDuplicates(pageNum - 1);
@@ -125,9 +127,6 @@ function App() {
   const refreshAndMaintainScroll = useCallback(async () => {
     const scrollPosition = mainContentRef.current?.scrollTop;
     const currentPage = page;
-
-    // Use background location if active so we refresh the correct view underneath the lightbox
-    const effectivePath = backgroundLocation?.pathname || location.pathname;
     
     if (effectivePath.startsWith('/duplicates')) {
        await fetchDuplicates(duplicatesPage);
@@ -172,14 +171,23 @@ function App() {
             }
         });
     }
-  }, [page, location.pathname, backgroundLocation, fetchAlbums, duplicatesPage, fetchDuplicates]);
+  }, [page, effectivePath, fetchAlbums, duplicatesPage, fetchDuplicates]);
 
   useEffect(() => {
     // Determine effective path for fetching data
-    const effectivePath = backgroundLocation?.pathname || location.pathname;
-    
+    const currentSection = effectivePath.split('/')[1] || 'library';
+    const prevSection = prevSectionRef.current;
+    prevSectionRef.current = currentSection;
+
     // Ignore direct navigation to an asset (handled by Lightbox and fallback logic)
-    if (effectivePath.startsWith('/asset/')) return;
+    // By returning early here, we DO NOT fetch the grid photos if the user hard-refreshes the page on /asset/:id.
+    // This perfectly solves the issue of the background grid requesting massive amounts of thumbnails unnecessarily!
+    if (location.pathname.startsWith('/asset/')) return;
+
+    // Prevent resetting state if we are just moving within the duplicates section (e.g. from /duplicates to /duplicates/hash)
+    if (currentSection === 'duplicates' && prevSection === 'duplicates') {
+      return;
+    }
 
     setPhotos([]); setPage(0); setHasMore(true); setSelectedIds([]);
     
@@ -189,24 +197,28 @@ function App() {
     else if (effectivePath === '/garbage') fetchPhotos(0, true, 'garbage');
     else if (effectivePath === '/map') fetch('/api/photos/locations').then(r => r.json()).then(setMapAssets);
     else if (effectivePath.startsWith('/duplicates')) {
-      setDuplicatesPage(0);
-      fetchDuplicates(0);
+      // Read page number from URL if it exists (for hard refreshes)
+      const urlParams = new URLSearchParams(window.location.search);
+      const pageParam = parseInt(urlParams.get('page'), 10);
+      const targetPage = !isNaN(pageParam) ? pageParam : 0;
+      
+      setDuplicatesPage(targetPage);
+      fetchDuplicates(targetPage);
     }
     
     if (effectivePath.startsWith('/albums')) fetchAlbums();
 
     if (albumMatch) fetchPhotos(0, true, 'album', albumMatch[1]);
-  }, [backgroundLocation?.pathname, location.pathname, fetchPhotos, fetchAlbums, fetchDuplicates])
+  }, [effectivePath, fetchPhotos, fetchAlbums, fetchDuplicates, location.pathname])
 
   useEffect(() => { 
     if (page > 0) {
-      const effectivePath = backgroundLocation?.pathname || location.pathname;
       const albumMatch = effectivePath.match(/^\/albums\/(.+)$/);
       if (effectivePath === '/') fetchPhotos(page, false, 'library');
       else if (effectivePath === '/garbage') fetchPhotos(page, false, 'garbage');
       else if (albumMatch) fetchPhotos(page, false, 'album', albumMatch[1]);
     }
-  }, [page, fetchPhotos, location.pathname, backgroundLocation])
+  }, [page, fetchPhotos, effectivePath])
 
   useEffect(() => {
     if (selectedPhoto) {
@@ -234,17 +246,30 @@ function App() {
       // If we land on a direct URL inside duplicates
       const photo = currentDuplicateGroup.photos.find(p => p.id === assetMatch[1]);
       if (photo) setSelectedPhoto(photo);
+    } else if (!selectedPhoto) {
+      // Hard refresh on an asset URL without a pre-loaded grid
+      fetch(`/api/photos/${assetMatch[1]}`)
+        .then(res => res.ok ? res.json() : null)
+        .then(data => {
+            if (data) setSelectedPhoto(data);
+        });
     }
   }, [location.pathname, photos, selectedPhoto, currentDuplicateGroup]);
 
   const handlePhotoClick = (photo) => {
     setSelectedPhoto(photo);
-    navigate(`/asset/${photo.id}`, { state: { backgroundLocation: location } });
+    // Push the asset URL, but keep the current effective path as the background location
+    navigate(`/asset/${photo.id}`, { state: { backgroundLocation: { pathname: effectivePath } }, replace: true });
   };
 
   const handleCloseLightbox = () => {
     setSelectedPhoto(null);
-    navigate(backgroundLocation?.pathname || -1, { replace: true });
+    // Determine the logical previous route cleanly
+    if (backgroundLocation) {
+        navigate(backgroundLocation.pathname + (backgroundLocation.search || '') + (backgroundLocation.hash || ''), { replace: true });
+    } else {
+        navigate('/', { replace: true }); // Fallback cleanly if there's no history
+    }
   };
 
   const handleMoveToGarbage = async (ids) => {
@@ -284,6 +309,8 @@ function App() {
     const files = Array.from(e.target.files || [])
     if (!files.length) return
 
+    const currentAlbumId = effectivePath.startsWith('/albums/') && effectivePath !== '/albums' ? effectivePath.split('/').pop() : null;
+
     const newUploads = files.map(file => ({
       id: Math.random().toString(36).substr(2, 9),
       uploadId: L.Util.stamp(file),
@@ -316,6 +343,7 @@ function App() {
         formData.append('totalChunks', uploadItem.totalChunks);
         formData.append('contentType', file.type);
         formData.append('chunk', chunk);
+        if (currentAlbumId) formData.append('albumId', currentAlbumId);
 
         try {
           const res = await fetch('/api/upload/chunk', { method: 'POST', body: formData });
@@ -496,6 +524,21 @@ function App() {
     } catch (err) { alert(`Error setting cover photo: ${err.message}`); }
   };
 
+  const handleUpdateDate = async (photoId, newDate) => {
+    try {
+      const res = await fetch(`/api/photos/${photoId}/date`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newDate })
+      });
+      if (res.ok) {
+        const updatedPhoto = await res.json();
+        setSelectedPhoto(updatedPhoto);
+        await refreshAndMaintainScroll();
+      } else throw new Error(`Failed to update date: ${res.status}`);
+    } catch (err) { alert(`Error updating date: ${err.message}`); }
+  };
+
   const renderAddToAlbumModal = () => (
     <div className="modal-overlay">
       <div className="modal-content">
@@ -589,6 +632,13 @@ function App() {
         isLastDuplicateGroup={isLastDuplicateGroup}
       />
     );
+  };
+
+  const getActivePhotosContext = () => {
+    if (effectivePath.startsWith('/duplicates')) {
+      return currentDuplicateGroup ? currentDuplicateGroup.photos : [];
+    }
+    return photos;
   };
 
   return (
@@ -699,7 +749,10 @@ function App() {
           pathname={backgroundLocation?.pathname || location.pathname} 
           handleMoveToGarbage={handleMoveToGarbage} 
           handleRestore={handleRestore} 
-          handlePermanentDelete={handlePermanentDelete} 
+          handlePermanentDelete={handlePermanentDelete}
+          photos={getActivePhotosContext()}
+          onNavigate={handlePhotoClick}
+          onUpdateDate={handleUpdateDate}
         />
       )}
 

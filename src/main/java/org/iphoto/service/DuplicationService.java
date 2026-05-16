@@ -106,10 +106,18 @@ public class DuplicationService {
         }
 
         // 1. auto rotate from metadata
-        image = autoRotate(imagePath, image);
+        Mat rotatedImage = autoRotate(imagePath, image);
+        if (rotatedImage != image) {
+            image.release();
+            image = rotatedImage;
+        }
 
         // 2. resize huge images
-        image = resizeIfNeeded(image);
+        Mat resizedImage = resizeIfNeeded(image);
+        if (resizedImage != image) {
+            image.release();
+            image = resizedImage;
+        }
 
         try (PHash pHash = PHash.create()) {
             Mat hash = new Mat();
@@ -167,41 +175,41 @@ public class DuplicationService {
             int angle =
                     Integer.parseInt(rotateMeta);
 
-            Mat rotated = new Mat();
-
             // IMPORTANT:
             // reverse direction to match players
 
             switch (angle) {
 
                 case 90:
+                    Mat rotated90 = new Mat();
                     rotate(
                             image,
-                            rotated,
+                            rotated90,
                             ROTATE_90_COUNTERCLOCKWISE
                     );
-                    break;
+                    return rotated90;
 
                 case 180:
+                    Mat rotated180 = new Mat();
                     rotate(
                             image,
-                            rotated,
+                            rotated180,
                             ROTATE_180
                     );
-                    break;
+                    return rotated180;
 
                 case 270:
+                    Mat rotated270 = new Mat();
                     rotate(
                             image,
-                            rotated,
+                            rotated270,
                             ROTATE_90_CLOCKWISE
                     );
-                    break;
+                    return rotated270;
 
                 default:
                     return image;
             }
-            return rotated;
         } catch (Exception ignored) {
             return image;
         }
@@ -239,6 +247,7 @@ public class DuplicationService {
                 resized,
                 new Size(newWidth, newHeight)
         );
+
 
         return resized;
     }
