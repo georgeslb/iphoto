@@ -1,8 +1,10 @@
 package org.iphoto.controller;
 
+import lombok.AllArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.PhotoEntity;
-import org.iphoto.entities.PhotoMetadataEntity;
 import org.iphoto.mappers.PhotoMapper;
+import org.iphoto.mappers.PhotoMetadataMapper;
 import org.iphoto.model.*;
 import org.iphoto.repository.PhotoMetadataRepository;
 import org.iphoto.repository.PhotoRepository;
@@ -27,19 +29,15 @@ import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/photos")
+@AllArgsConstructor
+@Slf4j
 public class PhotoController {
 
     private final PhotoService photoService;
     private final PhotoRepository photoRepository;
     private final PhotoMetadataRepository metadataRepository;
     private final PhotoMapper photoMapper;
-
-    public PhotoController(PhotoService photoService, PhotoRepository photoRepository, PhotoMetadataRepository metadataRepository, PhotoMapper photoMapper) {
-        this.photoService = photoService;
-        this.photoRepository = photoRepository;
-        this.metadataRepository = metadataRepository;
-        this.photoMapper = photoMapper;
-    }
+    private final PhotoMetadataMapper photoMetadataMapper;
 
     @GetMapping
     public PageResponse<Photo> getPhotos(@PageableDefault(size = 50, sort = "dateTaken", direction = Sort.Direction.DESC) Pageable pageable) {
@@ -61,6 +59,19 @@ public class PhotoController {
             return ResponseEntity.ok(photo);
         } catch (NoSuchElementException e) {
             return ResponseEntity.notFound().build();
+        }
+    }
+
+    @PostMapping("/{id}/edit")
+    public ResponseEntity<Photo> editPhoto(@PathVariable UUID id, @RequestBody PhotoEditRequest request) {
+        try {
+            Photo photo = photoService.editPhoto(id, request);
+            return ResponseEntity.ok(photo);
+        } catch (NoSuchElementException e) {
+            return ResponseEntity.notFound().build();
+        } catch (Exception e) {
+            log.error(e.getMessage(), e);
+            return ResponseEntity.internalServerError().build();
         }
     }
 
@@ -88,8 +99,8 @@ public class PhotoController {
     }
 
     @GetMapping("/{id}/metadata")
-    public ResponseEntity<PhotoMetadataEntity> getMetadata(@PathVariable UUID id) {
-        return metadataRepository.findById(id).map(ResponseEntity::ok).orElse(ResponseEntity.notFound().build());
+    public ResponseEntity<PhotoMetadata> getMetadata(@PathVariable UUID id) {
+        return metadataRepository.findById(id).map(photoMetadataMapper::photoMetadataEntityToPhotoMetadata).map(ResponseEntity::ok).orElse(ResponseEntity.notFound().build());
     }
 
     @GetMapping("/locations")

@@ -258,8 +258,10 @@ function App() {
 
   const handlePhotoClick = (photo) => {
     setSelectedPhoto(photo);
-    // Push the asset URL, but keep the current effective path as the background location
-    navigate(`/asset/${photo.id}`, { state: { backgroundLocation: { pathname: effectivePath } }, replace: true });
+    // Persist the FULL background location object (with its internal React Router key)
+    // This prevents the background <Routes> from unmounting and remounting all images
+    const bgLoc = backgroundLocation || location;
+    navigate(`/asset/${photo.id}`, { state: { backgroundLocation: bgLoc }, replace: true });
   };
 
   const handleCloseLightbox = () => {
@@ -539,6 +541,30 @@ function App() {
     } catch (err) { alert(`Error updating date: ${err.message}`); }
   };
 
+  const handleEditPhoto = async (photoId, editData) => {
+    try {
+      const res = await fetch(`/api/photos/${photoId}/edit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(editData)
+      });
+      if (res.ok) {
+        const updatedPhoto = await res.json();
+        if (!editData.saveAsNew) {
+           setSelectedPhoto(updatedPhoto);
+        } else {
+           alert("New photo is being processed and will appear shortly!");
+           handleCloseLightbox();
+        }
+        await refreshAndMaintainScroll();
+      } else {
+        throw new Error(`Failed to edit photo: ${res.status}`);
+      }
+    } catch (err) {
+      alert(`Error editing photo: ${err.message}`);
+    }
+  };
+
   const renderAddToAlbumModal = () => (
     <div className="modal-overlay">
       <div className="modal-content">
@@ -753,6 +779,7 @@ function App() {
           photos={getActivePhotosContext()}
           onNavigate={handlePhotoClick}
           onUpdateDate={handleUpdateDate}
+          onEditPhoto={handleEditPhoto}
         />
       )}
 

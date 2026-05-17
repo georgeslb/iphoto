@@ -1,5 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { X, Calendar, Info, Camera, MapPin, Zap, Clock, Trash2, RotateCcw, ChevronLeft, ChevronRight, Edit, Check, XCircle } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { X, Calendar, Info, Camera, MapPin, Zap, Clock, Trash2, RotateCcw, ChevronLeft, ChevronRight, Edit, Check, XCircle, Crop } from 'lucide-react';
+import Cropper from 'react-cropper';
+import 'cropperjs/dist/cropper.css';
 
 export default function Lightbox({ 
   selectedPhoto, 
@@ -11,14 +13,18 @@ export default function Lightbox({
   handlePermanentDelete,
   photos,
   onNavigate,
-  onUpdateDate
+  onUpdateDate,
+  onEditPhoto
 }) {
   const [isEditingDate, setIsEditingDate] = useState(false);
   const [newDate, setNewDate] = useState('');
 
+  // Cropping State
+  const [isCropping, setIsCropping] = useState(false);
+  const cropperRef = useRef(null);
+
   useEffect(() => {
     if (selectedPhoto) {
-      // Format the date for the datetime-local input
       const date = new Date(selectedPhoto.fullDateTime);
       const year = date.getFullYear();
       const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -26,6 +32,8 @@ export default function Lightbox({
       const hours = String(date.getHours()).padStart(2, '0');
       const minutes = String(date.getMinutes()).padStart(2, '0');
       setNewDate(`${year}-${month}-${day}T${hours}:${minutes}`);
+
+      setIsCropping(false);
     }
   }, [selectedPhoto]);
 
@@ -37,14 +45,14 @@ export default function Lightbox({
 
   const handlePrevious = (e) => {
     if (e) e.stopPropagation();
-    if (hasPrevious) {
+    if (hasPrevious && !isCropping) {
       onNavigate(photos[currentIndex - 1]);
     }
   };
 
   const handleNext = (e) => {
     if (e) e.stopPropagation();
-    if (hasNext) {
+    if (hasNext && !isCropping) {
       onNavigate(photos[currentIndex + 1]);
     }
   };
@@ -54,8 +62,38 @@ export default function Lightbox({
     setIsEditingDate(false);
   };
 
+  const handleSaveCrop = (saveAsNew) => {
+    if (cropperRef.current && cropperRef.current.cropper) {
+      const cropper = cropperRef.current.cropper;
+      const cropData = cropper.getData(true); // Gets rounded data (x, y, width, height, rotate)
+
+      onEditPhoto(selectedPhoto.id, {
+        cropX: cropData.x,
+        cropY: cropData.y,
+        width: cropData.width,
+        height: cropData.height,
+        rotation: cropData.rotate,
+        saveAsNew: saveAsNew
+      });
+      setIsCropping(false);
+    }
+  };
+
+  const handleRotateLeft = () => {
+    if (cropperRef.current && cropperRef.current.cropper) {
+      cropperRef.current.cropper.rotate(-90);
+    }
+  };
+
+  const handleRotateRight = () => {
+    if (cropperRef.current && cropperRef.current.cropper) {
+      cropperRef.current.cropper.rotate(90);
+    }
+  };
+
   useEffect(() => {
     const handleKeyDown = (e) => {
+      if (isCropping) return; // Disable keyboard nav while cropping
       if (e.key === 'ArrowLeft') handlePrevious();
       else if (e.key === 'ArrowRight') handleNext();
       else if (e.key === 'Escape') onClose();
@@ -63,27 +101,58 @@ export default function Lightbox({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [hasPrevious, hasNext, currentIndex]);
+  }, [hasPrevious, hasNext, currentIndex, isCropping]);
 
   return (
-    <div className="lightbox-overlay" onClick={onClose}>
+    <div className="lightbox-overlay" onClick={isCropping ? undefined : onClose}>
       <div className="lightbox-container" onClick={e => e.stopPropagation()}>
         <div className="lightbox-content" style={{ position: 'relative' }}>
-          {selectedPhoto.contentType?.startsWith('video') ? <video src={`/api/photos/${selectedPhoto.id}/stream`} controls autoPlay /> : <img src={`/api/photos/${selectedPhoto.id}/original`} />}
+          {isCropping ? (
+            <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 10, display: 'flex', flexDirection: 'column' }}>
+              <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+                <Cropper
+                  src={`/api/photos/${selectedPhoto.id}/original`}
+                  style={{ height: '100%', width: '100%' }}
+                  initialAspectRatio={NaN}
+                  guides={true}
+                  ref={cropperRef}
+                  viewMode={1}
+                  dragMode="crop"
+                  background={false}
+                  responsive={true}
+                  autoCropArea={0.8}
+                  checkOrientation={false} // Let the backend handle orientation logic to avoid mismatch
+                />
+              </div>
+              <div style={{ position: 'absolute', bottom: '20px', left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: '15px', alignItems: 'center', background: 'rgba(0,0,0,0.7)', padding: '15px 20px', borderRadius: '12px' }}>
+                 <button className="btn" onClick={handleRotateLeft}>Rotate Left</button>
+                 <button className="btn" onClick={handleRotateRight}>Rotate Right</button>
+                 <div style={{ display: 'flex', gap: '8px', marginLeft: '20px' }}>
+                   <button className="btn btn-primary" onClick={() => handleSaveCrop(false)}>Save</button>
+                   <button className="btn btn-primary" onClick={() => handleSaveCrop(true)}>Save as New</button>
+                   <button className="btn" onClick={() => setIsCropping(false)}>Cancel</button>
+                 </div>
+              </div>
+            </div>
+          ) : selectedPhoto.contentType?.startsWith('video') ? (
+            <video src={`/api/photos/${selectedPhoto.id}/stream`} controls autoPlay />
+          ) : (
+            <img src={`/api/photos/${selectedPhoto.id}/original`} />
+          )}
           
-          {hasPrevious && (
+          {hasPrevious && !isCropping && (
             <button className="lightbox-nav-btn prev" onClick={handlePrevious}>
               <ChevronLeft size={32} />
             </button>
           )}
 
-          {hasNext && (
+          {hasNext && !isCropping && (
             <button className="lightbox-nav-btn next" onClick={handleNext}>
               <ChevronRight size={32} />
             </button>
           )}
 
-          {pathname === '/garbage' ? (
+          {!isCropping && (pathname === '/garbage' ? (
             <>
               <button className="btn" style={{position: 'absolute', bottom: '20px', left: '20px', background: '#34c759', color: 'white', border: 'none'}} onClick={() => { handleRestore([selectedPhoto.id]); onClose(); }}>
                 <RotateCcw size={18}/> Restore Asset
@@ -96,11 +165,18 @@ export default function Lightbox({
             <button className="btn" style={{position: 'absolute', bottom: '20px', left: '20px', background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none'}} onClick={() => { handleMoveToGarbage([selectedPhoto.id]); onClose(); }}>
               <Trash2 size={18}/> Move to Garbage
             </button>
-          )}
+          ))}
         </div>
         <div className="metadata-sidebar">
           <div className="sidebar-header"><h3>Information</h3><X size={20} onClick={onClose} style={{cursor: 'pointer', opacity: 0.6}} /></div>
           <div className="sidebar-scroll-content">
+            {!selectedPhoto.contentType?.startsWith('video') && !isCropping && (
+               <div style={{ marginBottom: '20px' }}>
+                 <button className="btn" style={{ width: '100%', justifyContent: 'center' }} onClick={() => setIsCropping(true)}>
+                   <Crop size={16} /> Crop & Rotate
+                 </button>
+               </div>
+            )}
             <div className="metadata-group"><label>File Name</label><p>{selectedPhoto.title}</p></div>
             <div className="metadata-group">
               <label><Calendar size={14} /> Date Taken</label>

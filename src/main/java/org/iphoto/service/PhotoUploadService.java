@@ -10,6 +10,7 @@ import com.drew.metadata.jpeg.JpegDirectory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.io.FilenameUtils;
 import org.bytedeco.javacv.FFmpegFrameGrabber;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.PhotoMetadataEntity;
@@ -57,7 +58,7 @@ public class PhotoUploadService {
         String contentType = payload.get("contentType");
         Path storageDir = Paths.get(iPhotoProperties.getStorage().getPhotos());
         if (!Files.exists(storageDir)) Files.createDirectories(storageDir);
-        Path finalPath = storageDir.resolve(task.getPhotoId().toString());
+        Path finalPath = storageDir.resolve(task.getPhotoId().toString() + "." + FilenameUtils.getExtension(payload.get("originalFileName")));
         Files.move(tempFile.toPath(), finalPath);
 
         String thumbPath = thumbnailService.generateThumbnail(finalPath.toString(), task.getPhotoId().toString(), contentType);
