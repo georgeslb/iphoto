@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Upload, Plus, Trash2, RotateCcw, ImageIcon, ArrowLeft, ChevronLeft, ChevronRight } from 'lucide-react';
+import { X, Upload, Plus, Trash2, RotateCcw, ImageIcon, ArrowLeft, ChevronLeft, ChevronRight, Link } from 'lucide-react';
 
 export default function Header({
   selectedIds,
@@ -11,6 +11,7 @@ export default function Header({
   handleMoveToGarbage,
   setShowAddToAlbumModal,
   setShowCreateAlbumModal,
+  setShowCreateShareLinkModal, // New prop
   handleUpload,
   albumId,
   canSetCoverPhoto,
@@ -77,7 +78,10 @@ export default function Header({
             {pathname === '/albums' && !albumId ? (
               <button className="btn btn-primary" onClick={() => setShowCreateAlbumModal(true)}><Plus size={18} /> Create Album</button>
             ) : pathname.startsWith('/albums/') && albumId ? (
-              <button className="btn btn-primary" onClick={() => document.getElementById('fIn').click()}><Upload size={18} /> Upload</button>
+              <>
+                <button className="btn btn-primary" onClick={() => document.getElementById('fIn').click()}><Upload size={18} /> Upload</button>
+                <button className="btn" onClick={() => setShowCreateShareLinkModal(albumId)}><Link size={18} /> Create Share Link</button>
+              </>
             ) : !isDuplicatesPage ? (
               <>
                 <button className="btn btn-primary" onClick={() => document.getElementById('fIn').click()}><Upload size={18} /> Upload</button>

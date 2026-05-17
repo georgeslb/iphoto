@@ -28,6 +28,7 @@ spring:
       max-request-size: 2GB
 
 
+
   mvc:
     favicon:
       enabled: false
@@ -40,3 +41,7 @@ iphoto:
     chunks: D:\temp\storage\chunks
 
 
+server:
+  servlet:
+    session:
+      timeout: 30m

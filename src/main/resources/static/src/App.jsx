@@ -12,6 +12,8 @@ import Sidebar from './components/Sidebar'
 import PhotoGrid from './components/PhotoGrid'
 import Header from './components/Header'
 import Lightbox from './components/Lightbox'
+import ShareLinkPage from './components/ShareLinkPage'; // Import the new component
+import ShareLoginPage from './components/ShareLoginPage'; // Import the new ShareLoginPage component
 
 let DefaultIcon = L.icon({ iconUrl: markerIcon, shadowUrl: markerShadow, iconSize: [25, 41], iconAnchor: [12, 41] })
 L.Marker.prototype.options.icon = DefaultIcon
@@ -40,6 +42,15 @@ function App() {
   const [newAlbumName, setNewAlbumName] = useState('');
   const [newAlbumDescription, setNewAlbumDescription] = useState('');
   const [albumCreationError, setAlbumCreationError] = useState(null);
+
+  // Share Link State
+  const [showCreateShareLinkModal, setShowCreateShareLinkModal] = useState(false);
+  const [albumIdForShareLink, setAlbumIdForShareLink] = useState(null); // New state for album ID
+  const [newShareLinkName, setNewShareLinkName] = useState('');
+  const [newShareLinkPassword, setNewShareLinkPassword] = useState('');
+  const [newShareLinkExpiresInDays, setNewShareLinkExpiresInDays] = useState(7);
+  const [shareLinkCreationError, setShareLinkCreationError] = useState(null);
+
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -422,6 +433,55 @@ function App() {
     }
   };
 
+  const handleCreateShareLink = async () => {
+    setShareLinkCreationError(null);
+    if (!newShareLinkName.trim()) {
+      setShareLinkCreationError("Link name cannot be empty.");
+      return;
+    }
+    // Validate for URL-friendly characters (alphanumeric, hyphen, underscore)
+    const urlFriendlyRegex = /^[a-zA-Z0-9_-]+$/;
+    if (!urlFriendlyRegex.test(newShareLinkName)) {
+      setShareLinkCreationError("Link name can only contain letters, numbers, hyphens, and underscores.");
+      return;
+    }
+    if (newShareLinkExpiresInDays <= 0) {
+      setShareLinkCreationError("Link availability must be at least 1 day.");
+      return;
+    }
+    if (!albumIdForShareLink) {
+      setShareLinkCreationError("No album selected for sharing.");
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/share', { // Corrected endpoint to /api/share
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          name: newShareLinkName, 
+          password: newShareLinkPassword, 
+          daysAvailable: newShareLinkExpiresInDays, // Corrected to daysAvailable
+          albumId: albumIdForShareLink // Pass albumId
+        }) 
+      });
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.message || `Failed to create share link: ${res.status}`);
+      }
+      alert(`Share link "${newShareLinkName}" created successfully!`);
+      setNewShareLinkName('');
+      setNewShareLinkPassword('');
+      setNewShareLinkExpiresInDays(7); // Reset to default
+      setAlbumIdForShareLink(null); // Clear album ID
+      setShowCreateShareLinkModal(false);
+      // Optionally refresh share links or show a success message
+    } catch (err) {
+      setShareLinkCreationError(err.message);
+      console.error("Error creating share link:", err);
+    }
+  };
+
   const renderAlbums = () => (
     <div className="content-body">
       <div className="album-grid">
@@ -526,18 +586,18 @@ function App() {
     } catch (err) { alert(`Error setting cover photo: ${err.message}`); }
   };
 
-  const handleUpdateDate = async (photoId, newDate) => {
+  const handleUpdateDate = async (photoId, editData) => { // Changed newDate to editData
     try {
       const res = await fetch(`/api/photos/${photoId}/date`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ newDate })
+        body: JSON.stringify(editData) // Pass editData directly
       });
       if (res.ok) {
         const updatedPhoto = await res.json();
         setSelectedPhoto(updatedPhoto);
         await refreshAndMaintainScroll();
-      } else throw new Error(`Failed to update date: ${res.status}`);
+      } else throw new Error(`Failed to update date: ${err.status}`);
     } catch (err) { alert(`Error updating date: ${err.message}`); }
   };
 
@@ -599,6 +659,46 @@ function App() {
     </div>
   );
 
+  const renderCreateShareLinkModal = () => {
+    const currentAlbum = albums.find(a => a.id === albumIdForShareLink);
+    return (
+      <div className="modal-overlay">
+        <div className="modal-content">
+          <h2>Create Share Link for "{currentAlbum?.name}"</h2>
+          {shareLinkCreationError && <div className="error-message">{shareLinkCreationError}</div>}
+          <input 
+            type="text" 
+            placeholder="Link Name (URL friendly)" 
+            value={newShareLinkName} 
+            onChange={(e) => setNewShareLinkName(e.target.value)} 
+            className="modal-input" 
+          />
+          <input 
+            type="password" 
+            placeholder="Password (optional)" 
+            value={newShareLinkPassword} 
+            onChange={(e) => setNewShareLinkPassword(e.target.value)} 
+            className="modal-input" 
+            style={{ marginTop: '10px' }}
+          />
+          <input 
+            type="number" 
+            placeholder="Available for (days)" 
+            value={newShareLinkExpiresInDays} 
+            onChange={(e) => setNewShareLinkExpiresInDays(Math.max(1, parseInt(e.target.value) || 1))} // Ensure at least 1 day
+            className="modal-input" 
+            min="1"
+            style={{ marginTop: '10px' }}
+          />
+          <div className="modal-actions">
+            <button className="btn" onClick={() => { setShowCreateShareLinkModal(false); setAlbumIdForShareLink(null); }}>Cancel</button>
+            <button className="btn btn-primary" onClick={handleCreateShareLink}>Create Link</button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const AlbumDetail = () => {
     const { albumId } = useParams();
     const currentAlbum = albums.find(a => a.id === albumId);
@@ -647,6 +747,10 @@ function App() {
         handleMoveToGarbage={handleMoveToGarbage}
         setShowAddToAlbumModal={setShowAddToAlbumModal}
         setShowCreateAlbumModal={setShowCreateAlbumModal}
+        setShowCreateShareLinkModal={(albumId) => { // Modified to accept albumId
+          setAlbumIdForShareLink(albumId);
+          setShowCreateShareLinkModal(true);
+        }}
         handleUpload={handleUpload}
         albumId={routeAlbumId}
         canSetCoverPhoto={canSetCoverPhoto}
@@ -742,6 +846,14 @@ function App() {
           } />
           <Route path="/albums" element={renderAlbums()} />
           <Route path="/albums/:albumId" element={<AlbumDetail />} />
+          <Route path="/share-links" element={
+            <div className="content-body" style={{ textAlign: 'center', paddingTop: '40px' }}>
+              <h2>Manage Share Links</h2>
+              <p>This is where you will manage your share links.</p>
+            </div>
+          } />
+          <Route path="/share/:name" element={<ShareLinkPage />} />
+          <Route path="/share/:name/login" element={<ShareLoginPage />} /> {/* New route for ShareLoginPage */}
         </Routes>
       </main>
 
@@ -798,6 +910,7 @@ function App() {
           </div>
         </div>
       )}
+      {showCreateShareLinkModal && renderCreateShareLinkModal()}
     </div>
   )
 }

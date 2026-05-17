@@ -53,6 +53,9 @@ public class AlbumEntity implements Persistable<UUID> {
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
+    @OneToMany(fetch = FetchType.LAZY)
+    Set<ShareEntity> shares;
+
     @Transient
     private boolean isNew = true;
 

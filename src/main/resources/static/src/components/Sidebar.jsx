@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Image as ImageIcon, Library, Map as MapIcon, BookOpen, Copy, Trash2 } from 'lucide-react';
+import { Image as ImageIcon, Library, Map as MapIcon, BookOpen, Copy, Trash2, Link as LinkIcon } from 'lucide-react';
 
 export default function Sidebar({ pathname }) {
   return (
@@ -12,6 +12,7 @@ export default function Sidebar({ pathname }) {
         <Link to="/albums" className={`nav-item ${pathname.startsWith('/albums') ? 'active' : ''}`}><BookOpen size={20} /> Albums</Link>
         <Link to="/duplicates" className={`nav-item ${pathname === '/duplicates' ? 'active' : ''}`}><Copy size={20} /> Duplicates</Link>
         <Link to="/garbage" className={`nav-item ${pathname === '/garbage' ? 'active' : ''}`}><Trash2 size={20} /> Garbage</Link>
+        <Link to="/share-links" className={`nav-item ${pathname === '/share-links' ? 'active' : ''}`}><LinkIcon size={20} /> Share Links</Link>
       </nav>
     </aside>
   );
