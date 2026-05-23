@@ -99,8 +99,8 @@ public class PhotoUploadService {
                 }
             }
             ExifSubIFDDirectory dateDir = metadata.getFirstDirectoryOfType(ExifSubIFDDirectory.class);
+            photo.setDateTaken(extractBestCreationDate(file));
             if (dateDir != null) {
-                photo.setDateTaken(extractBestCreationDate(file));
                 meta.setAperture(dateDir.getString(ExifSubIFDDirectory.TAG_FNUMBER));
                 meta.setShutterSpeed(dateDir.getString(ExifSubIFDDirectory.TAG_EXPOSURE_TIME));
                 meta.setIso(dateDir.getString(ExifSubIFDDirectory.TAG_ISO_EQUIVALENT));
@@ -142,7 +142,7 @@ public class PhotoUploadService {
     }
 
 
-    public static LocalDateTime extractBestCreationDate(File file) {
+    public LocalDateTime extractBestCreationDate(File file) {
 
         try {
 

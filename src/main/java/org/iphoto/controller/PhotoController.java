@@ -17,11 +17,14 @@ import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.UUID;
@@ -38,6 +41,7 @@ public class PhotoController {
     private final PhotoMetadataRepository metadataRepository;
     private final PhotoMapper photoMapper;
     private final PhotoMetadataMapper photoMetadataMapper;
+    private final DateTimeFormatter df = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm");
 
     @GetMapping
     public PageResponse<Photo> getPhotos(@PageableDefault(size = 50, sort = "dateTaken", direction = Sort.Direction.DESC) Pageable pageable) {
@@ -55,17 +59,19 @@ public class PhotoController {
     @PatchMapping("/{id}/date")
     public ResponseEntity<Photo> updatePhotoDate(@PathVariable UUID id, @RequestBody UpdatePhotoDateRequest request) {
         try {
-            Photo photo = photoService.updatePhotoDate(id, request.newDate());
+            Photo photo = photoService.updatePhotoDate(id, LocalDateTime.parse(request.newDate(), df));
             return ResponseEntity.ok(photo);
         } catch (NoSuchElementException e) {
             return ResponseEntity.notFound().build();
         }
     }
 
-    @PostMapping("/{id}/edit")
-    public ResponseEntity<Photo> editPhoto(@PathVariable UUID id, @RequestBody PhotoEditRequest request) {
+    @PostMapping(value = "/{id}/edit", consumes = "multipart/form-data")
+    public ResponseEntity<Photo> editPhoto(@PathVariable UUID id,
+                                           @RequestPart("file") MultipartFile file,
+                                           @ModelAttribute PhotoEditRequest request) {
         try {
-            Photo photo = photoService.editPhoto(id, request);
+            Photo photo = photoService.editPhoto(id, file, request);
             return ResponseEntity.ok(photo);
         } catch (NoSuchElementException e) {
             return ResponseEntity.notFound().build();

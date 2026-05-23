@@ -1,12 +1,21 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// https://vitejs.dev/config/
+// https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
   build: {
     outDir: '../../../../frontend/dist',
     emptyOutDir: true,
   },
-  base: "/"
+  base: "/",
+  server: {
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+        // Remove the rewrite rule
+      },
+    },
+  },
 })

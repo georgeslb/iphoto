@@ -6,15 +6,16 @@ calcul data taken incorrecte -> done
 selection date -> done
 When moving one duplicated asset to garbage it consider if CLOSED even when having two other photos
 Le scroll infini n'est pas trop réactif
-
-
+toujours le pb des thumbails à l'infini à l'actualisation
+à la modification de l'image, pas de refraishissement
+Thread sleep laisse opérationel même après le retour
 
 
 
 Feature
 
 visage
-duplications
+duplications -> bug ici
 authent
 memories
 enregistrement plus intelligent des photos sur disque (ne pas mettre tout au même endroit)

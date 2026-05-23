@@ -7,7 +7,8 @@ export default function PhotoGrid({
   setPage, 
   selectedIds, 
   setSelectedIds, 
-  setSelectedPhoto 
+  setSelectedPhoto,
+  isLightboxOpen // Accept the new prop
 }) {
   const [hoveredVideoId, setHoveredVideoId] = useState(null);
   const observerTarget = useRef(null);
@@ -39,7 +40,8 @@ export default function PhotoGrid({
   useEffect(() => {
     const observer = new IntersectionObserver(
       entries => {
-        if (entries[0].isIntersecting && hasMore) {
+        // Only load more photos if the lightbox is NOT open
+        if (entries[0].isIntersecting && hasMore && !isLightboxOpen) {
           setPage(p => p + 1);
         }
       },
@@ -56,7 +58,7 @@ export default function PhotoGrid({
         observer.unobserve(currentTarget);
       }
     };
-  }, [hasMore, setPage]);
+  }, [hasMore, setPage, isLightboxOpen]); // Add isLightboxOpen to dependencies
 
   return (
     <div className="content-body">
@@ -110,11 +112,16 @@ export default function PhotoGrid({
                       </div>
                     </div>
 
-                    {hoveredVideoId === p.id ?
-                      <video src={`/api/photos/${p.id}/stream#t=0.5`} autoPlay muted loop playsInline className="card-video" /> :
-                      <img src={p.url} loading="lazy" />
-                    }
-                    {p.contentType?.startsWith('video') && hoveredVideoId !== p.id && <div className="video-badge">▶</div>}
+                    {/* Conditionally render video or image based on isLightboxOpen */}
+                    {isLightboxOpen ? (
+                      // Render a placeholder or nothing if lightbox is open to prevent thumbnail loading
+                      <div style={{ width: '100%', height: '100%', background: '#e0e0e5' }} />
+                    ) : (
+                      hoveredVideoId === p.id ?
+                        <video src={`/api/photos/${p.id}/stream#t=0.5`} autoPlay muted loop playsInline className="card-video" /> :
+                        <img src={p.url} loading="lazy" />
+                    )}
+                    {!isLightboxOpen && p.contentType?.startsWith('video') && hoveredVideoId !== p.id && <div className="video-badge">▶</div>}
                   </div>
                 )
               })}

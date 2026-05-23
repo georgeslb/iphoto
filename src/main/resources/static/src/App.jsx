@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { Routes, Route, useNavigate, useLocation, useParams } from 'react-router-dom'
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet'
-import { X, Image as ImageIcon, Copy, Trash2, BookOpen, Check } from 'lucide-react'
+import { X, Image as ImageIcon, Check } from 'lucide-react'
 import 'leaflet/dist/leaflet.css'
 import './App.css'
 
@@ -22,7 +22,7 @@ const CHUNK_SIZE = 1024 * 1024 * 5; // 5MB chunks
 
 function App() {
   const [photos, setPhotos] = useState([])
-  
+
   // Duplicates State
   const [duplicatesPage, setDuplicatesPage] = useState(0);
   const [currentDuplicateGroup, setCurrentDuplicateGroup] = useState(null);
@@ -55,11 +55,15 @@ function App() {
   const navigate = useNavigate();
   const location = useLocation();
   const mainContentRef = useRef(null);
+  const scrollPositionRef = useRef(0);// Ref to store scroll position
   const prevSectionRef = useRef(null);
+  const hasRestoredScrollRef = useRef(false);
 
   // Background location to keep grid mounted when showing lightbox over it
   const backgroundLocation = location.state?.backgroundLocation;
   const effectivePath = backgroundLocation?.pathname || location.pathname;
+
+  const isLightboxOpen = location.pathname.startsWith('/asset/');
 
   const fetchPhotos = useCallback(async (pageNum, reset = false, type = 'library', albumId = null) => {
     try {
@@ -75,7 +79,7 @@ function App() {
 
       const res = await fetch(`${endpoint}?page=${pageNum}&size=50&sort=${sort}`)
       const data = await res.json()
-      
+
       const content = Array.isArray(data) ? data : (data.content || []);
       const isLast = Array.isArray(data) ? true : (data.last === undefined ? true : data.last);
 
@@ -138,49 +142,49 @@ function App() {
   const refreshAndMaintainScroll = useCallback(async () => {
     const scrollPosition = mainContentRef.current?.scrollTop;
     const currentPage = page;
-    
+
     if (effectivePath.startsWith('/duplicates')) {
-       await fetchDuplicates(duplicatesPage);
-       return;
+      await fetchDuplicates(duplicatesPage);
+      return;
     }
 
     const type = effectivePath === '/garbage' ? 'garbage' : (effectivePath.startsWith('/albums/') ? 'album' : 'library');
     const albumId = type === 'album' ? effectivePath.split('/').pop() : null;
 
     const fetchPage = async (pageNum) => {
-        let endpoint = '/api/photos';
-        let sort = 'dateTaken,desc';
+      let endpoint = '/api/photos';
+      let sort = 'dateTaken,desc';
 
-        if (type === 'garbage') {
-            endpoint = '/api/photos/garbage';
-            sort = 'garbageAt,desc';
-        } else if (type === 'album' && albumId) {
-            endpoint = `/api/albums/${albumId}/photos`;
-        }
-        
-        const res = await fetch(`${endpoint}?page=${pageNum}&size=50&sort=${sort}`);
-        if (!res.ok) return [];
-        const data = await res.json();
-        return Array.isArray(data) ? data : (data.content || []);
+      if (type === 'garbage') {
+        endpoint = '/api/photos/garbage';
+        sort = 'garbageAt,desc';
+      } else if (type === 'album' && albumId) {
+        endpoint = `/api/albums/${albumId}/photos`;
+      }
+
+      const res = await fetch(`${endpoint}?page=${pageNum}&size=50&sort=${sort}`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      return Array.isArray(data) ? data : (data.content || []);
     };
 
     const allPagesPromises = [];
     for (let i = 0; i <= currentPage; i++) {
-        allPagesPromises.push(fetchPage(i));
+      allPagesPromises.push(fetchPage(i));
     }
 
     const allPagesContent = await Promise.all(allPagesPromises);
     const newPhotos = allPagesContent.flat();
-    
+
     setPhotos(newPhotos);
     await fetchAlbums();
 
     if (scrollPosition && mainContentRef.current) {
-        requestAnimationFrame(() => {
-            if(mainContentRef.current) {
-                mainContentRef.current.scrollTop = scrollPosition;
-            }
-        });
+      requestAnimationFrame(() => {
+        if(mainContentRef.current) {
+          mainContentRef.current.scrollTop = scrollPosition;
+        }
+      });
     }
   }, [page, effectivePath, fetchAlbums, duplicatesPage, fetchDuplicates]);
 
@@ -193,7 +197,7 @@ function App() {
     // Ignore direct navigation to an asset (handled by Lightbox and fallback logic)
     // By returning early here, we DO NOT fetch the grid photos if the user hard-refreshes the page on /asset/:id.
     // This perfectly solves the issue of the background grid requesting massive amounts of thumbnails unnecessarily!
-    if (location.pathname.startsWith('/asset/')) return;
+    if (isLightboxOpen) return;
 
     // Prevent resetting state if we are just moving within the duplicates section (e.g. from /duplicates to /duplicates/hash)
     if (currentSection === 'duplicates' && prevSection === 'duplicates') {
@@ -201,7 +205,7 @@ function App() {
     }
 
     setPhotos([]); setPage(0); setHasMore(true); setSelectedIds([]);
-    
+
     const albumMatch = effectivePath.match(/^\/albums\/(.+)$/);
 
     if (effectivePath === '/') fetchPhotos(0, true, 'library');
@@ -212,17 +216,15 @@ function App() {
       const urlParams = new URLSearchParams(window.location.search);
       const pageParam = parseInt(urlParams.get('page'), 10);
       const targetPage = !isNaN(pageParam) ? pageParam : 0;
-      
+
       setDuplicatesPage(targetPage);
       fetchDuplicates(targetPage);
     }
-    
-    if (effectivePath.startsWith('/albums')) fetchAlbums();
 
     if (albumMatch) fetchPhotos(0, true, 'album', albumMatch[1]);
-  }, [effectivePath, fetchPhotos, fetchAlbums, fetchDuplicates, location.pathname])
+  }, [effectivePath, fetchPhotos, fetchAlbums, fetchDuplicates, isLightboxOpen, location.pathname])
 
-  useEffect(() => { 
+  useEffect(() => {
     if (page > 0) {
       const albumMatch = effectivePath.match(/^\/albums\/(.+)$/);
       if (effectivePath === '/') fetchPhotos(page, false, 'library');
@@ -231,6 +233,13 @@ function App() {
     }
   }, [page, fetchPhotos, effectivePath])
 
+  // Separate useEffect for fetching albums
+  useEffect(() => {
+    // Only fetch albums if we are on an album route and NOT on an asset route
+    if (effectivePath.startsWith('/albums') && !isLightboxOpen) {
+      fetchAlbums();
+    }
+  }, [effectivePath, fetchAlbums, isLightboxOpen]);
   useEffect(() => {
     if (selectedPhoto) {
       setExtMetadata(null)
@@ -260,14 +269,19 @@ function App() {
     } else if (!selectedPhoto) {
       // Hard refresh on an asset URL without a pre-loaded grid
       fetch(`/api/photos/${assetMatch[1]}`)
-        .then(res => res.ok ? res.json() : null)
-        .then(data => {
+          .then(res => res.ok ? res.json() : null)
+          .then(data => {
             if (data) setSelectedPhoto(data);
-        });
+          });
     }
   }, [location.pathname, photos, selectedPhoto, currentDuplicateGroup]);
 
   const handlePhotoClick = (photo) => {
+    if (mainContentRef.current) {
+      scrollPositionRef.current = mainContentRef.current.scrollTop; // Save current scroll position of main-content
+      hasRestoredScrollRef.current = false;
+      console.log('handlePhotoClick: Saving scroll position:', scrollPositionRef.current);
+    }
     setSelectedPhoto(photo);
     // Persist the FULL background location object (with its internal React Router key)
     // This prevents the background <Routes> from unmounting and remounting all images
@@ -279,15 +293,49 @@ function App() {
     setSelectedPhoto(null);
     // Determine the logical previous route cleanly
     if (backgroundLocation) {
-        navigate(backgroundLocation.pathname + (backgroundLocation.search || '') + (backgroundLocation.hash || ''), { replace: true });
+      navigate(backgroundLocation.pathname + (backgroundLocation.search || '') + (backgroundLocation.hash || ''), { replace: true });
     } else {
-        navigate('/', { replace: true }); // Fallback cleanly if there's no history
+      navigate('/', { replace: true }); // Fallback cleanly if there's no history
     }
+    // The actual scroll restoration will happen in the useEffect below
   };
+
+  useEffect(() => {
+    if (
+        isLightboxOpen ||
+        !mainContentRef.current ||
+        scrollPositionRef.current === 0 ||
+        hasRestoredScrollRef.current
+    ) {
+      return;
+    }
+
+    const restoreScroll = () => {
+      const container = mainContentRef.current;
+
+      if (!container) return;
+
+      // Wait until layout is tall enough
+      if (container.scrollHeight <= scrollPositionRef.current) {
+        requestAnimationFrame(restoreScroll);
+        return;
+      }
+
+      console.log('Restoring scroll to', scrollPositionRef.current);
+
+      container.scrollTop = scrollPositionRef.current;
+
+      console.log('After restore:', container.scrollTop);
+
+      hasRestoredScrollRef.current = true;
+    };
+
+    requestAnimationFrame(restoreScroll);
+  }, [isLightboxOpen, photos]);
 
   const handleMoveToGarbage = async (ids) => {
     if (!window.confirm(`Trash ${ids.length} item(s)?`)) return
-    
+
     const res = await fetch('/api/photos/garbage', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ids) })
     if (res.ok) { setSelectedIds([]); await refreshAndMaintainScroll(); }
   }
@@ -364,18 +412,18 @@ function App() {
 
           if (data.status === 'completed') {
             setUploadQueue(prev => prev.map(item =>
-              item.uploadId === uploadItem.uploadId ? { ...item, status: 'PROCESSING', taskId: data.taskId, uploadedChunks: item.totalChunks, progress: 100 } : item
+                item.uploadId === uploadItem.uploadId ? { ...item, status: 'PROCESSING', taskId: data.taskId, uploadedChunks: item.totalChunks, progress: 100 } : item
             ));
             pollTaskStatus(uploadItem.uploadId, data.taskId);
           } else {
             setUploadQueue(prev => prev.map(item =>
-              item.uploadId === uploadItem.uploadId ? { ...item, uploadedChunks: item.uploadedChunks + 1, progress: Math.round(((item.uploadedChunks + 1) / item.totalChunks) * 100) } : item
+                item.uploadId === uploadItem.uploadId ? { ...item, uploadedChunks: item.uploadedChunks + 1, progress: Math.round(((item.uploadedChunks + 1) / item.totalChunks) * 100) } : item
             ));
           }
         } catch (err) {
           console.error("Chunk upload failed:", err);
           setUploadQueue(prev => prev.map(item =>
-            item.uploadId === uploadItem.uploadId ? { ...item, status: 'FAILED', error: 'Chunk upload failed' } : item
+              item.uploadId === uploadItem.uploadId ? { ...item, status: 'FAILED', error: 'Chunk upload failed' } : item
           ));
           break;
         }
@@ -397,9 +445,9 @@ function App() {
           let finalStatus = task.status;
           if (task.status === 'IGNORED') finalStatus = 'ALREADY IMPORTED';
           if (task.status === 'TRASHED') finalStatus = 'ALREADY IMPORTED AND TRASHED';
-          
+
           setUploadQueue(prev => prev.map(item =>
-            item.uploadId === uploadId ? { ...item, status: finalStatus, error: task.errorMessage, progress: 100 } : item
+              item.uploadId === uploadId ? { ...item, status: finalStatus, error: task.errorMessage, progress: 100 } : item
           ));
           if (task.status === 'COMPLETED') await refreshAndMaintainScroll();
         }
@@ -458,12 +506,12 @@ function App() {
       const res = await fetch('/api/share', { // Corrected endpoint to /api/share
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          name: newShareLinkName, 
-          password: newShareLinkPassword, 
+        body: JSON.stringify({
+          name: newShareLinkName,
+          password: newShareLinkPassword,
           daysAvailable: newShareLinkExpiresInDays, // Corrected to daysAvailable
           albumId: albumIdForShareLink // Pass albumId
-        }) 
+        })
       });
       if (!res.ok) {
         const errorData = await res.json();
@@ -483,58 +531,58 @@ function App() {
   };
 
   const renderAlbums = () => (
-    <div className="content-body">
-      <div className="album-grid">
-        {albums.map(album => {
-          const isSelected = selectedIds.includes(album.id);
-          return (
-            <div 
-              key={album.id} 
-              className={`album-card ${isSelected ? 'selected' : ''}`} 
-              onClick={() => {
-                if (selectedIds.length > 0) {
-                  setSelectedIds(v => v.includes(album.id) ? v.filter(i => i !== album.id) : [...v, album.id]);
-                } else {
-                  navigate(`/albums/${album.id}`);
-                }
-              }}
-            >
-              <div 
-                className="select-overlay" 
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setSelectedIds(v => v.includes(album.id) ? v.filter(i => i !== album.id) : [...v, album.id]);
-                }}
-              >
-                <div className={`check-circle ${isSelected ? 'checked' : ''}`}>
-                  {isSelected && <Check size={14} />}
+      <div className="content-body">
+        <div className="album-grid">
+          {albums.map(album => {
+            const isSelected = selectedIds.includes(album.id);
+            return (
+                <div
+                    key={album.id}
+                    className={`album-card ${isSelected ? 'selected' : ''}`}
+                    onClick={() => {
+                      if (selectedIds.length > 0) {
+                        setSelectedIds(v => v.includes(album.id) ? v.filter(i => i !== album.id) : [...v, album.id]);
+                      } else {
+                        navigate(`/albums/${album.id}`);
+                      }
+                    }}
+                >
+                  <div
+                      className="select-overlay"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedIds(v => v.includes(album.id) ? v.filter(i => i !== album.id) : [...v, album.id]);
+                      }}
+                  >
+                    <div className={`check-circle ${isSelected ? 'checked' : ''}`}>
+                      {isSelected && <Check size={14} />}
+                    </div>
+                  </div>
+
+                  <div className="album-cover">
+                    {album.coverPhoto ? <img src={album.coverPhoto.url} alt={album.name} /> : <div className="album-placeholder"><ImageIcon size={48} color="#888" /></div>}
+                  </div>
+                  <div className="album-info">
+                    <h3>{album.name}</h3>
+                    <p>{album.photoCount} photos</p>
+                  </div>
                 </div>
-              </div>
-              
-              <div className="album-cover">
-                {album.coverPhoto ? <img src={album.coverPhoto.url} alt={album.name} /> : <div className="album-placeholder"><ImageIcon size={48} color="#888" /></div>}
-              </div>
-              <div className="album-info">
-                <h3>{album.name}</h3>
-                <p>{album.photoCount} photos</p>
-              </div>
-            </div>
-          );
-        })}
-        {albums.length === 0 && <div style={{textAlign: 'center', padding: '50px', color: '#888', gridColumn: '1/-1'}}>No albums created yet. Click "Create Album" to get started!</div>}
+            );
+          })}
+          {albums.length === 0 && <div style={{textAlign: 'center', padding: '50px', color: '#888', gridColumn: '1/-1'}}>No albums created yet. Click "Create Album" to get started!</div>}
+        </div>
       </div>
-    </div>
   );
 
   const handleAddPhotosToAlbums = async () => {
     if (selectedIds.length === 0 || targetAlbumIds.length === 0) return;
 
-    const addPromises = targetAlbumIds.map(albumId => 
-      fetch(`/api/albums/${albumId}/photos`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ photoIds: selectedIds })
-      })
+    const addPromises = targetAlbumIds.map(albumId =>
+        fetch(`/api/albums/${albumId}/photos`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ photoIds: selectedIds })
+        })
     );
 
     try {
@@ -586,35 +634,35 @@ function App() {
     } catch (err) { alert(`Error setting cover photo: ${err.message}`); }
   };
 
-  const handleUpdateDate = async (photoId, editData) => { // Changed newDate to editData
+  const handleUpdateDate = async (photoId, newDateValue) => { // Renamed parameter to newDateValue
     try {
       const res = await fetch(`/api/photos/${photoId}/date`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editData) // Pass editData directly
+        body: JSON.stringify({ newDate: newDateValue }) // Explicitly construct payload
       });
       if (res.ok) {
         const updatedPhoto = await res.json();
         setSelectedPhoto(updatedPhoto);
         await refreshAndMaintainScroll();
-      } else throw new Error(`Failed to update date: ${err.status}`);
+      } else throw new Error(`Failed to update date: ${res.status}`);
     } catch (err) { alert(`Error updating date: ${err.message}`); }
   };
 
   const handleEditPhoto = async (photoId, editData) => {
     try {
+      console.log(editData);
       const res = await fetch(`/api/photos/${photoId}/edit`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editData)
+        body: editData,
       });
       if (res.ok) {
         const updatedPhoto = await res.json();
         if (!editData.saveAsNew) {
-           setSelectedPhoto(updatedPhoto);
+          setSelectedPhoto(updatedPhoto);
         } else {
-           alert("New photo is being processed and will appear shortly!");
-           handleCloseLightbox();
+          alert("New photo is being processed and will appear shortly!");
+          handleCloseLightbox();
         }
         await refreshAndMaintainScroll();
       } else {
@@ -626,76 +674,76 @@ function App() {
   };
 
   const renderAddToAlbumModal = () => (
-    <div className="modal-overlay">
-      <div className="modal-content">
-        <h2>Add to Album</h2>
-        <p>Select albums to add {selectedIds.length} photo(s) to:</p>
-        <div className="album-list-selection">
-          {albums.length > 0 ? albums.map(album => (
-            <div 
-              key={album.id} 
-              className={`album-select-item ${targetAlbumIds.includes(album.id) ? 'selected' : ''}`} 
-              onClick={() => {
-                setTargetAlbumIds(prev => 
-                  prev.includes(album.id) 
-                    ? prev.filter(id => id !== album.id) 
-                    : [...prev, album.id]
-                );
-              }}
-            >
-              <div className="album-cover-small">
-                {album.coverPhoto ? <img src={album.coverPhoto.url} alt={album.name} /> : <div className="album-placeholder-small"><ImageIcon size={24} color="#888" /></div>}
-              </div>
-              <div className="album-select-info"><h3>{album.name}</h3><p>{album.photoCount} photos</p></div>
-              {targetAlbumIds.includes(album.id) && <div className="check-circle checked" style={{ marginLeft: 'auto', width: '22px', height: '22px' }}><Check size={14} /></div>}
-            </div>
-          )) : <p>No albums available. Create one first!</p>}
-        </div>
-        <div className="modal-actions">
-          <button className="btn" onClick={() => setShowAddToAlbumModal(false)}>Cancel</button>
-          <button className="btn btn-primary" onClick={handleAddPhotosToAlbums} disabled={targetAlbumIds.length === 0}>Add to Albums</button>
+      <div className="modal-overlay">
+        <div className="modal-content">
+          <h2>Add to Album</h2>
+          <p>Select albums to add {selectedIds.length} photo(s) to:</p>
+          <div className="album-list-selection">
+            {albums.length > 0 ? albums.map(album => (
+                <div
+                    key={album.id}
+                    className={`album-select-item ${targetAlbumIds.includes(album.id) ? 'selected' : ''}`}
+                    onClick={() => {
+                      setTargetAlbumIds(prev =>
+                          prev.includes(album.id)
+                              ? prev.filter(id => id !== album.id)
+                              : [...prev, album.id]
+                      );
+                    }}
+                >
+                  <div className="album-cover-small">
+                    {album.coverPhoto ? <img src={album.coverPhoto.url} alt={album.name} /> : <div className="album-placeholder-small"><ImageIcon size={24} color="#888" /></div>}
+                  </div>
+                  <div className="album-select-info"><h3>{album.name}</h3><p>{album.photoCount} photos</p></div>
+                  {targetAlbumIds.includes(album.id) && <div className="check-circle checked" style={{ marginLeft: 'auto', width: '22px', height: '22px' }}><Check size={14} /></div>}
+                </div>
+            )) : <p>No albums available. Create one first!</p>}
+          </div>
+          <div className="modal-actions">
+            <button className="btn" onClick={() => setShowAddToAlbumModal(false)}>Cancel</button>
+            <button className="btn btn-primary" onClick={handleAddPhotosToAlbums} disabled={targetAlbumIds.length === 0}>Add to Albums</button>
+          </div>
         </div>
       </div>
-    </div>
   );
 
   const renderCreateShareLinkModal = () => {
     const currentAlbum = albums.find(a => a.id === albumIdForShareLink);
     return (
-      <div className="modal-overlay">
-        <div className="modal-content">
-          <h2>Create Share Link for "{currentAlbum?.name}"</h2>
-          {shareLinkCreationError && <div className="error-message">{shareLinkCreationError}</div>}
-          <input 
-            type="text" 
-            placeholder="Link Name (URL friendly)" 
-            value={newShareLinkName} 
-            onChange={(e) => setNewShareLinkName(e.target.value)} 
-            className="modal-input" 
-          />
-          <input 
-            type="password" 
-            placeholder="Password (optional)" 
-            value={newShareLinkPassword} 
-            onChange={(e) => setNewShareLinkPassword(e.target.value)} 
-            className="modal-input" 
-            style={{ marginTop: '10px' }}
-          />
-          <input 
-            type="number" 
-            placeholder="Available for (days)" 
-            value={newShareLinkExpiresInDays} 
-            onChange={(e) => setNewShareLinkExpiresInDays(Math.max(1, parseInt(e.target.value) || 1))} // Ensure at least 1 day
-            className="modal-input" 
-            min="1"
-            style={{ marginTop: '10px' }}
-          />
-          <div className="modal-actions">
-            <button className="btn" onClick={() => { setShowCreateShareLinkModal(false); setAlbumIdForShareLink(null); }}>Cancel</button>
-            <button className="btn btn-primary" onClick={handleCreateShareLink}>Create Link</button>
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <h2>Create Share Link for "{currentAlbum?.name}"</h2>
+            {shareLinkCreationError && <div className="error-message">{shareLinkCreationError}</div>}
+            <input
+                type="text"
+                placeholder="Link Name (URL friendly)"
+                value={newShareLinkName}
+                onChange={(e) => setNewShareLinkName(e.target.value)}
+                className="modal-input"
+            />
+            <input
+                type="password"
+                placeholder="Password (optional)"
+                value={newShareLinkPassword}
+                onChange={(e) => setNewShareLinkPassword(e.target.value)}
+                className="modal-input"
+                style={{ marginTop: '10px' }}
+            />
+            <input
+                type="number"
+                placeholder="Available for (days)"
+                value={newShareLinkExpiresInDays}
+                onChange={(e) => setNewShareLinkExpiresInDays(Math.max(1, parseInt(e.target.value) || 1))} // Ensure at least 1 day
+                className="modal-input"
+                min="1"
+                style={{ marginTop: '10px' }}
+            />
+            <div className="modal-actions">
+              <button className="btn" onClick={() => { setShowCreateShareLinkModal(false); setAlbumIdForShareLink(null); }}>Cancel</button>
+              <button className="btn btn-primary" onClick={handleCreateShareLink}>Create Link</button>
+            </div>
           </div>
         </div>
-      </div>
     );
   };
 
@@ -707,60 +755,61 @@ function App() {
     if (!currentAlbum) return <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>Loading album...</div>;
 
     return (
-      <div className="content-body">
-        <div className="album-detail-header">
-          <h2>{currentAlbum.name}</h2>
-          <p>{currentAlbum.description}</p>
-          <span className="count">{currentAlbum.photoCount} photos</span>
+        <div className="content-body">
+          <div className="album-detail-header">
+            <h2>{currentAlbum.name}</h2>
+            <p>{currentAlbum.description}</p>
+            <span className="count">{currentAlbum.photoCount} photos</span>
+          </div>
+          {photos.length > 0 ? (
+              <PhotoGrid
+                  photos={photos}
+                  hasMore={hasMore}
+                  setPage={setPage}
+                  selectedIds={selectedIds}
+                  setSelectedIds={setSelectedIds}
+                  setSelectedPhoto={handlePhotoClick}
+                  isLightboxOpen={isLightboxOpen} // Pass the new prop
+              />
+          ) : <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>This album is empty. Add some photos!</div>}
         </div>
-        {photos.length > 0 ? (
-          <PhotoGrid 
-            photos={photos} 
-            hasMore={hasMore} 
-            setPage={setPage} 
-            selectedIds={selectedIds} 
-            setSelectedIds={setSelectedIds} 
-            setSelectedPhoto={handlePhotoClick} 
-          />
-        ) : <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>This album is empty. Add some photos!</div>}
-      </div>
     );
   };
 
   const HeaderWrapper = () => {
     const effectivePath = backgroundLocation?.pathname || location.pathname;
     const routeAlbumId = effectivePath.startsWith('/albums/') && effectivePath !== '/albums' ? effectivePath.split('/').pop() : null;
-    
-    const singleSelectedPhoto = (selectedIds.length === 1) 
-      ? photos.find(p => p.id === selectedIds[0]) || currentDuplicateGroup?.photos?.find(p => p.id === selectedIds[0])
-      : null;
+
+    const singleSelectedPhoto = (selectedIds.length === 1)
+        ? photos.find(p => p.id === selectedIds[0]) || currentDuplicateGroup?.photos?.find(p => p.id === selectedIds[0])
+        : null;
     const canSetCoverPhoto = singleSelectedPhoto && !singleSelectedPhoto.contentType.startsWith('video');
 
     return (
-      <Header
-        selectedIds={selectedIds}
-        setSelectedIds={setSelectedIds}
-        pathname={effectivePath}
-        handleRestore={handleRestore}
-        handlePermanentDelete={handlePermanentDelete}
-        handleRemovePhotosFromAlbum={() => handleRemovePhotosFromAlbum(routeAlbumId)}
-        handleMoveToGarbage={handleMoveToGarbage}
-        setShowAddToAlbumModal={setShowAddToAlbumModal}
-        setShowCreateAlbumModal={setShowCreateAlbumModal}
-        setShowCreateShareLinkModal={(albumId) => { // Modified to accept albumId
-          setAlbumIdForShareLink(albumId);
-          setShowCreateShareLinkModal(true);
-        }}
-        handleUpload={handleUpload}
-        albumId={routeAlbumId}
-        canSetCoverPhoto={canSetCoverPhoto}
-        handleSetCoverPhoto={handleSetCoverPhoto}
-        handleDeleteAlbums={handleDeleteAlbums}
-        navigate={navigate}
-        duplicatesPage={duplicatesPage}
-        fetchDuplicates={fetchDuplicates}
-        isLastDuplicateGroup={isLastDuplicateGroup}
-      />
+        <Header
+            selectedIds={selectedIds}
+            setSelectedIds={setSelectedIds}
+            pathname={effectivePath}
+            handleRestore={handleRestore}
+            handlePermanentDelete={handlePermanentDelete}
+            handleRemovePhotosFromAlbum={() => handleRemovePhotosFromAlbum(routeAlbumId)}
+            handleMoveToGarbage={handleMoveToGarbage}
+            setShowAddToAlbumModal={setShowAddToAlbumModal}
+            setShowCreateAlbumModal={setShowCreateAlbumModal}
+            setShowCreateShareLinkModal={(albumId) => { // Modified to accept albumId
+              setAlbumIdForShareLink(albumId);
+              setShowCreateShareLinkModal(true);
+            }}
+            handleUpload={handleUpload}
+            albumId={routeAlbumId}
+            canSetCoverPhoto={canSetCoverPhoto}
+            handleSetCoverPhoto={handleSetCoverPhoto}
+            handleDeleteAlbums={handleDeleteAlbums}
+            navigate={navigate}
+            duplicatesPage={duplicatesPage}
+            fetchDuplicates={fetchDuplicates}
+            isLastDuplicateGroup={isLastDuplicateGroup}
+        />
     );
   };
 
@@ -772,146 +821,150 @@ function App() {
   };
 
   return (
-    <div className="app-container">
-      <Sidebar pathname={backgroundLocation?.pathname || location.pathname} />
+      <div className="app-container">
+        <Sidebar pathname={backgroundLocation?.pathname || location.pathname} />
 
-      <main className="main-content" ref={mainContentRef}>
-        <HeaderWrapper />
+        <main className="main-content" ref={mainContentRef}>
+          <HeaderWrapper />
 
-        <Routes location={backgroundLocation || location}>
-          <Route path="/" element={
-            <PhotoGrid photos={photos} hasMore={hasMore} setPage={setPage} selectedIds={selectedIds} setSelectedIds={setSelectedIds} setSelectedPhoto={handlePhotoClick} />
-          } />
-          <Route path="/garbage" element={
-            <PhotoGrid photos={photos} hasMore={hasMore} setPage={setPage} selectedIds={selectedIds} setSelectedIds={setSelectedIds} setSelectedPhoto={handlePhotoClick} />
-          } />
-          <Route path="/map" element={
-            <div className="map-view-container">
-              <MapContainer center={[20, 0]} zoom={2} zoomControl={false}>
-                <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-                {mapAssets.map(asset => (
-                  <Marker key={asset.id} position={[asset.latitude, asset.longitude]}>
-                    <Popup><div className="map-popup-asset" onClick={() => handlePhotoClick(asset)}><img src={`/api/photos/${asset.id}/thumbnail`} alt="Asset" style={{ width: '120px', borderRadius: '4px' }} /></div></Popup>
-                  </Marker>
-                ))}
-              </MapContainer>
-            </div>
-          } />
-          <Route path="/duplicates/*" element={
-            <div className="content-body" style={{ textAlign: 'center', paddingTop: '40px' }}>
-              {currentDuplicateGroup ? (
-                <div className="duplicate-group">
-                  <h3 style={{ marginBottom: '30px' }}>Duplicate Group ({currentDuplicateGroup.photos.length} items)</h3>
-                  <div className="photo-grid" style={{ justifyContent: 'center' }}>
-                    {currentDuplicateGroup.photos.map(p => {
-                      const aspectRatio = (p.width && p.height) ? (p.width / p.height) : 1;
-                      const isSelected = selectedIds.includes(p.id);
-                      return (
-                        <div 
-                          key={p.id} 
-                          className={`photo-card ${isSelected ? 'selected' : ''}`} 
-                          style={{ flexBasis: `${aspectRatio * 400}px`, height: '400px', flexGrow: 0, maxWidth: '100%' }} 
-                          onClick={() => {
-                            if (selectedIds.length > 0) {
-                              setSelectedIds(v => v.includes(p.id) ? v.filter(i => i !== p.id) : [...v, p.id]);
-                            } else {
-                              handlePhotoClick(p);
-                            }
-                          }}
-                        >
-                          <div 
-                            className="select-overlay" 
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedIds(v => v.includes(p.id) ? v.filter(i => i !== p.id) : [...v, p.id]);
-                            }}
-                          >
-                            <div className={`check-circle ${isSelected ? 'checked' : ''}`}>
-                              {isSelected && <Check size={14} />}
-                            </div>
+          <Routes location={backgroundLocation || location}>
+            <Route path="/" element={
+              <PhotoGrid photos={photos} hasMore={hasMore} setPage={setPage} selectedIds={selectedIds} setSelectedIds={setSelectedIds} setSelectedPhoto={handlePhotoClick} isLightboxOpen={isLightboxOpen} />
+            } />
+            <Route path="/garbage" element={
+              <PhotoGrid photos={photos} hasMore={hasMore} setPage={setPage} selectedIds={selectedIds} setSelectedIds={setSelectedIds} setSelectedPhoto={handlePhotoClick} isLightboxOpen={isLightboxOpen} />
+            } />
+            <Route path="/map" element={
+              isLightboxOpen ? null : ( // Conditionally render map
+                  <div className="map-view-container">
+                    <MapContainer center={[20, 0]} zoom={2} zoomControl={false}>
+                      <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                      {mapAssets.map(asset => (
+                          <Marker key={asset.id} position={[asset.latitude, asset.longitude]}>
+                            <Popup><div className="map-popup-asset" onClick={() => handlePhotoClick(asset)}><img src={`/api/photos/${asset.id}/thumbnail`} alt="Asset" style={{ width: '120px', borderRadius: '4px' }} /></div></Popup>
+                          </Marker>
+                      ))}
+                    </MapContainer>
+                  </div>
+              )
+            } />
+            <Route path="/duplicates/*" element={
+              isLightboxOpen ? null : ( // Conditionally render duplicates content
+                  <div className="content-body" style={{ textAlign: 'center', paddingTop: '40px' }}>
+                    {currentDuplicateGroup ? (
+                        <div className="duplicate-group">
+                          <h3 style={{ marginBottom: '30px' }}>Duplicate Group ({currentDuplicateGroup.photos.length} items)</h3>
+                          <div className="photo-grid" style={{ justifyContent: 'center' }}>
+                            {currentDuplicateGroup.photos.map(p => {
+                              const aspectRatio = (p.width && p.height) ? (p.width / p.height) : 1;
+                              const isSelected = selectedIds.includes(p.id);
+                              return (
+                                  <div
+                                      key={p.id}
+                                      className={`photo-card ${isSelected ? 'selected' : ''}`}
+                                      style={{ flexBasis: `${aspectRatio * 400}px`, height: '400px', flexGrow: 0, maxWidth: '100%' }}
+                                      onClick={() => {
+                                        if (selectedIds.length > 0) {
+                                          setSelectedIds(v => v.includes(p.id) ? v.filter(i => i !== p.id) : [...v, p.id]);
+                                        } else {
+                                          handlePhotoClick(p);
+                                        }
+                                      }}
+                                  >
+                                    <div
+                                        className="select-overlay"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setSelectedIds(v => v.includes(p.id) ? v.filter(i => i !== p.id) : [...v, p.id]);
+                                        }}
+                                    >
+                                      <div className={`check-circle ${isSelected ? 'checked' : ''}`}>
+                                        {isSelected && <Check size={14} />}
+                                      </div>
+                                    </div>
+                                    <img src={p.url} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#e0e0e5' }} />
+                                  </div>
+                              )
+                            })}
                           </div>
-                          <img src={p.url} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#e0e0e5' }} />
+                          <div style={{ display: 'flex', justifyContent: 'center', gap: '20px', marginTop: '40px' }}>
+                            <button className="btn" onClick={() => fetchDuplicates(duplicatesPage - 1)} disabled={duplicatesPage === 0}>Previous Group</button>
+                            <button className="btn" style={{color: '#007aff', borderColor: '#007aff'}} onClick={handleFinishComparison}>Finish Comparison</button>
+                            <button className="btn btn-primary" onClick={() => fetchDuplicates(duplicatesPage + 1)} disabled={isLastDuplicateGroup}>Next Group</button>
+                          </div>
                         </div>
-                      )
-                    })}
+                    ) : <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>No duplicates found. All clean!</div>}
                   </div>
-                  <div style={{ display: 'flex', justifyContent: 'center', gap: '20px', marginTop: '40px' }}>
-                     <button className="btn" onClick={() => fetchDuplicates(duplicatesPage - 1)} disabled={duplicatesPage === 0}>Previous Group</button>
-                     <button className="btn" style={{color: '#007aff', borderColor: '#007aff'}} onClick={handleFinishComparison}>Finish Comparison</button>
-                     <button className="btn btn-primary" onClick={() => fetchDuplicates(duplicatesPage + 1)} disabled={isLastDuplicateGroup}>Next Group</button>
-                  </div>
-                </div>
-              ) : <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>No duplicates found. All clean!</div>}
-            </div>
-          } />
-          <Route path="/albums" element={renderAlbums()} />
-          <Route path="/albums/:albumId" element={<AlbumDetail />} />
-          <Route path="/share-links" element={
-            <div className="content-body" style={{ textAlign: 'center', paddingTop: '40px' }}>
-              <h2>Manage Share Links</h2>
-              <p>This is where you will manage your share links.</p>
-            </div>
-          } />
-          <Route path="/share/:name" element={<ShareLinkPage />} />
-          <Route path="/share/:name/login" element={<ShareLoginPage />} /> {/* New route for ShareLoginPage */}
-        </Routes>
-      </main>
-
-      {uploadQueue.length > 0 && (
-        <div className="upload-queue">
-          <div className="upload-queue-header"><span>Uploads ({uploadQueue.length})</span><X size={16} onClick={() => setUploadQueue([])} style={{cursor: 'pointer', opacity: 0.5}}/></div>
-          <div className="upload-list">
-            {uploadQueue.map(item => (
-              <div key={item.id} className="upload-item">
-                <div className="upload-item-info">
-                  <span className="upload-item-name" title={item.name}>{item.name}</span>
-                  <span className={`status-text ${item.status?.replace(/\s/g, '')}`}>{item.status}</span>
-                </div>
-                {['UPLOADING', 'PROCESSING', 'COMPLETED'].includes(item.status) && (
-                  <div style={{ width: '100%', height: '4px', background: '#e0e0e5', borderRadius: '2px', marginTop: '6px', overflow: 'hidden' }}>
-                    <div style={{ height: '100%', background: 'var(--primary-color)', width: `${item.progress || 0}%`, transition: 'width 0.2s ease' }} />
-                  </div>
-                )}
+              )
+            } />
+            <Route path="/albums" element={renderAlbums()} />
+            <Route path="/albums/:albumId" element={<AlbumDetail />} />
+            <Route path="/share-links" element={
+              <div className="content-body" style={{ textAlign: 'center', paddingTop: '40px' }}>
+                <h2>Manage Share Links</h2>
+                <p>This is where you will manage your share links.</p>
               </div>
-            ))}
-          </div>
-        </div>
-      )}
+            } />
+            <Route path="/share/:name" element={<ShareLinkPage />} />
+            <Route path="/share/:name/login" element={<ShareLoginPage />} /> {/* New route for ShareLoginPage */}
+          </Routes>
+        </main>
 
-      {/* Render Lightbox independently if the URL matches /asset/ */}
-      {location.pathname.startsWith('/asset/') && selectedPhoto && (
-        <Lightbox 
-          selectedPhoto={selectedPhoto} 
-          onClose={handleCloseLightbox} 
-          extMetadata={extMetadata} 
-          pathname={backgroundLocation?.pathname || location.pathname} 
-          handleMoveToGarbage={handleMoveToGarbage} 
-          handleRestore={handleRestore} 
-          handlePermanentDelete={handlePermanentDelete}
-          photos={getActivePhotosContext()}
-          onNavigate={handlePhotoClick}
-          onUpdateDate={handleUpdateDate}
-          onEditPhoto={handleEditPhoto}
-        />
-      )}
-
-      {showAddToAlbumModal && renderAddToAlbumModal()}
-      {showCreateAlbumModal && (
-        <div className="modal-overlay">
-          <div className="modal-content">
-            <h2>Create New Album</h2>
-            {albumCreationError && <div className="error-message">{albumCreationError}</div>}
-            <input type="text" placeholder="Album Name" value={newAlbumName} onChange={(e) => setNewAlbumName(e.target.value)} className="modal-input" />
-            <textarea placeholder="Description (optional)" value={newAlbumDescription} onChange={(e) => setNewAlbumDescription(e.target.value)} className="modal-textarea" />
-            <div className="modal-actions">
-              <button className="btn" onClick={() => setShowCreateAlbumModal(false)}>Cancel</button>
-              <button className="btn btn-primary" onClick={handleCreateAlbum}>Create</button>
+        {uploadQueue.length > 0 && (
+            <div className="upload-queue">
+              <div className="upload-queue-header"><span>Uploads ({uploadQueue.length})</span><X size={16} onClick={() => setUploadQueue([])} style={{cursor: 'pointer', opacity: 0.5}}/></div>
+              <div className="upload-list">
+                {uploadQueue.map(item => (
+                    <div key={item.id} className="upload-item">
+                      <div className="upload-item-info">
+                        <span className="upload-item-name" title={item.name}></span>
+                        <span className={`status-text ${item.status?.replace(/\s/g, '')}`}>{item.status}</span>
+                      </div>
+                      {['UPLOADING', 'PROCESSING', 'COMPLETED'].includes(item.status) && (
+                          <div style={{ width: '100%', height: '4px', background: '#e0e0e5', borderRadius: '2px', marginTop: '6px', overflow: 'hidden' }}>
+                            <div style={{ height: '100%', background: 'var(--primary-color)', width: `${item.progress || 0}%`, transition: 'width 0.2s ease' }} />
+                          </div>
+                      )}
+                    </div>
+                ))}
+              </div>
             </div>
-          </div>
-        </div>
-      )}
-      {showCreateShareLinkModal && renderCreateShareLinkModal()}
-    </div>
+        )}
+
+        {/* Render Lightbox independently if the URL matches /asset/ */}
+        {isLightboxOpen && selectedPhoto && (
+            <Lightbox
+                selectedPhoto={selectedPhoto}
+                onClose={handleCloseLightbox}
+                extMetadata={extMetadata}
+                pathname={backgroundLocation?.pathname || location.pathname}
+                handleMoveToGarbage={handleMoveToGarbage}
+                handleRestore={handleRestore}
+                handlePermanentDelete={handlePermanentDelete}
+                photos={getActivePhotosContext()}
+                onNavigate={handlePhotoClick}
+                onUpdateDate={handleUpdateDate}
+                onEditPhoto={handleEditPhoto}
+            />
+        )}
+
+        {showAddToAlbumModal && renderAddToAlbumModal()}
+        {showCreateAlbumModal && (
+            <div className="modal-overlay">
+              <div className="modal-content">
+                <h2>Create New Album</h2>
+                {albumCreationError && <div className="error-message">{albumCreationError}</div>}
+                <input type="text" placeholder="Album Name" value={newAlbumName} onChange={(e) => setNewAlbumName(e.target.value)} className="modal-input" />
+                <textarea placeholder="Description (optional)" value={newAlbumDescription} onChange={(e) => setNewAlbumDescription(e.target.value)} className="modal-textarea" />
+                <div className="modal-actions">
+                  <button className="btn" onClick={() => setShowCreateAlbumModal(false)}>Cancel</button>
+                  <button className="btn btn-primary" onClick={handleCreateAlbum}>Create</button>
+                </div>
+              </div>
+            </div>
+        )}
+        {showCreateShareLinkModal && renderCreateShareLinkModal()}
+      </div>
   )
 }
 

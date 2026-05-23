@@ -10,13 +10,14 @@ import org.iphoto.model.Photo;
 import org.iphoto.model.PhotoEditRequest;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.TaskType;
-import org.iphoto.properties.IPhotoProperties;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.repository.TaskRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -29,6 +30,7 @@ import java.util.*;
 @Slf4j
 public class PhotoService {
 
+
     private final PhotoRepository photoRepository;
     private final TaskRepository taskRepository;
     private final ObjectMapper objectMapper;
@@ -37,9 +39,7 @@ public class PhotoService {
     private final PhotoDeletionService photoDeletionService;
     private final TaskManagerService taskManagerService;
     private final DuplicationService duplicationService;
-    private final ThumbnailService thumbnailService;
-    private final IPhotoProperties iPhotoProperties;
-
+    private final EditPhotoService editPhotoService;
 
     public Page<Photo> getPhotos(Pageable pageable) {
         return photoRepository.findByIsGarbageFalse(pageable).map(photoMapper::photoEntityToPhoto);
@@ -130,86 +130,23 @@ public class PhotoService {
         return photoMapper.photoEntityToPhoto(photoEntity);
     }
 
-    @Transactional
-    public Photo editPhoto(UUID id, PhotoEditRequest request) throws Exception {
-        PhotoEntity photoEntity = photoRepository.findById(id)
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public PhotoEntity fetchNewPhotoFromDatabaseAsync(UUID id) {
+        return photoRepository.findById(id)
                 .orElseThrow(() -> new NoSuchElementException("Photo not found with ID: " + id));
-
-        String originalPath = photoEntity.getOriginalPath();
-        if (originalPath == null || !Files.exists(Paths.get(originalPath))) {
-            throw new IOException("Original file not found");
-        }
-
-        org.bytedeco.opencv.opencv_core.Mat image = org.bytedeco.opencv.global.opencv_imgcodecs.imread(originalPath);
-        if (image.empty()) {
-            throw new IOException("Failed to load image for editing");
-        }
-
-        // Apply rotation first
-        if (request.rotation() != 0) {
-            org.bytedeco.opencv.opencv_core.Mat rotated = new org.bytedeco.opencv.opencv_core.Mat();
-            if (request.rotation() == 90) {
-                org.bytedeco.opencv.global.opencv_core.rotate(image, rotated, org.bytedeco.opencv.global.opencv_core.ROTATE_90_CLOCKWISE);
-            } else if (request.rotation() == 180) {
-                org.bytedeco.opencv.global.opencv_core.rotate(image, rotated, org.bytedeco.opencv.global.opencv_core.ROTATE_180);
-            } else if (request.rotation() == 270 || request.rotation() == -90) {
-                org.bytedeco.opencv.global.opencv_core.rotate(image, rotated, org.bytedeco.opencv.global.opencv_core.ROTATE_90_COUNTERCLOCKWISE);
-            } else {
-                 rotated = image;
-            }
-            image = rotated;
-        }
-
-        // Then apply crop
-        if (request.width() > 0 && request.height() > 0) {
-            org.bytedeco.opencv.opencv_core.Rect roi = new org.bytedeco.opencv.opencv_core.Rect(request.cropX(), request.cropY(), request.width(), request.height());
-            image = new org.bytedeco.opencv.opencv_core.Mat(image, roi);
-        }
-
-        if (request.saveAsNew()) {
-            String tempPath = iPhotoProperties.getStorage().getTemp() + "/" + UUID.randomUUID() + ".jpg";
-            // Use imencode to ensure correct extension handling
-            String ext = ".jpg";
-            if (photoEntity.getContentType() != null && photoEntity.getContentType().toLowerCase().contains("png")) {
-                ext = ".png";
-            }
-            try (org.bytedeco.javacpp.BytePointer buf = new org.bytedeco.javacpp.BytePointer()) {
-                org.bytedeco.opencv.global.opencv_imgcodecs.imencode(ext, image, buf);
-                byte[] bytes = new byte[(int) buf.limit()];
-                buf.get(bytes);
-                Files.write(Paths.get(tempPath), bytes);
-            }
-            
-            Map<String, String> payload = new HashMap<>();
-            payload.put("tempFilePath", tempPath);
-            payload.put("originalFileName", photoEntity.getFileName());
-            payload.put("contentType", photoEntity.getContentType());
-            payload.put("fileSize", String.valueOf(Files.size(Paths.get(tempPath))));
-            
-            taskManagerService.createTaskEntity(TaskType.PROCESS_UPLOAD, UUID.randomUUID(), objectMapper.writeValueAsString(payload), null);
-            return photoMapper.photoEntityToPhoto(photoEntity);
-        } else {
-            // Re-implement imencode fix for overwriting original
-            String ext = ".jpg";
-            if (photoEntity.getContentType() != null && photoEntity.getContentType().toLowerCase().contains("png")) {
-                ext = ".png";
-            }
-            
-            try (org.bytedeco.javacpp.BytePointer buf = new org.bytedeco.javacpp.BytePointer()) {
-                org.bytedeco.opencv.global.opencv_imgcodecs.imencode(ext, image, buf);
-                byte[] bytes = new byte[(int) buf.limit()];
-                buf.get(bytes);
-                Files.write(Paths.get(originalPath), bytes);
-            }
-
-            thumbnailService.generateThumbnail(originalPath, photoEntity.getId().toString(), photoEntity.getContentType());
-            
-            photoEntity.setFileSize(Files.size(Paths.get(originalPath)));
-            photoEntity.setWidth(image.cols());
-            photoEntity.setHeight(image.rows());
-            photoRepository.save(photoEntity);
-            
-            return photoMapper.photoEntityToPhoto(photoEntity);
+    }
+    /**
+     * Returns final saved image path.
+     */
+    @Transactional
+    public Photo editPhoto(
+            UUID id,
+            MultipartFile file, PhotoEditRequest request) {
+        try {
+            return photoMapper.photoEntityToPhoto(editPhotoService.editImage(id, file, request));
+        } catch (IOException e) {
+            throw new RuntimeException(e);
         }
     }
 }
+
