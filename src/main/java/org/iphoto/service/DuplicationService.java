@@ -146,7 +146,8 @@ public class DuplicationService {
 
             hash.release();
         }
-
+        rotatedImage.release();
+        resizedImage.release();
         image.release();
     }
 

@@ -118,7 +118,9 @@ public class EditPhotoService {
                 payload.put("fileSize", String.valueOf(Files.size(Path.of(newModifiedPhotoData.getTmpPath()))));
                 UUID newId = UUID.randomUUID();
                 TaskEntity task = taskManagerService.createTaskEntityImmediately(TaskType.PROCESS_UPLOAD, newId, objectMapper.writeValueAsString(payload), null);
-                while(taskManagerService.getTask(task.getId()).isEmpty() || taskManagerService.getTask(task.getId()).get().getStatus() == TaskStatus.PENDING ) {
+                while (taskManagerService.getTask(task.getId()).isEmpty()
+                        || taskManagerService.getTask(task.getId()).get().getStatus() == TaskStatus.PENDING
+                        || photoRepository.findById(newId).isEmpty()) {
                     Thread.sleep(500);
                 }
                 return photoRepository.findById(newId).get();

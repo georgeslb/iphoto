@@ -42,6 +42,37 @@ export default function Lightbox({
     const imageEditorRef = useRef(null);
     const editorInstance = useRef(null);
 
+    // Helper function to format date
+    const formatDateTime = (dateTimeString) => {
+        if (!dateTimeString) return '';
+        try {
+            const date = new Date(dateTimeString);
+            if (isNaN(date.getTime())) {
+                // Handle cases where backend might send non-standard format, e.g., "2023-10-26 10:30:00"
+                // Try parsing manually if default Date constructor fails for 'T' separator
+                const parts = dateTimeString.split(/[-T :]/).map(Number);
+                // Assuming format yyyy-MM-ddTHH:mm:ss
+                if (parts.length >= 6) {
+                    date.setFullYear(parts[0], parts[1] - 1, parts[2]);
+                    date.setHours(parts[3], parts[4], parts[5]);
+                } else {
+                    return dateTimeString; // Return original if still unparseable
+                }
+            }
+
+            const day = String(date.getDate()).padStart(2, '0');
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const year = date.getFullYear();
+            const hours = String(date.getHours()).padStart(2, '0');
+            const minutes = String(date.getMinutes()).padStart(2, '0');
+            const seconds = String(date.getSeconds()).padStart(2, '0');
+            return `${day}-${month}-${year} ${hours}:${minutes}:${seconds}`;
+        } catch (e) {
+            console.error("Error formatting date:", e);
+            return dateTimeString; // Fallback to original string on error
+        }
+    };
+
     useEffect(() => {
         if (selectedPhoto) {
             let formattedDate = '';
@@ -345,7 +376,7 @@ export default function Lightbox({
                                 </div>
                             ) : (
                                 <p style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
-                                    {selectedPhoto.fullDateTime}
+                                    {formatDateTime(selectedPhoto.fullDateTime)}
                                     <Edit size={14} onClick={() => setIsEditingDate(true)} className="edit-icon"/>
                                 </p>
                             )}
@@ -374,7 +405,7 @@ export default function Lightbox({
                         {selectedPhoto.fileSystemCreationDate && (
                             <div className="metadata-group">
                                 <label><Calendar size={14}/> File System Date</label>
-                                <p>{new Date(selectedPhoto.fileSystemCreationDate).toLocaleString()}</p>
+                                <p>{formatDateTime(selectedPhoto.fileSystemCreationDate)}</p>
                             </div>
                         )}
                     </div>

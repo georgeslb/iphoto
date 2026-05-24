@@ -11,7 +11,7 @@ public interface PhotoMapper {
 
     default Photo photoEntityToPhoto(PhotoEntity entity) {
         DateTimeFormatter mainDateFmt = DateTimeFormatter.ofPattern("MMM dd, yyyy");
-        DateTimeFormatter fullDateTimeFmt = DateTimeFormatter.ofPattern("MMM dd, yyyy HH:mm:ss");
+        DateTimeFormatter fullDateTimeFmt = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
         DateTimeFormatter groupDateFmt = DateTimeFormatter.ofPattern("EEEE, MMM dd, yyyy");
 
         String dateTaken = entity.getDateTaken() != null ? entity.getDateTaken().format(mainDateFmt) : "Unknown Date";
