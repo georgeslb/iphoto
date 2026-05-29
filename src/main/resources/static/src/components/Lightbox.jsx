@@ -14,7 +14,8 @@ import {
     X,
     XCircle,
     Zap,
-    Image as ImageIcon // Import ImageIcon for "Add to Album"
+    Image as ImageIcon, // Import ImageIcon for "Add to Album"
+    MinusCircle // Import MinusCircle for "Remove from Album"
 } from 'lucide-react';
 
 import 'tui-image-editor/dist/tui-image-editor.css';
@@ -33,7 +34,8 @@ export default function Lightbox({
                                      onNavigate,
                                      onUpdateDate,
                                      onEditPhoto,
-                                     onShowAddToAlbumModal // New prop for "Add to Album"
+                                     onShowAddToAlbumModal, // Prop for "Add to Album"
+                                     onShowRemoveFromAlbumModal // New prop for "Remove from Album"
                                  }) {
     const [isEditingDate, setIsEditingDate] = useState(false);
     const [newDate, setNewDate] = useState('');
@@ -325,6 +327,14 @@ export default function Lightbox({
                             </button>
                         )}
 
+                        {/* New "Remove from Album" button */}
+                        {!isEditingImage && (
+                            <button className="btn" style={{width: '100%', justifyContent: 'center', marginBottom: '10px'}}
+                                    onClick={() => onShowRemoveFromAlbumModal(selectedPhoto.id)}>
+                                <MinusCircle size={16}/> Remove from Album
+                            </button>
+                        )}
+
                         {/* Moved "Move to Garbage" button */}
                         {!isEditingImage && (pathname === '/garbage' ? (
                             <div style={{display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '10px'}}>
@@ -393,8 +403,10 @@ export default function Lightbox({
                                 </p>
                             )}
                         </div>
-                        <div className="metadata-group"><label><Info size={14}/> Basic Details</label>
-                            <p>{selectedPhoto.resolution} • {selectedPhoto.size}</p></div>
+                        <div className="metadata-group">
+                            <label><Info size={14}/> Basic Details</label>
+                            <p>{selectedPhoto.resolution} • {selectedPhoto.size}</p>
+                        </div>
                         {extMetadata && (
                             <div className="extended-meta">
                                 <div className="meta-divider">Technical</div>

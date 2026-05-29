@@ -464,7 +464,21 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 .album-select-item.selected {
   background: #eef5ff;
   border-color: var(--primary-color);
-  box-shadow: 0 4px 12px rgba(0, 122, 255, 0.1);
+  box-shadow: 0 44px 12px rgba(0, 122, 255, 0.1);
+}
+
+/* New style for remove mode selection */
+.album-select-item.remove-selected {
+  background: #ffeef0; /* Light red background */
+  border-color: #ff3b30; /* Red border */
+  box-shadow: 0 4px 12px rgba(255, 59, 48, 0.1); /* Red shadow */
+}
+
+.album-select-item.locked {
+  cursor: not-allowed;
+  opacity: 0.7;
+  background: #f0f0f0; /* Slightly darker background for locked items */
+  border-color: #d0d0d0;
 }
 
 .album-cover-small {

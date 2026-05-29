@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
-import { Routes, Route, useNavigate, useLocation, useParams } from 'react-router-dom'
+import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import 'leaflet/dist/leaflet.css'
 import './App.css'
 
@@ -19,6 +19,7 @@ import AlbumGridDisplay from './components/AlbumGridDisplay';
 import DuplicatePhotoGrid from './components/DuplicatePhotoGrid';
 import MapView from './components/MapView';
 import LightboxWrapper from './components/LightboxWrapper';
+import RemoveFromAlbumModal from './components/RemoveFromAlbumModal'; /* Import new modal */
 import { usePhotoData } from './hooks/usePhotoData';
 import { useAlbumManagement } from './hooks/useAlbumManagement';
 import { useShareLinkManagement } from './hooks/useShareLinkManagement';
@@ -42,7 +43,10 @@ function App() {
   const effectivePath = backgroundLocation?.pathname || location.pathname;
   const isLightboxOpen = location.pathname.startsWith('/asset/');
 
-  // Declare selectedIds and setSelectedIds at the top level
+  /* Derive albumId from effectivePath */
+  const currentAlbumId = effectivePath.startsWith('/albums/') ? effectivePath.split('/').pop() : null;
+
+  /* Declare selectedIds and setSelectedIds at the top level */
   const [selectedIds, setSelectedIds] = useState([]);
 
   const { photos, setPhotos, page, setPage, hasMore, fetchPhotos } = usePhotoData(effectivePath, isLightboxOpen);
@@ -64,39 +68,45 @@ function App() {
     setSelectedPhoto,
     handlePhotoClick,
     handleCloseLightbox,
-  } = useAppNavigationAndSelection(photos, currentDuplicateGroup, backgroundLocation, effectivePath, saveScrollPosition); // Pass saveScrollPosition directly
+  } = useAppNavigationAndSelection(photos, currentDuplicateGroup, backgroundLocation, effectivePath, saveScrollPosition); /* Pass saveScrollPosition directly */
 
   const extMetadata = usePhotoMetadata(selectedPhoto);
   const mapAssets = useMapAssets(effectivePath);
 
-  // State to hold the refreshAndMaintainScroll function
-  const [refreshAndMaintainScroll, setRefreshAndMaintainScroll] = useState(() => () => {}); // Initialize with a no-op function
+  /* State to hold the refreshAndMaintainScroll function */
+  const [refreshAndMaintainScroll, setRefreshAndMaintainScroll] = useState(() => () => {}); /* Initialize with a no-op function */
 
-  // Call useAlbumManagement first, passing the current (possibly no-op) refreshAndMaintainScroll
+  /* Call useAlbumManagement first, passing the current (possibly no-op) refreshAndMaintainScroll */
   const {
     albums,
     setAlbums,
     showCreateAlbumModal,
-    setShowCreateAlbumModal, // Now available from the hook
+    setShowCreateAlbumModal,
     showAddToAlbumModal,
     setShowAddToAlbumModal,
-    targetAlbumIds, // Destructure targetAlbumIds
+    targetAlbumIds,
     setTargetAlbumIds,
+    initialTargetAlbumIds, /* New */
     newAlbumName,
     setNewAlbumName,
     newAlbumDescription,
     setNewAlbumDescription,
     albumCreationError,
     setAlbumCreationError,
-    fetchAlbums, // Get fetchAlbums from useAlbumManagement
+    fetchAlbums,
+    fetchAlbumsForPhotos, /* Get this for RemoveFromAlbumModal */
     handleCreateAlbum,
     handleAddPhotosToAlbums,
     handleRemovePhotosFromAlbum,
     handleDeleteAlbums,
     handleSetCoverPhoto,
+    showRemoveFromAlbumModal,
+    setShowRemoveFromAlbumModal,
+    albumsPhotoBelongsTo,
+    setAlbumsPhotoBelongsTo,
   } = useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, setSelectedIds, refreshAndMaintainScroll);
 
-  // Define the actual refreshAndMaintainScroll function using useCallback
+  /* Define the actual refreshAndMaintainScroll function using useCallback */
   const actualRefreshAndMaintainScroll = useCallback(async () => {
     const scrollPosition = mainContentRef.current?.scrollTop;
     const currentPage = page;
@@ -135,7 +145,7 @@ function App() {
     const newPhotos = allPagesContent.flat();
 
     setPhotos(newPhotos);
-    await fetchAlbums(); // fetchAlbums is now available from useAlbumManagement
+    await fetchAlbums(); /* fetchAlbums is now available from useAlbumManagement */
 
     if (scrollPosition && mainContentRef.current) {
       requestAnimationFrame(() => {
@@ -146,7 +156,7 @@ function App() {
     }
   }, [page, effectivePath, fetchAlbums, duplicatesPage, fetchDuplicates, setPhotos, mainContentRef]);
 
-  // Update the refreshAndMaintainScroll state once the actual function is defined
+  /* Update the refreshAndMaintainScroll state once the actual function is defined */
   useEffect(() => {
     setRefreshAndMaintainScroll(() => actualRefreshAndMaintainScroll);
   }, [actualRefreshAndMaintainScroll]);
@@ -186,11 +196,22 @@ function App() {
     fetchDuplicates
   );
 
-  // Function to handle showing the AddToAlbumModal from Lightbox
+  /* Function to handle showing the AddToAlbumModal from Lightbox */
   const handleShowAddToAlbumModalForLightbox = useCallback((photoId) => {
-    setSelectedIds([photoId]); // Select only the current photo
+    setSelectedIds([photoId]); /* Select only the current photo */
     setShowAddToAlbumModal(true);
   }, [setSelectedIds, setShowAddToAlbumModal]);
+
+  /* New function to handle showing the RemoveFromAlbumModal from Lightbox */
+  const handleShowRemoveFromAlbumModalForLightbox = useCallback(async (photoId) => {
+    if (photoId) {
+      const albums = await fetchAlbumsForPhotos([photoId]);
+      setAlbumsPhotoBelongsTo(albums);
+      setSelectedPhoto(p => ({ ...p, id: photoId })); /* Ensure selectedPhoto is set for the modal */
+      setShowRemoveFromAlbumModal(true);
+    }
+  }, [fetchAlbumsForPhotos, setAlbumsPhotoBelongsTo, setSelectedPhoto, setShowRemoveFromAlbumModal]);
+
 
   return (
       <div className="app-container">
@@ -218,6 +239,7 @@ function App() {
                     photos={photos}
                     currentDuplicateGroup={currentDuplicateGroup}
                     backgroundLocation={backgroundLocation}
+                    albumId={currentAlbumId}
                 />
             )}
           </UploadManager>
@@ -299,9 +321,10 @@ function App() {
             photos={photos}
             currentDuplicateGroup={currentDuplicateGroup}
             onNavigate={handlePhotoClick}
-            onUpdateDate={handleUpdateDate}
+            onUpdateDate={handleUpdateDate} /* Corrected from onUpdateDate */
             onEditPhoto={handleEditPhoto}
-            onShowAddToAlbumModal={handleShowAddToAlbumModalForLightbox} // Pass the new handler
+            onShowAddToAlbumModal={handleShowAddToAlbumModalForLightbox}
+            onShowRemoveFromAlbumModal={handleShowRemoveFromAlbumModalForLightbox}
         />
 
         <AddToAlbumModal
@@ -311,7 +334,17 @@ function App() {
           selectedIds={selectedIds}
           targetAlbumIds={targetAlbumIds}
           setTargetAlbumIds={setTargetAlbumIds}
+          initialTargetAlbumIds={initialTargetAlbumIds}
           handleAddPhotosToAlbums={handleAddPhotosToAlbums}
+        />
+
+        <RemoveFromAlbumModal /* New modal */
+          show={showRemoveFromAlbumModal}
+          onClose={() => setShowRemoveFromAlbumModal(false)}
+          photoId={selectedPhoto?.id} /* Pass the ID of the photo in the lightbox */
+          albumsPhotoBelongsTo={albumsPhotoBelongsTo}
+          handleRemovePhotosFromAlbum={handleRemovePhotosFromAlbum}
+          fetchAlbumsForPhotos={fetchAlbumsForPhotos}
         />
 
         <CreateShareLinkModal

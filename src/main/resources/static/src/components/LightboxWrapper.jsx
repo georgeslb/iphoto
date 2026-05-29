@@ -15,7 +15,8 @@ function LightboxWrapper({
   onNavigate, // handlePhotoClick
   onUpdateDate,
   onEditPhoto,
-  onShowAddToAlbumModal // New prop
+  onShowAddToAlbumModal,
+  onShowRemoveFromAlbumModal // New prop
 }) {
   const getActivePhotosContext = useCallback(() => {
     const effectivePath = backgroundLocation?.pathname || window.location.pathname; // Use window.location.pathname as a fallback
@@ -42,7 +43,8 @@ function LightboxWrapper({
       onNavigate={onNavigate}
       onUpdateDate={onUpdateDate}
       onEditPhoto={onEditPhoto}
-      onShowAddToAlbumModal={onShowAddToAlbumModal} // Pass the new prop
+      onShowAddToAlbumModal={onShowAddToAlbumModal}
+      onShowRemoveFromAlbumModal={onShowRemoveFromAlbumModal} // Pass the new prop
     />
   );
 }

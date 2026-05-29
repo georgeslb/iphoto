@@ -51,7 +51,9 @@ public class AlbumService {
 
     @Transactional(readOnly = true)
     public List<AlbumDTO> getAllAlbums() {
-        return albumRepository.findAll().stream()
+        return albumRepository.findAll()
+                .stream()
+                .sorted(Comparator.comparing(AlbumEntity::getName))
                 .map(this::updateAlbumAndGetDto)
                 .collect(Collectors.toList());
     }
