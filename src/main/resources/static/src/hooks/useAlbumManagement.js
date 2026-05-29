@@ -2,12 +2,12 @@ import { useState, useEffect, useCallback } from 'react';
 
 export function useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, setSelectedIds, refreshAndMaintainScroll) {
   const [albums, setAlbums] = useState([]);
-  const [showCreateAlbumModal, setShowCreateAlbumModal] = useState(false);
   const [showAddToAlbumModal, setShowAddToAlbumModal] = useState(false);
   const [targetAlbumIds, setTargetAlbumIds] = useState([]);
   const [newAlbumName, setNewAlbumName] = useState('');
   const [newAlbumDescription, setNewAlbumDescription] = useState('');
   const [albumCreationError, setAlbumCreationError] = useState(null);
+  const [showCreateAlbumModal, setShowCreateAlbumModal] = useState(false);
 
   const fetchAlbums = useCallback(async () => {
     try {
@@ -16,6 +16,24 @@ export function useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, s
       setAlbums(data);
     } catch (err) {
       console.error("Fetch albums failed:", err);
+    }
+  }, []);
+
+  // Function to fetch albums a photo belongs to
+  const fetchAlbumsForPhotos = useCallback(async (photoIds) => {
+    if (!photoIds || photoIds.length !== 1) return [];
+    const photoId = photoIds[0];
+    try {
+      const res = await fetch(`/api/photos/${photoId}/albums`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (!res.ok) throw new Error(`Failed to fetch albums for photos: ${res.status}`);
+      const data = await res.json();
+      return data.map(album => album.id);
+    } catch (err) {
+      console.error("Fetch albums for photos failed:", err);
+      return [];
     }
   }, []);
 
@@ -28,9 +46,24 @@ export function useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, s
 
   useEffect(() => {
     if (showAddToAlbumModal) {
+      // Fetch all albums
+      fetchAlbums();
+
+      // If there are selected photos, pre-select albums they already belong to
+      if (selectedIds && selectedIds.length > 0) {
+        fetchAlbumsForPhotos(selectedIds).then(preselectedAlbumIds => {
+          // Ensure preselectedAlbumIds is an array before setting state
+          setTargetAlbumIds(Array.isArray(preselectedAlbumIds) ? preselectedAlbumIds : []);
+        });
+      } else {
+        setTargetAlbumIds([]); // Reset if no photos are selected
+      }
+    } else {
+      // Reset targetAlbumIds when modal closes
       setTargetAlbumIds([]);
     }
-  }, [showAddToAlbumModal]);
+  }, [showAddToAlbumModal, fetchAlbums, fetchAlbumsForPhotos, selectedIds]);
+
 
   const handleCreateAlbum = useCallback(async () => {
     setAlbumCreationError(null);
@@ -74,14 +107,17 @@ export function useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, s
         alert(`Added ${selectedIds.length} photo(s) to ${targetAlbumIds.length} album(s).`);
         setSelectedIds([]);
         setShowAddToAlbumModal(false);
+        setTargetAlbumIds([]); // Clear selections on successful add
         await fetchAlbums();
       } else {
+        const errorDetails = await Promise.all(responses.map(res => res.json().catch(() => ({ message: res.statusText }))));
+        console.error('handleAddPhotosToAlbums: One or more requests failed:', errorDetails); // More detailed error
         throw new Error('One or more requests to add photos failed.');
       }
     } catch (err) {
       alert(`Error: ${err.message}`);
     }
-  }, [selectedIds, targetAlbumIds, setSelectedIds, fetchAlbums]);
+  }, [selectedIds, targetAlbumIds, setSelectedIds, fetchAlbums, setShowAddToAlbumModal, setTargetAlbumIds]);
 
   const handleRemovePhotosFromAlbum = useCallback(async (albumId) => {
     if (!albumId || selectedIds.length === 0) return;

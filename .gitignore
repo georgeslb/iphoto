@@ -41,3 +41,4 @@ build/
 /src/main/resources/static/node_modules/
 /.idea/
 /frontend/
+/node_modules/

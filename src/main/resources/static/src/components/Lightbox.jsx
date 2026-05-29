@@ -13,7 +13,8 @@ import {
     Trash2,
     X,
     XCircle,
-    Zap
+    Zap,
+    Image as ImageIcon // Import ImageIcon for "Add to Album"
 } from 'lucide-react';
 
 import 'tui-image-editor/dist/tui-image-editor.css';
@@ -31,7 +32,8 @@ export default function Lightbox({
                                      photos,
                                      onNavigate,
                                      onUpdateDate,
-                                     onEditPhoto
+                                     onEditPhoto,
+                                     onShowAddToAlbumModal // New prop for "Add to Album"
                                  }) {
     const [isEditingDate, setIsEditingDate] = useState(false);
     const [newDate, setNewDate] = useState('');
@@ -288,50 +290,7 @@ export default function Lightbox({
                         </button>
                     )}
 
-                    {!isEditingImage && (pathname === '/garbage' ? (
-                        <>
-                            <button className="btn" style={{
-                                position: 'absolute',
-                                bottom: '20px',
-                                left: '20px',
-                                background: '#34c759',
-                                color: 'white',
-                                border: 'none'
-                            }} onClick={() => {
-                                handleRestore([selectedPhoto.id]);
-                                onClose();
-                            }}>
-                                <RotateCcw size={18}/> Restore Asset
-                            </button>
-                            <button className="btn" style={{
-                                position: 'absolute',
-                                bottom: '20px',
-                                left: '180px',
-                                background: '#ff3b30',
-                                color: 'white',
-                                border: 'none'
-                            }} onClick={() => {
-                                handlePermanentDelete([selectedPhoto.id]);
-                                onClose();
-                            }}>
-                                <Trash2 size={18}/> Delete Permanently
-                            </button>
-                        </>
-                    ) : (
-                        <button className="btn" style={{
-                            position: 'absolute',
-                            bottom: '20px',
-                            left: '20px',
-                            background: 'rgba(255,255,255,0.2)',
-                            color: 'white',
-                            border: 'none'
-                        }} onClick={() => {
-                            handleMoveToGarbage([selectedPhoto.id]);
-                            onClose();
-                        }}>
-                            <Trash2 size={18}/> Move to Garbage
-                        </button>
-                    ))}
+                    {/* Removed the old position of "Move to Garbage" button */}
                 </div>
                 <div className="metadata-sidebar">
                     <div className="sidebar-header">
@@ -342,7 +301,7 @@ export default function Lightbox({
                     </div>
                     <div className="sidebar-scroll-content">
                         {!selectedPhoto.contentType?.startsWith('video') && (
-                            <div style={{marginBottom: '20px'}}>
+                            <div style={{marginBottom: '10px'}}> {/* Adjusted margin-bottom */}
                                 {!isEditingImage ? (
                                     <button className="btn" style={{width: '100%', justifyContent: 'center'}}
                                             onClick={startImageEditing}>
@@ -357,6 +316,59 @@ export default function Lightbox({
                                 )}
                             </div>
                         )}
+
+                        {/* New "Add to Album" button */}
+                        {!isEditingImage && (
+                            <button className="btn" style={{width: '100%', justifyContent: 'center', marginBottom: '10px'}}
+                                    onClick={() => onShowAddToAlbumModal(selectedPhoto.id)}>
+                                <ImageIcon size={16}/> Add to Album
+                            </button>
+                        )}
+
+                        {/* Moved "Move to Garbage" button */}
+                        {!isEditingImage && (pathname === '/garbage' ? (
+                            <div style={{display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '10px'}}>
+                                <button className="btn" style={{
+                                    width: '100%',
+                                    justifyContent: 'center',
+                                    background: '#34c759',
+                                    color: 'white',
+                                    border: 'none'
+                                }} onClick={() => {
+                                    handleRestore([selectedPhoto.id]);
+                                    onClose();
+                                }}>
+                                    <RotateCcw size={18}/> Restore Asset
+                                </button>
+                                <button className="btn" style={{
+                                    width: '100%',
+                                    justifyContent: 'center',
+                                    background: '#ff3b30',
+                                    color: 'white',
+                                    border: 'none'
+                                }} onClick={() => {
+                                    handlePermanentDelete([selectedPhoto.id]);
+                                    onClose();
+                                }}>
+                                    <Trash2 size={18}/> Delete Permanently
+                                </button>
+                            </div>
+                        ) : (
+                            <button className="btn" style={{
+                                width: '100%',
+                                justifyContent: 'center',
+                                background: 'rgba(255,255,255,0.2)',
+                                color: 'white',
+                                border: 'none',
+                                marginBottom: '10px'
+                            }} onClick={() => {
+                                handleMoveToGarbage([selectedPhoto.id]);
+                                onClose();
+                            }}>
+                                <Trash2 size={18}/> Move to Garbage
+                            </button>
+                        ))}
+
                         <div className="metadata-group"><label>File Name</label><p>{selectedPhoto.title}</p></div>
                         <div className="metadata-group">
                             <label><Calendar size={14}/> Date Taken</label>

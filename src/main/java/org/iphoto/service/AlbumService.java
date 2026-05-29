@@ -131,7 +131,7 @@ public class AlbumService {
                 .collect(Collectors.toList());
     }
 
-    private AlbumDTO convertToDto(AlbumEntity album) {
+    public AlbumDTO convertToDto(AlbumEntity album) {
         Photo coverPhotoDTO = null;
         if (album.getCoverPhoto() != null) {
             coverPhotoDTO = photoMapper.photoEntityToPhoto(album.getCoverPhoto());

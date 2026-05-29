@@ -72,7 +72,8 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 
 /* Selection Styles */
 .photo-card.selected { outline: 4px solid var(--primary-color); outline-offset: -4px; }
-.select-overlay { position: absolute; top: 8px; left: 8px; z-index: 5; opacity: 0; transition: opacity 0.2s ease; }
+/* Original .select-overlay for photo-card */
+.photo-card .select-overlay { position: absolute; top: 8px; left: 8px; z-index: 5; opacity: 0; transition: opacity 0.2s ease; }
 .photo-card:hover .select-overlay, .photo-card.selected .select-overlay { opacity: 1; }
 
 .check-circle { width: 22px; height: 22px; border-radius: 50%; border: 2px solid white; background: rgba(0,0,0,0.2); display: flex; align-items: center; justify-content: center; color: white; }
@@ -290,6 +291,17 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   outline-offset: -4px;
 }
 
+/* This rule was causing the issue. Removed opacity: 0 */
+.album-card .select-overlay {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 5;
+  opacity: 1; /* Changed from 0 to 1 to always be visible */
+  transition: opacity 0.2s ease;
+}
+
+/* This rule is now redundant for opacity, but keeps the hover effect if any other styles are added */
 .album-card:hover .select-overlay, .album-card.selected .select-overlay {
   opacity: 1;
 }

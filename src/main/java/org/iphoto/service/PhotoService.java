@@ -6,10 +6,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.TaskEntity;
 import org.iphoto.mappers.PhotoMapper;
-import org.iphoto.model.Photo;
-import org.iphoto.model.PhotoEditRequest;
-import org.iphoto.model.TaskStatus;
-import org.iphoto.model.TaskType;
+import org.iphoto.model.*;
+import org.iphoto.repository.AlbumRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.repository.TaskRepository;
 import org.springframework.data.domain.Page;
@@ -40,6 +38,7 @@ public class PhotoService {
     private final TaskManagerService taskManagerService;
     private final DuplicationService duplicationService;
     private final EditPhotoService editPhotoService;
+    private final AlbumRepository albumRepository;
 
     public Page<Photo> getPhotos(Pageable pageable) {
         return photoRepository.findByIsGarbageFalse(pageable).map(photoMapper::photoEntityToPhoto);
@@ -147,6 +146,10 @@ public class PhotoService {
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    public List<AlbumDTO> getAlbumsByPhoto(UUID photoId) {
+       return albumRepository.findByPhotos_Id(photoId).stream().map(albumService::convertToDto).toList();
     }
 }
 

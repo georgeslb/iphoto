@@ -14,7 +14,8 @@ function LightboxWrapper({
   currentDuplicateGroup, // For duplicates context
   onNavigate, // handlePhotoClick
   onUpdateDate,
-  onEditPhoto
+  onEditPhoto,
+  onShowAddToAlbumModal // New prop
 }) {
   const getActivePhotosContext = useCallback(() => {
     const effectivePath = backgroundLocation?.pathname || window.location.pathname; // Use window.location.pathname as a fallback
@@ -41,6 +42,7 @@ function LightboxWrapper({
       onNavigate={onNavigate}
       onUpdateDate={onUpdateDate}
       onEditPhoto={onEditPhoto}
+      onShowAddToAlbumModal={onShowAddToAlbumModal} // Pass the new prop
     />
   );
 }

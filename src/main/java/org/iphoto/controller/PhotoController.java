@@ -92,6 +92,16 @@ public class PhotoController {
         return ResponseEntity.ok().build();
     }
 
+    @GetMapping("/{id}/albums")
+    public ResponseEntity<List<AlbumDTO>> getAlbumByPhoto(@PathVariable UUID id) {
+        try {
+            List<AlbumDTO> albumDTOS = photoService.getAlbumsByPhoto(id);
+            return ResponseEntity.ok(albumDTOS);
+        } catch (NoSuchElementException e) {
+            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+        }
+    }
+
     @PostMapping("/garbage/restore")
     public ResponseEntity<Void> restoreAssets(@RequestBody List<UUID> ids) {
         photoService.restoreAssetsFromGarbage(ids);

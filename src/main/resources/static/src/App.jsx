@@ -13,7 +13,6 @@ import ShareLoginPage from './components/ShareLoginPage';
 import UploadManager from './components/UploadManager';
 import HeaderWrapper from './components/HeaderWrapper';
 import AddToAlbumModal from './components/AddToAlbumModal';
-import CreateAlbumModal from './components/CreateAlbumModal';
 import CreateShareLinkModal from './components/CreateShareLinkModal';
 import AlbumDetail from './components/AlbumDetail';
 import AlbumGridDisplay from './components/AlbumGridDisplay';
@@ -78,10 +77,10 @@ function App() {
     albums,
     setAlbums,
     showCreateAlbumModal,
-    setShowCreateAlbumModal,
+    setShowCreateAlbumModal, // Now available from the hook
     showAddToAlbumModal,
     setShowAddToAlbumModal,
-    targetAlbumIds,
+    targetAlbumIds, // Destructure targetAlbumIds
     setTargetAlbumIds,
     newAlbumName,
     setNewAlbumName,
@@ -187,6 +186,12 @@ function App() {
     fetchDuplicates
   );
 
+  // Function to handle showing the AddToAlbumModal from Lightbox
+  const handleShowAddToAlbumModalForLightbox = useCallback((photoId) => {
+    setSelectedIds([photoId]); // Select only the current photo
+    setShowAddToAlbumModal(true);
+  }, [setSelectedIds, setShowAddToAlbumModal]);
+
   return (
       <div className="app-container">
         <Sidebar pathname={backgroundLocation?.pathname || location.pathname} />
@@ -202,7 +207,6 @@ function App() {
                     handleRemovePhotosFromAlbum={handleRemovePhotosFromAlbum}
                     handleMoveToGarbage={handleMoveToGarbage}
                     setShowAddToAlbumModal={setShowAddToAlbumModal}
-                    setShowCreateAlbumModal={setShowCreateAlbumModal}
                     setShowCreateShareLinkModal={handleShowCreateShareLinkModal}
                     handleUpload={handleUpload}
                     handleSetCoverPhoto={handleSetCoverPhoto}
@@ -249,6 +253,15 @@ function App() {
                 albums={albums}
                 selectedIds={selectedIds}
                 setSelectedIds={setSelectedIds}
+                newAlbumName={newAlbumName}
+                setNewAlbumName={setNewAlbumName}
+                newAlbumDescription={newAlbumDescription}
+                setNewAlbumDescription={setNewAlbumDescription}
+                albumCreationError={albumCreationError}
+                setAlbumCreationError={setAlbumCreationError}
+                handleCreateAlbum={handleCreateAlbum}
+                showCreateAlbumModal={showCreateAlbumModal}
+                setShowCreateAlbumModal={setShowCreateAlbumModal}
               />
             } />
             <Route path="/albums/:albumId" element={
@@ -288,6 +301,7 @@ function App() {
             onNavigate={handlePhotoClick}
             onUpdateDate={handleUpdateDate}
             onEditPhoto={handleEditPhoto}
+            onShowAddToAlbumModal={handleShowAddToAlbumModalForLightbox} // Pass the new handler
         />
 
         <AddToAlbumModal
@@ -295,19 +309,9 @@ function App() {
           onClose={() => setShowAddToAlbumModal(false)}
           albums={albums}
           selectedIds={selectedIds}
+          targetAlbumIds={targetAlbumIds}
           setTargetAlbumIds={setTargetAlbumIds}
           handleAddPhotosToAlbums={handleAddPhotosToAlbums}
-        />
-
-        <CreateAlbumModal
-          show={showCreateAlbumModal}
-          onClose={() => setShowCreateAlbumModal(false)}
-          newAlbumName={newAlbumName}
-          setNewAlbumName={setNewAlbumName}
-          newAlbumDescription={newAlbumDescription}
-          setNewAlbumDescription={setNewAlbumDescription}
-          albumCreationError={albumCreationError}
-          handleCreateAlbum={handleCreateAlbum}
         />
 
         <CreateShareLinkModal
@@ -318,7 +322,7 @@ function App() {
           newShareLinkName={newShareLinkName}
           setNewShareLinkName={setNewShareLinkName}
           newShareLinkPassword={newShareLinkPassword}
-          setNewShareLinkPassword={newShareLinkPassword}
+          setNewShareLinkPassword={setNewShareLinkPassword}
           newShareLinkExpiresInDays={newShareLinkExpiresInDays}
           setNewShareLinkExpiresInDays={setNewShareLinkExpiresInDays}
           shareLinkCreationError={shareLinkCreationError}

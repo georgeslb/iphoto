@@ -10,11 +10,9 @@ function HeaderWrapper({
   handleRemovePhotosFromAlbum,
   handleMoveToGarbage,
   setShowAddToAlbumModal,
-  setShowCreateAlbumModal,
   setShowCreateShareLinkModal, // This is now the handler from App.jsx
   handleUpload,
   albumId, // Use the albumId passed as a prop
-  // Removed canSetCoverPhoto from props as it's calculated here
   handleSetCoverPhoto,
   handleDeleteAlbums,
   navigate, // navigate is passed as a prop
@@ -45,7 +43,6 @@ function HeaderWrapper({
           handleRemovePhotosFromAlbum={() => handleRemovePhotosFromAlbum(albumId)} // Use albumId prop
           handleMoveToGarbage={handleMoveToGarbage}
           setShowAddToAlbumModal={setShowAddToAlbumModal}
-          setShowCreateAlbumModal={setShowCreateAlbumModal}
           setShowCreateShareLinkModal={(albumIdFromHeader) => { // Call the prop handler
             setShowCreateShareLinkModal(albumIdFromHeader);
           }}

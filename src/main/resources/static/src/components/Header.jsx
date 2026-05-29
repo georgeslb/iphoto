@@ -10,7 +10,6 @@ export default function Header({
   handleRemovePhotosFromAlbum,
   handleMoveToGarbage,
   setShowAddToAlbumModal,
-  setShowCreateAlbumModal,
   setShowCreateShareLinkModal, // New prop
   handleUpload,
   albumId,
@@ -75,9 +74,8 @@ export default function Header({
               </>
             )}
 
-            {pathname === '/albums' && !albumId ? (
-              <button className="btn btn-primary" onClick={() => setShowCreateAlbumModal(true)}><Plus size={18} /> Create Album</button>
-            ) : pathname.startsWith('/albums/') && albumId ? (
+            {/* Removed "Create Album" button from here */}
+            {pathname.startsWith('/albums/') && albumId ? (
               <>
                 <button className="btn btn-primary" onClick={() => document.getElementById('fIn').click()}><Upload size={18} /> Upload</button>
                 <button className="btn" onClick={() => setShowCreateShareLinkModal(albumId)}><Link size={18} /> Create Share Link</button>
