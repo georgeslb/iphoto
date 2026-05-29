@@ -2,7 +2,6 @@ import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
     Calendar,
     Camera,
-    Check,
     ChevronLeft,
     ChevronRight,
     Clock,
@@ -14,8 +13,8 @@ import {
     X,
     XCircle,
     Zap,
-    Image as ImageIcon, // Import ImageIcon for "Add to Album"
-    MinusCircle // Import MinusCircle for "Remove from Album"
+    Image as ImageIcon, /* Import ImageIcon for "Add to Album" */
+    MinusCircle /* Import MinusCircle for "Remove from Album" */
 } from 'lucide-react';
 
 import 'tui-image-editor/dist/tui-image-editor.css';
@@ -34,33 +33,33 @@ export default function Lightbox({
                                      onNavigate,
                                      onUpdateDate,
                                      onEditPhoto,
-                                     onShowAddToAlbumModal, // Prop for "Add to Album"
-                                     onShowRemoveFromAlbumModal // New prop for "Remove from Album"
+                                     onShowAddToAlbumModal, /* Prop for "Add to Album" */
+                                     onShowRemoveFromAlbumModal /* New prop for "Remove from Album" */
                                  }) {
     const [isEditingDate, setIsEditingDate] = useState(false);
     const [newDate, setNewDate] = useState('');
 
     const [isEditingImage, setIsEditingImage] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
-    const [isApplyButtonVisible, setIsApplyButtonVisible] = useState(false); // New state for TUI editor's apply button
+    const [isApplyButtonVisible, setIsApplyButtonVisible] = useState(false); /* New state for TUI editor's apply button */
     const imageEditorRef = useRef(null);
     const editorInstance = useRef(null);
 
-    // Helper function to format date
+    /* Helper function to format date */
     const formatDateTime = (dateTimeString) => {
         if (!dateTimeString) return '';
         try {
             const date = new Date(dateTimeString);
             if (isNaN(date.getTime())) {
-                // Handle cases where backend might send non-standard format, e.g., "2023-10-26 10:30:00"
-                // Try parsing manually if default Date constructor fails for 'T' separator
+                /* Handle cases where backend might send non-standard format, e.g., "2023-10-26 10:30:00" */
+                /* Try parsing manually if default Date constructor fails for 'T' separator */
                 const parts = dateTimeString.split(/[-T :]/).map(Number);
-                // Assuming format yyyy-MM-ddTHH:mm:ss
+                /* Assuming format yyyy-MM-ddTHH:mm:ss */
                 if (parts.length >= 6) {
                     date.setFullYear(parts[0], parts[1] - 1, parts[2]);
                     date.setHours(parts[3], parts[4], parts[5]);
                 } else {
-                    return dateTimeString; // Return original if still unparseable
+                    return dateTimeString; /* Return original if still unparseable */
                 }
             }
 
@@ -73,7 +72,7 @@ export default function Lightbox({
             return `${day}-${month}-${year} ${hours}:${minutes}:${seconds}`;
         } catch (e) {
             console.error("Error formatting date:", e);
-            return dateTimeString; // Fallback to original string on error
+            return dateTimeString; /* Fallback to original string on error */
         }
     };
 
@@ -82,7 +81,7 @@ export default function Lightbox({
             let formattedDate = '';
             if (selectedPhoto.fullDateTime) {
                 const date = new Date(selectedPhoto.fullDateTime);
-                if (!isNaN(date.getTime())) { // Check if date is valid
+                if (!isNaN(date.getTime())) { /* Check if date is valid */
                     const year = date.getFullYear();
                     const month = String(date.getMonth() + 1).padStart(2, '0');
                     const day = String(date.getDate()).padStart(2, '0');
@@ -200,24 +199,24 @@ export default function Lightbox({
                 usageStatistics: false,
             });
 
-            // MutationObserver to detect visibility of the "Apply" button
+            /* MutationObserver to detect visibility of the "Apply" button */
             const observer = new MutationObserver((mutations) => {
                 let applyButtonFound = false;
-                // Look for the "Apply" button within the editor's UI
-                // The class name might vary slightly, but 'apply' is common for the action button
+                /* Look for the "Apply" button within the editor's UI */
+                /* The class name might vary slightly, but 'apply' is common for the action button */
                 const applyButton = imageEditorRef.current?.querySelector('.tui-image-editor-menu-crop .tui-image-editor-button.apply');
-                if (applyButton && applyButton.offsetParent !== null) { // offsetParent checks for display:none
+                if (applyButton && applyButton.offsetParent !== null) { /* offsetParent checks for display:none */
                     applyButtonFound = true;
                 }
                 setIsApplyButtonVisible(applyButtonFound);
             });
 
-            // Start observing the editor's root element for subtree changes
+            /* Start observing the editor's root element for subtree changes */
             observer.observe(imageEditorRef.current, { childList: true, subtree: true, attributes: true });
 
 
             return () => {
-                observer.disconnect(); // Disconnect observer on cleanup
+                observer.disconnect(); /* Disconnect observer on cleanup */
                 if (editorInstance.current) {
                     editorInstance.current.destroy();
                     editorInstance.current = null;
@@ -246,7 +245,7 @@ export default function Lightbox({
             `}</style>
             <div className="lightbox-container" onClick={e => e.stopPropagation()}>
                 <div className="lightbox-content" style={{position: 'relative'}}>
-                    {isLoading && ( // Loading overlay
+                    {isLoading && ( /* Loading overlay */
                         <div style={{
                             position: 'absolute',
                             inset: 0,

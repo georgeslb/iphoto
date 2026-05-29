@@ -1,5 +1,5 @@
 import React from 'react';
-import { Image as ImageIcon, Check, Plus } from 'lucide-react';
+import { Image as ImageIcon, Check, Plus, Circle } from 'lucide-react'; /* Keep Circle for unchecked state */
 import { useNavigate } from 'react-router-dom';
 import CreateAlbumModal from './CreateAlbumModal'; // Import CreateAlbumModal
 
@@ -38,14 +38,15 @@ function AlbumGridDisplay({
             >
               <div
                 className="select-overlay"
+                style={{ opacity: 1, pointerEvents: selectedIds.length > 0 ? 'all' : 'none' }} /* Ensure overlay is always visible but only interactive in selection mode */
                 onClick={(e) => {
                   e.stopPropagation();
                   setSelectedIds(v => v.includes(album.id) ? v.filter(i => i !== album.id) : [...v, album.id]);
                 }}
               >
-                  <div className="check-circle {` isSelected ? 'checked' : ''`}">
-                      {isSelected && <Check size={14} />}
-                  </div>
+                <div className={`check-circle ${isSelected ? 'checked' : ''}`}>
+                  {isSelected ? <Check size={14} /> : <Circle size={14} color="#ccc" />} {/* Corrected: show Circle when not selected */}
+                </div>
               </div>
 
               <div className="album-cover">
@@ -66,7 +67,6 @@ function AlbumGridDisplay({
               </button>
           </div>
 
-      {/* CreateAlbumModal moved here */}
       <CreateAlbumModal
         show={showCreateAlbumModal}
         onClose={() => setShowCreateAlbumModal(false)}

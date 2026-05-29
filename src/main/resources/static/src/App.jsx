@@ -3,9 +3,7 @@ import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import 'leaflet/dist/leaflet.css'
 import './App.css'
 
-import L from 'leaflet'
-import markerIcon from 'leaflet/dist/images/marker-icon.png'
-import markerShadow from 'leaflet/dist/images/marker-shadow.png'
+/* Removed L, markerIcon, markerShadow imports as they are not directly used in App.jsx */
 import Sidebar from './components/Sidebar'
 import PhotoGrid from './components/PhotoGrid'
 import ShareLinkPage from './components/ShareLinkPage';
@@ -31,8 +29,7 @@ import { useMapAssets } from './hooks/useMapAssets';
 import { useAppNavigationAndSelection } from './hooks/useAppNavigationAndSelection';
 import { useInitialDataFetch } from './hooks/useInitialDataFetch';
 
-let DefaultIcon = L.icon({ iconUrl: markerIcon, shadowUrl: markerShadow, iconSize: [25, 41], iconAnchor: [12, 41] })
-L.Marker.prototype.options.icon = DefaultIcon
+/* Removed DefaultIcon definition as it's not used */
 
 function App() {
   const navigate = useNavigate();
@@ -321,7 +318,7 @@ function App() {
             photos={photos}
             currentDuplicateGroup={currentDuplicateGroup}
             onNavigate={handlePhotoClick}
-            onUpdateDate={handleUpdateDate} /* Corrected from onUpdateDate */
+            onUpdateDate={handleUpdateDate}
             onEditPhoto={handleEditPhoto}
             onShowAddToAlbumModal={handleShowAddToAlbumModalForLightbox}
             onShowRemoveFromAlbumModal={handleShowRemoveFromAlbumModalForLightbox}
