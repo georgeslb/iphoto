@@ -3,7 +3,7 @@ package org.iphoto.repository;
 import org.iphoto.entities.AlbumEntity;
 import org.iphoto.entities.PersonEntity;
 import org.iphoto.entities.PhotoEntity;
-import org.iphoto.entities.UserEntity; // Import UserEntity
+import org.iphoto.entities.SpaceEntity;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Slice;
@@ -19,26 +19,23 @@ import java.util.UUID;
 @Repository
 public interface PhotoRepository extends JpaRepository<PhotoEntity, UUID> {
 
-    Page<PhotoEntity> findByUserAndIsGarbageFalse(UserEntity user, Pageable pageable);
+    Page<PhotoEntity> findBySpaceIdAndIsGarbageFalse(UUID spaceId, Pageable pageable);
     
-    Page<PhotoEntity> findByUserAndIsGarbageTrue(UserEntity user, Pageable pageable);
+    Page<PhotoEntity> findBySpaceInAndIsGarbageTrue(Set<SpaceEntity> id, Pageable pageable);
 
-    Page<PhotoEntity> findByUserAndIsGarbageFalseAndAlbums(UserEntity user, AlbumEntity album, Pageable pageable);
 
-    Page<PhotoEntity> findByUserAndFacesPerson(UserEntity user, PersonEntity person, Pageable pageable);
+    Page<PhotoEntity> findByIsGarbageFalseAndAlbums(AlbumEntity album, Pageable pageable);
 
-    long countByUserAndIsGarbageFalseAndAlbums(UserEntity user, AlbumEntity album);
+    Page<PhotoEntity> findByFacesPerson(PersonEntity person, Pageable pageable);
 
-    Slice<PhotoEntity> findByDateTakenBetweenAndPhashNotNullAndMhashNotNullAndIsGarbageFalse(LocalDateTime startDateTaken, LocalDateTime endDateTaken, Pageable pageable);
+    long countByIsGarbageFalseAndAlbums(AlbumEntity album);
+
+    Slice<PhotoEntity> findBySpaceIdAndDateTakenBetweenAndPhashNotNullAndMhashNotNullAndIsGarbageFalse(UUID spaceId, LocalDateTime startDateTaken, LocalDateTime endDateTaken, Pageable pageable);
 
     // Add a method to find a photo by ID and user
-    Optional<PhotoEntity> findByIdAndUser(UUID id, UserEntity user);
+    Optional<PhotoEntity> findById(UUID id);
 
-    Set<PhotoEntity> findByIdInAndUser(List<UUID> ids, UserEntity user);
-
-
-    // Add method to find photos by user for AdminService
-    Slice<PhotoEntity> findByUser(UserEntity user, Pageable pageable);
+    Set<PhotoEntity> findBySpaceIdAndIdIn(UUID space, List<UUID> ids);
 
     Optional<PhotoEntity> findByFileHash(String hash);
 

@@ -60,6 +60,9 @@ export default function Lightbox({
     const [showFaces, setShowFaces] = useState(false);
     const [imageSize, setImageSize] = useState({ naturalWidth: 0, naturalHeight: 0, displayWidth: 0, displayHeight: 0 });
 
+    // State for albumAllowed from SpaceDTO
+    const [albumAllowed, setAlbumAllowed] = useState(false);
+
 
     const formatDateTime = (dateTimeString) => {
         if (!dateTimeString) return '';
@@ -98,6 +101,15 @@ export default function Lightbox({
                 .then(response => response.ok ? response.json() : [])
                 .then(data => setFaces(data))
                 .catch(error => console.error('Error fetching faces:', error));
+
+            // Fetch SpaceDTO for albumAllowed property
+            fetch(`/api/photos/${selectedPhoto.id}/space`)
+                .then(response => response.ok ? response.json() : { albumAllowed: false })
+                .then(data => setAlbumAllowed(data.albumAllowed))
+                .catch(error => {
+                    console.error('Error fetching space info:', error);
+                    setAlbumAllowed(false); // Default to false on error
+                });
         }
     }, [selectedPhoto]);
 
@@ -443,8 +455,8 @@ export default function Lightbox({
                             </div>
                         )}
 
-                        {!isEditingImage && <button className="btn" style={{width: '100%', justifyContent: 'center', marginBottom: '10px'}} onClick={() => onShowAddToAlbumModal(selectedPhoto.id)}><ImageIcon size={16}/> Add to Album</button>}
-                        {!isEditingImage && <button className="btn" style={{width: '100%', justifyContent: 'center', marginBottom: '10px'}} onClick={() => onShowRemoveFromAlbumModal(selectedPhoto.id)}><MinusCircle size={16}/> Remove from Album</button>}
+                        {albumAllowed && !isEditingImage && <button className="btn" style={{width: '100%', justifyContent: 'center', marginBottom: '10px'}} onClick={() => onShowAddToAlbumModal(selectedPhoto.id)}><ImageIcon size={16}/> Add to Album</button>}
+                        {albumAllowed && !isEditingImage && <button className="btn" style={{width: '100%', justifyContent: 'center', marginBottom: '10px'}} onClick={() => onShowRemoveFromAlbumModal(selectedPhoto.id)}><MinusCircle size={16}/> Remove from Album</button>}
 
                         {!isEditingImage && (pathname === '/garbage' ? (
                             <div style={{display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '10px'}}>

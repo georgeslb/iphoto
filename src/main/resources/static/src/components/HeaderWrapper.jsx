@@ -13,6 +13,7 @@ function HeaderWrapper({
   setShowCreateShareLinkModal, // This is now the handler from App.jsx
   handleUpload,
   albumId, // Use the albumId passed as a prop
+  spaceId, // Add spaceId prop here
   handleSetCoverPhoto,
   handleDeleteAlbums,
   navigate, // navigate is passed as a prop
@@ -22,12 +23,17 @@ function HeaderWrapper({
   photos,
   currentDuplicateGroup,
   backgroundLocation,
-  fileInputRef // Add fileInputRef to props
+  fileInputRef, // Add fileInputRef to props
+  allowCopyToMain, // New prop
+  refreshAndMaintainScroll // New prop
 }) {
   const location = useLocation();
 
   const effectivePath = backgroundLocation?.pathname || location.pathname;
   // Removed redundant routeAlbumId calculation, use albumId prop directly
+
+  // console.log('HeaderWrapper: spaceId received as prop:', spaceId); // Removed for cleanup
+
 
   const singleSelectedPhoto = (selectedIds.length === 1)
       ? photos.find(p => p.id === selectedIds[0]) || currentDuplicateGroup?.photos?.find(p => p.id === selectedIds[0])
@@ -49,6 +55,7 @@ function HeaderWrapper({
           }}
           handleUpload={handleUpload}
           albumId={albumId} // Use the prop
+          spaceId={spaceId} // Pass spaceId prop to Header
           canSetCoverPhoto={canSetCoverPhoto} // Use the calculated value
           handleSetCoverPhoto={handleSetCoverPhoto}
           handleDeleteAlbums={handleDeleteAlbums}
@@ -57,6 +64,8 @@ function HeaderWrapper({
           fetchDuplicates={fetchDuplicates}
           isLastDuplicateGroup={isLastDuplicateGroup}
           fileInputRef={fileInputRef} // Pass fileInputRef to Header
+          allowCopyToMain={allowCopyToMain} // Pass allowCopyToMain
+          refreshAndMaintainScroll={refreshAndMaintainScroll} // Pass refresh function
       />
   );
 }

@@ -1,9 +1,14 @@
 package org.iphoto.controller;
 
+import org.iphoto.entities.SpaceEntity;
 import org.iphoto.entities.UserEntity;
 import org.iphoto.model.*;
+import org.iphoto.model.request.AlbumCreateRequest;
+import org.iphoto.model.request.AlbumPhotoRequest;
+import org.iphoto.model.request.AlbumUpdateRequest;
 import org.iphoto.repository.UserRepository;
 import org.iphoto.service.AlbumService;
+import org.iphoto.service.SpaceService;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
@@ -20,17 +25,20 @@ import java.util.UUID;
 public class AlbumController extends AbstractBaseController {
 
     private final AlbumService albumService;
+    private final SpaceService spaceService;
 
-    public AlbumController(AlbumService albumService, UserRepository userRepository) {
+    public AlbumController(AlbumService albumService, SpaceService spaceService, UserRepository userRepository) {
         super(userRepository);
         this.albumService = albumService;
+        this.spaceService = spaceService;
     }
 
     @PostMapping
     public ResponseEntity<AlbumDTO> createAlbum(@RequestBody AlbumCreateRequest request) {
         UserEntity currentUser = getCurrentUser();
+        SpaceEntity space = spaceService.getDefaultSpaceForUser(currentUser);
         try {
-            AlbumDTO album = albumService.createAlbum(currentUser, request);
+            AlbumDTO album = albumService.createAlbum(space, request);
             return new ResponseEntity<>(album, HttpStatus.CREATED);
         } catch (IllegalArgumentException e) {
             return new ResponseEntity<>(HttpStatus.CONFLICT); // Album with name already exists
@@ -39,16 +47,14 @@ public class AlbumController extends AbstractBaseController {
 
     @GetMapping
     public ResponseEntity<List<AlbumDTO>> getAllAlbums() {
-        UserEntity currentUser = getCurrentUser();
-        List<AlbumDTO> albums = albumService.getAllAlbums(currentUser);
+        List<AlbumDTO> albums = albumService.getAllAlbums();
         return ResponseEntity.ok(albums);
     }
 
     @GetMapping("/{id}")
     public ResponseEntity<AlbumDTO> getAlbumById(@PathVariable UUID id) {
-        UserEntity currentUser = getCurrentUser();
         try {
-            AlbumDTO album = albumService.getAlbumById(currentUser, id);
+            AlbumDTO album = albumService.getAlbumById(id);
             return ResponseEntity.ok(album);
         } catch (NoSuchElementException e) {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
@@ -57,9 +63,8 @@ public class AlbumController extends AbstractBaseController {
 
     @PutMapping("/{id}")
     public ResponseEntity<AlbumDTO> updateAlbum(@PathVariable UUID id, @RequestBody AlbumUpdateRequest request) {
-        UserEntity currentUser = getCurrentUser();
         try {
-            AlbumDTO album = albumService.updateAlbum(currentUser, id, request);
+            AlbumDTO album = albumService.updateAlbum(id, request);
             return ResponseEntity.ok(album);
         } catch (NoSuchElementException e) {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
@@ -70,16 +75,15 @@ public class AlbumController extends AbstractBaseController {
 
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> deleteAlbum(@PathVariable UUID id) {
-        UserEntity currentUser = getCurrentUser();
-        albumService.deleteAlbum(currentUser, id);
+        albumService.deleteAlbum(id);
         return new ResponseEntity<>(HttpStatus.NO_CONTENT);
     }
 
     @PostMapping("/{id}/photos")
     public ResponseEntity<AlbumDTO> addPhotosToAlbum(@PathVariable UUID id, @RequestBody AlbumPhotoRequest request) {
-        UserEntity currentUser = getCurrentUser();
         try {
-            AlbumDTO album = albumService.addPhotosToAlbum(currentUser, id, request.photoIds());
+            UserEntity user = getCurrentUser();
+            AlbumDTO album = albumService.addPhotosToAlbum(id, request.photoIds());
             return ResponseEntity.ok(album);
         } catch (NoSuchElementException e) {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
@@ -88,9 +92,8 @@ public class AlbumController extends AbstractBaseController {
 
     @DeleteMapping("/{id}/photos")
     public ResponseEntity<AlbumDTO> removePhotosFromAlbum(@PathVariable UUID id, @RequestBody AlbumPhotoRequest request) {
-        UserEntity currentUser = getCurrentUser();
         try {
-            AlbumDTO album = albumService.removePhotosFromAlbum(currentUser, id, request.photoIds());
+            AlbumDTO album = albumService.removePhotosFromAlbum(id, request.photoIds());
             return ResponseEntity.ok(album);
         } catch (NoSuchElementException e) {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
@@ -101,7 +104,7 @@ public class AlbumController extends AbstractBaseController {
     public ResponseEntity<List<Photo>> getAlbumPhotos(@PathVariable UUID id, @PageableDefault(size = 50, sort = "dateTaken", direction = Sort.Direction.DESC) Pageable pageable) {
         UserEntity currentUser = getCurrentUser();
         try {
-            List<Photo> photos = albumService.getAlbumPhotos(currentUser, id, pageable);
+            List<Photo> photos = albumService.getAlbumPhotos(id, pageable);
             return ResponseEntity.ok(photos);
         } catch (NoSuchElementException e) {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);

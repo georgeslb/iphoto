@@ -2,7 +2,7 @@ package org.iphoto.controller;
 
 import org.iphoto.entities.UserEntity;
 import org.iphoto.model.DuplicateGroupDTO;
-import org.iphoto.model.FinishComparisonRequest;
+import org.iphoto.model.request.FinishComparisonRequest;
 import org.iphoto.repository.UserRepository;
 import org.iphoto.service.DuplicationService;
 import org.springframework.data.domain.Pageable;

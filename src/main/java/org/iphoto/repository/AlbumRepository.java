@@ -1,7 +1,7 @@
 package org.iphoto.repository;
 
+import org.iphoto.configuration.MainSpaceLimited;
 import org.iphoto.entities.AlbumEntity;
-import org.iphoto.entities.UserEntity; // Import UserEntity
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
@@ -12,13 +12,19 @@ import java.util.UUID;
 
 @Repository
 public interface AlbumRepository extends JpaRepository<AlbumEntity, UUID> {
-    Optional<AlbumEntity> findByUserAndName(UserEntity user, String name);
 
-    boolean existsByUserAndIdAndPhotos_Id(UserEntity user, UUID albumId, UUID photoId);
+    @MainSpaceLimited
+    Optional<AlbumEntity> findByName(String name);
 
-    List<AlbumEntity> findByUserAndPhotos_Id(UserEntity user, UUID photoId);
+    @MainSpaceLimited
+    boolean existsByIdAndPhotos_Id(UUID albumId, UUID photoId);
 
-    List<AlbumEntity> findAllByUser(UserEntity user);
+    @MainSpaceLimited
+    List<AlbumEntity> findByPhotos_Id(UUID photoId);
 
-    Optional<AlbumEntity> findByIdAndUser(UUID id, UserEntity user);
+    @MainSpaceLimited
+    List<AlbumEntity> findAll();
+
+    @MainSpaceLimited
+    Optional<AlbumEntity> findById(UUID id);
 }

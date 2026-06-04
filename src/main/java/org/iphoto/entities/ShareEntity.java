@@ -25,7 +25,6 @@ public class ShareEntity extends BaseEntity { // Extends BaseEntity
     @EqualsAndHashCode.Include
     private UUID id;
 
-    // Removed user field as it's inherited from BaseEntity
 
     @Column(nullable = false, unique = true)
     @ToString.Include

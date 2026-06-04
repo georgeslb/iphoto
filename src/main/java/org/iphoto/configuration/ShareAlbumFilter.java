@@ -32,8 +32,9 @@ public class ShareAlbumFilter
 
         String uri = request.getRequestURI();
 
-        if (!uri.startsWith("/api/albums/")) {
-            filterChain.doFilter(request, response);
+        if (!uri.startsWith("/api/albums/share")) {
+            filterChain.
+                    doFilter(request, response);
             return;
         }
 

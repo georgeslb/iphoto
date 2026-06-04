@@ -1,9 +1,9 @@
 package org.iphoto.controller;
 
-import org.iphoto.dto.UserCreateRequest;
-import org.iphoto.dto.UserDto;
 import org.iphoto.entities.UserEntity;
 import org.iphoto.mappers.UserMapper;
+import org.iphoto.model.UserDto;
+import org.iphoto.model.request.UserCreateRequest;
 import org.iphoto.service.UserService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/users")
@@ -37,13 +38,13 @@ public class UserController {
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> deleteUser(@PathVariable Long id) {
+    public ResponseEntity<Void> deleteUser(@PathVariable UUID id) {
         userService.deleteUser(id);
         return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{id}/reset-password")
-    public ResponseEntity<UserDto> resetPassword(@PathVariable Long id, @RequestBody Map<String, String> payload) {
+    public ResponseEntity<UserDto> resetPassword(@PathVariable UUID id, @RequestBody Map<String, String> payload) {
         String newPassword = payload.get("newPassword");
         return userService.resetPassword(id, newPassword)
                 .map(userMapper::toDto)

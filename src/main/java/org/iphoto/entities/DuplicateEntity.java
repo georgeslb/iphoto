@@ -17,9 +17,9 @@ import java.util.UUID;
 @Getter
 @Setter
 @SuperBuilder
-@EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true) // Changed callSuper to true
+@EqualsAndHashCode(onlyExplicitlyIncluded = true) // Changed callSuper to true
 @ToString(onlyExplicitlyIncluded = true)
-public class DuplicateEntity extends BaseEntity { // Extends BaseEntity
+public class DuplicateEntity { // Extends BaseEntity
 
     @Id
     @ToString.Include
@@ -32,7 +32,7 @@ public class DuplicateEntity extends BaseEntity { // Extends BaseEntity
             joinColumns = @JoinColumn(name = "duplicate_id"),
             inverseJoinColumns = @JoinColumn(name = "photo_id")
     )
-    private Set<PhotoEntity> photos = new HashSet<>();
+    private Set<PhotoEntity> photos;
 
     @Enumerated(EnumType.STRING)
     private DuplicateStatus status;

@@ -34,7 +34,7 @@ public class PersonEntity extends BaseEntity { // Extends BaseEntity
         mappedBy = "person",
         fetch = FetchType.LAZY
     )
-    private List<FaceEntity> faces = new ArrayList<>();
+    private List<FaceEntity> faces;
 
     // The face that represents this person in the UI (their "profile picture").
     @OneToOne(fetch = FetchType.LAZY)

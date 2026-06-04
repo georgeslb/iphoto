@@ -5,6 +5,7 @@ import jakarta.servlet.http.HttpSession;
 import lombok.AllArgsConstructor;
 import org.iphoto.entities.UserEntity;
 import org.iphoto.model.*;
+import org.iphoto.model.request.ShareRequest;
 import org.iphoto.repository.UserRepository;
 import org.iphoto.service.ShareService;
 import org.springframework.http.HttpStatus;
@@ -81,9 +82,9 @@ public class ShareController {
     }
 
     // This endpoint is for public access to a share link, so it does not filter by user.
-    @GetMapping("/{name}")
-    public ResponseEntity<Map<String, Serializable>> getShareDetailsByName(@PathVariable("name")  String name, HttpSession session) {
-        ShareResponse share = shareService.getShareDetails(name);
+    @GetMapping("{albumId}/{name}")
+    public ResponseEntity<Map<String, Serializable>> getShareDetailsByName(@PathVariable("albumId") UUID albumId, @PathVariable("name")  String name, HttpSession session) {
+        ShareResponse share = shareService.getShareDetails(albumId, name);
 
         // non protégé
         if (!share.isPasswordProtected()) {

@@ -43,7 +43,7 @@ export function useShareLinkManagement() {
         const errorData = await res.json();
         throw new Error(errorData.message || `Failed to create share link: ${res.status}`);
       }
-      alert(`Share link "${newShareLinkName}" created successfully!`);
+      alert(`Share link "${albumIdForShareLink}"/"${newShareLinkName}" created successfully!`);
       setNewShareLinkName('');
       setNewShareLinkPassword('');
       setNewShareLinkExpiresInDays(7);

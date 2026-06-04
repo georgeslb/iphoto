@@ -1,4 +1,4 @@
-package org.iphoto.dto;
+package org.iphoto.model.request;
 
 import lombok.Data;
 

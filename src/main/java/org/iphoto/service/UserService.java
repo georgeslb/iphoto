@@ -1,29 +1,27 @@
 package org.iphoto.service;
 
+import lombok.RequiredArgsConstructor;
+import org.iphoto.entities.SpaceEntity;
 import org.iphoto.entities.UserEntity;
 import org.iphoto.repository.UserRepository;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
-import java.util.List;
-import java.util.Optional;
+import java.util.*;
 
 @Service
+@RequiredArgsConstructor
 public class UserService {
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
-
-    public UserService(UserRepository userRepository, PasswordEncoder passwordEncoder) {
-        this.userRepository = userRepository;
-        this.passwordEncoder = passwordEncoder;
-    }
+    private final SpaceService spaceService;
 
     public List<UserEntity> findAll() {
         return userRepository.findAll();
     }
 
-    public Optional<UserEntity> findById(Long id) {
+    public Optional<UserEntity> findById(UUID id) {
         return userRepository.findById(id);
     }
 
@@ -36,14 +34,18 @@ public class UserService {
                     .username(username)
                     .password(passwordEncoder.encode(password))
                     .role(role).build();
+        SpaceEntity defaultSpace = spaceService.createDefaultSpace(user);
+        Set<SpaceEntity> spaces = new HashSet<>();
+        spaces.add(defaultSpace);
+        user.setSpaces(spaces);
         return userRepository.save(user);
     }
 
-    public void deleteUser(Long id) {
+    public void deleteUser(UUID id) {
         userRepository.deleteById(id);
     }
 
-    public Optional<UserEntity> resetPassword(Long id, String newPassword) {
+    public Optional<UserEntity> resetPassword(UUID id, String newPassword) {
         return userRepository.findById(id).map(user -> {
             user.setPassword(passwordEncoder.encode(newPassword));
             return userRepository.save(user);

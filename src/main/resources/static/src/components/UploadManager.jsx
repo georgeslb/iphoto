@@ -1,12 +1,11 @@
-import React, { useState, useCallback } from 'react'; // Removed useRef from here
+import React, { useState, useCallback } from 'react';
 import { X } from 'lucide-react';
 import L from 'leaflet';
 
 const CHUNK_SIZE = 1024 * 1024 * 5; // 5MB chunks
 
-function UploadManager({ refreshAndMaintainScroll, effectivePath, children, fileInputRef }) { // Accept fileInputRef as prop
+function UploadManager({ refreshAndMaintainScroll, effectivePath, children, fileInputRef }) {
   const [uploadQueue, setUploadQueue] = useState([]);
-  // Removed: const fileInputRef = useRef(null); // This is now passed as a prop
 
   const pollTaskStatus = useCallback((uploadId, taskId) => {
     const interval = setInterval(async () => {
@@ -34,8 +33,8 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children, file
         clearInterval(interval);
         console.error("Polling failed:", err);
         setUploadQueue(prev => prev.map(item =>
-            item.uploadId === uploadId ? { ...item, status: 'FAILED', error: `Polling failed: ${err.message}` } : item
-        ));
+              item.uploadId === uploadId ? { ...item, status: 'FAILED', error: `Polling failed: ${err.message}` } : item
+          ));
       }
     }, 3000);
   }, [refreshAndMaintainScroll]);
@@ -49,7 +48,11 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children, file
       return;
     }
 
-    const currentAlbumId = effectivePath.startsWith('/albums/') && effectivePath !== '/albums' ? effectivePath.split('/').pop() : null;
+    // Get albumId and spaceId from the dataset of the file input element
+    const currentAlbumId = fileInputRef.current?.dataset.albumId || '';
+    const currentSpaceId = fileInputRef.current?.dataset.spaceId || '';
+    // Removed console.logs
+
 
     const newUploadItems = filesToUpload.map(file => ({
       id: Math.random().toString(36).substr(2, 9),
@@ -90,6 +93,7 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children, file
         formData.append('contentType', file.type);
         formData.append('chunk', chunk);
         if (currentAlbumId) formData.append('albumId', currentAlbumId);
+        if (currentSpaceId) formData.append('spaceId', currentSpaceId); // Add spaceId to formData
 
         try {
           const res = await fetch('/api/upload/chunk', { method: 'POST', body: formData });
@@ -151,7 +155,7 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children, file
 
   return (
     <>
-      {children({ handleUpload: handleInitialUpload, uploadQueue, setUploadQueue, fileInputRef })} {/* Pass fileInputRef */}
+      {children({ handleUpload: handleInitialUpload, uploadQueue, setUploadQueue, fileInputRef })}
       {uploadQueue.length > 0 && (
           <div className="upload-queue">
             <div className="upload-queue-header"><span>Uploads ({uploadQueue.length})</span><X size={16} onClick={() => setUploadQueue([])} style={{cursor: 'pointer', opacity: 0.5}}/></div>

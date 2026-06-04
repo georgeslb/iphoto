@@ -14,7 +14,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.configuration.FaceAligner;
 import org.iphoto.entities.FaceEntity;
-import org.iphoto.entities.PersonEntity;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.TaskEntity;
 import org.iphoto.exception.ServiceNotAvailableException;
@@ -141,7 +140,6 @@ public class FaceDetectionService {
 
                         FaceEntity faceEntity =
                                 FaceEntity.builder().width(w).height(h).x(x).y(y).photo(photo).build();
-                        faceEntity.setUser(photo.getUser()); // Set the user for the face
                         faceEntity.setEmbedding(embeddingBytes);
                         faceEntity.setFaceThumbnail(thumbnailBytes);
 

@@ -21,6 +21,8 @@ import RemoveFromAlbumModal from './components/RemoveFromAlbumModal'; /* Import 
 import Persons from './components/Persons';
 import Login from './components/Login'; // Import Login component
 import UserManagement from './components/UserManagement'; // Import UserManagement component
+import SpaceGridDisplay from './components/SpaceGridDisplay'; // Import SpaceGridDisplay
+import SpaceDetail from './components/SpaceDetail'; // Import SpaceDetail
 import { usePhotoData } from './hooks/usePhotoData';
 import { useAlbumManagement } from './hooks/useAlbumManagement';
 import { useShareLinkManagement } from './hooks/useShareLinkManagement';
@@ -46,10 +48,14 @@ function App() {
 
   const backgroundLocation = location.state?.backgroundLocation;
   const effectivePath = backgroundLocation?.pathname || location.pathname;
-  const isLightboxOpen = location.pathname.startsWith('/asset/') || /^\/albums\/[^/]+\/asset\//.test(location.pathname);
+  const isLightboxOpen = location.pathname.startsWith('/asset/') || /^\/albums\/[^/]+\/asset\//.test(location.pathname) || /^\/spaces\/[^/]+\/asset\//.test(location.pathname); // Updated for spaces
 
-  /* Derive albumId from effectivePath */
-  const currentAlbumId = effectivePath.startsWith('/albums/') ? effectivePath.split('/').pop() : null;
+  /* Derive albumId/spaceId from effectivePath */
+  const currentAlbumId = effectivePath.startsWith('/albums/') ? effectivePath.split('/')[2] : null;
+  const currentSpaceId = effectivePath.startsWith('/spaces/') ? effectivePath.split('/')[2] : null;
+
+  // Removed console.logs
+
 
   /* Declare selectedIds and setSelectedIds at the top level */
   const [selectedIds, setSelectedIds] = useState([]);
@@ -156,46 +162,103 @@ function App() {
     setAlbumsPhotoBelongsTo,
   } = useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, setSelectedIds, refreshAndMaintainScroll);
 
+  // --- Space Management ---
+  const [spaces, setSpaces] = useState([]);
+  const [newSpaceName, setNewSpaceName] = useState('');
+  const [newSpaceDescription, setNewSpaceDescription] = useState('');
+  const [spaceCreationError, setSpaceCreationError] = useState('');
+  const [showCreateSpaceModal, setShowCreateSpaceModal] = useState(false);
+  const [selectedSpaceIds, setSelectedSpaceIds] = useState([]); // For deleting multiple spaces
+  const [currentSpaceDetails, setCurrentSpaceDetails] = useState(null); // New state for current space details
+
+  const fetchSpaces = useCallback(async () => {
+    try {
+      const response = await fetch('/api/spaces');
+      if (response.ok) {
+        const data = await response.json();
+        setSpaces(data);
+      } else {
+        console.error('Failed to fetch spaces');
+      }
+    } catch (error) {
+      console.error('Error fetching spaces:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchSpaces();
+  }, [fetchSpaces]);
+
+  // Effect to set currentSpaceDetails when currentSpaceId or spaces change
+  useEffect(() => {
+    if (currentSpaceId && spaces.length > 0) {
+      const foundSpace = spaces.find(space => space.id === currentSpaceId);
+      setCurrentSpaceDetails(foundSpace || null);
+    } else {
+      setCurrentSpaceDetails(null);
+    }
+  }, [currentSpaceId, spaces]);
+
+
+  const handleCreateSpace = useCallback(async () => {
+    setSpaceCreationError('');
+    try {
+      const response = await fetch('/api/spaces', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newSpaceName, description: newSpaceDescription }),
+      });
+      if (response.ok) {
+        setNewSpaceName('');
+        setNewSpaceDescription('');
+        setShowCreateSpaceModal(false);
+        fetchSpaces();
+      } else {
+        const errorData = await response.json();
+        setSpaceCreationError(errorData.message || 'Failed to create space.');
+      }
+    } catch (error) {
+      console.error('Error creating space:', error);
+      setSpaceCreationError('An unexpected error occurred.');
+    }
+  }, [newSpaceName, newSpaceDescription, fetchSpaces]);
+
+  const handleDeleteSpaces = useCallback(async (idsToDelete) => {
+    if (!window.confirm(`Are you sure you want to delete ${idsToDelete.length} space(s)?`)) {
+      return;
+    }
+    try {
+      for (const id of idsToDelete) {
+        await fetch(`/api/spaces/${id}`, { method: 'DELETE' });
+      }
+      setSelectedSpaceIds([]); // Clear selection
+      fetchSpaces(); // Refresh list
+    } catch (error) {
+      console.error('Error deleting spaces:', error);
+    }
+  }, [fetchSpaces]);
+  // --- End Space Management ---
+
+
   /* Define the actual refreshAndMaintainScroll function using useCallback */
   const actualRefreshAndMaintainScroll = useCallback(async () => {
     const scrollPosition = mainContentRef.current?.scrollTop;
-    const currentPage = page;
 
     if (effectivePath.startsWith('/duplicates')) {
       await fetchDuplicates(duplicatesPage);
       return;
     }
 
-    const type = effectivePath === '/garbage' ? 'garbage' : (effectivePath.startsWith('/albums/') ? 'album' : 'library');
-    const albumId = type === 'album' ? effectivePath.split('/').pop() : null;
+    const type = effectivePath === '/garbage' ? 'garbage' : (effectivePath.startsWith('/albums/') ? 'album' : (effectivePath.startsWith('/spaces/') ? 'space' : 'library'));
+    const albumId = type === 'album' ? effectivePath.split('/')[2] : null;
+    const spaceId = type === 'space' ? effectivePath.split('/')[2] : null;
 
-    const fetchPage = async (pageNum) => {
-      let endpoint = '/api/photos';
-      let sort = 'dateTaken,desc';
+    // Use the fetchPhotos from usePhotoData to refresh the current view
+    // This will reset the photos and fetch the first page (page 0)
+    await fetchPhotos(0, true, type, albumId, spaceId);
 
-      if (type === 'garbage') {
-        endpoint = '/api/photos/garbage';
-        sort = 'garbageAt,desc';
-      } else if (type === 'album' && albumId) {
-        endpoint = `/api/albums/${albumId}/photos`;
-      }
-
-      const res = await fetch(`${endpoint}?page=${pageNum}&size=50&sort=${sort}`);
-      if (!res.ok) return [];
-      const data = await res.json();
-      return Array.isArray(data) ? data : (data.content || []);
-    };
-
-    const allPagesPromises = [];
-    for (let i = 0; i <= currentPage; i++) {
-      allPagesPromises.push(fetchPage(i));
-    }
-
-    const allPagesContent = await Promise.all(allPagesPromises);
-    const newPhotos = allPagesContent.flat();
-
-    setPhotos(newPhotos);
     await fetchAlbums(); /* fetchAlbums is now available from useAlbumManagement */
+    await fetchSpaces(); // Fetch spaces as well
 
     if (scrollPosition && mainContentRef.current) {
       requestAnimationFrame(() => {
@@ -204,7 +267,7 @@ function App() {
         }
       });
     }
-  }, [page, effectivePath, fetchAlbums, duplicatesPage, fetchDuplicates, setPhotos, mainContentRef]);
+  }, [effectivePath, fetchAlbums, fetchSpaces, duplicatesPage, fetchDuplicates, fetchPhotos, mainContentRef]); // Added fetchPhotos to dependencies
 
   /* Update the refreshAndMaintainScroll state once the actual function is defined */
   useEffect(() => {
@@ -301,6 +364,9 @@ function App() {
                       currentDuplicateGroup={currentDuplicateGroup}
                       backgroundLocation={backgroundLocation}
                       albumId={currentAlbumId}
+                      spaceId={currentSpaceId} // Pass currentSpaceId
+                      allowCopyToMain={currentSpaceDetails?.allowCopyToMain || false} // Pass allowCopyToMain
+                      refreshAndMaintainScroll={refreshAndMaintainScroll} // Pass refresh function
                       fileInputRef={fileInputRef} // Pass fileInputRef to HeaderWrapper
                   />
               )}
@@ -371,6 +437,49 @@ function App() {
                   <Route path="/albums/:albumId/asset/:photoId" element={
                     <AlbumDetail
                         albums={albums}
+                        photos={photos}
+                        hasMore={hasMore}
+                        setPage={setPage}
+                        selectedIds={selectedIds}
+                        setSelectedIds={setSelectedIds}
+                        handlePhotoClick={handlePhotoClick}
+                        isLightboxOpen={isLightboxOpen}
+                    />
+                  } />
+                  {/* New Space Routes */}
+                  <Route path="/spaces" element={
+                    <SpaceGridDisplay
+                        spaces={spaces}
+                        selectedIds={selectedSpaceIds}
+                        setSelectedIds={setSelectedSpaceIds}
+                        newSpaceName={newSpaceName}
+                        setNewSpaceName={setNewSpaceName}
+                        newSpaceDescription={newSpaceDescription}
+                        setNewSpaceDescription={setNewSpaceDescription}
+                        spaceCreationError={spaceCreationError}
+                        setSpaceCreationError={setSpaceCreationError}
+                        handleCreateSpace={handleCreateSpace}
+                        showCreateSpaceModal={showCreateSpaceModal}
+                        setShowCreateSpaceModal={setShowCreateSpaceModal}
+                        fetchSpaces={fetchSpaces}
+                        handleDeleteSpaces={handleDeleteSpaces}
+                    />
+                  } />
+                  <Route path="/spaces/:spaceId" element={
+                    <SpaceDetail
+                        spaces={spaces}
+                        photos={photos}
+                        hasMore={hasMore}
+                        setPage={setPage}
+                        selectedIds={selectedIds}
+                        setSelectedIds={setSelectedIds}
+                        handlePhotoClick={handlePhotoClick}
+                        isLightboxOpen={isLightboxOpen}
+                    />
+                  } />
+                  <Route path="/spaces/:spaceId/asset/:photoId" element={
+                    <SpaceDetail
+                        spaces={spaces}
                         photos={photos}
                         hasMore={hasMore}
                         setPage={setPage}

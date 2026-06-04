@@ -1,6 +1,6 @@
 package org.iphoto.mappers;
 
-import org.iphoto.dto.UserDto;
+import org.iphoto.model.UserDto;
 import org.iphoto.entities.UserEntity;
 import org.mapstruct.Mapper;
 import org.mapstruct.factory.Mappers;

@@ -19,7 +19,6 @@ import java.util.UUID;
 @Setter
 @ToString(onlyExplicitlyIncluded = true)
 public final class AlbumEntity extends BaseEntity { // Extends BaseEntity
-
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     @ToString.Include
