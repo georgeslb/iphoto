@@ -8,7 +8,9 @@ import lombok.ToString;
 import org.springframework.data.domain.Persistable;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
@@ -68,6 +70,15 @@ public class PhotoEntity implements Persistable<UUID> {
 
     @ManyToMany(mappedBy = "photos", cascade = {CascadeType.DETACH, CascadeType.MERGE, CascadeType.PERSIST, CascadeType.REFRESH})
     private Set<AlbumEntity> albums = new HashSet<>();
+
+    // This ensures that when a Photo is deleted, all Faces detected within it are also deleted.
+    @OneToMany(
+        mappedBy = "photo",
+        cascade = CascadeType.ALL,
+        orphanRemoval = true,
+        fetch = FetchType.LAZY
+    )
+    private List<FaceEntity> faces = new ArrayList<>();
 
     @Transient
     private boolean isNew = true;

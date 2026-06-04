@@ -190,6 +190,48 @@
                     </execution>
                 </executions>
             </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <phase>generate-resources</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <id>haarcascade_frontalface_alt</id>
+                        <configuration>
+                            <target>
+                                <mkdir dir="${project.build.outputDirectory}"/>
+
+                                <get
+                                        src="https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_alt.xml"
+                                        dest="${project.build.outputDirectory}/haarcascade_frontalface_alt.xml"
+                                        verbose="true"
+                                        skipexisting="true"/>
+                            </target>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <phase>generate-resources</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <id>nn4.small2.v1.t7</id>
+                        <configuration>
+                            <target>
+                                <mkdir dir="${project.build.outputDirectory}"/>
+
+                                <get
+                                        src="https://storage.cmusatyalab.org/openface-models/nn4.small2.v1.t7"
+                                        dest="${project.build.outputDirectory}/nn4.small2.v1.t7"
+                                        verbose="true"
+                                        skipexisting="true"/>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 </project>

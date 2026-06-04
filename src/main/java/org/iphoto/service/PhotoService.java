@@ -81,9 +81,8 @@ public class PhotoService {
             photo.setGarbageAt(LocalDateTime.now());
             photoRepository.save(photo);
 
-            Map<String, String> payload = Map.of("photoId", photo.getId().toString());
             taskManagerService
-                    .createTaskEntity(TaskType.PERMANENT_DELETE, photo.getId(), objectMapper.writeValueAsString(payload), LocalDateTime.now().plusDays(30));
+                    .createTaskEntity(TaskType.PERMANENT_DELETE, photo.getId(), null, LocalDateTime.now().plusDays(30));
         }
         duplicationService.processMovingToGarbage(photos);
         photos.stream().map(PhotoEntity::getAlbums).flatMap(Collection::stream)

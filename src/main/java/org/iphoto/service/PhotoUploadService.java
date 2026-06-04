@@ -84,7 +84,8 @@ public class PhotoUploadService {
         if (payload.get("albumId") != null) {
             albumService.addPhotosToAlbum(UUID.fromString(payload.get("albumId")), List.of(photo.getId()));
         }
-        taskManagerService.createTaskEntity(TaskType.HASH_IMAGE, photo.getId(), objectMapper.writeValueAsString(Map.of("photoId", photo.getId().toString())),  LocalDateTime.now().plusMinutes(2));
+        taskManagerService.createTaskEntity(TaskType.HASH_IMAGE, photo.getId(), null,  LocalDateTime.now().plusMinutes(2));
+        taskManagerService.createTaskEntity(TaskType.ISOLATE_FACES, photo.getId(), null,  LocalDateTime.now().plusMinutes(3));
 
         return SUCCESS;
     }

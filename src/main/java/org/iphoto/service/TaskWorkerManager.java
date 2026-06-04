@@ -41,8 +41,9 @@ public class TaskWorkerManager {
     private final DuplicationService duplicationService;
     private final PhotoUploadService photoUploadService;
     private final PhotoService photoService;
-    private final ExecutorService executorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+    private final FaceDetectionService faceDetectionImage;
 
+    private final ExecutorService executorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
 
 
     @Scheduled(fixedDelay = 5000)
@@ -74,10 +75,16 @@ public class TaskWorkerManager {
                 } else if (HASH_IMAGE.name().equals(task.getTaskType())) {
                     duplicationService.hashImage(task);
                     task.setStatus(TaskStatus.COMPLETED);
-                }
-                else if (CHECK_DUPLICATION.name().equals(task.getTaskType())) {
+                } else if (CHECK_DUPLICATION.name().equals(task.getTaskType())) {
                     duplicationService.checkDuplication(task);
+                } else if (ISOLATE_FACES.name().equals(task.getTaskType())) {
+                    faceDetectionImage.detectAndSaveFaces(task);
+                    task.setStatus(TaskStatus.COMPLETED);
+                } else if (HASH_FACES.name().equals(task.getTaskType())) {
+                    faceDetectionImage.detectAndSaveFaces(task);
+                    task.setStatus(TaskStatus.COMPLETED);
                 }
+
             } catch (Exception e) {
                 log.error("Task failed", e);
                 task.setStatus(TaskStatus.FAILED);

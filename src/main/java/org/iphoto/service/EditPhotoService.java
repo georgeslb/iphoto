@@ -137,9 +137,10 @@ public class EditPhotoService {
                 originalPhoto.setFileSize(Files.size(Path.of(originalPhoto.getOriginalPath())));
                 originalPhoto.setWidth(workingImage.getWidth());
                 originalPhoto.setHeight(workingImage.getHeight());
-                taskManagerService.createTaskEntity(TaskType.HASH_IMAGE, originalPhoto.getId(), objectMapper.writeValueAsString(Map.of("photoId", originalPhoto.getId().toString())),  LocalDateTime.now().plusMinutes(2));
+                taskManagerService.createTaskEntity(TaskType.HASH_IMAGE, originalPhoto.getId(), null,  LocalDateTime.now().plusMinutes(2));
+                taskManagerService.createTaskEntity(TaskType.ISOLATE_FACES, originalPhoto.getId(), null,  LocalDateTime.now().plusMinutes(3));
                 return photoRepository.save(originalPhoto);
-            } catch (IOException | NoSuchAlgorithmException e) {
+            } catch (Exception e) {
                 throw new RuntimeException(e);
             }
         }

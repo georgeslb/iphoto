@@ -71,14 +71,13 @@ public class DuplicationService {
         photoRepository
                 .findById(task.getPhotoId()).ifPresent(photo -> {
                     try {
-
                         if (photo.getContentType().contains("image")) {
                             log.info("creating Perceptive Hash for photoId: {}", photo.getId());
                             preprocess(photo);
                             photoRepository.save(photo);
-                            taskManagerService.createTaskEntity(TaskType.CHECK_DUPLICATION, photo.getId(), objectMapper.writeValueAsString(Map.of("photoId", photo.getId().toString())), LocalDateTime.now().plusMinutes(1));
+                            taskManagerService.createTaskEntity(TaskType.CHECK_DUPLICATION, photo.getId(), null, LocalDateTime.now().plusMinutes(1));
                         }
-                    } catch (IOException e) {
+                    } catch (Exception e) {
                         log.warn(e.getMessage(), e);
                         throw new RuntimeException(e);
                     }
