@@ -1,7 +1,6 @@
 package org.iphoto.service;
 
 import lombok.extern.slf4j.Slf4j;
-import org.bytedeco.javacpp.BytePointer;
 import org.bytedeco.javacpp.FloatPointer;
 import org.bytedeco.opencv.opencv_core.*;
 import org.bytedeco.opencv.opencv_dnn.Net;
@@ -9,7 +8,6 @@ import org.bytedeco.opencv.opencv_objdetect.CascadeClassifier;
 import org.iphoto.entities.FaceEntity;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.TaskEntity;
-import org.iphoto.model.TaskType;
 import org.iphoto.repository.FaceRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.springframework.stereotype.Service;
@@ -17,13 +15,10 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.ResourceUtils;
 
-
 import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.time.LocalDateTime;
 
 import static org.bytedeco.opencv.global.opencv_core.CV_32F;
 import static org.bytedeco.opencv.global.opencv_dnn.blobFromImage;
@@ -39,7 +34,6 @@ public class FaceDetectionService {
     private final FaceRepository faceRepository;
     private final CascadeClassifier faceCascade;
     private final PhotoRepository photoRepository;
-    private final TaskManagerService taskManagerService;
     private final Net faceNet;
     private static final String MODEL_FILE = "nn4.small2.v1.t7";
 
@@ -47,7 +41,6 @@ public class FaceDetectionService {
     public FaceDetectionService(FaceRepository faceRepository, PhotoRepository photoRepository, TaskManagerService taskManagerService) throws IOException {
         this.faceRepository = faceRepository;
         this.photoRepository = photoRepository;
-        this.taskManagerService = taskManagerService;
         faceCascade = new CascadeClassifier(
                 ResourceUtils.getFile("classpath:haarcascade_frontalface_alt.xml").getAbsolutePath()
         );
@@ -68,8 +61,21 @@ public class FaceDetectionService {
         Mat grayImage = new Mat();
         cvtColor(image, grayImage, COLOR_BGR2GRAY);
 
+        // Ensure the image is large enough for the CascadeClassifier to process.
+        // The default minimum window size for haarcascade_frontalface_alt.xml is typically 20x20.
+        // Passing an image smaller than this will cause an OpenCV assertion failure.
+        if (grayImage.rows() < 20 || grayImage.cols() < 20) {
+            log.warn("Photo {} ({}x{}) is too small for face detection, skipping", photo.getId(), grayImage.cols(), grayImage.rows());
+            return;
+        }
+
         RectVector faces = new RectVector();
-        faceCascade.detectMultiScale(grayImage, faces);
+        try {
+            faceCascade.detectMultiScale(grayImage, faces);
+        } catch (RuntimeException e) {
+            log.error("OpenCV error during face detection for photo {}: {}", photo.getId(), e.getMessage());
+            return;
+        }
 
         for (Rect faceRect : faces.get()) {
             FaceEntity faceEntity = new FaceEntity(photo, faceRect.x(), faceRect.y(), faceRect.width(), faceRect.height());
@@ -97,27 +103,26 @@ public class FaceDetectionService {
         }
 
         // The detected region of the face
-        Rect detectedRect = new Rect(face.getX(), face.getY(), face.getWidth(), face.getHeight());
+        try (Rect detectedRect = new Rect(face.getX(), face.getY(), face.getWidth(), face.getHeight());
+                Rect imageBounds = new Rect(0, 0, originalImage.cols(), originalImage.rows())) {
 
-        // The full image boundary
-        Rect imageBounds = new Rect(0, 0, originalImage.cols(), originalImage.rows());
+            // --- Corrected Intersection Logic ---
+            int x = Math.max(detectedRect.x(), imageBounds.x());
+            int y = Math.max(detectedRect.y(), imageBounds.y());
+            int width = Math.min(detectedRect.x() + detectedRect.width(), imageBounds.x() + imageBounds.width()) - x;
+            int height = Math.min(detectedRect.y() + detectedRect.height(), imageBounds.y() + imageBounds.height()) - y;
 
-        // --- Corrected Intersection Logic ---
-        int x = Math.max(detectedRect.x(), imageBounds.x());
-        int y = Math.max(detectedRect.y(), imageBounds.y());
-        int width = Math.min(detectedRect.x() + detectedRect.width(), imageBounds.x() + imageBounds.width()) - x;
-        int height = Math.min(detectedRect.y() + detectedRect.height(), imageBounds.y() + imageBounds.height()) - y;
+            // Check if there is a valid, non-empty intersection
+            if (width <= 0 || height <= 0) {
+                return null;
+            }
 
-        // Check if there is a valid, non-empty intersection
-        if (width <= 0 || height <= 0) {
-            return null;
+            Rect validCropRegion = new Rect(x, y, width, height);
+            // --- End of Correction ---
+
+            // Return a new Mat containing only the cropped region
+            return new Mat(originalImage, validCropRegion);
         }
-
-        Rect validCropRegion = new Rect(x, y, width, height);
-        // --- End of Correction ---
-
-        // Return a new Mat containing only the cropped region
-        return new Mat(originalImage, validCropRegion);
     }
 
     /**
@@ -159,9 +164,6 @@ public class FaceDetectionService {
             try {
                 log.info("starting isolating faces for photo: {}", photo.getId());
                 this.detectAndSaveFaces(photo);
-                // generate photo UUID and add a new task
-                taskManagerService
-                        .createTaskEntity(TaskType.HASH_FACES, photo.getId(), null, LocalDateTime.now().plusMinutes(2));
             } catch (Exception e) {
                 log.error("error while isolating faces for photo: {}", photo.getId());
                 throw new RuntimeException(e.getMessage(), e);

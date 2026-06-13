@@ -3,7 +3,6 @@ package org.iphoto.service;
 import lombok.Builder;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
-import org.iphoto.entities.CoverFaceOrigin;
 import org.iphoto.entities.FaceEntity;
 import org.iphoto.entities.PersonEntity;
 import org.iphoto.entities.PhotoEntity;
@@ -17,7 +16,6 @@ import org.springframework.util.CollectionUtils;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
-import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Stream;
 
@@ -27,30 +25,28 @@ public class FaceRecognitionService {
 
     private final FaceRepository faceRepository;
     private final PersonRepository personRepository;
+    private final PersonRecognitionService personRecognitionService;
+
     private static final double THRESHOLD = 0.8;
 
     public void groupFaces() {
         Pageable pageable = Pageable.ofSize(20);
         List<PersonEntity> persons = personRepository.findAll();
-        Page<FaceEntity> facesNotGrouped = faceRepository.findByPersonIsNull(pageable);
+        Page<FaceEntity> facesNotGrouped;
         do {
+            facesNotGrouped = faceRepository.findByPersonIsNull(pageable);
             for (FaceEntity face : facesNotGrouped) {
                 checkIfFaceRelatedToPerson(face, persons).ifPresent(personWithScore -> {
-                    face.setPerson(personWithScore.getPerson());
-                    faceRepository.save(face);
-                    personWithScore.getPerson().getFaces().add(face);
-                    recalculateCoverFace(personWithScore.getPerson());
-                    personRepository.save(personWithScore.getPerson());
+                    personRecognitionService.updatePerson(personWithScore.getPerson(), face);
                 });
             }
-            facesNotGrouped = faceRepository.findByPersonIsNull(pageable.next());
-
+            pageable = facesNotGrouped.nextPageable();
         } while (facesNotGrouped.hasNext() && facesNotGrouped.getNumber() <= 5);
 
         pageable = Pageable.ofSize(100);
         facesNotGrouped = faceRepository.findByPersonIsNull(pageable);
-
-
+        List<List<FaceEntity>> facestGrouped =  clusterFaces(facesNotGrouped.toList());
+        facestGrouped.forEach(personRecognitionService::addPerson);
     }
 
     private Optional<PersonWithScore> checkIfFaceRelatedToPerson(FaceEntity face, List<PersonEntity> persons) {
@@ -123,48 +119,64 @@ public class FaceRecognitionService {
     }
 
     /**
-     * Helper method to recalculate and update the cover face based on the most recent valid photo date.
-     * A photo date is considered valid if dateTaken is not null and is different from createdAt.
-     * This method only updates the cover face if its current origin is not MANUAL.
+     * Groups a list of faces into clusters based on their embeddings.
+     * This is ideal for an initial run to discover people from a large set of ungrouped faces.
+     *
+     * @param facesToCluster A list of FaceEntity objects, each with a valid embedding.
+     * @return A list of lists, where each inner list is a cluster of faces belonging to the same person.
      */
-    private void recalculateCoverFace(PersonEntity person) {
-        if (person.getCoverFaceOrigin() == CoverFaceOrigin.MANUAL) {
-            return; // Never override a manual choice automatically
+    private List<List<FaceEntity>> clusterFaces(List<FaceEntity> facesToCluster) {
+        if (CollectionUtils.isEmpty(facesToCluster)) {
+            return new ArrayList<>();
         }
 
-        FaceEntity bestFace = getLastFaceForPerson(person);
+        List<List<FaceEntity>> clusters = new ArrayList<>();
+        // Keep track of which faces have already been assigned to a cluster
+        boolean[] isClustered = new boolean[facesToCluster.size()];
 
-        // If we found a valid face, update the cover
-        if (bestFace != null) {
-            person.setCoverFace(bestFace);
-        } else if (!CollectionUtils.isEmpty(person.getFaces()) && person.getCoverFace() == null) {
-            // Fallback: If no photo has a valid dateTaken and we don't have a cover face yet,
-            // just pick the first face so the UI isn't broken.
-            person.setCoverFace(person.getFaces().getFirst());
-        }
-        person.setCoverFaceOrigin(CoverFaceOrigin.CALCULATED);
-    }
+        for (int i = 0; i < facesToCluster.size(); i++) {
+            if (isClustered[i]) {
+                continue; // This face is already in a cluster
+            }
 
-    private FaceEntity getLastFaceForPerson(PersonEntity person) {
-        FaceEntity bestFace = null;
-        LocalDateTime latestDate = null;
+            FaceEntity currentFace = facesToCluster.get(i);
+            if (currentFace.getEmbedding() == null) {
+                continue; // Cannot cluster a face without an embedding
+            }
 
-        for (FaceEntity face : person.getFaces()) {
-            PhotoEntity photo = face.getPhoto();
-            if (photo != null) {
-                LocalDateTime dateTaken = photo.getDateTaken();
-                LocalDateTime createdAt = photo.getCreatedAt();
+            // Start a new cluster with the current face
+            List<FaceEntity> newCluster = new ArrayList<>();
+            newCluster.add(currentFace);
+            isClustered[i] = true;
 
-                // Check if dateTaken is valid and different from createdAt
-                if (dateTaken != null && !dateTaken.equals(createdAt)) {
-                    if (latestDate == null || dateTaken.isAfter(latestDate)) {
-                        latestDate = dateTaken;
-                        bestFace = face;
-                    }
+            float[] currentEmbedding = byteArrayToFloatArray(currentFace.getEmbedding());
+
+            // Compare with all other faces to see if they belong in this new cluster
+            for (int j = i + 1; j < facesToCluster.size(); j++) {
+                if (isClustered[j]) {
+                    continue;
+                }
+
+                FaceEntity otherFace = facesToCluster.get(j);
+                if (otherFace.getEmbedding() == null) {
+                    continue;
+                }
+
+                float[] otherEmbedding = byteArrayToFloatArray(otherFace.getEmbedding());
+                double distance = calculateEuclideanDistance(currentEmbedding, otherEmbedding);
+
+                if (distance <= THRESHOLD) {
+                    // It's a match, add it to the current cluster
+                    newCluster.add(otherFace);
+                    isClustered[j] = true;
                 }
             }
+            if (newCluster.size() > 2) {
+                clusters.add(newCluster);
+            }
         }
-        return bestFace;
+
+        return clusters;
     }
 
     @Builder
