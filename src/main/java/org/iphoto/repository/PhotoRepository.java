@@ -1,7 +1,9 @@
 package org.iphoto.repository;
 
 import org.iphoto.entities.AlbumEntity;
+import org.iphoto.entities.PersonEntity;
 import org.iphoto.entities.PhotoEntity;
+import org.iphoto.model.Photo;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Slice;
@@ -25,8 +27,9 @@ public interface PhotoRepository extends JpaRepository<PhotoEntity, UUID> {
 
     Page<PhotoEntity> findByIsGarbageFalseAndAlbums(AlbumEntity album, Pageable pageable);
 
-    long countByIsGarbageFalseAndAlbums(AlbumEntity album);
+    Page<PhotoEntity> findByFacesPerson(PersonEntity person, Pageable pageable);
 
+    long countByIsGarbageFalseAndAlbums(AlbumEntity album);
 
     Slice<PhotoEntity> findByDateTakenBetweenAndPhashNotNullAndMhashNotNullAndIsGarbageFalse(LocalDateTime startDateTaken, LocalDateTime endDateTaken, Pageable pageable);
 }

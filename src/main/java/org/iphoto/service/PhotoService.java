@@ -3,6 +3,7 @@ package org.iphoto.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.iphoto.entities.PersonEntity;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.TaskEntity;
 import org.iphoto.mappers.PhotoMapper;
@@ -31,7 +32,6 @@ public class PhotoService {
 
     private final PhotoRepository photoRepository;
     private final TaskRepository taskRepository;
-    private final ObjectMapper objectMapper;
     private final PhotoMapper photoMapper;
     private final AlbumService albumService;
     private final PhotoDeletionService photoDeletionService;
@@ -149,6 +149,10 @@ public class PhotoService {
 
     public List<AlbumDTO> getAlbumsByPhoto(UUID photoId) {
        return albumRepository.findByPhotos_Id(photoId).stream().map(albumService::convertToDto).toList();
+    }
+
+    public Page<Photo> findByPerson(PersonEntity personEntity, Pageable pageable) {
+        return photoRepository.findByFacesPerson(personEntity, pageable).map(photoMapper::photoEntityToPhoto);
     }
 }
 

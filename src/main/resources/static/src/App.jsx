@@ -18,6 +18,7 @@ import DuplicatePhotoGrid from './components/DuplicatePhotoGrid';
 import MapView from './components/MapView';
 import LightboxWrapper from './components/LightboxWrapper';
 import RemoveFromAlbumModal from './components/RemoveFromAlbumModal'; /* Import new modal */
+import Persons from './components/Persons';
 import { usePhotoData } from './hooks/usePhotoData';
 import { useAlbumManagement } from './hooks/useAlbumManagement';
 import { useShareLinkManagement } from './hooks/useShareLinkManagement';
@@ -253,6 +254,7 @@ function App() {
                   <MapView mapAssets={mapAssets} handlePhotoClick={handlePhotoClick} />
               )
             } />
+            <Route path="/persons" element={<Persons />} />
             <Route path="/duplicates/*" element={
               isLightboxOpen ? null : (
                 <DuplicatePhotoGrid
@@ -352,6 +354,7 @@ function App() {
           newShareLinkName={newShareLinkName}
           setNewShareLinkName={setNewShareLinkName}
           newShareLinkPassword={newShareLinkPassword}
+
           setNewShareLinkPassword={setNewShareLinkPassword}
           newShareLinkExpiresInDays={newShareLinkExpiresInDays}
           setNewShareLinkExpiresInDays={setNewShareLinkExpiresInDays}

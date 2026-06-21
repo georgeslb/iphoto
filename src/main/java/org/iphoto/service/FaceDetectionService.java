@@ -7,10 +7,12 @@ import ai.djl.modality.cv.ImageFactory;
 import ai.djl.modality.cv.output.BoundingBox;
 import ai.djl.modality.cv.output.DetectedObjects;
 import ai.djl.modality.cv.output.DetectedObjects.DetectedObject;
+import ai.djl.modality.cv.output.Landmark;
 import ai.djl.modality.cv.output.Rectangle;
 import ai.djl.repository.zoo.ZooModel;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.iphoto.configuration.FaceAligner;
 import org.iphoto.entities.FaceEntity;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.TaskEntity;
@@ -86,17 +88,35 @@ public class FaceDetectionService {
                     int w = (int) (bounds.getWidth() * image.getWidth());
                     int h = (int) (bounds.getHeight() * image.getHeight());
 
-                    if (w < 20 || h < 20) {
+                    int padX = w / 5;
+                    int padY = h / 5;
+
+                    x = Math.max(0, x - padX);
+                    y = Math.max(0, y - padY);
+
+                    w = Math.min(image.getWidth() - x, w + 2 * padX);
+                    h = Math.min(image.getHeight() - y, h + 2 * padY);
+
+                    if (w < 60 || h < 60) {
                         log.warn("Skipping tiny detected face ({}x{}) in photo {}", w, h, photo.getId());
                         continue;
                     }
                     try {
-                        Image subImage = image.getSubImage(x, y, w, h);
+                        Image subImage =
+                                image.getSubImage(x, y, w, h);
+                        Image embeddingInput;
 
-                        Image resizedImage = subImage.resize(112, 112, true);
+                        if (box instanceof Landmark landmark) {
+                            embeddingInput =
+                                    FaceAligner.align(image, landmark);
+                        } else {
+                            embeddingInput =
+                                    subImage.resize(112, 112, false);
+                        }
 
-                        // Generate embedding from the *resized* image
-                        float[] embedding = embedder.predict(resizedImage);
+                        float[] embedding =
+                                embedder.predict(embeddingInput);
+
                         byte[] embeddingBytes = toByteArray(embedding);
 
                         // Generate JPEG thumbnail for UI from the original crop

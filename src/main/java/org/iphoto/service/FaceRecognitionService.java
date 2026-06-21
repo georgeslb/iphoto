@@ -18,6 +18,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.util.*;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Stream;
 
 @Service
@@ -28,30 +29,37 @@ public class FaceRecognitionService {
     private final FaceRepository faceRepository;
     private final PersonRepository personRepository;
     private final PersonRecognitionService personRecognitionService;
+    private final ReentrantLock lock = new ReentrantLock();
 
     // Threshold for Cosine Similarity: A higher value means a stricter match.
-    private static final double THRESHOLD = 0.80;
+    private static final double THRESHOLD = 0.60;
 
     public void groupFaces() {
 
-        Pageable pageable = Pageable.ofSize(20);
-        List<PersonEntity> persons = personRepository.findAll();
-        Page<FaceEntity> facesNotGrouped;
-        do {
-            facesNotGrouped = faceRepository.findByPersonIsNull(pageable);
-            for (FaceEntity face : facesNotGrouped) {
-                // Find the best matching person and update if the score is above the threshold
-                findBestMatchForFace(face, persons).ifPresent(personWithScore -> {
-                    personRecognitionService.updatePerson(personWithScore.getPerson(), face);
-                });
-            }
-            pageable = facesNotGrouped.nextPageable();
-        } while (facesNotGrouped.hasNext() && facesNotGrouped.getNumber() <= 5);
+        lock.lock();
+        try {
+            Pageable pageable = Pageable.ofSize(20);
+            List<PersonEntity> persons = personRepository.findAll();
+            Page<FaceEntity> facesNotGrouped;
+            do {
+                facesNotGrouped = faceRepository.findByPersonIsNull(pageable);
+                for (FaceEntity face : facesNotGrouped) {
+                    // Find the best matching person and update if the score is above the threshold
+                    findBestMatchForFace(face, persons).ifPresent(personWithScore -> {
+                        personRecognitionService.updatePerson(personWithScore.getPerson(), face);
+                    });
+                }
+                pageable = facesNotGrouped.nextPageable();
+            } while (facesNotGrouped.hasNext() && facesNotGrouped.getNumber() <= 5);
 
-        pageable = Pageable.ofSize(100);
-        facesNotGrouped = faceRepository.findByPersonIsNull(pageable);
-        List<List<FaceEntity>> facesGrouped = clusterFaces(facesNotGrouped.toList());
-        facesGrouped.forEach(personRecognitionService::addPerson);
+            pageable = Pageable.ofSize(100);
+            facesNotGrouped = faceRepository.findByPersonIsNull(pageable);
+            List<List<FaceEntity>> facesGrouped = clusterFaces(facesNotGrouped.toList());
+            facesGrouped.forEach(personRecognitionService::addPerson);
+        } finally {
+            lock.unlock();
+        }
+
     }
 
     private Optional<PersonWithScore> findBestMatchForFace(FaceEntity face, List<PersonEntity> persons) {
@@ -162,7 +170,7 @@ public class FaceRecognitionService {
                     isClustered[j] = true;
                 }
             }
-            if (newCluster.size() > 2) {
+            if (newCluster.size() >= 3) {
                 clusters.add(newCluster);
             }
         }

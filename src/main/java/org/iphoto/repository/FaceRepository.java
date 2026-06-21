@@ -1,5 +1,6 @@
 package org.iphoto.repository;
 
+import org.apache.commons.io.function.IOStream;
 import org.iphoto.entities.FaceEntity;
 import org.iphoto.entities.PersonEntity;
 import org.iphoto.entities.PhotoEntity;
@@ -19,4 +20,6 @@ public interface FaceRepository extends JpaRepository<FaceEntity, UUID> {
     Page<FaceEntity> findByPersonAndPhotoDateTakenBeforeOrderByPhotoDateTakenDesc(PersonEntity person, LocalDateTime dateTakenLowerRange, Pageable pageable);
 
     List<FaceEntity> findAllByPhotoId(UUID photoId);
+
+    Page<FaceEntity> findByPersonId(UUID id, Pageable pageable);
 }
