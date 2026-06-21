@@ -6,11 +6,13 @@ import jakarta.annotation.PreDestroy;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.TaskEntity;
+import org.iphoto.exception.ServiceNotAvailableException;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.UploadStatus;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.repository.TaskRepository;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.security.authentication.LockedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -79,14 +81,19 @@ public class TaskWorkerManager {
                 } else if (CHECK_DUPLICATION.name().equals(task.getTaskType())) {
                     duplicationService.checkDuplication(task);
                 } else if (ISOLATE_FACES.name().equals(task.getTaskType())) {
-                    faceDetectionService.detectAndSaveFaces(task);
-                    task.setStatus(TaskStatus.COMPLETED);
+                    try {
+                        faceDetectionService.detectAndSaveFaces(task);
+                    } catch (ServiceNotAvailableException e) {
+                        task.setStatus(TaskStatus.PENDING);
+                        task.setExecuteAt(null);
+                    }
                 } else if (FACE_RECOGNITION.name().equals(task.getTaskType())) {
                     faceRecognitionService.groupFaces();
-                    task.setExecuteAt(LocalDateTime.now().minusHours(30));
+                    task.setExecuteAt(LocalDateTime.now().plusSeconds(30));
+                    task.setStatus(TaskStatus.PENDING);
                 }
 
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 log.error("Task failed", e);
                 task.setStatus(TaskStatus.FAILED);
                 task.setErrorMessage(e.getMessage());

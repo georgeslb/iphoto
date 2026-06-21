@@ -3,6 +3,7 @@ package org.iphoto.service;
 import lombok.Builder;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.FaceEntity;
 import org.iphoto.entities.PersonEntity;
 import org.iphoto.entities.PhotoEntity;
@@ -20,6 +21,7 @@ import java.util.*;
 import java.util.stream.Stream;
 
 @Service
+@Slf4j
 @RequiredArgsConstructor
 public class FaceRecognitionService {
 
@@ -27,16 +29,19 @@ public class FaceRecognitionService {
     private final PersonRepository personRepository;
     private final PersonRecognitionService personRecognitionService;
 
-    private static final double THRESHOLD = 0.8;
+    // Threshold for Cosine Similarity: A higher value means a stricter match.
+    private static final double THRESHOLD = 0.80;
 
     public void groupFaces() {
+
         Pageable pageable = Pageable.ofSize(20);
         List<PersonEntity> persons = personRepository.findAll();
         Page<FaceEntity> facesNotGrouped;
         do {
             facesNotGrouped = faceRepository.findByPersonIsNull(pageable);
             for (FaceEntity face : facesNotGrouped) {
-                checkIfFaceRelatedToPerson(face, persons).ifPresent(personWithScore -> {
+                // Find the best matching person and update if the score is above the threshold
+                findBestMatchForFace(face, persons).ifPresent(personWithScore -> {
                     personRecognitionService.updatePerson(personWithScore.getPerson(), face);
                 });
             }
@@ -45,22 +50,25 @@ public class FaceRecognitionService {
 
         pageable = Pageable.ofSize(100);
         facesNotGrouped = faceRepository.findByPersonIsNull(pageable);
-        List<List<FaceEntity>> facestGrouped =  clusterFaces(facesNotGrouped.toList());
-        facestGrouped.forEach(personRecognitionService::addPerson);
+        List<List<FaceEntity>> facesGrouped = clusterFaces(facesNotGrouped.toList());
+        facesGrouped.forEach(personRecognitionService::addPerson);
     }
 
-    private Optional<PersonWithScore> checkIfFaceRelatedToPerson(FaceEntity face, List<PersonEntity> persons) {
-        Optional<PersonWithScore> selectedPerson = persons
-                .stream()
+    private Optional<PersonWithScore> findBestMatchForFace(FaceEntity face, List<PersonEntity> persons) {
+        // Find the person with the highest similarity score.
+        Optional<PersonWithScore> bestMatch = persons.stream()
                 .flatMap(person -> getPersonWithScoreStream(face, person, 20))
-                .min(Comparator.comparingDouble(PersonWithScore::getScore));
-        if (selectedPerson.isEmpty()) {
-            selectedPerson = persons
-                    .stream()
+                .max(Comparator.comparingDouble(PersonWithScore::getScore));
+
+        // If no match was found with the first batch, try a larger sample.
+        if (bestMatch.isEmpty()) {
+            bestMatch = persons.stream()
                     .flatMap(person -> getPersonWithScoreStream(face, person, 100))
-                    .min(Comparator.comparingDouble(PersonWithScore::getScore));
+                    .max(Comparator.comparingDouble(PersonWithScore::getScore));
         }
-        return selectedPerson;
+
+        // Only return the match if it's above our confidence threshold.
+        return bestMatch.filter(match -> match.getScore() >= THRESHOLD);
     }
 
     private Stream<PersonWithScore> getPersonWithScoreStream(FaceEntity face, PersonEntity person, int pageSize) {
@@ -68,49 +76,51 @@ public class FaceRecognitionService {
         List<FaceEntity> facesForPersonInDate = faceRepository
                 .findByPersonAndPhotoDateTakenBeforeOrderByPhotoDateTakenDesc(person, photoWorkInProgressFace.getDateTaken(), Pageable.ofSize(pageSize))
                 .stream().toList();
-        return calculateScoreForPerson(face, facesForPersonInDate).stream()
-                .filter(score -> score < THRESHOLD)
+
+        // Calculate the average similarity and map to a PersonWithScore object.
+        return calculateAverageSimilarity(face, facesForPersonInDate)
+                .stream()
                 .mapToObj(score -> PersonWithScore.builder().person(person).score(score).build());
     }
 
-    /**
-     * Finds the best matching face from a map of known faces.
-     *
-     * @param face The embedding of the face to identify.
-     * @param person A Map where the key is the unique ID of a known face and the value is its embedding.
-     * @return An Optional containing the ID of the best match, or an empty Optional if no match is found below the threshold.
-     */
-    private OptionalDouble calculateScoreForPerson(FaceEntity face, List<FaceEntity> person) {
+    private OptionalDouble calculateAverageSimilarity(FaceEntity face, List<FaceEntity> personFaces) {
+        if (personFaces.isEmpty()) {
+            return OptionalDouble.empty();
+        }
         float[] newEmbeddingFloats = byteArrayToFloatArray(face.getEmbedding());
-        return person.stream()
+        return personFaces.stream()
                 .map(FaceEntity::getEmbedding)
                 .map(this::byteArrayToFloatArray)
-                .map(knownEmbeddingFloats -> this.calculateEuclideanDistance(newEmbeddingFloats, knownEmbeddingFloats))
-                .mapToDouble(Double::doubleValue)
+                .mapToDouble(knownEmbeddingFloats -> this.cosineSimilarity(newEmbeddingFloats, knownEmbeddingFloats))
                 .average();
     }
 
-
     /**
-     * Calculates the L2 Euclidean distance between two vectors.
+     * Calculates the Cosine Similarity between two vectors.
+     * The result is between -1 and 1, where 1 means the vectors are identical.
      */
-    private double calculateEuclideanDistance(float[] vectorA, float[] vectorB) {
+    private double cosineSimilarity(float[] vectorA, float[] vectorB) {
         if (vectorA.length != vectorB.length) {
             throw new IllegalArgumentException("Vectors must have the same dimension.");
         }
-        double sumOfSquares = 0.0;
+        double dotProduct = 0.0;
+        double normA = 0.0;
+        double normB = 0.0;
         for (int i = 0; i < vectorA.length; i++) {
-            sumOfSquares += Math.pow(vectorA[i] - vectorB[i], 2);
+            dotProduct += vectorA[i] * vectorB[i];
+            normA += Math.pow(vectorA[i], 2);
+            normB += Math.pow(vectorB[i], 2);
         }
-        return Math.sqrt(sumOfSquares);
+        if (normA == 0 || normB == 0) {
+            return 0; // Avoid division by zero
+        }
+        return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
     }
 
-
-    /**
-     * Converts a byte array back into a float array.
-     */
     private float[] byteArrayToFloatArray(byte[] bytes) {
+        if (bytes == null) return new float[0];
         ByteBuffer buffer = ByteBuffer.wrap(bytes);
+        // **FIX**: Set the byte order to LITTLE_ENDIAN to match the default writing order.
         buffer.order(ByteOrder.LITTLE_ENDIAN);
         FloatBuffer floatBuffer = buffer.asFloatBuffer();
         float[] floatArray = new float[floatBuffer.remaining()];
@@ -118,55 +128,36 @@ public class FaceRecognitionService {
         return floatArray;
     }
 
-    /**
-     * Groups a list of faces into clusters based on their embeddings.
-     * This is ideal for an initial run to discover people from a large set of ungrouped faces.
-     *
-     * @param facesToCluster A list of FaceEntity objects, each with a valid embedding.
-     * @return A list of lists, where each inner list is a cluster of faces belonging to the same person.
-     */
     private List<List<FaceEntity>> clusterFaces(List<FaceEntity> facesToCluster) {
         if (CollectionUtils.isEmpty(facesToCluster)) {
             return new ArrayList<>();
         }
 
         List<List<FaceEntity>> clusters = new ArrayList<>();
-        // Keep track of which faces have already been assigned to a cluster
         boolean[] isClustered = new boolean[facesToCluster.size()];
 
         for (int i = 0; i < facesToCluster.size(); i++) {
-            if (isClustered[i]) {
-                continue; // This face is already in a cluster
-            }
+            if (isClustered[i]) continue;
 
             FaceEntity currentFace = facesToCluster.get(i);
-            if (currentFace.getEmbedding() == null) {
-                continue; // Cannot cluster a face without an embedding
-            }
+            if (currentFace.getEmbedding() == null) continue;
 
-            // Start a new cluster with the current face
             List<FaceEntity> newCluster = new ArrayList<>();
             newCluster.add(currentFace);
             isClustered[i] = true;
 
             float[] currentEmbedding = byteArrayToFloatArray(currentFace.getEmbedding());
 
-            // Compare with all other faces to see if they belong in this new cluster
             for (int j = i + 1; j < facesToCluster.size(); j++) {
-                if (isClustered[j]) {
-                    continue;
-                }
+                if (isClustered[j]) continue;
 
                 FaceEntity otherFace = facesToCluster.get(j);
-                if (otherFace.getEmbedding() == null) {
-                    continue;
-                }
+                if (otherFace.getEmbedding() == null) continue;
 
                 float[] otherEmbedding = byteArrayToFloatArray(otherFace.getEmbedding());
-                double distance = calculateEuclideanDistance(currentEmbedding, otherEmbedding);
+                double similarity = cosineSimilarity(currentEmbedding, otherEmbedding);
 
-                if (distance <= THRESHOLD) {
-                    // It's a match, add it to the current cluster
+                if (similarity >= THRESHOLD) {
                     newCluster.add(otherFace);
                     isClustered[j] = true;
                 }
@@ -175,7 +166,6 @@ public class FaceRecognitionService {
                 clusters.add(newCluster);
             }
         }
-
         return clusters;
     }
 

@@ -35,10 +35,11 @@ spring:
 
 iphoto:
   storage:
-    photos: D:\temp\storage\originals
-    thumbnails: D:\temp\storage\thumbnails
-    temp: D:\temp\storage\temp
-    chunks: D:\temp\storage\chunks
+    base: /home/georges/data/iphoto/storage
+    photos: ${iphoto.storage.base}/originals
+    thumbnails: ${iphoto.storage.base}/thumbnails
+    temp: ${iphoto.storage.base}/temp
+    chunks: ${iphoto.storage.base}/chunks
 
 
 server:

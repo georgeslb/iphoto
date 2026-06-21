@@ -111,7 +111,7 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children }) { 
               {uploadQueue.map(item => (
                   <div key={item.id} className="upload-item">
                     <div className="upload-item-info">
-                      <span className="upload-item-name" title={item.name}></span>
+                      <span className="upload-item-name" title={item.name}>{item.name}</span>
                       <span className={`status-text ${item.status?.replace(/\s/g, '')}`}>{item.status}</span>
                     </div>
                     {['UPLOADING', 'PROCESSING', 'COMPLETED'].includes(item.status) && (

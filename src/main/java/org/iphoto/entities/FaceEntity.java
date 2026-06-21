@@ -20,7 +20,6 @@ public class FaceEntity {
     @JoinColumn(name = "photo_id", nullable = false)
     private PhotoEntity photo;
 
-    // A face belongs to exactly one person. This can be null initially if a face is detected but not yet recognized/clustered.
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "person_id")
     private PersonEntity person;
@@ -38,7 +37,10 @@ public class FaceEntity {
     private int height;
 
     @Column(columnDefinition = "BYTEA")
-    private byte[] embedding; // Stores the 128-dimensional float array
+    private byte[] embedding; // Stores the 128-dimensional float array for recognition
+
+    @Column(columnDefinition = "BYTEA")
+    private byte[] faceThumbnail; // Stores the cropped JPEG image of the face for UI display
 
     public FaceEntity(PhotoEntity photo, int x, int y, int width, int height) {
         this.photo = photo;
@@ -47,5 +49,4 @@ public class FaceEntity {
         this.width = width;
         this.height = height;
     }
-
 }

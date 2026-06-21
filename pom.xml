@@ -5,7 +5,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.4.1</version>
+        <version>3.5.0</version>
         <relativePath/>
     </parent>
     <groupId>org.iphoto</groupId>
@@ -21,8 +21,20 @@
         <javacv.version>1.5.12</javacv.version>
         <mapstruct.version>1.6.3</mapstruct.version>
         <lombok.version>1.18.46</lombok.version>
+        <djl.version>0.36.0</djl.version>
     </properties>
 
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>ai.djl</groupId>
+                <artifactId>bom</artifactId>
+                <version>${djl.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
     <dependencies>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -108,6 +120,21 @@
             <groupId>org.mapstruct</groupId>
             <artifactId>mapstruct</artifactId>
             <version>${mapstruct.version}</version>
+        </dependency>
+
+        <!-- Source: https://mvnrepository.com/artifact/ai.djl/api -->
+        <dependency>
+            <groupId>ai.djl</groupId>
+            <artifactId>api</artifactId>
+        </dependency>
+        <!-- Pytorch -->
+        <dependency>
+            <groupId>ai.djl.pytorch</groupId>
+            <artifactId>pytorch-model-zoo</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.djl</groupId>
+            <artifactId>model-zoo</artifactId>
         </dependency>
     </dependencies>
 
@@ -204,14 +231,14 @@
                         <goals>
                             <goal>run</goal>
                         </goals>
-                        <id>haarcascade_frontalface_alt</id>
+                        <id>retinaface.zip</id>
                         <configuration>
                             <target>
                                 <mkdir dir="${project.build.outputDirectory}"/>
 
                                 <get
-                                        src="https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_alt.xml"
-                                        dest="${project.build.outputDirectory}/haarcascade_frontalface_alt.xml"
+                                        src="https://resources.djl.ai/test-models/pytorch/retinaface.zip"
+                                        dest="${project.build.outputDirectory}/retinaface.zip"
                                         verbose="true"
                                         skipexisting="true"/>
                             </target>
@@ -222,14 +249,14 @@
                         <goals>
                             <goal>run</goal>
                         </goals>
-                        <id>nn4.small2.v1.t7</id>
+                        <id>face_feature.zip</id>
                         <configuration>
                             <target>
                                 <mkdir dir="${project.build.outputDirectory}"/>
 
                                 <get
-                                        src="https://storage.cmusatyalab.org/openface-models/nn4.small2.v1.t7"
-                                        dest="${project.build.outputDirectory}/nn4.small2.v1.t7"
+                                        src="https://resources.djl.ai/test-models/pytorch/face_feature.zip"
+                                        dest="${project.build.outputDirectory}/face_feature.zip"
                                         verbose="true"
                                         skipexisting="true"/>
                             </target>

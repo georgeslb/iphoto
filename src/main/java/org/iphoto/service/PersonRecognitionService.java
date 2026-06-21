@@ -45,7 +45,9 @@ public class PersonRecognitionService {
         PersonEntity person = new PersonEntity();
         person.setFaces(faces);
         recalculateCoverFace(person);
+        faces.forEach(faceEntity -> faceEntity.setPerson(person));
         personRepository.save(person);
+        faceRepository.saveAll(faces);
     }
 
     /**
