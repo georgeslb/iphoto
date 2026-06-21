@@ -93,14 +93,15 @@ public class FaceDetectionService {
                     try {
                         Image subImage = image.getSubImage(x, y, w, h);
 
-                        // Generate embedding for recognition
-                        float[] embedding = embedder.predict(subImage);
+                        Image resizedImage = subImage.resize(112, 112, true);
+
+                        // Generate embedding from the *resized* image
+                        float[] embedding = embedder.predict(resizedImage);
                         byte[] embeddingBytes = toByteArray(embedding);
 
-                        // Generate JPEG thumbnail for UI
+                        // Generate JPEG thumbnail for UI from the original crop
                         ByteArrayOutputStream baos = new ByteArrayOutputStream();
                         subImage.save(baos, "png");
-
                         byte[] thumbnailBytes = baos.toByteArray();
 
                         FaceEntity faceEntity = new FaceEntity(photo, x, y, w, h);
@@ -109,7 +110,7 @@ public class FaceDetectionService {
 
                         faceRepository.save(faceEntity);
                     } catch (Exception e) {
-                        log.debug("can't parse a face at position x {}, y {}, w {}, h {}", x, y , w, h);
+                        log.info("can't parse a face at position x {}, y {}, w {}, h {}", x, y , w, h);
                     }
                 }
             }
@@ -120,7 +121,8 @@ public class FaceDetectionService {
 
     private byte[] toByteArray(float[] floatArray) {
         ByteBuffer buffer = ByteBuffer.allocate(4 * floatArray.length);
-        buffer.order(ByteOrder.LITTLE_ENDIAN);
+        // Set to BIG_ENDIAN to match the reader service
+        buffer.order(ByteOrder.BIG_ENDIAN);
         for (float v : floatArray) {
             buffer.putFloat(v);
         }

@@ -121,7 +121,7 @@ public class FaceRecognitionService {
         if (bytes == null) return new float[0];
         ByteBuffer buffer = ByteBuffer.wrap(bytes);
         // **FIX**: Set the byte order to LITTLE_ENDIAN to match the default writing order.
-        buffer.order(ByteOrder.LITTLE_ENDIAN);
+        buffer.order(ByteOrder.BIG_ENDIAN);
         FloatBuffer floatBuffer = buffer.asFloatBuffer();
         float[] floatArray = new float[floatBuffer.remaining()];
         floatBuffer.get(floatArray);
