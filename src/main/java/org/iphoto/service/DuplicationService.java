@@ -10,7 +10,7 @@ import org.bytedeco.opencv.opencv_img_hash.AverageHash;
 import org.bytedeco.opencv.opencv_img_hash.PHash;
 import org.iphoto.entities.DuplicateEntity;
 import org.iphoto.entities.PhotoEntity;
-import org.iphoto.entities.TaskEntity;
+import org.iphoto.entities.UserEntity; // Import UserEntity
 import org.iphoto.mappers.PhotoMapper;
 import org.iphoto.model.*;
 import org.iphoto.repository.DuplicateRepository;
@@ -47,8 +47,9 @@ public class DuplicationService {
     private static final int MAX_SIZE = 1000;
 
 
-    public void processMovingToGarbage(List<PhotoEntity> photosDeleted) {
-        List<DuplicateEntity> duplicateEntities = duplicateRepository.findByPhotosIdIn(photosDeleted.stream().map(PhotoEntity::getId).collect(Collectors.toList()));
+    public void processMovingToGarbage(UserEntity user, List<PhotoEntity> photosDeleted) { // Added UserEntity parameter
+        List<UUID> photoIds = photosDeleted.stream().map(PhotoEntity::getId).collect(Collectors.toList());
+        List<DuplicateEntity> duplicateEntities = duplicateRepository.findByUserAndPhotosIdIn(user, photoIds); // Filter by user
         duplicateEntities.forEach(duplicateEntity -> {
             if (duplicateEntity.getStatus() == OPEN && duplicateEntity.getPhotos()
                     .stream().filter(photoEntity -> !photoEntity.getIsGarbage()).count() < 2) {
@@ -57,8 +58,9 @@ public class DuplicationService {
         });
     }
 
-    public void restoreFromGarbage(List<PhotoEntity> photosDeleted) {
-        List<DuplicateEntity> duplicateEntities = duplicateRepository.findByPhotosIdIn(photosDeleted.stream().map(PhotoEntity::getId).collect(Collectors.toList()));
+    public void restoreFromGarbage(UserEntity user, List<PhotoEntity> photosRestored) { // Added UserEntity parameter
+        List<UUID> photoIds = photosRestored.stream().map(PhotoEntity::getId).collect(Collectors.toList());
+        List<DuplicateEntity> duplicateEntities = duplicateRepository.findByUserAndPhotosIdIn(user, photoIds); // Filter by user
         duplicateEntities.forEach(duplicateEntity -> {
             if (duplicateEntity.getStatus() == CLOSED && duplicateEntity.getPhotos()
                     .stream().filter(photoEntity -> !photoEntity.getIsGarbage()).count() > 1) {
@@ -67,9 +69,9 @@ public class DuplicationService {
         });
     }
 
-    public void hashImage(TaskEntity task) {
+    public void hashImage(UserEntity user, TaskEntity task) { // Added UserEntity parameter
         photoRepository
-                .findById(task.getPhotoId()).ifPresent(photo -> {
+                .findByIdAndUser(task.getPhotoId(), user).ifPresent(photo -> { // Filter by user
                     try {
                         if (photo.getContentType().contains("image")) {
                             log.info("creating Perceptive Hash for photoId: {}", photo.getId());
@@ -84,8 +86,8 @@ public class DuplicationService {
                 });
     }
 
-    public void closeDuplicates (String hash) {
-        duplicateRepository.findById(UUID.fromString(hash)).ifPresent(duplicate -> {
+    public void closeDuplicates (UserEntity user, String hash) { // Added UserEntity parameter
+        duplicateRepository.findByUserAndHash(user, hash).ifPresent(duplicate -> { // Filter by user
             duplicate.setStatus(CLOSED);
             duplicateRepository.save(duplicate);
         });
@@ -252,16 +254,16 @@ public class DuplicationService {
         return resized;
     }
 
-    public void checkDuplication(TaskEntity task) {
+    public void checkDuplication(UserEntity user, TaskEntity task) { // Added UserEntity parameter
         photoRepository
-                .findById(task.getPhotoId()).ifPresent(photo -> {
+                .findByIdAndUser(task.getPhotoId(), user).ifPresent(photo -> { // Filter by user
                     Pageable pageable = PageRequest.of(0, 100);
                     Slice<PhotoEntity> photosSlice;
                     Set<PhotoEntity> duplicatesPhotos = new HashSet<>();
                     do {
                         photosSlice =
-                                photoRepository.findByDateTakenBetweenAndPhashNotNullAndMhashNotNullAndIsGarbageFalse(photo.getDateTaken().minusDays(1),
-                                        photo.getDateTaken().plusDays(1), pageable);
+                                photoRepository.findByUserAndDateTakenBetweenAndPhashNotNullAndMhashNotNullAndIsGarbageFalse(user, photo.getDateTaken().minusDays(1),
+                                        photo.getDateTaken().plusDays(1), pageable); // Filter by user
 
                         List<PhotoEntity> duplicatePhotosForIteration = compare(photo, photosSlice.getContent());
                         if (!duplicatePhotosForIteration.isEmpty()) {
@@ -273,7 +275,7 @@ public class DuplicationService {
 
                     if (!duplicatesPhotos.isEmpty()) {
                         try {
-                            TaskStatus taskStatus = duplicateUniquenessService.consolidateDuplicates(photo, duplicatesPhotos);
+                            TaskStatus taskStatus = duplicateUniquenessService.consolidateDuplicates(user, photo, duplicatesPhotos); // Pass user
                             if (taskStatus == TaskStatus.COMPLETED || taskStatus == TaskStatus.FAILED) {
                                 task.setStatus(taskStatus);
                             } else {
@@ -308,9 +310,9 @@ public class DuplicationService {
                 .toList();
     }
 
-    public Slice<DuplicateGroupDTO> getDuplicates(Pageable pageable) {
+    public Slice<DuplicateGroupDTO> getDuplicates(UserEntity user, Pageable pageable) { // Added UserEntity parameter
         // Pageable is equals to 1, we will see only one DuplicateEntity
-        Slice<DuplicateEntity> hashesSlice = duplicateRepository.findByStatus(OPEN, pageable);
+        Slice<DuplicateEntity> hashesSlice = duplicateRepository.findByUserAndStatus(user, OPEN, pageable); // Filter by user
         List<DuplicateEntity> duplicateEntities = hashesSlice.getContent();
 
         if (duplicateEntities.isEmpty()) {

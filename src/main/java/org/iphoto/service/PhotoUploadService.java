@@ -15,11 +15,13 @@ import org.bytedeco.javacv.FFmpegFrameGrabber;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.PhotoMetadataEntity;
 import org.iphoto.entities.TaskEntity;
+import org.iphoto.entities.UserEntity; // Import UserEntity
 import org.iphoto.model.TaskType;
 import org.iphoto.model.UploadStatus;
 import org.iphoto.properties.IPhotoProperties;
 import org.iphoto.repository.PhotoMetadataRepository;
 import org.iphoto.repository.PhotoRepository;
+import org.iphoto.repository.TaskRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -54,7 +56,7 @@ public class PhotoUploadService {
     private final TaskManagerService taskManagerService;
     private final AlbumService albumService;
 
-    public UploadStatus processNewAsset(TaskEntity task, Map<String, String> payload, File tempFile, String hash) throws IOException {
+    public UploadStatus processNewAsset(UserEntity user, TaskEntity task, Map<String, String> payload, File tempFile, String hash) throws IOException {
         String contentType = payload.get("contentType");
         Path storageDir = Paths.get(iPhotoProperties.getStorage().getPhotos());
         if (!Files.exists(storageDir)) Files.createDirectories(storageDir);
@@ -64,6 +66,7 @@ public class PhotoUploadService {
         String thumbPath = thumbnailService.generateThumbnail(finalPath.toString(), task.getPhotoId().toString(), contentType);
 
         PhotoEntity photo = new PhotoEntity(task.getPhotoId(), payload.get("originalFileName"), finalPath.toString(), thumbPath, hash, Files.size(finalPath), contentType);
+        photo.setUser(user); // Set the user for the photo
         photo.setNew(true);
 
         PhotoMetadataEntity metadataEntity = new PhotoMetadataEntity(photo);
@@ -82,10 +85,10 @@ public class PhotoUploadService {
         photoRepository.save(photo);
         metadataRepository.save(metadataEntity);
         if (payload.get("albumId") != null) {
-            albumService.addPhotosToAlbum(UUID.fromString(payload.get("albumId")), List.of(photo.getId()));
+            albumService.addPhotosToAlbum(user, UUID.fromString(payload.get("albumId")), List.of(photo.getId())); // Pass user to albumService
         }
-        taskManagerService.createTaskEntity(TaskType.HASH_IMAGE, photo.getId(), null,  LocalDateTime.now().plusMinutes(2));
-        taskManagerService.createTaskEntity(TaskType.ISOLATE_FACES, photo.getId(), null,  LocalDateTime.now().plusMinutes(3));
+        taskManagerService.createTaskEntity(user, TaskType.HASH_IMAGE, photo.getId(), null,  LocalDateTime.now().plusMinutes(2)); // Pass user
+        taskManagerService.createTaskEntity(user, TaskType.ISOLATE_FACES, photo.getId(), null,  LocalDateTime.now().plusMinutes(3)); // Pass user
 
         return SUCCESS;
     }

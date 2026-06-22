@@ -24,6 +24,10 @@ public class DuplicateEntity implements Persistable<UUID> {
     @EqualsAndHashCode.Include
     private UUID id;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    private UserEntity user;
+
     @ManyToMany(fetch = FetchType.LAZY)
     @JoinTable(
             name = "duplicate_photos",
@@ -35,7 +39,7 @@ public class DuplicateEntity implements Persistable<UUID> {
     @Enumerated(EnumType.STRING)
     private DuplicateStatus status;
 
-    @Column(unique = true)
+    @Column(unique = true) // This unique constraint might need to be adjusted to be unique per user
     private String hash;
 
     @Transient

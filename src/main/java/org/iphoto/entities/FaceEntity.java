@@ -17,6 +17,10 @@ public class FaceEntity {
     private UUID id;
 
     @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    private UserEntity user;
+
+    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "photo_id", nullable = false)
     private PhotoEntity photo;
 

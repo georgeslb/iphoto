@@ -19,6 +19,8 @@ import MapView from './components/MapView';
 import LightboxWrapper from './components/LightboxWrapper';
 import RemoveFromAlbumModal from './components/RemoveFromAlbumModal'; /* Import new modal */
 import Persons from './components/Persons';
+import Login from './components/Login'; // Import Login component
+import UserManagement from './components/UserManagement'; // Import UserManagement component
 import { usePhotoData } from './hooks/usePhotoData';
 import { useAlbumManagement } from './hooks/useAlbumManagement';
 import { useShareLinkManagement } from './hooks/useShareLinkManagement';
@@ -37,6 +39,10 @@ function App() {
   const location = useLocation();
   const mainContentRef = useRef(null);
 
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [userRole, setUserRole] = useState(null);
+  const [loadingAuth, setLoadingAuth] = useState(true);
+
   const backgroundLocation = location.state?.backgroundLocation;
   const effectivePath = backgroundLocation?.pathname || location.pathname;
   const isLightboxOpen = location.pathname.startsWith('/asset/') || /^\/albums\/[^/]+\/asset\//.test(location.pathname);
@@ -46,6 +52,51 @@ function App() {
 
   /* Declare selectedIds and setSelectedIds at the top level */
   const [selectedIds, setSelectedIds] = useState([]);
+
+  const checkAuthStatus = useCallback(async () => {
+    try {
+      const response = await fetch('/api/user/me');
+      if (response.ok) {
+        const userData = await response.json();
+        setIsAuthenticated(true);
+        setUserRole(userData.role);
+        if (location.pathname === '/login') {
+          navigate('/'); // Redirect from login page if already authenticated
+        }
+      } else {
+        setIsAuthenticated(false);
+        setUserRole(null);
+        if (location.pathname !== '/login' && !location.pathname.startsWith('/share')) {
+          navigate('/login'); // Redirect to login if not authenticated and not on a share page
+        }
+      }
+    } catch (error) {
+      console.error('Error checking authentication status:', error);
+      setIsAuthenticated(false);
+      setUserRole(null);
+      if (location.pathname !== '/login' && !location.pathname.startsWith('/share')) {
+        navigate('/login');
+      }
+    } finally {
+      setLoadingAuth(false);
+    }
+  }, [navigate, location.pathname]);
+
+  useEffect(() => {
+    checkAuthStatus();
+  }, [checkAuthStatus]);
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/logout', { method: 'POST' });
+      setIsAuthenticated(false);
+      setUserRole(null);
+      navigate('/login');
+    } catch (error) {
+      console.error('Error logging out:', error);
+    }
+  };
+
 
   const { photos, setPhotos, page, setPage, hasMore, fetchPhotos } = usePhotoData(effectivePath, isLightboxOpen);
   const { saveScrollPosition } = useScrollRestoration(mainContentRef, isLightboxOpen, photos);
@@ -210,10 +261,18 @@ function App() {
     }
   }, [fetchAlbumsForPhotos, setAlbumsPhotoBelongsTo, setSelectedPhoto, setShowRemoveFromAlbumModal]);
 
+  if (loadingAuth) {
+    return <div>Loading authentication...</div>;
+  }
 
   return (
       <div className="app-container">
-        <Sidebar pathname={backgroundLocation?.pathname || location.pathname} />
+        <Sidebar
+            pathname={backgroundLocation?.pathname || location.pathname}
+            isAuthenticated={isAuthenticated}
+            userRole={userRole}
+            handleLogout={handleLogout}
+        />
 
         <main className="main-content" ref={mainContentRef}>
           <UploadManager refreshAndMaintainScroll={refreshAndMaintainScroll} effectivePath={effectivePath}>
@@ -243,81 +302,93 @@ function App() {
           </UploadManager>
 
           <Routes location={backgroundLocation || location}>
-            <Route path="/" element={
-              <PhotoGrid photos={photos} hasMore={hasMore} setPage={setPage} selectedIds={selectedIds} setSelectedIds={setSelectedIds} setSelectedPhoto={handlePhotoClick} isLightboxOpen={isLightboxOpen} />
-            } />
-            <Route path="/garbage" element={
-              <PhotoGrid photos={photos} hasMore={hasMore} setPage={setPage} selectedIds={selectedIds} setSelectedIds={setSelectedIds} setSelectedPhoto={handlePhotoClick} isLightboxOpen={isLightboxOpen} />
-            } />
-             <Route path="/asset/:photoId" element={
-              <PhotoGrid photos={photos} hasMore={hasMore} setPage={setPage} selectedIds={selectedIds} setSelectedIds={setSelectedIds} setSelectedPhoto={handlePhotoClick} isLightboxOpen={isLightboxOpen} />
-            } />
-            <Route path="/map" element={
-              isLightboxOpen ? null : (
-                  <MapView mapAssets={mapAssets} handlePhotoClick={handlePhotoClick} />
-              )
-            } />
-            <Route path="/persons" element={<Persons />} />
-            <Route path="/duplicates/*" element={
-              isLightboxOpen ? null : (
-                <DuplicatePhotoGrid
-                  currentDuplicateGroup={currentDuplicateGroup}
-                  selectedIds={selectedIds}
-                  setSelectedIds={setSelectedIds}
-                  handlePhotoClick={handlePhotoClick}
-                  duplicatesPage={duplicatesPage}
-                  fetchDuplicates={fetchDuplicates}
-                  isLastDuplicateGroup={isLastDuplicateGroup}
-                  handleFinishComparison={handleFinishComparison}
-                />
-              )
-            } />
-            <Route path="/albums" element={
-              <AlbumGridDisplay
-                albums={albums}
-                selectedIds={selectedIds}
-                setSelectedIds={setSelectedIds}
-                newAlbumName={newAlbumName}
-                setNewAlbumName={setNewAlbumName}
-                newAlbumDescription={newAlbumDescription}
-                setNewAlbumDescription={setNewAlbumDescription}
-                albumCreationError={albumCreationError}
-                setAlbumCreationError={setAlbumCreationError}
-                handleCreateAlbum={handleCreateAlbum}
-                showCreateAlbumModal={showCreateAlbumModal}
-                setShowCreateAlbumModal={setShowCreateAlbumModal}
-              />
-            } />
-            <Route path="/albums/:albumId" element={
-              <AlbumDetail
-                albums={albums}
-                photos={photos}
-                hasMore={hasMore}
-                setPage={setPage}
-                selectedIds={selectedIds}
-                setSelectedIds={setSelectedIds}
-                handlePhotoClick={handlePhotoClick}
-                isLightboxOpen={isLightboxOpen}
-              />
-            } />
-            <Route path="/albums/:albumId/asset/:photoId" element={
-              <AlbumDetail
-                albums={albums}
-                photos={photos}
-                hasMore={hasMore}
-                setPage={setPage}
-                selectedIds={selectedIds}
-                setSelectedIds={setSelectedIds}
-                handlePhotoClick={handlePhotoClick}
-                isLightboxOpen={isLightboxOpen}
-              />
-            } />
-            <Route path="/share-links" element={
-              <div className="content-body" style={{ textAlign: 'center', paddingTop: '40px' }}>
-                <h2>Manage Share Links</h2>
-                <p>This is where you will manage your share links.</p>
-              </div>
-            } />
+            <Route path="/login" element={<Login />} />
+            {isAuthenticated ? (
+                <>
+                  <Route path="/" element={
+                    <PhotoGrid photos={photos} hasMore={hasMore} setPage={setPage} selectedIds={selectedIds} setSelectedIds={setSelectedIds} setSelectedPhoto={handlePhotoClick} isLightboxOpen={isLightboxOpen} />
+                  } />
+                  <Route path="/garbage" element={
+                    <PhotoGrid photos={photos} hasMore={hasMore} setPage={setPage} selectedIds={selectedIds} setSelectedIds={setSelectedIds} setSelectedPhoto={handlePhotoClick} isLightboxOpen={isLightboxOpen} />
+                  } />
+                  <Route path="/asset/:photoId" element={
+                    <PhotoGrid photos={photos} hasMore={hasMore} setPage={setPage} selectedIds={selectedIds} setSelectedIds={setSelectedIds} setSelectedPhoto={handlePhotoClick} isLightboxOpen={isLightboxOpen} />
+                  } />
+                  <Route path="/map" element={
+                    isLightboxOpen ? null : (
+                        <MapView mapAssets={mapAssets} handlePhotoClick={handlePhotoClick} />
+                    )
+                  } />
+                  <Route path="/persons" element={<Persons />} />
+                  <Route path="/duplicates/*" element={
+                    isLightboxOpen ? null : (
+                        <DuplicatePhotoGrid
+                            currentDuplicateGroup={currentDuplicateGroup}
+                            selectedIds={selectedIds}
+                            setSelectedIds={setSelectedIds}
+                            handlePhotoClick={handlePhotoClick}
+                            duplicatesPage={duplicatesPage}
+                            fetchDuplicates={fetchDuplicates}
+                            isLastDuplicateGroup={isLastDuplicateGroup}
+                            handleFinishComparison={handleFinishComparison}
+                        />
+                    )
+                  } />
+                  <Route path="/albums" element={
+                    <AlbumGridDisplay
+                        albums={albums}
+                        selectedIds={selectedIds}
+                        setSelectedIds={setSelectedIds}
+                        newAlbumName={newAlbumName}
+                        setNewAlbumName={setNewAlbumName}
+                        newAlbumDescription={newAlbumDescription}
+                        setNewAlbumDescription={setNewAlbumDescription}
+                        albumCreationError={albumCreationError}
+                        setAlbumCreationError={setAlbumCreationError}
+                        handleCreateAlbum={handleCreateAlbum}
+                        showCreateAlbumModal={showCreateAlbumModal}
+                        setShowCreateAlbumModal={setShowCreateAlbumModal}
+                    />
+                  } />
+                  <Route path="/albums/:albumId" element={
+                    <AlbumDetail
+                        albums={albums}
+                        photos={photos}
+                        hasMore={hasMore}
+                        setPage={setPage}
+                        selectedIds={selectedIds}
+                        setSelectedIds={setSelectedIds}
+                        handlePhotoClick={handlePhotoClick}
+                        isLightboxOpen={isLightboxOpen}
+                    />
+                  } />
+                  <Route path="/albums/:albumId/asset/:photoId" element={
+                    <AlbumDetail
+                        albums={albums}
+                        photos={photos}
+                        hasMore={hasMore}
+                        setPage={setPage}
+                        selectedIds={selectedIds}
+                        setSelectedIds={setSelectedIds}
+                        handlePhotoClick={handlePhotoClick}
+                        isLightboxOpen={isLightboxOpen}
+                    />
+                  } />
+                  <Route path="/share-links" element={
+                    <div className="content-body" style={{ textAlign: 'center', paddingTop: '40px' }}>
+                      <h2>Manage Share Links</h2>
+                      <p>This is where you will manage your share links.</p>
+                    </div>
+                  } />
+                  {userRole === 'ADMIN' && (
+                      <Route path="/admin/users" element={<UserManagement />} />
+                  )}
+                </>
+            ) : (
+                // Redirect all non-share, non-login paths to login if not authenticated
+                <Route path="*" element={<Login />} />
+            )}
+            {/* Share routes are always accessible */}
             <Route path="/share/:name" element={<ShareLinkPage />} />
             <Route path="/share/:name/login" element={<ShareLoginPage />} />
           </Routes>

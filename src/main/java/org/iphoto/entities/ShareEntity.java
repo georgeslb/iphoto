@@ -24,6 +24,10 @@ public class ShareEntity implements Persistable<UUID> {
     @EqualsAndHashCode.Include
     private UUID id;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    private UserEntity user;
+
     @Column(nullable = false, unique = true)
     @ToString.Include
     private String name;

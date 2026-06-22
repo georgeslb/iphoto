@@ -20,6 +20,10 @@ public class TaskEntity {
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = true) // Making it nullable for now, some tasks might be global
+    private UserEntity user;
+
     @Column()
     private UUID photoId;
 

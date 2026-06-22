@@ -26,6 +26,10 @@ public class PhotoEntity implements Persistable<UUID> {
     @ToString.Include
     private UUID id;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    private UserEntity user;
+
     @Column(nullable = false)
     @ToString.Include
     private String fileName;
@@ -37,7 +41,7 @@ public class PhotoEntity implements Persistable<UUID> {
     @Column(length = 1024)
     private String thumbnailPath;
 
-    @Column(unique = true)
+    @Column(unique = true) // This unique constraint might need to be adjusted to be unique per user
     @ToString.Include
     @EqualsAndHashCode.Include
     private String fileHash;
@@ -83,8 +87,7 @@ public class PhotoEntity implements Persistable<UUID> {
     @Transient
     private boolean isNew = true;
 
-
-
+    // Constructor for new photos, user will be set by service
     public PhotoEntity(UUID id, String fileName, String originalPath, String thumbnailPath, String fileHash, Long fileSize, String contentType) {
         this.id = id;
         this.fileName = fileName;

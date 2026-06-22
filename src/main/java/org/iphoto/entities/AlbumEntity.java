@@ -26,7 +26,11 @@ public class AlbumEntity implements Persistable<UUID> {
     @EqualsAndHashCode.Include
     private UUID id;
 
-    @Column(nullable = false, unique = true)
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    private UserEntity user;
+
+    @Column(nullable = false, unique = true) // This unique constraint might need to be adjusted to be unique per user
     @ToString.Include
     private String name;
 

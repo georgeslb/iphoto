@@ -5,6 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.SetUtils;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.TaskEntity;
+import org.iphoto.entities.UserEntity; // Import UserEntity
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.TaskType;
 import org.iphoto.repository.PhotoRepository;
@@ -30,19 +31,22 @@ public class AdminService {
     private final PhotoRepository photoRepository;
     private final TaskRepository taskRepository;
 
-    public void activateFaceRecognition() {
+    public void activateFaceRecognition(UserEntity user) { // Added UserEntity parameter
+        // This will create a global task, but the processing of this task will need to be user-aware
+        // or it will trigger face recognition for all photos, which might not be desired for user isolation.
+        // For now, we'll assume the task processing logic (TaskManagerService) will handle user context.
         taskManagerService.createTaskEntity(TaskType.FACE_RECOGNITION, null, null, LocalDateTime.now());
     }
 
-    public void updateImageTaskToDo() {
+    public void updateImageTaskToDo(UserEntity user) { // Added UserEntity parameter
         Set<String> taskTypes = Stream.of(TaskType.values()).filter(TaskType::isCanBeReplayed)
                 .map(Enum::name).collect(Collectors.toSet());
         Slice<PhotoEntity> photosSlice;
 
         Pageable pageable = PageRequest.of(0, 100);
         do {
-            photosSlice =
-                    photoRepository.findAll(pageable);
+            // Filter photos by user
+            photosSlice = photoRepository.findByUser(user, pageable); // Now findByUser exists in PhotoRepository
             photosSlice.getContent().forEach(photo -> {
                 List<TaskEntity> photosTasks = taskRepository.findByPhotoIdAndTaskTypeIn(photo.getId(), taskTypes);
                 photosTasks.stream().filter(photoTask -> !photoTask.getStatus().equals(TaskStatus.COMPLETED)

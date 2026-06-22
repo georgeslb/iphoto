@@ -5,6 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.hibernate.exception.ConstraintViolationException;
 import org.iphoto.entities.DuplicateEntity;
 import org.iphoto.entities.PhotoEntity;
+import org.iphoto.entities.UserEntity; // Import UserEntity
 import org.iphoto.model.TaskStatus;
 import org.iphoto.repository.DuplicateRepository;
 import org.springframework.stereotype.Service;
@@ -27,10 +28,10 @@ public class DuplicationUniquenessService {
     private final DuplicateRepository duplicateRepository;
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public TaskStatus consolidateDuplicates(PhotoEntity photo, Set<PhotoEntity> duplicatesPhotos) {
+    public TaskStatus consolidateDuplicates(UserEntity user, PhotoEntity photo, Set<PhotoEntity> duplicatesPhotos) { // Added UserEntity parameter
         try {
             List<UUID> ids = duplicatesPhotos.stream().map(PhotoEntity::getId).toList();
-            List<DuplicateEntity> existingDuplicates =  duplicateRepository.findByPhotosIdIn(ids);
+            List<DuplicateEntity> existingDuplicates =  duplicateRepository.findByUserAndPhotosIdIn(user, ids); // Filter by user
             boolean addNewDuplicatePhoto = true;
             for (DuplicateEntity duplicate : existingDuplicates) {
                 if (duplicate.getPhotos().stream().map(PhotoEntity::getId)
@@ -47,8 +48,13 @@ public class DuplicationUniquenessService {
                 // create a new duplicate group
                 Set<PhotoEntity> duplicatesPhotosToAdd = new HashSet<>(duplicatesPhotos);
                 duplicatesPhotosToAdd.add(photo);
-                DuplicateEntity duplicateEntity = DuplicateEntity.builder().id(UUID.randomUUID())
-                        .photos(duplicatesPhotosToAdd).status(OPEN).hash(generateUniqueHash(duplicatesPhotosToAdd)).build();
+                DuplicateEntity duplicateEntity = DuplicateEntity.builder()
+                        .id(UUID.randomUUID())
+                        .user(user) // Set the user for the new duplicate group
+                        .photos(duplicatesPhotosToAdd)
+                        .status(OPEN)
+                        .hash(generateUniqueHash(duplicatesPhotosToAdd))
+                        .build();
                 duplicateRepository.saveAndFlush(duplicateEntity);
             }
            return TaskStatus.COMPLETED;

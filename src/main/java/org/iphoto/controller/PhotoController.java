@@ -3,19 +3,24 @@ package org.iphoto.controller;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.PhotoEntity;
+import org.iphoto.entities.UserEntity;
 import org.iphoto.mappers.PhotoMapper;
 import org.iphoto.mappers.PhotoMetadataMapper;
 import org.iphoto.model.*;
 import org.iphoto.repository.PhotoMetadataRepository;
 import org.iphoto.repository.PhotoRepository;
+import org.iphoto.repository.UserRepository;
 import org.iphoto.service.PhotoService;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.ResourceRegion;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.*;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -37,20 +42,30 @@ import java.util.stream.Collectors;
 public class PhotoController {
 
     private final PhotoService photoService;
-    private final PhotoRepository photoRepository;
+    private final PhotoRepository photoRepository; // Keep for direct access where appropriate, but prefer service
     private final PhotoMetadataRepository metadataRepository;
     private final PhotoMapper photoMapper;
     private final PhotoMetadataMapper photoMetadataMapper;
+    private final UserRepository userRepository; // To fetch UserEntity from username
     private final DateTimeFormatter df = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm");
+
+    private UserEntity getCurrentUser() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        String username = authentication.getName();
+        return userRepository.findByUsername(username)
+                .orElseThrow(() -> new NoSuchElementException("User not found: " + username));
+    }
 
     @GetMapping
     public PageResponse<Photo> getPhotos(@PageableDefault(size = 50, sort = "dateTaken", direction = Sort.Direction.DESC) Pageable pageable) {
-        return PageResponse.from(photoService.getPhotos(pageable));
+        UserEntity currentUser = getCurrentUser();
+        return PageResponse.from(photoService.getPhotos(currentUser, pageable));
     }
 
     @GetMapping("/{id}")
     public ResponseEntity<Photo> getPhoto(@PathVariable UUID id) {
-        return photoRepository.findById(id)
+        UserEntity currentUser = getCurrentUser();
+        return photoService.findById(currentUser, id)
                 .map(photoMapper::photoEntityToPhoto)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
@@ -58,8 +73,9 @@ public class PhotoController {
 
     @PatchMapping("/{id}/date")
     public ResponseEntity<Photo> updatePhotoDate(@PathVariable UUID id, @RequestBody UpdatePhotoDateRequest request) {
+        UserEntity currentUser = getCurrentUser();
         try {
-            Photo photo = photoService.updatePhotoDate(id, LocalDateTime.parse(request.newDate(), df));
+            Photo photo = photoService.updatePhotoDate(currentUser, id, LocalDateTime.parse(request.newDate(), df));
             return ResponseEntity.ok(photo);
         } catch (NoSuchElementException e) {
             return ResponseEntity.notFound().build();
@@ -70,8 +86,9 @@ public class PhotoController {
     public ResponseEntity<Photo> editPhoto(@PathVariable UUID id,
                                            @RequestPart("file") MultipartFile file,
                                            @ModelAttribute PhotoEditRequest request) {
+        UserEntity currentUser = getCurrentUser();
         try {
-            Photo photo = photoService.editPhoto(id, file, request);
+            Photo photo = photoService.editPhoto(currentUser, id, file, request);
             return ResponseEntity.ok(photo);
         } catch (NoSuchElementException e) {
             return ResponseEntity.notFound().build();
@@ -83,19 +100,22 @@ public class PhotoController {
 
     @GetMapping("/garbage")
     public PageResponse<Photo> getGarbage(@PageableDefault(size = 50, sort = "garbageAt", direction = Sort.Direction.DESC) Pageable pageable) {
-        return PageResponse.from(photoService.getGarbagePhotos(pageable));
+        UserEntity currentUser = getCurrentUser();
+        return PageResponse.from(photoService.getGarbagePhotos(currentUser, pageable));
     }
 
     @PostMapping("/garbage")
     public ResponseEntity<Void> moveAssetsToGarbage(@RequestBody List<UUID> ids) throws Exception {
-        photoService.moveAssetsToGarbage(ids);
+        UserEntity currentUser = getCurrentUser();
+        photoService.moveAssetsToGarbage(currentUser, ids);
         return ResponseEntity.ok().build();
     }
 
     @GetMapping("/{id}/albums")
     public ResponseEntity<List<AlbumDTO>> getAlbumByPhoto(@PathVariable UUID id) {
+        UserEntity currentUser = getCurrentUser();
         try {
-            List<AlbumDTO> albumDTOS = photoService.getAlbumsByPhoto(id);
+            List<AlbumDTO> albumDTOS = photoService.getAlbumsByPhoto(currentUser, id);
             return ResponseEntity.ok(albumDTOS);
         } catch (NoSuchElementException e) {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
@@ -104,42 +124,54 @@ public class PhotoController {
 
     @PostMapping("/garbage/restore")
     public ResponseEntity<Void> restoreAssets(@RequestBody List<UUID> ids) {
-        photoService.restoreAssetsFromGarbage(ids);
+        UserEntity currentUser = getCurrentUser();
+        photoService.restoreAssetsFromGarbage(currentUser, ids);
         return ResponseEntity.ok().build();
     }
 
     @DeleteMapping("/garbage/permanent")
     public ResponseEntity<Void> permanentDeleteAssets(@RequestBody List<UUID> ids) {
-        photoService.permanentDeleteAssets(ids);
+        UserEntity currentUser = getCurrentUser();
+        photoService.permanentDeleteAssets(currentUser, ids);
         return ResponseEntity.noContent().build();
     }
 
     @GetMapping("/{id}/metadata")
     public ResponseEntity<PhotoMetadata> getMetadata(@PathVariable UUID id) {
-        return metadataRepository.findById(id).map(photoMetadataMapper::photoMetadataEntityToPhotoMetadata).map(ResponseEntity::ok).orElse(ResponseEntity.notFound().build());
+        UserEntity currentUser = getCurrentUser();
+        // Ensure the photo associated with the metadata belongs to the user
+        return metadataRepository.findById(id)
+                .filter(metadata -> metadata.getPhoto().getUser().equals(currentUser))
+                .map(photoMetadataMapper::photoMetadataEntityToPhotoMetadata)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
     }
 
     @GetMapping("/locations")
     public List<LocationDTO> getLocations() {
+        UserEntity currentUser = getCurrentUser();
         return metadataRepository.findAll().stream()
-                .filter(m -> m.getLatitude() != null && m.getPhoto().getIsGarbage() == false)
+                .filter(m -> m.getPhoto().getUser().equals(currentUser) && m.getLatitude() != null && !m.getPhoto().getIsGarbage())
                 .map(m -> new LocationDTO(m.getId(), m.getLatitude(), m.getLongitude(), m.getPhoto().getFileName(), "/api/photos/" + m.getId() + "/thumbnail"))
                 .collect(Collectors.toList());
     }
 
     @GetMapping("/{id}/thumbnail")
     public ResponseEntity<Resource> getThumbnail(@PathVariable UUID id) {
-        return photoRepository.findById(id).map(photo -> this.serveFile(photo, true)).orElse(ResponseEntity.notFound().build());
+        UserEntity currentUser = getCurrentUser();
+        return photoService.findById(currentUser, id).map(photo -> this.serveFile(photo, true)).orElse(ResponseEntity.notFound().build());
     }
 
     @GetMapping("/{id}/original")
     public ResponseEntity<Resource> getOriginal(@PathVariable UUID id) {
-        return photoRepository.findById(id).map(photo -> this.serveFile(photo, false)).orElse(ResponseEntity.notFound().build());
+        UserEntity currentUser = getCurrentUser();
+        return photoService.findById(currentUser, id).map(photo -> this.serveFile(photo, false)).orElse(ResponseEntity.notFound().build());
     }
 
     @GetMapping("/{id}/stream")
     public ResponseEntity<ResourceRegion> streamVideo(@PathVariable UUID id, @RequestHeader HttpHeaders headers) throws IOException {
-        PhotoEntity photo = photoRepository.findById(id).orElse(null);
+        UserEntity currentUser = getCurrentUser();
+        PhotoEntity photo = photoService.findById(currentUser, id).orElse(null);
         if (photo == null || photo.getOriginalPath() == null) return ResponseEntity.notFound().build();
         Path path = Paths.get(photo.getOriginalPath());
         Resource video = new FileSystemResource(path);

@@ -19,6 +19,10 @@ public class PersonEntity {
     @GeneratedValue(strategy = GenerationType.AUTO)
     private UUID id;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    private UserEntity user;
+
     @Column(nullable = true) // Name can be assigned by the user later
     private String name;
 
@@ -56,6 +60,4 @@ public class PersonEntity {
             face.setPerson(null);
         }
     }
-
-
 }

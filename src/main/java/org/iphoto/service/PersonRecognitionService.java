@@ -7,6 +7,7 @@ import org.iphoto.entities.CoverFaceOrigin;
 import org.iphoto.entities.FaceEntity;
 import org.iphoto.entities.PersonEntity;
 import org.iphoto.entities.PhotoEntity;
+import org.iphoto.entities.UserEntity; // Import UserEntity
 import org.iphoto.repository.FaceRepository;
 import org.iphoto.repository.PersonRepository;
 import org.springframework.data.domain.Page;
@@ -32,7 +33,14 @@ public class PersonRecognitionService {
     private final PersonRepository personRepository;
     private static final double THRESHOLD = 0.8;
 
-    public void updatePerson(PersonEntity person, FaceEntity face) {
+    public void updatePerson(UserEntity user, PersonEntity person, FaceEntity face) { // Added UserEntity parameter
+        // Ensure the person and face belong to the user
+        if (!person.getUser().equals(user)) {
+            throw new IllegalArgumentException("Person does not belong to the current user.");
+        }
+        if (!face.getUser().equals(user)) {
+            throw new IllegalArgumentException("Face does not belong to the current user.");
+        }
 
         face.setPerson(person);
         faceRepository.save(face);
@@ -41,11 +49,17 @@ public class PersonRecognitionService {
         personRepository.save(person);
     }
 
-    public void addPerson(List<FaceEntity> faces) {
+    public void addPerson(UserEntity user, List<FaceEntity> faces) { // Added UserEntity parameter
         PersonEntity person = new PersonEntity();
+        person.setUser(user); // Set the user for the new person
         person.setFaces(faces);
         recalculateCoverFace(person);
-        faces.forEach(faceEntity -> faceEntity.setPerson(person));
+        faces.forEach(faceEntity -> {
+            if (!faceEntity.getUser().equals(user)) { // Ensure all faces belong to the user
+                throw new IllegalArgumentException("One or more faces do not belong to the current user.");
+            }
+            faceEntity.setPerson(person);
+        });
         personRepository.save(person);
         faceRepository.saveAll(faces);
     }

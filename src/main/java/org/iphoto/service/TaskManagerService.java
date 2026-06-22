@@ -3,6 +3,7 @@ package org.iphoto.service;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.TaskEntity;
+import org.iphoto.entities.UserEntity; // Import UserEntity
 import org.iphoto.model.TaskType;
 import org.iphoto.repository.TaskRepository;
 import org.springframework.stereotype.Service;
@@ -29,13 +30,17 @@ public class TaskManagerService {
         return taskRepository.findById(taskId);
     }
 
-
-
-
     public TaskEntity createTaskEntity(TaskType taskType, UUID photoId,
                                        String payload,
                                        LocalDateTime executionDateTime) {
+        return createTaskEntity(null, taskType, photoId, payload, executionDateTime);
+    }
+
+    public TaskEntity createTaskEntity(UserEntity user, TaskType taskType, UUID photoId,
+                                       String payload,
+                                       LocalDateTime executionDateTime) {
         TaskEntity task = new TaskEntity();
+        task.setUser(user); // Set the user for the task
         task.setTaskType(taskType.name());
         task.setPhotoId(photoId);
         task.setPayload(payload);
@@ -47,7 +52,15 @@ public class TaskManagerService {
     public TaskEntity createTaskEntityImmediately(TaskType taskType, UUID photoId,
                                        String payload,
                                        LocalDateTime executionDateTime) {
+        return createTaskEntityImmediately(null, taskType, photoId, payload, executionDateTime);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public TaskEntity createTaskEntityImmediately(UserEntity user, TaskType taskType, UUID photoId,
+                                       String payload,
+                                       LocalDateTime executionDateTime) {
         TaskEntity task = new TaskEntity();
+        task.setUser(user); // Set the user for the task
         task.setTaskType(taskType.name());
         task.setPhotoId(photoId);
         task.setPayload(payload);

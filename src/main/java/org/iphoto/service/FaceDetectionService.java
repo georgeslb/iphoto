@@ -16,6 +16,7 @@ import org.iphoto.configuration.FaceAligner;
 import org.iphoto.entities.FaceEntity;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.TaskEntity;
+import org.iphoto.entities.UserEntity; // Import UserEntity
 import org.iphoto.exception.ServiceNotAvailableException;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.repository.FaceRepository;
@@ -50,11 +51,19 @@ public class FaceDetectionService {
             throw new ServiceNotAvailableException("Face detection service is busy with task " + task.getId());
         }
         try {
-            photoRepository.findById(task.getPhotoId()).ifPresent(photo -> {
+            // Retrieve the user from the task
+            UserEntity user = task.getUser();
+            if (user == null) {
+                log.error("Task {} does not have an associated user. Skipping face detection.", task.getId());
+                task.setStatus(TaskStatus.FAILED);
+                return;
+            }
+
+            photoRepository.findByIdAndUser(task.getPhotoId(), user).ifPresent(photo -> { // Filter by user
                 try {
                     log.info("Starting face detection for photo: {}", photo.getId());
                     if (photo.getContentType() != null && photo.getContentType().startsWith("image")) {
-                        this.detectAndSaveFaces(photo);
+                        this.detectAndSaveFaces(user, photo); // Pass user to helper method
                         task.setStatus(TaskStatus.COMPLETED);
                     } else {
                         log.warn("Skipping face detection for non-image file: {}", photo.getId());
@@ -70,7 +79,7 @@ public class FaceDetectionService {
         }
     }
 
-    private void detectAndSaveFaces(PhotoEntity photo) throws IOException {
+    private void detectAndSaveFaces(UserEntity user, PhotoEntity photo) throws IOException { // Added UserEntity parameter
         ImageFactory factory = ImageFactory.getInstance();
         Image image = factory.fromFile(Paths.get(photo.getOriginalPath()));
 
@@ -125,6 +134,7 @@ public class FaceDetectionService {
                         byte[] thumbnailBytes = baos.toByteArray();
 
                         FaceEntity faceEntity = new FaceEntity(photo, x, y, w, h);
+                        faceEntity.setUser(user); // Set the user for the face
                         faceEntity.setEmbedding(embeddingBytes);
                         faceEntity.setFaceThumbnail(thumbnailBytes);
 
