@@ -39,7 +39,7 @@ function App() {
 
   const backgroundLocation = location.state?.backgroundLocation;
   const effectivePath = backgroundLocation?.pathname || location.pathname;
-  const isLightboxOpen = location.pathname.startsWith('/asset/');
+  const isLightboxOpen = location.pathname.startsWith('/asset/') || /^\/albums\/[^/]+\/asset\//.test(location.pathname);
 
   /* Derive albumId from effectivePath */
   const currentAlbumId = effectivePath.startsWith('/albums/') ? effectivePath.split('/').pop() : null;
@@ -249,6 +249,9 @@ function App() {
             <Route path="/garbage" element={
               <PhotoGrid photos={photos} hasMore={hasMore} setPage={setPage} selectedIds={selectedIds} setSelectedIds={setSelectedIds} setSelectedPhoto={handlePhotoClick} isLightboxOpen={isLightboxOpen} />
             } />
+             <Route path="/asset/:photoId" element={
+              <PhotoGrid photos={photos} hasMore={hasMore} setPage={setPage} selectedIds={selectedIds} setSelectedIds={setSelectedIds} setSelectedPhoto={handlePhotoClick} isLightboxOpen={isLightboxOpen} />
+            } />
             <Route path="/map" element={
               isLightboxOpen ? null : (
                   <MapView mapAssets={mapAssets} handlePhotoClick={handlePhotoClick} />
@@ -286,6 +289,18 @@ function App() {
               />
             } />
             <Route path="/albums/:albumId" element={
+              <AlbumDetail
+                albums={albums}
+                photos={photos}
+                hasMore={hasMore}
+                setPage={setPage}
+                selectedIds={selectedIds}
+                setSelectedIds={setSelectedIds}
+                handlePhotoClick={handlePhotoClick}
+                isLightboxOpen={isLightboxOpen}
+              />
+            } />
+            <Route path="/albums/:albumId/asset/:photoId" element={
               <AlbumDetail
                 albums={albums}
                 photos={photos}
