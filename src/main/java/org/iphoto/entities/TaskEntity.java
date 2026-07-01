@@ -1,9 +1,9 @@
 package org.iphoto.entities;
 
 import jakarta.persistence.*;
+import lombok.Builder;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
-import lombok.NoArgsConstructor;
 import org.iphoto.model.TaskStatus;
 
 import java.time.LocalDateTime;
@@ -11,21 +11,22 @@ import java.util.UUID;
 
 @Entity
 @Table(name = "tasks")
+@Builder
 @Data
 @EqualsAndHashCode(callSuper = false)
-@NoArgsConstructor
-public class TaskEntity {
+public class TaskEntity{
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id", nullable = true) // Making it nullable for now, some tasks might be global
-    private UserEntity user;
-
     @Column()
     private UUID photoId;
+
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id")
+    protected UserEntity user;
 
     @Column(nullable = false)
     private String taskType;

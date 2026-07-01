@@ -1,10 +1,11 @@
 package org.iphoto.entities;
 
 import jakarta.persistence.*;
-import lombok.Data;
 import lombok.EqualsAndHashCode;
-import lombok.NoArgsConstructor;
+import lombok.Getter;
+import lombok.Setter;
 import lombok.ToString;
+import lombok.experimental.SuperBuilder;
 import org.springframework.data.domain.Persistable;
 
 import java.time.LocalDateTime;
@@ -14,11 +15,12 @@ import java.util.UUID;
 
 @Entity
 @Table(name = "albums")
-@Data
-@EqualsAndHashCode(callSuper = false, onlyExplicitlyIncluded = true)
-@NoArgsConstructor
+@EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true) // Changed callSuper to true
+@SuperBuilder
+@Getter
+@Setter
 @ToString(onlyExplicitlyIncluded = true)
-public class AlbumEntity implements Persistable<UUID> {
+public class AlbumEntity extends BaseEntity implements Persistable<UUID> { // Extends BaseEntity
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
@@ -26,9 +28,7 @@ public class AlbumEntity implements Persistable<UUID> {
     @EqualsAndHashCode.Include
     private UUID id;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id", nullable = false)
-    private UserEntity user;
+    // Removed user field as it's inherited from BaseEntity
 
     @Column(nullable = false, unique = true) // This unique constraint might need to be adjusted to be unique per user
     @ToString.Include
@@ -52,7 +52,7 @@ public class AlbumEntity implements Persistable<UUID> {
         joinColumns = @JoinColumn(name = "album_id"),
         inverseJoinColumns = @JoinColumn(name = "photo_id")
     )
-    private Set<PhotoEntity> photos = new HashSet<>();
+    private Set<PhotoEntity> photos;
 
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

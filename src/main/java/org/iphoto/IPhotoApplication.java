@@ -1,6 +1,7 @@
 package org.iphoto;
 
 import org.iphoto.entities.UserEntity;
+import org.iphoto.properties.AdminProperties; // Import AdminProperties
 import org.iphoto.repository.UserRepository;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
@@ -17,13 +18,13 @@ public class IPhotoApplication {
     }
 
     @Bean
-    CommandLineRunner initDatabase(UserRepository userRepository, PasswordEncoder passwordEncoder) {
+    CommandLineRunner initDatabase(UserRepository userRepository, PasswordEncoder passwordEncoder, AdminProperties adminProperties) { // Inject AdminProperties
         return args -> {
-            if (userRepository.findByUsername("admin").isEmpty()) {
+            if (userRepository.findByUsername(adminProperties.getUsername()).isEmpty()) {
                 UserEntity admin = new UserEntity();
-                admin.setUsername("admin");
-                admin.setPassword(passwordEncoder.encode("admin"));
-                admin.setRole("ADMIN");
+                admin.setUsername(adminProperties.getUsername());
+                admin.setPassword(passwordEncoder.encode(adminProperties.getPassword()));
+                admin.setRole(adminProperties.getRole());
                 userRepository.save(admin);
             }
         };

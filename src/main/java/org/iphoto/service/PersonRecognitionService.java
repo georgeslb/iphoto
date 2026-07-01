@@ -50,9 +50,7 @@ public class PersonRecognitionService {
     }
 
     public void addPerson(UserEntity user, List<FaceEntity> faces) { // Added UserEntity parameter
-        PersonEntity person = new PersonEntity();
-        person.setUser(user); // Set the user for the new person
-        person.setFaces(faces);
+        PersonEntity person = PersonEntity.builder().user(user).faces(faces).build();
         recalculateCoverFace(person);
         faces.forEach(faceEntity -> {
             if (!faceEntity.getUser().equals(user)) { // Ensure all faces belong to the user

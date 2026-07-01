@@ -56,7 +56,7 @@ public class PhotoUploadService {
     private final TaskManagerService taskManagerService;
     private final AlbumService albumService;
 
-    public UploadStatus processNewAsset(UserEntity user, TaskEntity task, Map<String, String> payload, File tempFile, String hash) throws IOException {
+    public UploadStatus processNewAsset(TaskEntity task, Map<String, String> payload, File tempFile, String hash) throws IOException {
         String contentType = payload.get("contentType");
         Path storageDir = Paths.get(iPhotoProperties.getStorage().getPhotos());
         if (!Files.exists(storageDir)) Files.createDirectories(storageDir);
@@ -65,8 +65,15 @@ public class PhotoUploadService {
 
         String thumbPath = thumbnailService.generateThumbnail(finalPath.toString(), task.getPhotoId().toString(), contentType);
 
-        PhotoEntity photo = new PhotoEntity(task.getPhotoId(), payload.get("originalFileName"), finalPath.toString(), thumbPath, hash, Files.size(finalPath), contentType);
-        photo.setUser(user); // Set the user for the photo
+        PhotoEntity photo = PhotoEntity.builder().id(task.getPhotoId())
+                .fileName(payload.get("originalFileName"))
+                .originalPath(finalPath.toString())
+                .thumbnailPath(thumbPath)
+                .fileHash(hash)
+                .fileSize(Files.size(finalPath))
+                .contentType(contentType)
+                .user(task.getUser()).build();
+
         photo.setNew(true);
 
         PhotoMetadataEntity metadataEntity = new PhotoMetadataEntity(photo);
@@ -85,10 +92,10 @@ public class PhotoUploadService {
         photoRepository.save(photo);
         metadataRepository.save(metadataEntity);
         if (payload.get("albumId") != null) {
-            albumService.addPhotosToAlbum(user, UUID.fromString(payload.get("albumId")), List.of(photo.getId())); // Pass user to albumService
+            albumService.addPhotosToAlbum(photo.getUser(), UUID.fromString(payload.get("albumId")), List.of(photo.getId())); // Pass user to albumService
         }
-        taskManagerService.createTaskEntity(user, TaskType.HASH_IMAGE, photo.getId(), null,  LocalDateTime.now().plusMinutes(2)); // Pass user
-        taskManagerService.createTaskEntity(user, TaskType.ISOLATE_FACES, photo.getId(), null,  LocalDateTime.now().plusMinutes(3)); // Pass user
+        taskManagerService.createTaskEntity(photo.getUser(), TaskType.HASH_IMAGE, photo.getId(), null,  LocalDateTime.now().plusMinutes(2)); // Pass user
+        taskManagerService.createTaskEntity(photo.getUser(), TaskType.ISOLATE_FACES, photo.getId(), null,  LocalDateTime.now().plusMinutes(3)); // Pass user
 
         return SUCCESS;
     }

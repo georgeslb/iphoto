@@ -104,7 +104,7 @@ public class UploadController {
 
             // generate photo UUID and add a new task
             TaskEntity task = taskManagerService
-                    .createTaskEntity(TaskType.PROCESS_UPLOAD, UUID.randomUUID(), objectMapper.writeValueAsString(payload), null);
+                    .createTaskEntity(currentUser, TaskType.PROCESS_UPLOAD, UUID.randomUUID(), objectMapper.writeValueAsString(payload), null);
 
 
 

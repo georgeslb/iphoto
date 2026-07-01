@@ -1,11 +1,7 @@
 package org.iphoto.controller;
 
 import org.iphoto.entities.UserEntity;
-import org.iphoto.model.AlbumCreateRequest;
-import org.iphoto.model.AlbumDTO;
-import org.iphoto.model.AlbumPhotoRequest;
-import org.iphoto.model.AlbumUpdateRequest;
-import org.iphoto.model.Photo;
+import org.iphoto.model.*;
 import org.iphoto.repository.UserRepository;
 import org.iphoto.service.AlbumService;
 import org.springframework.data.domain.Pageable;
@@ -13,8 +9,6 @@ import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -23,21 +17,13 @@ import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/albums")
-public class AlbumController {
+public class AlbumController extends AbstractBaseController {
 
     private final AlbumService albumService;
-    private final UserRepository userRepository; // Inject UserRepository
 
     public AlbumController(AlbumService albumService, UserRepository userRepository) {
+        super(userRepository);
         this.albumService = albumService;
-        this.userRepository = userRepository;
-    }
-
-    private UserEntity getCurrentUser() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        String username = authentication.getName();
-        return userRepository.findByUsername(username)
-                .orElseThrow(() -> new NoSuchElementException("User not found: " + username));
     }
 
     @PostMapping

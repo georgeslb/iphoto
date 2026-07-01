@@ -12,6 +12,7 @@ import org.iphoto.model.UploadStatus;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.repository.TaskRepository;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.security.access.annotation.Secured;
 import org.springframework.security.authentication.LockedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;

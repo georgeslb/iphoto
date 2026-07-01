@@ -36,11 +36,7 @@ public class AlbumService {
             throw new IllegalArgumentException("Album with name '" + request.name() + "' already exists.");
         }
 
-        AlbumEntity album = new AlbumEntity();
-        album.setUser(user); // Set the user for the album
-        album.setName(request.name());
-        album.setDescription(request.description());
-        album.setPhotoCount(0);
+        AlbumEntity album = AlbumEntity.builder().user(user).name(request.name()).description(request.description()).photoCount(0).build();
 
         if (request.coverPhotoId() != null) {
             PhotoEntity coverPhoto = photoRepository.findByIdAndUser(request.coverPhotoId(), user)

@@ -1,34 +1,30 @@
 package org.iphoto.entities;
 
 import jakarta.persistence.*;
-import lombok.Data;
 import lombok.EqualsAndHashCode;
-import lombok.NoArgsConstructor;
+import lombok.Getter;
+import lombok.Setter;
 import lombok.ToString;
+import lombok.experimental.SuperBuilder;
 import org.springframework.data.domain.Persistable;
 
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
-import java.util.UUID;
+import java.util.*;
 
 @Entity
 @Table(name = "photos")
-@Data
-@EqualsAndHashCode(callSuper = false, onlyExplicitlyIncluded = true)
-@NoArgsConstructor
+@EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true) // Changed callSuper to true
 @ToString(onlyExplicitlyIncluded = true)
-public class PhotoEntity implements Persistable<UUID> {
+@Getter
+@Setter
+@SuperBuilder
+public class PhotoEntity extends BaseEntity implements Persistable<UUID> { // Extends BaseEntity
 
     @Id
     @ToString.Include
     private UUID id;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id", nullable = false)
-    private UserEntity user;
+    // Removed user field as it's inherited from BaseEntity
 
     @Column(nullable = false)
     @ToString.Include
@@ -58,10 +54,10 @@ public class PhotoEntity implements Persistable<UUID> {
     private String location;
 
     @Column(nullable = false)
-    private Boolean isFavorite = false;
+    private Boolean isFavorite;
 
     @Column(nullable = false)
-    private Boolean isGarbage = false;
+    private Boolean isGarbage;
 
     @Column(columnDefinition = "BYTEA")
     private byte[] phash;
@@ -87,17 +83,8 @@ public class PhotoEntity implements Persistable<UUID> {
     @Transient
     private boolean isNew = true;
 
-    // Constructor for new photos, user will be set by service
-    public PhotoEntity(UUID id, String fileName, String originalPath, String thumbnailPath, String fileHash, Long fileSize, String contentType) {
-        this.id = id;
-        this.fileName = fileName;
-        this.originalPath = originalPath;
-        this.thumbnailPath = thumbnailPath;
-        this.fileHash = fileHash;
-        this.fileSize = fileSize;
-        this.contentType = contentType;
-        this.isFavorite = false;
-        this.isGarbage = false;
+    public PhotoEntity() {
+        super();
     }
 
     @Override

@@ -1,6 +1,5 @@
 package org.iphoto.service;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.PersonEntity;
@@ -78,12 +77,9 @@ public class PhotoService {
     }
 
     @Transactional
-    public void moveAssetsToGarbage(UserEntity user, List<UUID> ids) throws Exception {
-        List<PhotoEntity> photos = ids.stream()
-                .map(id -> photoRepository.findByIdAndUser(id, user))
-                .filter(Optional::isPresent)
-                .map(Optional::get)
-                .collect(Collectors.toList());
+    public void moveAssetsToGarbage(UserEntity user, List<UUID> ids) {
+
+        Set<PhotoEntity> photos = photoRepository.findByIdInAndUser(ids, user);
 
         for (PhotoEntity photo : photos) {
             if (photo == null || photo.getIsGarbage()) continue;
@@ -101,33 +97,36 @@ public class PhotoService {
     }
 
     @Transactional
+    public  void permanentDeleteAssets(List<UUID> photoId) {
+        Set<PhotoEntity> photos = photoRepository.findByIdIn(photoId);
+        deleteAssets(photos);
+    }
+
+    @Transactional
     public void permanentDeleteAssets(UserEntity user, List<UUID> ids) {
-        ids.parallelStream().forEach(photoId -> {
+        Set<PhotoEntity> photos = photoRepository.findByIdInAndUser(ids, user);
+        deleteAssets(photos);
+
+    }
+
+    private void deleteAssets(Set<PhotoEntity> photos) {
+        photos.parallelStream().forEach(photo -> {
             try {
-                Optional<PhotoEntity> optionalPhoto = photoRepository.findByIdAndUser(photoId, user);
-                if (optionalPhoto.isPresent()) {
-                    String originalPath = optionalPhoto.get().getOriginalPath();
-                    String  thumbnailPath = optionalPhoto.get().getThumbnailPath();
-                    photoDeletionService.permanentDeleteAssets(user, photoId); // Pass user to photoDeletionService
-                    photoRepository.findByIdAndUser(photoId, user).or(() -> { // Use findByIdAndUser
-                        try {
-                            Files.deleteIfExists(Paths.get(originalPath));
-                            if (thumbnailPath != null) {
-                                Files.deleteIfExists(Paths.get(thumbnailPath));
-                            }
-                        } catch (IOException e) {
-                            throw new RuntimeException(e);
+                    String originalPath = photo.getOriginalPath();
+                    String  thumbnailPath = photo.getThumbnailPath();
+                    photoDeletionService.permanentDeleteAssets(photo); // Pass user to photoDeletionService
+                    try {
+                        Files.deleteIfExists(Paths.get(originalPath));
+                        if (thumbnailPath != null) {
+                            Files.deleteIfExists(Paths.get(thumbnailPath));
                         }
-                        return Optional.empty();
-                    });
-
-                }
-
-            } catch (IOException e) {
-                log.error("can't delete photo with id {}", photoId, e);
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+            } catch (Exception e) {
+                log.error("can't delete photo with id {}", photo.getId(), e);
             }
         });
-
     }
 
     @Transactional
@@ -170,4 +169,6 @@ public class PhotoService {
     public Optional<PhotoEntity> findById(UserEntity user, UUID id) {
         return photoRepository.findByIdAndUser(id, user);
     }
+
+
 }

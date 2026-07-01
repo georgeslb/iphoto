@@ -6,7 +6,6 @@ import org.iphoto.entities.AlbumEntity;
 import org.iphoto.entities.DuplicateEntity;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.TaskEntity;
-import org.iphoto.entities.UserEntity; // Import UserEntity
 import org.iphoto.model.TaskStatus;
 import org.iphoto.repository.DuplicateRepository;
 import org.iphoto.repository.PhotoMetadataRepository;
@@ -32,43 +31,38 @@ public class PhotoDeletionService {
     private final TaskRepository taskRepository;
     private final DuplicateRepository duplicateRepository;
 
-    public void permanentDeleteAssets(UserEntity user, UUID id) throws IOException { // Added UserEntity parameter
-        Optional<PhotoEntity> optionalPhoto = photoRepository.findByIdAndUser(id, user); // Filter by user
-        if (optionalPhoto.isPresent()) {
-            PhotoEntity photo = optionalPhoto.get();
-            // Copy collection first
-            Set<AlbumEntity> albums = new HashSet<>(photo.getAlbums());
+    public void permanentDeleteAssets(PhotoEntity photo) { // Added UserEntity parameter
+        // Copy collection first
+        Set<AlbumEntity> albums = new HashSet<>(photo.getAlbums());
 
-            for (AlbumEntity album : albums) {
-                albumService.removePhotosFromAlbum(user, album.getId(), List.of(photo.getId())); // Pass user to albumService
-                // The photo is removed from the album's photos collection by albumService.
-                // We don't need to save the photo here again as it will be deleted.
-            }
-
-            // Handle duplicates: This logic assumes DuplicateEntity might contain photos from different users.
-            // If DuplicateEntity is user-scoped, this needs to be adjusted.
-            // For now, we'll remove the specific photo from any duplicate groups it's part of.
-            List<DuplicateEntity> duplicateEntities = duplicateRepository.findByPhotosIdIn(List.of(photo.getId()));
-            for (DuplicateEntity duplicateEntity : duplicateEntities) {
-                // Ensure we only modify duplicate groups relevant to the current user's photos
-                // This is a simplification; a more robust solution might involve user-scoping DuplicateEntity
-                // or more complex logic to handle shared duplicate groups.
-                if (duplicateEntity.getPhotos().contains(photo)) {
-                    duplicateEntity.getPhotos().remove(photo);
-                    if (duplicateEntity.getPhotos().isEmpty()) {
-                        duplicateRepository.delete(duplicateEntity);
-                    } else {
-                        duplicateRepository.save(duplicateEntity);
-                    }
-                }
-            }
-
-            metadataRepository.deleteById(id); // Metadata is tied to photo ID, so delete directly
-            photoRepository.delete(photo);
-
+        for (AlbumEntity album : albums) {
+            albumService.removePhotosFromAlbum(photo.getUser(), album.getId(), List.of(photo.getId())); // Pass user to albumService
+            // The photo is removed from the album's photos collection by albumService.
+            // We don't need to save the photo here again as it will be deleted.
         }
 
-        List<TaskEntity> pendingTasks = taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), LocalDateTime.now().plusYears(1), List.of(id));
+        // Handle duplicates: This logic assumes DuplicateEntity might contain photos from different users.
+        // If DuplicateEntity is user-scoped, this needs to be adjusted.
+        // For now, we'll remove the specific photo from any duplicate groups it's part of.
+        List<DuplicateEntity> duplicateEntities = duplicateRepository.findByPhotosIdIn(List.of(photo.getId()));
+        for (DuplicateEntity duplicateEntity : duplicateEntities) {
+            // Ensure we only modify duplicate groups relevant to the current user's photos
+            // This is a simplification; a more robust solution might involve user-scoping DuplicateEntity
+            // or more complex logic to handle shared duplicate groups.
+            if (duplicateEntity.getPhotos().contains(photo)) {
+                duplicateEntity.getPhotos().remove(photo);
+                if (duplicateEntity.getPhotos().isEmpty()) {
+                    duplicateRepository.delete(duplicateEntity);
+                } else {
+                    duplicateRepository.save(duplicateEntity);
+                }
+            }
+        }
+
+        metadataRepository.deleteById(photo.getId()); // Metadata is tied to photo ID, so delete directly
+        List<TaskEntity> pendingTasks = taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), LocalDateTime.now().plusYears(1), List.of(photo.getId()));
         taskRepository.deleteAll(pendingTasks);
+        photoRepository.delete(photo);
+
     }
 }

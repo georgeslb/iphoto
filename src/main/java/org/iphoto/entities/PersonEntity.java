@@ -1,27 +1,28 @@
 package org.iphoto.entities;
 
 import jakarta.persistence.*;
-import lombok.Data;
-import lombok.NoArgsConstructor;
+import lombok.EqualsAndHashCode;
+import lombok.Getter;
+import lombok.Setter;
+import lombok.experimental.SuperBuilder;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
-import java.time.LocalDateTime;
 
+@EqualsAndHashCode(callSuper = true)
 @Entity
 @Table(name = "people")
-@Data
-@NoArgsConstructor
-public class PersonEntity {
+@Getter
+@Setter
+@SuperBuilder
+public class PersonEntity extends BaseEntity { // Extends BaseEntity
 
     @Id
     @GeneratedValue(strategy = GenerationType.AUTO)
     private UUID id;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id", nullable = false)
-    private UserEntity user;
+    // Removed user field as it's inherited from BaseEntity
 
     @Column(nullable = true) // Name can be assigned by the user later
     private String name;
@@ -46,10 +47,6 @@ public class PersonEntity {
     @Enumerated(EnumType.STRING)
     @Column(name = "cover_face_origin")
     private CoverFaceOrigin coverFaceOrigin;
-
-    public PersonEntity(String name) {
-        this.name = name;
-    }
 
     // This ensures that before a Person is deleted from the DB, the reference in all
     // their associated faces is set to null, preventing a foreign key constraint violation

@@ -12,11 +12,8 @@ import org.iphoto.repository.FaceRepository;
 import org.iphoto.repository.PeopleRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
-import org.springframework.http.HttpMethod;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.Base64;
 import java.util.List;
@@ -56,7 +53,7 @@ public class FaceService {
     }
 
     public Page<PersonDTO> getPersons(UserEntity user, Pageable pageable) {
-        return peopleRepository.findAllByUser(user, pageable) // Assuming findAllByUser exists in PeopleRepository
+        return peopleRepository.findByUser(user, pageable) // Assuming findAllByUser exists in PeopleRepository
                 .map(personEntity -> mapToPerson(user, personEntity)); // Pass user to mapToPerson
     }
 

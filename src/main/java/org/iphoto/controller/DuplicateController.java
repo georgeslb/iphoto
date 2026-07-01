@@ -1,6 +1,5 @@
 package org.iphoto.controller;
 
-import lombok.AllArgsConstructor;
 import org.iphoto.entities.UserEntity;
 import org.iphoto.model.DuplicateGroupDTO;
 import org.iphoto.model.FinishComparisonRequest;
@@ -10,25 +9,17 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Slice;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
-
-import java.util.NoSuchElementException;
 
 @RestController
 @RequestMapping("/api/photos/duplicates")
-@AllArgsConstructor
-public class DuplicateController {
+public class DuplicateController extends AbstractBaseController {
 
     private final DuplicationService duplicationService;
-    private final UserRepository userRepository; // Inject UserRepository
 
-    private UserEntity getCurrentUser() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        String username = authentication.getName();
-        return userRepository.findByUsername(username)
-                .orElseThrow(() -> new NoSuchElementException("User not found: " + username));
+    public DuplicateController(DuplicationService duplicationService, UserRepository  userRepository) {
+        super(userRepository);
+        this.duplicationService = duplicationService;
     }
 
     @GetMapping

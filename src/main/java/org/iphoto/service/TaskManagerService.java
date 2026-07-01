@@ -39,12 +39,13 @@ public class TaskManagerService {
     public TaskEntity createTaskEntity(UserEntity user, TaskType taskType, UUID photoId,
                                        String payload,
                                        LocalDateTime executionDateTime) {
-        TaskEntity task = new TaskEntity();
-        task.setUser(user); // Set the user for the task
-        task.setTaskType(taskType.name());
-        task.setPhotoId(photoId);
-        task.setPayload(payload);
-        task.setExecuteAt(executionDateTime);
+        TaskEntity task = TaskEntity.builder()
+                .user(user)
+                .taskType(taskType.name())
+                .photoId(photoId)
+                .payload(payload)
+                .executeAt(executionDateTime)
+                .build();
         return taskRepository.save(task);
     }
 
@@ -59,12 +60,13 @@ public class TaskManagerService {
     public TaskEntity createTaskEntityImmediately(UserEntity user, TaskType taskType, UUID photoId,
                                        String payload,
                                        LocalDateTime executionDateTime) {
-        TaskEntity task = new TaskEntity();
-        task.setUser(user); // Set the user for the task
-        task.setTaskType(taskType.name());
-        task.setPhotoId(photoId);
-        task.setPayload(payload);
-        task.setExecuteAt(executionDateTime);
+        TaskEntity task = TaskEntity.builder()
+                .user(user)
+                .taskType(taskType.name())
+                .photoId(photoId)
+                .payload(payload)
+                .executeAt(executionDateTime)
+                .build();
         return taskRepository.saveAndFlush(task);
     }
 

@@ -36,12 +36,11 @@ public class ShareService {
 
         return  albumRepository.findByIdAndUser(request.albumId(), user) // Ensure album belongs to the user
                 .map(album -> {
-                    ShareEntity share = new ShareEntity();
-                    share.setUser(user); // Set the user for the share
-                    share.setName(request.name());
-                    share.setAvailableUntil(request.daysAvailable() > 0 ? LocalDateTime.now().plusDays(request.daysAvailable()) : null);
-                    share.setAlbum(album);
-                    share.setPaswword(encryptPassword(request.password()));
+                    ShareEntity share =
+                            ShareEntity.builder().user(user).name(request.name())
+                            .availableUntil(request.daysAvailable() > 0 ? LocalDateTime.now().plusDays(request.daysAvailable()) : null)
+                            .album(album)
+                            .paswword(encryptPassword(request.password())).build();
                     return shareRepository.save(share);
                 })
                 .map(this::buildShareResponse)
@@ -62,6 +61,13 @@ public class ShareService {
                 .orElseThrow(() -> new NoSuchElementException("Share link not found."));
 
         return buildShareResponse(shareEntity);
+    }
+
+    private ShareResponse buildShareResponse(ShareEntity shareEntity) {
+        // Check for password protection
+        boolean isPasswordProtected = StringUtils.hasText(shareEntity.getPaswword());
+        boolean isExpired = shareEntity.getAvailableUntil() != null && shareEntity.getAvailableUntil().isBefore(LocalDateTime.now());
+        return new ShareResponse(shareEntity.getId().toString(), shareEntity.getName(), shareEntity.getAlbum().getId(), isPasswordProtected, isExpired);
     }
 
     public ShareResponse getShareDetailsById(String shareId) {

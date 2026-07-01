@@ -1,10 +1,11 @@
 package org.iphoto.entities;
 
 import jakarta.persistence.*;
-import lombok.Data;
 import lombok.EqualsAndHashCode;
-import lombok.NoArgsConstructor;
+import lombok.Getter;
+import lombok.Setter;
 import lombok.ToString;
+import lombok.experimental.SuperBuilder;
 import org.springframework.data.domain.Persistable;
 
 import java.time.LocalDateTime;
@@ -12,11 +13,12 @@ import java.util.UUID;
 
 @Entity
 @Table(name = "shares")
-@Data
-@EqualsAndHashCode(callSuper = false, onlyExplicitlyIncluded = true)
-@NoArgsConstructor
+@EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true) // Changed callSuper to true
+@Getter
+@Setter
+@SuperBuilder
 @ToString(onlyExplicitlyIncluded = true)
-public class ShareEntity implements Persistable<UUID> {
+public class ShareEntity extends BaseEntity implements Persistable<UUID> { // Extends BaseEntity
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
@@ -24,9 +26,7 @@ public class ShareEntity implements Persistable<UUID> {
     @EqualsAndHashCode.Include
     private UUID id;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id", nullable = false)
-    private UserEntity user;
+    // Removed user field as it's inherited from BaseEntity
 
     @Column(nullable = false, unique = true)
     @ToString.Include

@@ -1,24 +1,24 @@
 package org.iphoto.entities;
 
 import jakarta.persistence.*;
-import lombok.Data;
-import lombok.NoArgsConstructor;
+import lombok.*;
+import lombok.experimental.SuperBuilder;
 
 import java.util.UUID;
 
+@EqualsAndHashCode(callSuper = true)
 @Entity
 @Table(name = "faces")
-@Data
-@NoArgsConstructor
-public class FaceEntity {
+@Getter
+@Setter
+@SuperBuilder
+public class FaceEntity extends BaseEntity { // Extends BaseEntity
 
     @Id
     @GeneratedValue(strategy = GenerationType.AUTO)
     private UUID id;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id", nullable = false)
-    private UserEntity user;
+    // Removed user field as it's inherited from BaseEntity
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "photo_id", nullable = false)
@@ -45,12 +45,4 @@ public class FaceEntity {
 
     @Column(columnDefinition = "BYTEA")
     private byte[] faceThumbnail; // Stores the cropped JPEG image of the face for UI display
-
-    public FaceEntity(PhotoEntity photo, int x, int y, int width, int height) {
-        this.photo = photo;
-        this.x = x;
-        this.y = y;
-        this.width = width;
-        this.height = height;
-    }
 }

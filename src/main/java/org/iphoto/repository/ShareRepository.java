@@ -16,4 +16,6 @@ public interface ShareRepository extends JpaRepository<ShareEntity, UUID> {
     List<ShareEntity> findAllByUser(UserEntity user);
 
     Optional<ShareEntity> findByIdAndUser(UUID id, UserEntity user);
+
+    Optional<ShareEntity> findByName(String name);
 }

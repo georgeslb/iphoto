@@ -8,6 +8,7 @@ import org.iphoto.model.PersonDTO;
 import org.iphoto.model.Photo;
 import org.iphoto.repository.UserRepository;
 import org.iphoto.service.FaceService;
+import org.iphoto.service.UserService;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
@@ -24,19 +25,16 @@ import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/faces")
-@AllArgsConstructor
 @Slf4j
-public class FaceController {
+public class FaceController extends AbstractBaseController {
 
     private final FaceService faceService;
-    private final UserRepository userRepository; // Inject UserRepository
 
-    private UserEntity getCurrentUser() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        String username = authentication.getName();
-        return userRepository.findByUsername(username)
-                .orElseThrow(() -> new NoSuchElementException("User not found: " + username));
+    public FaceController(FaceService faceService, UserRepository userRepository) {
+        super(userRepository);
+        this.faceService = faceService;
     }
+
 
     @GetMapping("/photo/{id}")
     public ResponseEntity<List<FaceDTO>> getFacesForPhoto(@PathVariable String id) {
