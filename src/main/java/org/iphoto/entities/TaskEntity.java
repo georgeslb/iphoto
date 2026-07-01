@@ -32,7 +32,7 @@ public class TaskEntity{
     private String taskType;
 
     @Column(nullable = false)
-    private String status = TaskStatus.PENDING.name();
+    private String status;
 
     @Column(columnDefinition = "TEXT")
     private String payload;

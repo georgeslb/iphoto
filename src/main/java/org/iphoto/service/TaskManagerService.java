@@ -4,6 +4,7 @@ import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.TaskEntity;
 import org.iphoto.entities.UserEntity; // Import UserEntity
+import org.iphoto.model.TaskStatus;
 import org.iphoto.model.TaskType;
 import org.iphoto.repository.TaskRepository;
 import org.springframework.stereotype.Service;
@@ -45,6 +46,7 @@ public class TaskManagerService {
                 .photoId(photoId)
                 .payload(payload)
                 .executeAt(executionDateTime)
+                .status(TaskStatus.PENDING.name())
                 .build();
         return taskRepository.save(task);
     }

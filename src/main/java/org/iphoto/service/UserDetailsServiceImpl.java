@@ -25,7 +25,8 @@ public class UserDetailsServiceImpl implements UserDetailsService {
         UserEntity userEntity = userRepository.findByUsername(username)
                 .orElseThrow(() -> new UsernameNotFoundException("User not found with username: " + username));
 
+        // Prepend "ROLE_" to the role name to match Spring Security's default expectation for hasRole()
         return new User(userEntity.getUsername(), userEntity.getPassword(),
-                Collections.singletonList(new SimpleGrantedAuthority(userEntity.getRole())));
+                Collections.singletonList(new SimpleGrantedAuthority("ROLE_" + userEntity.getRole())));
     }
 }
