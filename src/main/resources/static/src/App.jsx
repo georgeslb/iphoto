@@ -267,39 +267,43 @@ function App() {
 
   return (
       <div className="app-container">
-        <Sidebar
-            pathname={backgroundLocation?.pathname || location.pathname}
-            isAuthenticated={isAuthenticated}
-            userRole={userRole}
-            handleLogout={handleLogout}
-        />
+        {isAuthenticated && (
+          <Sidebar
+              pathname={backgroundLocation?.pathname || location.pathname}
+              isAuthenticated={isAuthenticated}
+              userRole={userRole}
+              handleLogout={handleLogout}
+          />
+        )}
 
         <main className="main-content" ref={mainContentRef}>
-          <UploadManager refreshAndMaintainScroll={refreshAndMaintainScroll} effectivePath={effectivePath}>
-            {({ handleUpload }) => (
-                <HeaderWrapper
-                    selectedIds={selectedIds}
-                    setSelectedIds={setSelectedIds}
-                    handleRestore={handleRestore}
-                    handlePermanentDelete={handlePermanentDelete}
-                    handleRemovePhotosFromAlbum={handleRemovePhotosFromAlbum}
-                    handleMoveToGarbage={handleMoveToGarbage}
-                    setShowAddToAlbumModal={setShowAddToAlbumModal}
-                    setShowCreateShareLinkModal={handleShowCreateShareLinkModal}
-                    handleUpload={handleUpload}
-                    handleSetCoverPhoto={handleSetCoverPhoto}
-                    handleDeleteAlbums={handleDeleteAlbums}
-                    navigate={navigate}
-                    duplicatesPage={duplicatesPage}
-                    fetchDuplicates={fetchDuplicates}
-                    isLastDuplicateGroup={isLastDuplicateGroup}
-                    photos={photos}
-                    currentDuplicateGroup={currentDuplicateGroup}
-                    backgroundLocation={backgroundLocation}
-                    albumId={currentAlbumId}
-                />
-            )}
-          </UploadManager>
+          {isAuthenticated && (
+            <UploadManager refreshAndMaintainScroll={refreshAndMaintainScroll} effectivePath={effectivePath}>
+              {({ handleUpload }) => (
+                  <HeaderWrapper
+                      selectedIds={selectedIds}
+                      setSelectedIds={setSelectedIds}
+                      handleRestore={handleRestore}
+                      handlePermanentDelete={handlePermanentDelete}
+                      handleRemovePhotosFromAlbum={handleRemovePhotosFromAlbum}
+                      handleMoveToGarbage={handleMoveToGarbage}
+                      setShowAddToAlbumModal={setShowAddToAlbumModal}
+                      setShowCreateShareLinkModal={handleShowCreateShareLinkModal}
+                      handleUpload={handleUpload}
+                      handleSetCoverPhoto={handleSetCoverPhoto}
+                      handleDeleteAlbums={handleDeleteAlbums}
+                      navigate={navigate}
+                      duplicatesPage={duplicatesPage}
+                      fetchDuplicates={fetchDuplicates}
+                      isLastDuplicateGroup={isLastDuplicateGroup}
+                      photos={photos}
+                      currentDuplicateGroup={currentDuplicateGroup}
+                      backgroundLocation={backgroundLocation}
+                      albumId={currentAlbumId}
+                  />
+              )}
+            </UploadManager>
+          )}
 
           <Routes location={backgroundLocation || location}>
             <Route path="/login" element={<Login />} />
