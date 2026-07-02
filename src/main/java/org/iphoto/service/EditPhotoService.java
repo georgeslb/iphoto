@@ -1,6 +1,7 @@
 package org.iphoto.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.persistence.EntityManager;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
@@ -11,6 +12,7 @@ import org.iphoto.model.PhotoEditRequest;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.TaskType;
 import org.iphoto.properties.IPhotoProperties;
+import org.iphoto.repository.FaceRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
@@ -46,6 +48,8 @@ public class EditPhotoService {
     private final TaskManagerService taskManagerService;
     private final ThumbnailService thumbnailService;
     private final IPhotoProperties iPhotoProperties;
+    private final FaceRepository faceRepository;
+    private final DuplicationService duplicationService;
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public PhotoEntity editImage(
@@ -140,6 +144,8 @@ public class EditPhotoService {
                 originalPhoto.setFileSize(Files.size(Path.of(originalPhoto.getOriginalPath())));
                 originalPhoto.setWidth(workingImage.getWidth());
                 originalPhoto.setHeight(workingImage.getHeight());
+                originalPhoto.getFaces().forEach(faceRepository::delete);
+                duplicationService.deleteDuplicatesForPhoto(originalPhoto);
                 taskManagerService.createTaskEntity(TaskType.HASH_IMAGE, originalPhoto.getId(), null,  LocalDateTime.now().plusMinutes(2));
                 taskManagerService.createTaskEntity(TaskType.ISOLATE_FACES, originalPhoto.getId(), null,  LocalDateTime.now().plusMinutes(3));
                 return photoRepository.save(originalPhoto);

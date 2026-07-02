@@ -1,9 +1,7 @@
 package org.iphoto.entities;
 
 import jakarta.persistence.*;
-import lombok.EqualsAndHashCode;
-import lombok.Getter;
-import lombok.Setter;
+import lombok.*;
 import lombok.experimental.SuperBuilder;
 
 import java.util.ArrayList;
@@ -56,5 +54,8 @@ public class PersonEntity extends BaseEntity { // Extends BaseEntity
         for (FaceEntity face : faces) {
             face.setPerson(null);
         }
+    }
+    public PersonEntity() {
+        super();
     }
 }

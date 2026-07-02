@@ -32,10 +32,10 @@ public class UserService {
     }
 
     public UserEntity createUser(String username, String password, String role) {
-        UserEntity user = new UserEntity();
-        user.setUsername(username);
-        user.setPassword(passwordEncoder.encode(password));
-        user.setRole(role);
+        UserEntity user = UserEntity.builder()
+                    .username(username)
+                    .password(passwordEncoder.encode(password))
+                    .role(role).build();
         return userRepository.save(user);
     }
 

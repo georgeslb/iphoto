@@ -1,7 +1,5 @@
 package org.iphoto.service;
 
-import lombok.Builder;
-import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.iphoto.entities.CoverFaceOrigin;
 import org.iphoto.entities.FaceEntity;
@@ -10,19 +8,13 @@ import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.UserEntity; // Import UserEntity
 import org.iphoto.repository.FaceRepository;
 import org.iphoto.repository.PersonRepository;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.FloatBuffer;
 import java.time.LocalDateTime;
 import java.util.*;
-import java.util.stream.Stream;
 
 @Service
 @RequiredArgsConstructor
@@ -33,15 +25,7 @@ public class PersonRecognitionService {
     private final PersonRepository personRepository;
     private static final double THRESHOLD = 0.8;
 
-    public void updatePerson(UserEntity user, PersonEntity person, FaceEntity face) { // Added UserEntity parameter
-        // Ensure the person and face belong to the user
-        if (!person.getUser().equals(user)) {
-            throw new IllegalArgumentException("Person does not belong to the current user.");
-        }
-        if (!face.getUser().equals(user)) {
-            throw new IllegalArgumentException("Face does not belong to the current user.");
-        }
-
+    public void updatePerson(PersonEntity person, FaceEntity face) { // Added UserEntity parameter
         face.setPerson(person);
         faceRepository.save(face);
         person.getFaces().add(face);
@@ -53,9 +37,6 @@ public class PersonRecognitionService {
         PersonEntity person = PersonEntity.builder().user(user).faces(faces).build();
         recalculateCoverFace(person);
         faces.forEach(faceEntity -> {
-            if (!faceEntity.getUser().equals(user)) { // Ensure all faces belong to the user
-                throw new IllegalArgumentException("One or more faces do not belong to the current user.");
-            }
             faceEntity.setPerson(person);
         });
         personRepository.save(person);

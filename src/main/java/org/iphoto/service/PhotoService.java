@@ -159,7 +159,7 @@ public class PhotoService {
     }
 
     public List<AlbumDTO> getAlbumsByPhoto(UserEntity user, UUID photoId) {
-       return albumRepository.findByUserAndPhotos_Id(user, photoId).stream().map(album -> albumService.convertToDto(user, album)).toList(); // Pass user to albumService
+       return albumRepository.findByUserAndPhotos_Id(user, photoId).stream().map(album -> albumService.convertToDto(album)).toList(); // Pass user to albumService
     }
 
     public Page<Photo> findByPerson(UserEntity user, PersonEntity personEntity, Pageable pageable) {

@@ -47,9 +47,7 @@ public class GlobalExceptionHandler {
         ex.printStackTrace(new PrintWriter(sw));
 
         Map<String, Object> body = new HashMap<>();
-        body.put("error", ex.getMessage());
-        body.put("type", ex.getClass().getSimpleName());
-        body.put("stackTrace", sw.toString());
+        log.error(ex.getMessage(), ex);
         body.put("timestamp", System.currentTimeMillis());
 
         return new ResponseEntity<>(body, HttpStatus.INTERNAL_SERVER_ERROR);

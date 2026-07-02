@@ -22,6 +22,7 @@ import org.iphoto.properties.IPhotoProperties;
 import org.iphoto.repository.PhotoMetadataRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.repository.TaskRepository;
+import org.iphoto.repository.UserRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -62,7 +63,6 @@ public class PhotoUploadService {
         if (!Files.exists(storageDir)) Files.createDirectories(storageDir);
         Path finalPath = storageDir.resolve(task.getPhotoId().toString() + "." + FilenameUtils.getExtension(payload.get("originalFileName")));
         Files.move(tempFile.toPath(), finalPath);
-
         String thumbPath = thumbnailService.generateThumbnail(finalPath.toString(), task.getPhotoId().toString(), contentType);
 
         PhotoEntity photo = PhotoEntity.builder().id(task.getPhotoId())
@@ -94,8 +94,8 @@ public class PhotoUploadService {
         if (payload.get("albumId") != null) {
             albumService.addPhotosToAlbum(photo.getUser(), UUID.fromString(payload.get("albumId")), List.of(photo.getId())); // Pass user to albumService
         }
-        taskManagerService.createTaskEntity(photo.getUser(), TaskType.HASH_IMAGE, photo.getId(), null,  LocalDateTime.now().plusMinutes(2)); // Pass user
-        taskManagerService.createTaskEntity(photo.getUser(), TaskType.ISOLATE_FACES, photo.getId(), null,  LocalDateTime.now().plusMinutes(3)); // Pass user
+        taskManagerService.createTaskEntity(null, TaskType.HASH_IMAGE, photo.getId(), null,  LocalDateTime.now().plusMinutes(2)); // Pass user
+        taskManagerService.createTaskEntity(null, TaskType.ISOLATE_FACES, photo.getId(), null,  LocalDateTime.now().plusMinutes(3)); // Pass user
 
         return SUCCESS;
     }

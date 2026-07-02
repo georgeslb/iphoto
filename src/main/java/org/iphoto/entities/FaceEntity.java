@@ -18,8 +18,6 @@ public class FaceEntity extends BaseEntity { // Extends BaseEntity
     @GeneratedValue(strategy = GenerationType.AUTO)
     private UUID id;
 
-    // Removed user field as it's inherited from BaseEntity
-
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "photo_id", nullable = false)
     private PhotoEntity photo;
@@ -45,4 +43,9 @@ public class FaceEntity extends BaseEntity { // Extends BaseEntity
 
     @Column(columnDefinition = "BYTEA")
     private byte[] faceThumbnail; // Stores the cropped JPEG image of the face for UI display
+
+
+    public FaceEntity() {
+        super();
+    }
 }

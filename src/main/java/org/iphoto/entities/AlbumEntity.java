@@ -6,10 +6,8 @@ import lombok.Getter;
 import lombok.Setter;
 import lombok.ToString;
 import lombok.experimental.SuperBuilder;
-import org.springframework.data.domain.Persistable;
 
 import java.time.LocalDateTime;
-import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
 
@@ -20,15 +18,13 @@ import java.util.UUID;
 @Getter
 @Setter
 @ToString(onlyExplicitlyIncluded = true)
-public class AlbumEntity extends BaseEntity implements Persistable<UUID> { // Extends BaseEntity
+public final class AlbumEntity extends BaseEntity { // Extends BaseEntity
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     @ToString.Include
     @EqualsAndHashCode.Include
     private UUID id;
-
-    // Removed user field as it's inherited from BaseEntity
 
     @Column(nullable = false, unique = true) // This unique constraint might need to be adjusted to be unique per user
     @ToString.Include
@@ -60,10 +56,6 @@ public class AlbumEntity extends BaseEntity implements Persistable<UUID> { // Ex
     @OneToMany(fetch = FetchType.LAZY)
     Set<ShareEntity> shares;
 
-    @Transient
-    private boolean isNew = true;
-
-
     @Override
     public UUID getId() {
         return id;
@@ -79,20 +71,17 @@ public class AlbumEntity extends BaseEntity implements Persistable<UUID> { // Ex
         this.photos.remove(photo);
         // If the relationship is bidirectional, you would also nullify the other side here.
     }
-    @Override
-    public boolean isNew() {
-        return isNew;
-    }
+
 
     @PrePersist
-    protected void onCreate() {
+    private void onCreate() {
         createdAt = LocalDateTime.now();
         updatedAt = LocalDateTime.now();
         isNew = false;
     }
 
     @PreUpdate
-    protected void onUpdate() {
+    private void onUpdate() {
         updatedAt = LocalDateTime.now();
     }
 
@@ -101,4 +90,7 @@ public class AlbumEntity extends BaseEntity implements Persistable<UUID> { // Ex
         this.isNew = false;
     }
 
+    public AlbumEntity() {
+        super();
+    }
 }

@@ -1,9 +1,7 @@
 package org.iphoto.entities;
 
 import jakarta.persistence.*;
-import lombok.Builder;
-import lombok.Data;
-import lombok.EqualsAndHashCode;
+import lombok.*;
 import org.iphoto.model.TaskStatus;
 
 import java.time.LocalDateTime;
@@ -11,9 +9,13 @@ import java.util.UUID;
 
 @Entity
 @Table(name = "tasks")
-@Builder
 @Data
 @EqualsAndHashCode(callSuper = false)
+@Builder(toBuilder = true)
+@AllArgsConstructor(access = AccessLevel.PUBLIC)
+@NoArgsConstructor(access = AccessLevel.PUBLIC)
+@Setter(value = AccessLevel.PUBLIC)
+@Getter
 public class TaskEntity{
 
     @Id
@@ -47,6 +49,7 @@ public class TaskEntity{
 
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+
 
     @PrePersist
     protected void onCreate() {

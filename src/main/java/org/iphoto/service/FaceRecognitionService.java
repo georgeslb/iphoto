@@ -58,7 +58,7 @@ public class FaceRecognitionService {
             for (FaceEntity face : facesNotGrouped) {
                 // Find the best matching person and update if the score is above the threshold
                 findBestMatchForFace(user, face, persons).ifPresent(personWithScore -> { // Pass user
-                    personRecognitionService.updatePerson(user, personWithScore.getPerson(), face); // Pass user
+                    personRecognitionService.updatePerson(personWithScore.getPerson(), face); // Pass user
                 });
             }
             pageable = facesNotGrouped.nextPageable();

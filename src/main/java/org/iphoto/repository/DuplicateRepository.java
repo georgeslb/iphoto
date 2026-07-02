@@ -16,9 +16,9 @@ import java.util.UUID;
 public interface DuplicateRepository extends JpaRepository<DuplicateEntity, UUID> {
     List<DuplicateEntity> findByPhotosIdIn(List<UUID> ids);
 
-    List<DuplicateEntity> findByPhotosIdInAndUser(List<UUID> ids, UserEntity user);
-
     Slice<DuplicateEntity> findByUserAndStatus(UserEntity user, DuplicateStatus duplicateStatus, Pageable pageable);
 
     Optional<DuplicateEntity> findByUserAndHash(UserEntity user, String hash);
+
+    void deleteByIdAndPhotosId(UUID duplicateId, UUID photoId);
 }

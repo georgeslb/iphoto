@@ -38,6 +38,7 @@ function App() {
   const navigate = useNavigate();
   const location = useLocation();
   const mainContentRef = useRef(null);
+  const fileInputRef = useRef(null); // Declare fileInputRef here
 
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [userRole, setUserRole] = useState(null);
@@ -278,7 +279,7 @@ function App() {
 
         <main className="main-content" ref={mainContentRef}>
           {isAuthenticated && (
-            <UploadManager refreshAndMaintainScroll={refreshAndMaintainScroll} effectivePath={effectivePath}>
+            <UploadManager refreshAndMaintainScroll={refreshAndMaintainScroll} effectivePath={effectivePath} fileInputRef={fileInputRef}>
               {({ handleUpload }) => (
                   <HeaderWrapper
                       selectedIds={selectedIds}
@@ -300,6 +301,7 @@ function App() {
                       currentDuplicateGroup={currentDuplicateGroup}
                       backgroundLocation={backgroundLocation}
                       albumId={currentAlbumId}
+                      fileInputRef={fileInputRef} // Pass fileInputRef to HeaderWrapper
                   />
               )}
             </UploadManager>

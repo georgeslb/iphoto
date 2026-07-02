@@ -14,11 +14,13 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.configuration.FaceAligner;
 import org.iphoto.entities.FaceEntity;
+import org.iphoto.entities.PersonEntity;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.TaskEntity;
 import org.iphoto.exception.ServiceNotAvailableException;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.repository.FaceRepository;
+import org.iphoto.repository.PersonRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
@@ -41,8 +43,21 @@ public class FaceDetectionService {
     private final ZooModel<Image, DetectedObjects> detectionModel;
     private final ZooModel<Image, float[]> embeddingModel;
     private final ReentrantLock lock = new ReentrantLock();
+    private final PersonRepository personRepository;
 
 
+
+    public void deleteFaces(PhotoEntity photo) {
+        photo.getFaces().forEach(faceEntity -> {
+            personRepository.findByCoverFace(faceEntity).forEach(personEntity -> {
+                        personEntity.setCoverFace(null);
+                        personRepository.save(personEntity);
+                    });
+            faceRepository.deleteByPhotoId(photo);
+        });
+
+
+    }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void detectAndSaveFaces(TaskEntity task) {
@@ -50,7 +65,6 @@ public class FaceDetectionService {
             throw new ServiceNotAvailableException("Face detection service is busy with task " + task.getId());
         }
         try {
-
             photoRepository.findById(task.getPhotoId()).ifPresent(photo -> { // Filter by user
                 try {
                     log.info("Starting face detection for photo: {}", photo.getId());

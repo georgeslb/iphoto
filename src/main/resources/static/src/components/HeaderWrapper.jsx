@@ -21,7 +21,8 @@ function HeaderWrapper({
   isLastDuplicateGroup,
   photos,
   currentDuplicateGroup,
-  backgroundLocation
+  backgroundLocation,
+  fileInputRef // Add fileInputRef to props
 }) {
   const location = useLocation();
 
@@ -55,6 +56,7 @@ function HeaderWrapper({
           duplicatesPage={duplicatesPage}
           fetchDuplicates={fetchDuplicates}
           isLastDuplicateGroup={isLastDuplicateGroup}
+          fileInputRef={fileInputRef} // Pass fileInputRef to Header
       />
   );
 }

@@ -6,7 +6,6 @@ import lombok.Getter;
 import lombok.Setter;
 import lombok.ToString;
 import lombok.experimental.SuperBuilder;
-import org.springframework.data.domain.Persistable;
 
 import java.time.LocalDateTime;
 import java.util.*;
@@ -18,7 +17,7 @@ import java.util.*;
 @Getter
 @Setter
 @SuperBuilder
-public class PhotoEntity extends BaseEntity implements Persistable<UUID> { // Extends BaseEntity
+public class PhotoEntity extends BaseEntity  { // Extends BaseEntity
 
     @Id
     @ToString.Include
@@ -80,12 +79,6 @@ public class PhotoEntity extends BaseEntity implements Persistable<UUID> { // Ex
     )
     private List<FaceEntity> faces = new ArrayList<>();
 
-    @Transient
-    private boolean isNew = true;
-
-    public PhotoEntity() {
-        super();
-    }
 
     @Override
     public boolean isNew() {
@@ -104,4 +97,9 @@ public class PhotoEntity extends BaseEntity implements Persistable<UUID> { // Ex
         if (isFavorite == null) isFavorite = false;
         if (isGarbage == null) isGarbage = false;
     }
+
+    public PhotoEntity() {
+        super();
+    }
+
 }

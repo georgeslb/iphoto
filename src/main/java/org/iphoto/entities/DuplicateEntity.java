@@ -1,10 +1,12 @@
 package org.iphoto.entities;
 
 import jakarta.persistence.*;
-import lombok.*;
+import lombok.EqualsAndHashCode;
+import lombok.Getter;
+import lombok.Setter;
+import lombok.ToString;
 import lombok.experimental.SuperBuilder;
 import org.iphoto.model.DuplicateStatus;
-import org.springframework.data.domain.Persistable;
 
 import java.util.HashSet;
 import java.util.Set;
@@ -17,14 +19,12 @@ import java.util.UUID;
 @SuperBuilder
 @EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true) // Changed callSuper to true
 @ToString(onlyExplicitlyIncluded = true)
-public class DuplicateEntity extends BaseEntity implements Persistable<UUID> { // Extends BaseEntity
+public class DuplicateEntity extends BaseEntity { // Extends BaseEntity
 
     @Id
     @ToString.Include
     @EqualsAndHashCode.Include
     private UUID id;
-
-    // Removed user field as it's inherited from BaseEntity
 
     @ManyToMany(fetch = FetchType.LAZY)
     @JoinTable(
@@ -40,7 +40,10 @@ public class DuplicateEntity extends BaseEntity implements Persistable<UUID> { /
     @Column(unique = true) // This unique constraint might need to be adjusted to be unique per user
     private String hash;
 
-    @Transient
-    private boolean isNew = true;
+
+    public DuplicateEntity() {
+        super();
+    }
+
 
 }

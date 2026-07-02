@@ -50,6 +50,19 @@ public class DuplicationService {
     private static final int MAX_SIZE = 1000;
 
 
+    public void deleteDuplicatesForPhoto(PhotoEntity photo) {
+        duplicateRepository.findByPhotosIdIn(Collections.singletonList(photo.getId()))
+                .forEach(duplicate -> {
+                    if (duplicate.getPhotos().size() == 2) {
+                        duplicateRepository.delete(duplicate);
+                    } else {
+                        duplicateRepository.deleteByIdAndPhotosId(duplicate.getId(), photo.getId());
+                    }
+                });
+
+
+    }
+
     public void processMovingToGarbage(Set<PhotoEntity> photosDeleted) { // Added UserEntity parameter
         List<UUID> photoIds = photosDeleted.stream().map(PhotoEntity::getId).collect(Collectors.toList());
         List<DuplicateEntity> duplicateEntities = duplicateRepository.findByPhotosIdIn(photoIds); // Filter by user
@@ -354,4 +367,5 @@ public class DuplicationService {
         // Long.bitCount uses an optimized hardware instruction (popcount) to count the 1s
         return Long.bitCount(xorResult);
     }
+
 }

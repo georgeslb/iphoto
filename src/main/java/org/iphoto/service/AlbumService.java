@@ -2,14 +2,14 @@ package org.iphoto.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.iphoto.entities.AlbumEntity;
+import org.iphoto.entities.PhotoEntity;
+import org.iphoto.entities.UserEntity; // Import UserEntity
 import org.iphoto.mappers.PhotoMapper;
 import org.iphoto.model.AlbumCreateRequest;
 import org.iphoto.model.AlbumDTO;
-import org.iphoto.entities.AlbumEntity;
 import org.iphoto.model.AlbumUpdateRequest;
 import org.iphoto.model.Photo;
-import org.iphoto.entities.PhotoEntity;
-import org.iphoto.entities.UserEntity; // Import UserEntity
 import org.iphoto.repository.AlbumRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.springframework.data.domain.PageRequest;
@@ -137,7 +137,7 @@ public class AlbumService {
                 .collect(Collectors.toList());
     }
 
-    public AlbumDTO convertToDto(UserEntity user, AlbumEntity album) { // Added UserEntity parameter
+    public AlbumDTO convertToDto(AlbumEntity album) { // Added UserEntity parameter
         Photo coverPhotoDTO = null;
         if (album.getCoverPhoto() != null) {
             coverPhotoDTO = photoMapper.photoEntityToPhoto(album.getCoverPhoto());
@@ -181,7 +181,7 @@ public class AlbumService {
     }
 
     private AlbumDTO updateAlbumAndGetDto(UserEntity user, AlbumEntity album) { // Added UserEntity parameter
-        return convertToDto(user, updateAlbum(user, album)); // Pass user
+        return convertToDto(updateAlbum(user, album)); // Pass user
     }
 
     private void setAlbumPhotoCount(UserEntity user, AlbumEntity albumEntity) { // Added UserEntity parameter

@@ -45,6 +45,15 @@ export default function Lightbox({
     const imageEditorRef = useRef(null);
     const editorInstance = useRef(null);
     const imageRef = useRef(null);
+    const zoomContainerRef = useRef(null); // Ref for the zoomable container
+
+    // State for zoom and pan
+    const [zoomScale, setZoomScale] = useState(1);
+    const [panX, setPanX] = useState(0);
+    const [panY, setPanY] = useState(0);
+    const [isDragging, setIsDragging] = useState(false);
+    const [startX, setStartX] = useState(0);
+    const [startY, setStartY] = useState(0);
 
     // State for face detection
     const [faces, setFaces] = useState([]);
@@ -113,6 +122,10 @@ export default function Lightbox({
                 editorInstance.current.destroy();
                 editorInstance.current = null;
             }
+            // Reset zoom and pan when photo changes
+            setZoomScale(1);
+            setPanX(0);
+            setPanY(0);
         }
     }, [selectedPhoto]);
 
@@ -168,6 +181,137 @@ export default function Lightbox({
             setImageSize({ naturalWidth, naturalHeight, displayWidth: clientWidth, displayHeight: clientHeight });
         }
     };
+
+    const clampPan = useCallback((newPanX, newPanY, currentScale) => {
+        const img = imageRef.current;
+        const container = zoomContainerRef.current;
+        if (!img || !container) return { x: 0, y: 0 };
+
+        // Get the actual rendered size of the image content within the container (before zoom transform)
+        // This accounts for object-fit: contain
+        const naturalImageWidth = img.naturalWidth;
+        const naturalImageHeight = img.naturalHeight;
+        const containerWidth = container.clientWidth;
+        const containerHeight = container.clientHeight;
+
+        let renderedImageWidth = naturalImageWidth;
+        let renderedImageHeight = naturalImageHeight;
+
+        const aspectRatioContainer = containerWidth / containerHeight;
+        const aspectRatioImage = naturalImageWidth / naturalImageHeight;
+
+        if (aspectRatioImage > aspectRatioContainer) {
+            // Image is wider than container, height is constrained
+            renderedImageWidth = containerWidth;
+            renderedImageHeight = containerWidth / aspectRatioImage;
+        } else {
+            // Image is taller than container, width is constrained
+            renderedImageHeight = containerHeight;
+            renderedImageWidth = containerHeight * aspectRatioImage;
+        }
+
+        // Now, apply the current zoom scale to these rendered dimensions
+        const scaledContentWidth = renderedImageWidth * currentScale;
+        const scaledContentHeight = renderedImageHeight * currentScale;
+
+        // Calculate the maximum allowed pan from the center
+        // The pan values are offsets from the center of the container
+        const maxPanRangeX = Math.max(0, (scaledContentWidth - containerWidth) / 2);
+        const maxPanRangeY = Math.max(0, (scaledContentHeight - containerHeight) / 2);
+
+        const clampedX = Math.max(-maxPanRangeX, Math.min(maxPanRangeX, newPanX));
+        const clampedY = Math.max(-maxPanRangeY, Math.min(maxPanRangeY, newPanY));
+
+        return { x: clampedX, y: clampedY };
+    }, []); // Dependencies: imageRef and zoomContainerRef are refs, so they don't change
+
+    // Zoom and Pan Handlers
+    const handleWheel = useCallback((e) => {
+        if (isEditingImage || selectedPhoto.contentType?.startsWith('video')) return;
+        e.preventDefault(); // Prevent page scrolling
+
+        const scaleAmount = 0.1;
+        const newScale = e.deltaY < 0 ? zoomScale * (1 + scaleAmount) : zoomScale / (1 + scaleAmount);
+
+        // Limit zoom scale
+        const clampedScale = Math.max(1, Math.min(newScale, 5)); // Min 1x, Max 5x zoom
+
+        if (clampedScale === zoomScale) {
+            // If scale didn't change (e.g., already at max/min zoom), ensure pan is clamped
+            const { x, y } = clampPan(panX, panY, zoomScale);
+            if (x !== panX || y !== panY) {
+                setPanX(x);
+                setPanY(y);
+            }
+            return;
+        }
+
+        const container = zoomContainerRef.current;
+        if (!container) return;
+
+        const containerRect = container.getBoundingClientRect();
+
+        // Mouse position relative to the container's top-left
+        const mouseX = e.clientX - containerRect.left;
+        const mouseY = e.clientY - containerRect.top;
+
+        // Mouse position relative to the *center* of the container
+        const mouseXRelativeToContainerCenter = mouseX - containerRect.width / 2;
+        const mouseYRelativeToContainerCenter = mouseY - containerRect.height / 2;
+
+        const ratio = clampedScale / zoomScale;
+
+        // Calculate new pan values to keep the point under the mouse fixed relative to the image content
+        // This formula is for transform-origin: center center
+        const newPanX = mouseXRelativeToContainerCenter * (1 - ratio) + panX * ratio;
+        const newPanY = mouseYRelativeToContainerCenter * (1 - ratio) + panY * ratio;
+
+        // Apply clamping to the new pan values
+        const { x: finalPanX, y: finalPanY } = clampPan(newPanX, newPanY, clampedScale);
+
+        setPanX(finalPanX);
+        setPanY(finalPanY);
+        setZoomScale(clampedScale);
+    }, [zoomScale, panX, panY, isEditingImage, selectedPhoto, clampPan]); // Added clampPan to dependencies
+
+    const handleMouseDown = useCallback((e) => {
+        if (isEditingImage || selectedPhoto.contentType?.startsWith('video') || zoomScale === 1) return;
+        e.preventDefault();
+        setIsDragging(true);
+        setStartX(e.clientX);
+        setStartY(e.clientY);
+    }, [zoomScale, isEditingImage, selectedPhoto]);
+
+    const handleMouseMove = useCallback((e) => {
+        if (!isDragging || isEditingImage || selectedPhoto.contentType?.startsWith('video')) return;
+        e.preventDefault();
+
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+
+        const newPanX = panX + dx;
+        const newPanY = panY + dy;
+
+        // Apply clamping to the new pan values
+        const { x: finalPanX, y: finalPanY } = clampPan(newPanX, newPanY, zoomScale);
+
+        setPanX(finalPanX);
+        setPanY(finalPanY);
+
+        // Update startX, startY for continuous dragging
+        setStartX(e.clientX);
+        setStartY(e.clientY);
+    }, [isDragging, startX, startY, panX, panY, zoomScale, isEditingImage, selectedPhoto, clampPan]); // Added clampPan to dependencies
+
+
+    const handleMouseUp = useCallback(() => {
+        setIsDragging(false);
+    }, []);
+
+    const handleMouseLeave = useCallback(() => {
+        setIsDragging(false); // Stop dragging if mouse leaves the container
+    }, []);
+
 
     const scaleX = imageSize.naturalWidth > 0 ? imageSize.displayWidth / imageSize.naturalWidth : 0;
     const scaleY = imageSize.naturalHeight > 0 ? imageSize.displayHeight / imageSize.naturalHeight : 0;
@@ -243,8 +387,28 @@ export default function Lightbox({
                     ) : selectedPhoto.contentType?.startsWith('video') ? (
                         <video src={`/api/photos/${selectedPhoto.id}/stream`} controls autoPlay/>
                     ) : (
-                        <div style={{ position: 'relative', display: 'inline-block' }}>
-                            <img ref={imageRef} src={`/api/photos/${selectedPhoto.id}/original`} onLoad={handleImageLoad} style={{ maxWidth: '100%', maxHeight: '100%' }} />
+                        <div
+                            ref={zoomContainerRef}
+                            className="zoom-container"
+                            onWheel={handleWheel}
+                            onMouseDown={handleMouseDown}
+                            onMouseMove={handleMouseMove}
+                            onMouseUp={handleMouseUp}
+                            onMouseLeave={handleMouseLeave}
+                            style={{
+                                transform: `scale(${zoomScale}) translate(${panX}px, ${panY}px)`,
+                                cursor: zoomScale > 1 && isDragging ? 'grabbing' : (zoomScale > 1 ? 'grab' : 'default'),
+                                transformOrigin: 'center center', // Changed to center center
+                                willChange: 'transform',
+                                display: 'flex', // To center the image within the container
+                                justifyContent: 'center',
+                                alignItems: 'center',
+                                width: '100%', // Ensure container fills lightbox-content
+                                height: '100%',
+                                overflow: 'hidden' // Hide overflow during pan/zoom
+                            }}
+                        >
+                            <img ref={imageRef} src={`/api/photos/${selectedPhoto.id}/original`} onLoad={handleImageLoad} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
                             {showFaces && faces.map((face, index) => (
                                 <div key={index} className="face-box" style={{
                                     left: `${face.x * scaleX}px`,

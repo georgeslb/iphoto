@@ -6,7 +6,6 @@ import lombok.Getter;
 import lombok.Setter;
 import lombok.ToString;
 import lombok.experimental.SuperBuilder;
-import org.springframework.data.domain.Persistable;
 
 import java.time.LocalDateTime;
 import java.util.UUID;
@@ -18,7 +17,7 @@ import java.util.UUID;
 @Setter
 @SuperBuilder
 @ToString(onlyExplicitlyIncluded = true)
-public class ShareEntity extends BaseEntity implements Persistable<UUID> { // Extends BaseEntity
+public class ShareEntity extends BaseEntity { // Extends BaseEntity
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
@@ -35,9 +34,6 @@ public class ShareEntity extends BaseEntity implements Persistable<UUID> { // Ex
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
-    @Transient
-    private boolean isNew = true;
-
     @ManyToOne
     AlbumEntity album;
 
@@ -47,12 +43,6 @@ public class ShareEntity extends BaseEntity implements Persistable<UUID> { // Ex
     private String paswword;
 
     private LocalDateTime availableUntil;
-
-
-    @Override
-    public boolean isNew() {
-        return isNew;
-    }
 
     @PrePersist
     protected void onCreate() {
@@ -69,5 +59,9 @@ public class ShareEntity extends BaseEntity implements Persistable<UUID> { // Ex
     @PostLoad
     void markNotNew() {
         this.isNew = false;
+    }
+
+    public ShareEntity() {
+        super();
     }
 }

@@ -25,4 +25,6 @@ public interface FaceRepository extends JpaRepository<FaceEntity, UUID> {
     Page<FaceEntity> findByUserAndPersonId(UserEntity user, UUID id, Pageable pageable);
 
     Optional<FaceEntity> findByIdAndUser(UUID id, UserEntity user);
+
+    void deleteByPhotoId(PhotoEntity photo);
 }
