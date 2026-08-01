@@ -4,10 +4,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.iphoto.entities.FaceEntity;
-import org.iphoto.entities.PersonEntity;
-import org.iphoto.entities.PhotoEntity;
-import org.iphoto.entities.UserEntity; // Import UserEntity
+import org.iphoto.entities.*;
 import org.iphoto.repository.FaceRepository;
 import org.iphoto.repository.PersonRepository;
 import org.iphoto.repository.UserRepository;
@@ -32,6 +29,7 @@ public class FaceRecognitionService {
     private final PersonRepository personRepository;
     private final PersonRecognitionService personRecognitionService;
     private final UserRepository userRepository;
+    private final SpaceService spaceService;
     private final ReentrantLock lock = new ReentrantLock();
 
     // Threshold for Cosine Similarity: A higher value means a stricter match.
@@ -51,35 +49,35 @@ public class FaceRecognitionService {
 
     private void groupFacesForUser(UserEntity user) {
         Pageable pageable = Pageable.ofSize(20);
-        List<PersonEntity> persons = personRepository.findAllByUser(user); // Filter by user
+        List<PersonEntity> persons = personRepository.findAll();
         Page<FaceEntity> facesNotGrouped;
         do {
-            facesNotGrouped = faceRepository.findByUserAndPersonIsNull(user, pageable); // Filter by user
+            facesNotGrouped = faceRepository.findByPersonIsNull(pageable);
             for (FaceEntity face : facesNotGrouped) {
                 // Find the best matching person and update if the score is above the threshold
-                findBestMatchForFace(user, face, persons).ifPresent(personWithScore -> { // Pass user
-                    personRecognitionService.updatePerson(personWithScore.getPerson(), face); // Pass user
+                findBestMatchForFace(face, persons).ifPresent(personWithScore -> {
+                    personRecognitionService.updatePerson(personWithScore.getPerson(), face);
                 });
             }
             pageable = facesNotGrouped.nextPageable();
         } while (facesNotGrouped.hasNext() && facesNotGrouped.getNumber() <= 5);
 
         pageable = Pageable.ofSize(100);
-        facesNotGrouped = faceRepository.findByUserAndPersonIsNull(user, pageable); // Filter by user
-        List<List<FaceEntity>> facesGrouped = clusterFaces(user, facesNotGrouped.toList()); // Pass user
+        facesNotGrouped = faceRepository.findByPersonIsNull(pageable);
+        List<List<FaceEntity>> facesGrouped = clusterFaces(facesNotGrouped.toList()); // Pass user
         facesGrouped.forEach(cluster -> personRecognitionService.addPerson(user, cluster)); // Pass user
     }
 
-    private Optional<PersonWithScore> findBestMatchForFace(UserEntity user, FaceEntity face, List<PersonEntity> persons) { // Added UserEntity parameter
+    private Optional<PersonWithScore> findBestMatchForFace(FaceEntity face, List<PersonEntity> persons) { // Added UserEntity parameter
         // Find the person with the highest similarity score.
         Optional<PersonWithScore> bestMatch = persons.stream()
-                .flatMap(person -> getPersonWithScoreStream(user, face, person, 20)) // Pass user
+                .flatMap(person -> getPersonWithScoreStream(face, person, 20)) // Pass user
                 .max(Comparator.comparingDouble(PersonWithScore::getScore));
 
         // If no match was found with the first batch, try a larger sample.
         if (bestMatch.isEmpty()) {
             bestMatch = persons.stream()
-                    .flatMap(person -> getPersonWithScoreStream(user, face, person, 100)) // Pass user
+                    .flatMap(person -> getPersonWithScoreStream(face, person, 100)) // Pass user
                     .max(Comparator.comparingDouble(PersonWithScore::getScore));
         }
 
@@ -87,10 +85,10 @@ public class FaceRecognitionService {
         return bestMatch.filter(match -> match.getScore() >= THRESHOLD);
     }
 
-    private Stream<PersonWithScore> getPersonWithScoreStream(UserEntity user, FaceEntity face, PersonEntity person, int pageSize) { // Added UserEntity parameter
+    private Stream<PersonWithScore> getPersonWithScoreStream(FaceEntity face, PersonEntity person, int pageSize) {
         PhotoEntity photoWorkInProgressFace = face.getPhoto();
         List<FaceEntity> facesForPersonInDate = faceRepository
-                .findByUserAndPersonAndPhotoDateTakenBeforeOrderByPhotoDateTakenDesc(user, person, photoWorkInProgressFace.getDateTaken(), Pageable.ofSize(pageSize)) // Filter by user
+                .findByPersonAndPhotoDateTakenBeforeOrderByPhotoDateTakenDesc(person, photoWorkInProgressFace.getDateTaken(), Pageable.ofSize(pageSize)) // Filter by user
                 .stream().toList();
 
         // Calculate the average similarity and map to a PersonWithScore object.
@@ -144,7 +142,7 @@ public class FaceRecognitionService {
         return floatArray;
     }
 
-    private List<List<FaceEntity>> clusterFaces(UserEntity user, List<FaceEntity> facesToCluster) { // Added UserEntity parameter
+    private List<List<FaceEntity>> clusterFaces(List<FaceEntity> facesToCluster) { // Added UserEntity parameter
         if (CollectionUtils.isEmpty(facesToCluster)) {
             return new ArrayList<>();
         }

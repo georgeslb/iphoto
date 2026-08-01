@@ -4,7 +4,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.ShareEntity;
 import org.iphoto.entities.UserEntity; // Import UserEntity
-import org.iphoto.model.ShareRequest;
+import org.iphoto.model.request.ShareRequest;
 import org.iphoto.model.ShareResponse;
 import org.iphoto.repository.AlbumRepository;
 import org.iphoto.repository.ShareRepository;
@@ -26,18 +26,19 @@ public class ShareService {
 
     private final ShareRepository shareRepository;
     private final AlbumRepository albumRepository;
+    private final SpaceService spaceService;
     private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder(); // Use a single instance
 
     @Transactional
     public ShareResponse createShare(UserEntity user, ShareRequest request) {
-        if (shareRepository.findByUserAndName(user, request.name()).isPresent()) {
+        if (shareRepository.findByName(request.name()).isPresent()) {
             throw new IllegalArgumentException("Share with name '" + request.name() + "' already exists for this user.");
         }
 
-        return  albumRepository.findByIdAndUser(request.albumId(), user) // Ensure album belongs to the user
+        return  albumRepository.findById(request.albumId()) // Ensure album belongs to the user
                 .map(album -> {
                     ShareEntity share =
-                            ShareEntity.builder().user(user).name(request.name())
+                            ShareEntity.builder().space(spaceService.getDefaultSpaceForUser(user)).name(request.name())
                             .availableUntil(request.daysAvailable() > 0 ? LocalDateTime.now().plusDays(request.daysAvailable()) : null)
                             .album(album)
                             .paswword(encryptPassword(request.password())).build();
@@ -54,10 +55,10 @@ public class ShareService {
         return passwordEncoder.encode(password); // Encrypt the provided password
     }
 
-    public ShareResponse getShareDetails(String name) {
+    public ShareResponse getShareDetails(UUID albumId, String name) {
         // This method is intended for public access to a share link, so it does not filter by user.
         // The share link itself must be unique globally by name.
-        ShareEntity shareEntity = shareRepository.findByName(name) // Assuming findByName still exists for public shares
+        ShareEntity shareEntity = shareRepository.findByAlbumIdAndName(albumId, name) // Assuming findByName still exists for public shares
                 .orElseThrow(() -> new NoSuchElementException("Share link not found."));
 
         return buildShareResponse(shareEntity);
@@ -87,21 +88,21 @@ public class ShareService {
     }
 
     public List<ShareResponse> getAllShares(UserEntity user) {
-        return shareRepository.findAllByUser(user)
+        return shareRepository.findAll()
                 .stream()
                 .map(this::buildShareResponse)
                 .collect(Collectors.toList());
     }
 
     public ShareResponse getShareById(UserEntity user, UUID id) {
-        return shareRepository.findByIdAndUser(id, user)
+        return shareRepository.findById(id)
                 .map(this::buildShareResponse)
                 .orElseThrow(() -> new NoSuchElementException("Share link not found or does not belong to the user."));
     }
 
     @Transactional
     public void deleteShare(UserEntity user, UUID id) {
-        ShareEntity share = shareRepository.findByIdAndUser(id, user)
+        ShareEntity share = shareRepository.findById(id)
                 .orElseThrow(() -> new NoSuchElementException("Share link not found or does not belong to the user."));
         shareRepository.delete(share);
     }

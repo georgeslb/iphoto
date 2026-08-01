@@ -6,13 +6,13 @@ import lombok.experimental.SuperBuilder;
 
 import java.util.UUID;
 
-@EqualsAndHashCode(callSuper = true)
+@EqualsAndHashCode(onlyExplicitlyIncluded = true)
 @Entity
 @Table(name = "faces")
 @Getter
 @Setter
 @SuperBuilder
-public class FaceEntity extends BaseEntity { // Extends BaseEntity
+public class FaceEntity { // Extends BaseEntity
 
     @Id
     @GeneratedValue(strategy = GenerationType.AUTO)

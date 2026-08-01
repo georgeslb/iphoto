@@ -1,6 +1,6 @@
 package org.iphoto.controller;
 
-import org.iphoto.dto.UserDto;
+import org.iphoto.model.UserDto;
 import org.iphoto.mappers.UserMapper;
 import org.iphoto.service.UserService;
 import org.springframework.security.core.Authentication;

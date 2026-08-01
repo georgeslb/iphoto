@@ -1,4 +1,4 @@
-package org.iphoto.model;
+package org.iphoto.model.request;
 
 import java.util.List;
 import java.util.UUID;

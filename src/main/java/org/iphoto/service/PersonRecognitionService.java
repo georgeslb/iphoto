@@ -1,11 +1,7 @@
 package org.iphoto.service;
 
 import lombok.RequiredArgsConstructor;
-import org.iphoto.entities.CoverFaceOrigin;
-import org.iphoto.entities.FaceEntity;
-import org.iphoto.entities.PersonEntity;
-import org.iphoto.entities.PhotoEntity;
-import org.iphoto.entities.UserEntity; // Import UserEntity
+import org.iphoto.entities.*;
 import org.iphoto.repository.FaceRepository;
 import org.iphoto.repository.PersonRepository;
 import org.springframework.stereotype.Service;
@@ -14,7 +10,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
 
 import java.time.LocalDateTime;
-import java.util.*;
+import java.util.List;
 
 @Service
 @RequiredArgsConstructor
@@ -23,6 +19,7 @@ public class PersonRecognitionService {
 
     private final FaceRepository faceRepository;
     private final PersonRepository personRepository;
+    private final SpaceService spaceService;
     private static final double THRESHOLD = 0.8;
 
     public void updatePerson(PersonEntity person, FaceEntity face) { // Added UserEntity parameter
@@ -34,7 +31,7 @@ public class PersonRecognitionService {
     }
 
     public void addPerson(UserEntity user, List<FaceEntity> faces) { // Added UserEntity parameter
-        PersonEntity person = PersonEntity.builder().user(user).faces(faces).build();
+        PersonEntity person = PersonEntity.builder().space(spaceService.getDefaultSpaceForUser(user)).faces(faces).build();
         recalculateCoverFace(person);
         faces.forEach(faceEntity -> {
             faceEntity.setPerson(person);

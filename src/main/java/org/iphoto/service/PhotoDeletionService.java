@@ -15,9 +15,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.io.IOException;
 import java.time.LocalDateTime;
-import java.util.*;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 @Service
 @AllArgsConstructor
@@ -36,7 +37,7 @@ public class PhotoDeletionService {
         Set<AlbumEntity> albums = new HashSet<>(photo.getAlbums());
 
         for (AlbumEntity album : albums) {
-            albumService.removePhotosFromAlbum(photo.getUser(), album.getId(), List.of(photo.getId())); // Pass user to albumService
+            albumService.removePhotosFromAlbum(album.getId(), List.of(photo.getId())); // Pass user to albumService
             // The photo is removed from the album's photos collection by albumService.
             // We don't need to save the photo here again as it will be deleted.
         }

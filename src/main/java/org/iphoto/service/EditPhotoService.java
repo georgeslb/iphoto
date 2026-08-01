@@ -1,14 +1,13 @@
 package org.iphoto.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.persistence.EntityManager;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.TaskEntity;
 import org.iphoto.entities.UserEntity; // Import UserEntity
-import org.iphoto.model.PhotoEditRequest;
+import org.iphoto.model.request.PhotoEditRequest;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.TaskType;
 import org.iphoto.properties.IPhotoProperties;
@@ -33,7 +32,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -62,7 +60,7 @@ public class EditPhotoService {
         // =========================
         // LOAD IMAGE
         // =========================
-        PhotoEntity photoEntity = photoRepository.findByIdAndUser(id, user) // Filter by user
+        PhotoEntity photoEntity = photoRepository.findById(id) // Filter by user
                 .orElseThrow(() -> new NoSuchElementException("Photo not found with ID: " + id));
 
         String originalImagePath = photoEntity.getOriginalPath();
@@ -127,10 +125,10 @@ public class EditPhotoService {
                 TaskEntity task = taskManagerService.createTaskEntityImmediately(TaskType.PROCESS_UPLOAD, newId, objectMapper.writeValueAsString(payload), null);
                 while (taskManagerService.getTask(task.getId()).isEmpty()
                         || taskManagerService.getTask(task.getId()).get().getStatus() == TaskStatus.PENDING
-                        || photoRepository.findByIdAndUser(newId, user).isEmpty()) { // Filter by user
+                        || photoRepository.findById(newId).isEmpty()) { // Filter by user
                     Thread.sleep(500);
                 }
-                return photoRepository.findByIdAndUser(newId, user).get(); // Filter by user
+                return photoRepository.findById(newId).get(); // Filter by user
             } catch (Exception e) {
                 log.error(e.getMessage(), e);
                 throw new RuntimeException(e);

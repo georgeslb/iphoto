@@ -49,7 +49,6 @@ public class DuplicationUniquenessService {
                 duplicatesPhotosToAdd.add(photo);
                 DuplicateEntity duplicateEntity = DuplicateEntity.builder()
                         .id(UUID.randomUUID())
-                        .user(photo.getUser()) // Set the user for the new duplicate group
                         .photos(duplicatesPhotosToAdd)
                         .status(OPEN)
                         .hash(generateUniqueHash(duplicatesPhotosToAdd))

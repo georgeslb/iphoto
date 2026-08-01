@@ -57,6 +57,7 @@ public class UploadController {
             @RequestParam("totalChunks") int totalChunks,
             @RequestParam("contentType") String contentType,
             @RequestParam(value = "albumId", required = false) UUID albumId,
+            @RequestParam(value = "spaceId", required = false) UUID spaceId,
             @RequestParam("chunk") MultipartFile chunk) throws IOException {
 
         UserEntity currentUser = getCurrentUser(); // Get the current user
@@ -75,7 +76,11 @@ public class UploadController {
         if (chunkIndex == totalChunks - 1) { // This is the last chunk
             log.info("All chunks received for uploadId: {}. Reassembling file.", uploadId);
             Path finalTempFilePath = Paths.get(iPhotoProperties.getStorage().getTemp(), uploadId);
-            
+
+            if (!Files.exists(Paths.get(iPhotoProperties.getStorage().getTemp()))) {
+                Files.createDirectories(Paths.get(iPhotoProperties.getStorage().getTemp()));
+            }
+
             try (var outputStream = Files.newOutputStream(finalTempFilePath)) {
                 for (int i = 0; i < totalChunks; i++) {
                     Path currentChunkPath = chunkDir.resolve(fileName + ".chunk" + i);
@@ -99,6 +104,9 @@ public class UploadController {
             payload.put("fileSize", String.valueOf(fileSize));
             if (albumId != null) {
                 payload.put("albumId", albumId.toString());
+            }
+            if (spaceId != null) {
+                payload.put("spaceId", spaceId.toString());
             }
             payload.put("userId", currentUser.getId().toString()); // Add user ID to payload
 

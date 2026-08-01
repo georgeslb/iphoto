@@ -1,6 +1,5 @@
 package org.iphoto.service;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.bytedeco.javacv.FFmpegFrameGrabber;
@@ -8,10 +7,7 @@ import org.bytedeco.opencv.opencv_core.Mat;
 import org.bytedeco.opencv.opencv_core.Size;
 import org.bytedeco.opencv.opencv_img_hash.AverageHash;
 import org.bytedeco.opencv.opencv_img_hash.PHash;
-import org.iphoto.entities.DuplicateEntity;
-import org.iphoto.entities.PhotoEntity;
-import org.iphoto.entities.TaskEntity;
-import org.iphoto.entities.UserEntity; // Import UserEntity
+import org.iphoto.entities.*;
 import org.iphoto.mappers.PhotoMapper;
 import org.iphoto.model.DuplicateGroupDTO;
 import org.iphoto.model.Photo;
@@ -43,7 +39,6 @@ public class DuplicationService {
 
     private final PhotoRepository photoRepository;
     private final TaskManagerService taskManagerService;
-    private final ObjectMapper objectMapper;
     private final DuplicateRepository duplicateRepository;
     private final PhotoMapper photoMapper;
     private final DuplicationUniquenessService duplicateUniquenessService;
@@ -103,7 +98,7 @@ public class DuplicationService {
     }
 
     public void closeDuplicates (UserEntity user, String hash) { // Added UserEntity parameter
-        duplicateRepository.findByUserAndHash(user, hash).ifPresent(duplicate -> { // Filter by user
+        duplicateRepository.findByHash(hash).ifPresent(duplicate -> { // Filter by user
             duplicate.setStatus(CLOSED);
             duplicateRepository.save(duplicate);
         });
@@ -270,16 +265,22 @@ public class DuplicationService {
         return resized;
     }
 
-    public void checkDuplication(TaskEntity task) { // Added UserEntity parameter
+    public void checkDuplication(TaskEntity task) {
         photoRepository
-                .findById(task.getPhotoId()).ifPresent(photo -> { // Filter by user
+                .findById(task.getPhotoId()).ifPresent(photo -> {
+                    //TODO when photo is moved to MAIN we should run Duplicate job
+                    if (photo.getSpace().getType() != SpaceType.MAIN) {
+                        task.setStatus(TaskStatus.IGNORED);
+                        task.setErrorMessage("photo " + photo.getId() + "  is not in main space, we don't look for duplicates");
+                        return;
+                    }
                     Pageable pageable = PageRequest.of(0, 100);
                     Slice<PhotoEntity> photosSlice;
                     Set<PhotoEntity> duplicatesPhotos = new HashSet<>();
                     do {
                         photosSlice =
-                                photoRepository.findByDateTakenBetweenAndPhashNotNullAndMhashNotNullAndIsGarbageFalse(photo.getDateTaken().minusDays(1),
-                                        photo.getDateTaken().plusDays(1), pageable); // Filter by user
+                                photoRepository.findBySpaceIdAndDateTakenBetweenAndPhashNotNullAndMhashNotNullAndIsGarbageFalse(photo.getSpace().getId(), photo.getDateTaken().minusDays(1),
+                                        photo.getDateTaken().plusDays(1), pageable);
 
                         List<PhotoEntity> duplicatePhotosForIteration = compare(photo, photosSlice.getContent());
                         if (!duplicatePhotosForIteration.isEmpty()) {
@@ -328,7 +329,7 @@ public class DuplicationService {
 
     public Slice<DuplicateGroupDTO> getDuplicates(UserEntity user, Pageable pageable) { // Added UserEntity parameter
         // Pageable is equals to 1, we will see only one DuplicateEntity
-        Slice<DuplicateEntity> hashesSlice = duplicateRepository.findByUserAndStatus(user, OPEN, pageable); // Filter by user
+        Slice<DuplicateEntity> hashesSlice = duplicateRepository.findByStatus(OPEN, pageable); // Filter by user
         List<DuplicateEntity> duplicateEntities = hashesSlice.getContent();
 
         if (duplicateEntities.isEmpty()) {

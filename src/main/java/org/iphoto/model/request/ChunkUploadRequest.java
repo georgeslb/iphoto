@@ -1,4 +1,4 @@
-package org.iphoto.model;
+package org.iphoto.model.request;
 
 import org.springframework.web.multipart.MultipartFile;
 

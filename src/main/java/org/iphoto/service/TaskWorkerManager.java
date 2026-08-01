@@ -12,8 +12,6 @@ import org.iphoto.model.UploadStatus;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.repository.TaskRepository;
 import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.security.access.annotation.Secured;
-import org.springframework.security.authentication.LockedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -47,7 +45,7 @@ public class TaskWorkerManager {
     private final FaceDetectionService faceDetectionService;
     private final FaceRecognitionService faceRecognitionService;
 
-    private final ExecutorService executorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+    private final ExecutorService executorService = Executors.newVirtualThreadPerTaskExecutor();
 
 
     @Scheduled(fixedDelay = 5000)
@@ -61,7 +59,13 @@ public class TaskWorkerManager {
 
         if (taskIdsToProcess != null) {
             for (UUID taskId : taskIdsToProcess) {
-                executorService.submit(() -> processTask(taskId));
+                executorService.submit(() -> {
+                    Thread virtualThread = Thread.ofVirtual()
+                            .name("backend-task" + taskId)
+                            .start(() ->  processTask(taskId));
+                    virtualThread.start();
+
+                });
             }
         }
     }

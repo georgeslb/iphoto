@@ -8,21 +8,19 @@ import com.drew.metadata.exif.ExifSubIFDDirectory;
 import com.drew.metadata.exif.GpsDirectory;
 import com.drew.metadata.jpeg.JpegDirectory;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.common.util.StringUtils;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.io.FilenameUtils;
 import org.bytedeco.javacv.FFmpegFrameGrabber;
-import org.iphoto.entities.PhotoEntity;
-import org.iphoto.entities.PhotoMetadataEntity;
-import org.iphoto.entities.TaskEntity;
-import org.iphoto.entities.UserEntity; // Import UserEntity
+import org.iphoto.entities.*;
+import org.iphoto.exception.NoMatchUserSpaceException;
+import org.iphoto.exception.NoUserFoundException;
 import org.iphoto.model.TaskType;
 import org.iphoto.model.UploadStatus;
 import org.iphoto.properties.IPhotoProperties;
 import org.iphoto.repository.PhotoMetadataRepository;
 import org.iphoto.repository.PhotoRepository;
-import org.iphoto.repository.TaskRepository;
-import org.iphoto.repository.UserRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -56,6 +54,8 @@ public class PhotoUploadService {
     private final ObjectMapper objectMapper;
     private final TaskManagerService taskManagerService;
     private final AlbumService albumService;
+    private final SpaceService spaceService;
+    private final UserService userService;
 
     public UploadStatus processNewAsset(TaskEntity task, Map<String, String> payload, File tempFile, String hash) throws IOException {
         String contentType = payload.get("contentType");
@@ -65,6 +65,15 @@ public class PhotoUploadService {
         Files.move(tempFile.toPath(), finalPath);
         String thumbPath = thumbnailService.generateThumbnail(finalPath.toString(), task.getPhotoId().toString(), contentType);
 
+        UserEntity user = userService.findById(UUID.fromString(payload.get("userId"))).orElseThrow(NoUserFoundException::new);
+
+        SpaceEntity space;
+        if (StringUtils.isBlank(payload.get("spaceId"))) {
+            space = spaceService.getDefaultSpaceForUser(user);
+        } else {
+            space = spaceService.getSpaceByIdForUser(UUID.fromString(payload.get("spaceId")), user).orElseThrow(NoMatchUserSpaceException::new);
+        }
+
         PhotoEntity photo = PhotoEntity.builder().id(task.getPhotoId())
                 .fileName(payload.get("originalFileName"))
                 .originalPath(finalPath.toString())
@@ -72,7 +81,8 @@ public class PhotoUploadService {
                 .fileHash(hash)
                 .fileSize(Files.size(finalPath))
                 .contentType(contentType)
-                .user(task.getUser()).build();
+                .space(space)
+                .build();
 
         photo.setNew(true);
 
@@ -92,7 +102,7 @@ public class PhotoUploadService {
         photoRepository.save(photo);
         metadataRepository.save(metadataEntity);
         if (payload.get("albumId") != null) {
-            albumService.addPhotosToAlbum(photo.getUser(), UUID.fromString(payload.get("albumId")), List.of(photo.getId())); // Pass user to albumService
+            albumService.addPhotosToAlbum(UUID.fromString(payload.get("albumId")), List.of(photo.getId())); // Pass user to albumService
         }
         taskManagerService.createTaskEntity(null, TaskType.HASH_IMAGE, photo.getId(), null,  LocalDateTime.now().plusMinutes(2)); // Pass user
         taskManagerService.createTaskEntity(null, TaskType.ISOLATE_FACES, photo.getId(), null,  LocalDateTime.now().plusMinutes(3)); // Pass user
@@ -227,7 +237,7 @@ public class PhotoUploadService {
         }
     }
 
-    // ---------------------------------------------------
+    // --------------------------------0-------------------
     // VIDEO METADATA DATE
     // ---------------------------------------------------
 
