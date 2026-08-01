@@ -1,9 +1,12 @@
 package org.iphoto.entities;
 
 import jakarta.persistence.*;
-import lombok.*;
+import lombok.EqualsAndHashCode;
+import lombok.Getter;
+import lombok.Setter;
+import lombok.ToString;
+import lombok.experimental.SuperBuilder;
 import org.iphoto.model.DuplicateStatus;
-import org.springframework.data.domain.Persistable;
 
 import java.util.HashSet;
 import java.util.Set;
@@ -11,13 +14,12 @@ import java.util.UUID;
 
 @Entity
 @Table(name = "duplicates")
-@Data
-@EqualsAndHashCode(callSuper = false, onlyExplicitlyIncluded = true)
-@NoArgsConstructor
-@AllArgsConstructor
+@Getter
+@Setter
+@SuperBuilder
+@EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true) // Changed callSuper to true
 @ToString(onlyExplicitlyIncluded = true)
-@Builder
-public class DuplicateEntity implements Persistable<UUID> {
+public class DuplicateEntity extends BaseEntity { // Extends BaseEntity
 
     @Id
     @ToString.Include
@@ -35,10 +37,13 @@ public class DuplicateEntity implements Persistable<UUID> {
     @Enumerated(EnumType.STRING)
     private DuplicateStatus status;
 
-    @Column(unique = true)
+    @Column(unique = true) // This unique constraint might need to be adjusted to be unique per user
     private String hash;
 
-    @Transient
-    private boolean isNew = true;
+
+    public DuplicateEntity() {
+        super();
+    }
+
 
 }

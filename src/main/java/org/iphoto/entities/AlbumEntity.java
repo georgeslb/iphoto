@@ -1,24 +1,24 @@
 package org.iphoto.entities;
 
 import jakarta.persistence.*;
-import lombok.Data;
 import lombok.EqualsAndHashCode;
-import lombok.NoArgsConstructor;
+import lombok.Getter;
+import lombok.Setter;
 import lombok.ToString;
-import org.springframework.data.domain.Persistable;
+import lombok.experimental.SuperBuilder;
 
 import java.time.LocalDateTime;
-import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
 
 @Entity
 @Table(name = "albums")
-@Data
-@EqualsAndHashCode(callSuper = false, onlyExplicitlyIncluded = true)
-@NoArgsConstructor
+@EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true) // Changed callSuper to true
+@SuperBuilder
+@Getter
+@Setter
 @ToString(onlyExplicitlyIncluded = true)
-public class AlbumEntity implements Persistable<UUID> {
+public final class AlbumEntity extends BaseEntity { // Extends BaseEntity
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
@@ -26,7 +26,7 @@ public class AlbumEntity implements Persistable<UUID> {
     @EqualsAndHashCode.Include
     private UUID id;
 
-    @Column(nullable = false, unique = true)
+    @Column(nullable = false, unique = true) // This unique constraint might need to be adjusted to be unique per user
     @ToString.Include
     private String name;
 
@@ -48,17 +48,13 @@ public class AlbumEntity implements Persistable<UUID> {
         joinColumns = @JoinColumn(name = "album_id"),
         inverseJoinColumns = @JoinColumn(name = "photo_id")
     )
-    private Set<PhotoEntity> photos = new HashSet<>();
+    private Set<PhotoEntity> photos;
 
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
     @OneToMany(fetch = FetchType.LAZY)
     Set<ShareEntity> shares;
-
-    @Transient
-    private boolean isNew = true;
-
 
     @Override
     public UUID getId() {
@@ -75,20 +71,17 @@ public class AlbumEntity implements Persistable<UUID> {
         this.photos.remove(photo);
         // If the relationship is bidirectional, you would also nullify the other side here.
     }
-    @Override
-    public boolean isNew() {
-        return isNew;
-    }
+
 
     @PrePersist
-    protected void onCreate() {
+    private void onCreate() {
         createdAt = LocalDateTime.now();
         updatedAt = LocalDateTime.now();
         isNew = false;
     }
 
     @PreUpdate
-    protected void onUpdate() {
+    private void onUpdate() {
         updatedAt = LocalDateTime.now();
     }
 
@@ -97,4 +90,7 @@ public class AlbumEntity implements Persistable<UUID> {
         this.isNew = false;
     }
 
+    public AlbumEntity() {
+        super();
+    }
 }

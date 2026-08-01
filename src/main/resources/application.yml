@@ -12,7 +12,7 @@ spring:
       minimum-idle: 10 #minimum number of idle connections maintained by HikariCP in a connection pool
       maximum-pool-size: 100 #limite le nombre total de connexions simultanées que ce pool conservera.les valeurs de ce paramètre sont très variables en fonction de la conception, de l'infrastructure et de la base de données
       idle-timeout: 10000 #maximum idle time for connection
-      max-lifetime: 1000 # maximum lifetime in milliseconds of a connection in the pool after it is closed.
+      max-lifetime: 1000 # maximum lifetime in milliseconds of a connection in the pool after it est closed.
 
   jpa:
     hibernate:
@@ -35,11 +35,15 @@ spring:
 
 iphoto:
   storage:
-    photos: D:\temp\storage\originals
-    thumbnails: D:\temp\storage\thumbnails
-    temp: D:\temp\storage\temp
-    chunks: D:\temp\storage\chunks
-
+    base: /home/georges/data/iphoto/storage
+    photos: ${iphoto.storage.base}/originals
+    thumbnails: ${iphoto.storage.base}/thumbnails
+    temp: ${iphoto.storage.base}/temp
+    chunks: ${iphoto.storage.base}/chunks
+  admin:
+    username: admin
+    password: admin
+    role: ADMIN
 
 server:
   port: 8080

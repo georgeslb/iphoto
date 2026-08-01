@@ -5,7 +5,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.4.1</version>
+        <version>3.5.0</version>
         <relativePath/>
     </parent>
     <groupId>org.iphoto</groupId>
@@ -21,8 +21,20 @@
         <javacv.version>1.5.12</javacv.version>
         <mapstruct.version>1.6.3</mapstruct.version>
         <lombok.version>1.18.46</lombok.version>
+        <djl.version>0.36.0</djl.version>
     </properties>
 
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>ai.djl</groupId>
+                <artifactId>bom</artifactId>
+                <version>${djl.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
     <dependencies>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -41,7 +53,16 @@
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
-
+        <dependency>
+            <groupId>tools.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-hibernate5-jakarta</artifactId>
+            <version>3.2.0</version>
+        </dependency>
+        <!-- Source: https://mvnrepository.com/artifact/jakarta.persistence/jakarta.persistence-api -->
+        <dependency>
+            <groupId>jakarta.persistence</groupId>
+            <artifactId>jakarta.persistence-api</artifactId>
+        </dependency>
         <!-- JavaCV Wrapper -->
         <dependency>
             <groupId>org.bytedeco</groupId>
@@ -84,6 +105,11 @@
             <version>6.4.5</version>
         </dependency>
         <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-collections4</artifactId>
+            <version>4.4</version>
+        </dependency>
+        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
@@ -103,6 +129,21 @@
             <groupId>org.mapstruct</groupId>
             <artifactId>mapstruct</artifactId>
             <version>${mapstruct.version}</version>
+        </dependency>
+
+        <!-- Source: https://mvnrepository.com/artifact/ai.djl/api -->
+        <dependency>
+            <groupId>ai.djl</groupId>
+            <artifactId>api</artifactId>
+        </dependency>
+        <!-- Pytorch -->
+        <dependency>
+            <groupId>ai.djl.pytorch</groupId>
+            <artifactId>pytorch-model-zoo</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.djl</groupId>
+            <artifactId>model-zoo</artifactId>
         </dependency>
     </dependencies>
 
@@ -186,6 +227,48 @@
                                     <filtering>false</filtering>
                                 </resource>
                             </resources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <phase>generate-resources</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <id>retinaface.zip</id>
+                        <configuration>
+                            <target>
+                                <mkdir dir="${project.build.outputDirectory}"/>
+
+                                <get
+                                        src="https://resources.djl.ai/test-models/pytorch/retinaface.zip"
+                                        dest="${project.build.outputDirectory}/retinaface.zip"
+                                        verbose="true"
+                                        skipexisting="true"/>
+                            </target>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <phase>generate-resources</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <id>face_feature.zip</id>
+                        <configuration>
+                            <target>
+                                <mkdir dir="${project.build.outputDirectory}"/>
+
+                                <get
+                                        src="https://resources.djl.ai/test-models/pytorch/face_feature.zip"
+                                        dest="${project.build.outputDirectory}/face_feature.zip"
+                                        verbose="true"
+                                        skipexisting="true"/>
+                            </target>
                         </configuration>
                     </execution>
                 </executions>

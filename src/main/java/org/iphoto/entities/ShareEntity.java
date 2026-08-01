@@ -1,22 +1,23 @@
 package org.iphoto.entities;
 
 import jakarta.persistence.*;
-import lombok.Data;
 import lombok.EqualsAndHashCode;
-import lombok.NoArgsConstructor;
+import lombok.Getter;
+import lombok.Setter;
 import lombok.ToString;
-import org.springframework.data.domain.Persistable;
+import lombok.experimental.SuperBuilder;
 
 import java.time.LocalDateTime;
 import java.util.UUID;
 
 @Entity
 @Table(name = "shares")
-@Data
-@EqualsAndHashCode(callSuper = false, onlyExplicitlyIncluded = true)
-@NoArgsConstructor
+@EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true) // Changed callSuper to true
+@Getter
+@Setter
+@SuperBuilder
 @ToString(onlyExplicitlyIncluded = true)
-public class ShareEntity implements Persistable<UUID> {
+public class ShareEntity extends BaseEntity { // Extends BaseEntity
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
@@ -24,15 +25,14 @@ public class ShareEntity implements Persistable<UUID> {
     @EqualsAndHashCode.Include
     private UUID id;
 
+    // Removed user field as it's inherited from BaseEntity
+
     @Column(nullable = false, unique = true)
     @ToString.Include
     private String name;
 
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
-
-    @Transient
-    private boolean isNew = true;
 
     @ManyToOne
     AlbumEntity album;
@@ -43,12 +43,6 @@ public class ShareEntity implements Persistable<UUID> {
     private String paswword;
 
     private LocalDateTime availableUntil;
-
-
-    @Override
-    public boolean isNew() {
-        return isNew;
-    }
 
     @PrePersist
     protected void onCreate() {
@@ -65,5 +59,9 @@ public class ShareEntity implements Persistable<UUID> {
     @PostLoad
     void markNotNew() {
         this.isNew = false;
+    }
+
+    public ShareEntity() {
+        super();
     }
 }

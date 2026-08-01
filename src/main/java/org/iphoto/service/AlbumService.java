@@ -2,13 +2,14 @@ package org.iphoto.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.iphoto.entities.AlbumEntity;
+import org.iphoto.entities.PhotoEntity;
+import org.iphoto.entities.UserEntity; // Import UserEntity
 import org.iphoto.mappers.PhotoMapper;
 import org.iphoto.model.AlbumCreateRequest;
 import org.iphoto.model.AlbumDTO;
-import org.iphoto.entities.AlbumEntity;
 import org.iphoto.model.AlbumUpdateRequest;
 import org.iphoto.model.Photo;
-import org.iphoto.entities.PhotoEntity;
 import org.iphoto.repository.AlbumRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.springframework.data.domain.PageRequest;
@@ -30,48 +31,45 @@ public class AlbumService {
     private final PhotoMapper photoMapper; // To convert PhotoEntity to Photo DTO
 
     @Transactional
-    public AlbumDTO createAlbum(AlbumCreateRequest request) {
-        if (albumRepository.findByName(request.name()).isPresent()) {
+    public AlbumDTO createAlbum(UserEntity user, AlbumCreateRequest request) {
+        if (albumRepository.findByUserAndName(user, request.name()).isPresent()) {
             throw new IllegalArgumentException("Album with name '" + request.name() + "' already exists.");
         }
 
-        AlbumEntity album = new AlbumEntity();
-        album.setName(request.name());
-        album.setDescription(request.description());
-        album.setPhotoCount(0);
+        AlbumEntity album = AlbumEntity.builder().user(user).name(request.name()).description(request.description()).photoCount(0).build();
 
         if (request.coverPhotoId() != null) {
-            PhotoEntity coverPhoto = photoRepository.findById(request.coverPhotoId())
+            PhotoEntity coverPhoto = photoRepository.findByIdAndUser(request.coverPhotoId(), user)
                     .orElseThrow(() -> new NoSuchElementException("Cover photo not found with ID: " + request.coverPhotoId()));
             album.setCoverPhoto(coverPhoto);
         }
 
-        return updateAlbumAndGetDto(album);
+        return updateAlbumAndGetDto(user, album);
     }
 
     @Transactional(readOnly = true)
-    public List<AlbumDTO> getAllAlbums() {
-        return albumRepository.findAll()
+    public List<AlbumDTO> getAllAlbums(UserEntity user) {
+        return albumRepository.findAllByUser(user)
                 .stream()
                 .sorted(Comparator.comparing(AlbumEntity::getName))
-                .map(this::updateAlbumAndGetDto)
+                .map(album -> updateAlbumAndGetDto(user, album)) // Pass user to updateAlbumAndGetDto
                 .collect(Collectors.toList());
     }
 
     @Transactional(readOnly = true)
-    public AlbumDTO getAlbumById(UUID id) {
-        return albumRepository.findById(id)
-                .map(this::updateAlbumAndGetDto)
+    public AlbumDTO getAlbumById(UserEntity user, UUID id) {
+        return albumRepository.findByIdAndUser(id, user)
+                .map(album -> updateAlbumAndGetDto(user, album)) // Pass user to updateAlbumAndGetDto
                 .orElseThrow(() -> new NoSuchElementException("Album not found with ID: " + id));
     }
 
 
     @Transactional
-    public AlbumDTO updateAlbum(UUID id, AlbumUpdateRequest request) {
-        AlbumEntity album = getAlbum(id);
+    public AlbumDTO updateAlbum(UserEntity user, UUID id, AlbumUpdateRequest request) {
+        AlbumEntity album = getAlbum(user, id);
 
         if (request.name() != null && !request.name().equals(album.getName())) {
-            if (albumRepository.findByName(request.name()).isPresent()) {
+            if (albumRepository.findByUserAndName(user, request.name()).isPresent()) {
                 throw new IllegalArgumentException("Album with name '" + request.name() + "' already exists.");
             }
             album.setName(request.name());
@@ -80,60 +78,66 @@ public class AlbumService {
             album.setDescription(request.description());
         }
         if (request.coverPhotoId() != null) {
-            PhotoEntity coverPhoto = photoRepository.findById(request.coverPhotoId())
+            PhotoEntity coverPhoto = photoRepository.findByIdAndUser(request.coverPhotoId(), user)
                     .orElseThrow(() -> new NoSuchElementException("Cover photo not found with ID: " + request.coverPhotoId()));
             album.setCoverPhoto(coverPhoto);
         }
 
-        return updateAlbumAndGetDto(album);
+        return updateAlbumAndGetDto(user, album);
     }
 
     @Transactional
-    public void deleteAlbum(UUID id) {
-        albumRepository.deleteById(id);
+    public void deleteAlbum(UserEntity user, UUID id) {
+        AlbumEntity album = getAlbum(user, id); // Ensure user owns the album
+        albumRepository.delete(album);
     }
 
     @Transactional
-    public AlbumDTO addPhotosToAlbum(UUID albumId, List<UUID> photoIds) {
-        AlbumEntity album = getAlbum(albumId);
+    public AlbumDTO addPhotosToAlbum(UserEntity user, UUID albumId, List<UUID> photoIds) {
+        AlbumEntity album = getAlbum(user, albumId);
 
         Set<PhotoEntity> photosToAdd = photoIds.stream()
-                .map(photoRepository::findById)
-                .filter(java.util.Optional::isPresent)
-                .map(java.util.Optional::get)
+                .map(id -> photoRepository.findByIdAndUser(id, user)) // Filter photos by user
+                .filter(Optional::isPresent)
+                .map(Optional::get)
                 .collect(Collectors.toSet());
 
         album.getPhotos().addAll(photosToAdd);
-        return updateAlbumAndGetDto(album);
+        return updateAlbumAndGetDto(user, album);
     }
 
     @Transactional
-    public AlbumDTO removePhotosFromAlbum(UUID albumId, List<UUID> photoIds) {
-        final AlbumEntity album = getAlbum(albumId);
+    public AlbumDTO removePhotosFromAlbum(UserEntity user, UUID albumId, List<UUID> photoIds) {
+        final AlbumEntity album = getAlbum(user, albumId); // Ensure user owns the album
 
-        List<PhotoEntity> selectedPhotos = photoRepository.findAllById(photoIds);
+        List<PhotoEntity> selectedPhotos = photoIds.stream()
+                .map(id -> photoRepository.findByIdAndUser(id, user)) // Filter photos by user
+                .filter(Optional::isPresent)
+                .map(Optional::get)
+                .collect(Collectors.toList());
+
         selectedPhotos.forEach(album.getPhotos()::remove);
         if (album.getCoverPhoto() != null && photoIds.stream().anyMatch(photoId -> photoId.equals(album.getCoverPhoto().getId()))) {
             album.setCoverPhoto(null);
         }
-        return updateAlbumAndGetDto(album);
+        return updateAlbumAndGetDto(user, album);
     }
 
 
-    private AlbumEntity getAlbum(UUID albumId) {
-        return albumRepository.findById(albumId)
+    private AlbumEntity getAlbum(UserEntity user, UUID albumId) {
+        return albumRepository.findByIdAndUser(albumId, user)
                 .orElseThrow(() -> new NoSuchElementException("Album not found with ID: " + albumId));
     }
 
     @Transactional(readOnly = true)
-    public List<Photo> getAlbumPhotos(UUID albumId, Pageable pageable) {
-        AlbumEntity album = getAlbum(albumId);
-        return photoRepository.findByIsGarbageFalseAndAlbums(album, pageable).stream()
+    public List<Photo> getAlbumPhotos(UserEntity user, UUID albumId, Pageable pageable) {
+        AlbumEntity album = getAlbum(user, albumId);
+        return photoRepository.findByUserAndIsGarbageFalseAndAlbums(user, album, pageable).stream()
                 .map(photoMapper::photoEntityToPhoto)
                 .collect(Collectors.toList());
     }
 
-    public AlbumDTO convertToDto(AlbumEntity album) {
+    public AlbumDTO convertToDto(AlbumEntity album) { // Added UserEntity parameter
         Photo coverPhotoDTO = null;
         if (album.getCoverPhoto() != null) {
             coverPhotoDTO = photoMapper.photoEntityToPhoto(album.getCoverPhoto());
@@ -150,38 +154,38 @@ public class AlbumService {
         );
     }
 
-    public AlbumEntity updateAlbum(AlbumEntity albumEntity) {
+    public AlbumEntity updateAlbum(UserEntity user, AlbumEntity albumEntity) { // Added UserEntity parameter
         if (albumEntity.getId() != null) {
             if (albumEntity.getCoverPhoto() == null ||
-                    photoRepository.findById(albumEntity.getCoverPhoto().getId()).isEmpty() ||
-                    photoRepository.findById(albumEntity.getCoverPhoto().getId()).get().getIsGarbage() ||
-                    !albumRepository.existsByIdAndPhotos_Id(albumEntity.getId(),albumEntity.getCoverPhoto().getId())) {
-                selectANewPhotoAsCover(albumEntity);
+                    photoRepository.findByIdAndUser(albumEntity.getCoverPhoto().getId(), user).isEmpty() || // Check user ownership
+                    photoRepository.findByIdAndUser(albumEntity.getCoverPhoto().getId(), user).get().getIsGarbage() || // Check user ownership
+                    !albumRepository.existsByUserAndIdAndPhotos_Id(user, albumEntity.getId(),albumEntity.getCoverPhoto().getId())) { // Check user ownership
+                selectANewPhotoAsCover(user, albumEntity); // Pass user
             }
 
-            setAlbumPhotoCount(albumEntity);
+            setAlbumPhotoCount(user, albumEntity); // Pass user
         }
         return albumRepository.save(albumEntity);
     }
 
 
-    private void selectANewPhotoAsCover(AlbumEntity album) {
-        long photoInAlbumCount = photoRepository.countByIsGarbageFalseAndAlbums(album);
+    private void selectANewPhotoAsCover(UserEntity user, AlbumEntity album) { // Added UserEntity parameter
+        long photoInAlbumCount = photoRepository.countByUserAndIsGarbageFalseAndAlbums(user, album); // Filter by user
         if (photoInAlbumCount > 0) {
             Pageable pageable = PageRequest.of(0, 50);
-            photoRepository.findByIsGarbageFalseAndAlbums(album, pageable)
+            photoRepository.findByUserAndIsGarbageFalseAndAlbums(user, album, pageable) // Filter by user
                     .stream().filter(photoEntity -> photoEntity.getContentType().startsWith("image"))
                     .skip(ThreadLocalRandom.current().nextInt((int) Math.min(photoInAlbumCount, 50)))
                     .findAny().ifPresent(album::setCoverPhoto);
         }
     }
 
-    private AlbumDTO updateAlbumAndGetDto(AlbumEntity album) {
-        return convertToDto(updateAlbum(album));
+    private AlbumDTO updateAlbumAndGetDto(UserEntity user, AlbumEntity album) { // Added UserEntity parameter
+        return convertToDto(updateAlbum(user, album)); // Pass user
     }
 
-    private void setAlbumPhotoCount(AlbumEntity albumEntity) {
-        long photoInAlbum = photoRepository.countByIsGarbageFalseAndAlbums(albumEntity);
+    private void setAlbumPhotoCount(UserEntity user, AlbumEntity albumEntity) { // Added UserEntity parameter
+        long photoInAlbum = photoRepository.countByUserAndIsGarbageFalseAndAlbums(user, albumEntity); // Filter by user
         albumEntity.setPhotoCount((int) photoInAlbum);
     }
 }

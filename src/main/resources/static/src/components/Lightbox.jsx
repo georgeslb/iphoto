@@ -13,8 +13,9 @@ import {
     X,
     XCircle,
     Zap,
-    Image as ImageIcon, /* Import ImageIcon for "Add to Album" */
-    MinusCircle /* Import MinusCircle for "Remove from Album" */
+    Image as ImageIcon,
+    MinusCircle,
+    Users
 } from 'lucide-react';
 
 import 'tui-image-editor/dist/tui-image-editor.css';
@@ -33,36 +34,46 @@ export default function Lightbox({
                                      onNavigate,
                                      onUpdateDate,
                                      onEditPhoto,
-                                     onShowAddToAlbumModal, /* Prop for "Add to Album" */
-                                     onShowRemoveFromAlbumModal /* New prop for "Remove from Album" */
+                                     onShowAddToAlbumModal,
+                                     onShowRemoveFromAlbumModal
                                  }) {
     const [isEditingDate, setIsEditingDate] = useState(false);
     const [newDate, setNewDate] = useState('');
-
     const [isEditingImage, setIsEditingImage] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
-    const [isApplyButtonVisible, setIsApplyButtonVisible] = useState(false); /* New state for TUI editor's apply button */
+    const [isApplyButtonVisible, setIsApplyButtonVisible] = useState(false);
     const imageEditorRef = useRef(null);
     const editorInstance = useRef(null);
+    const imageRef = useRef(null);
+    const zoomContainerRef = useRef(null); // Ref for the zoomable container
 
-    /* Helper function to format date */
+    // State for zoom and pan
+    const [zoomScale, setZoomScale] = useState(1);
+    const [panX, setPanX] = useState(0);
+    const [panY, setPanY] = useState(0);
+    const [isDragging, setIsDragging] = useState(false);
+    const [startX, setStartX] = useState(0);
+    const [startY, setStartY] = useState(0);
+
+    // State for face detection
+    const [faces, setFaces] = useState([]);
+    const [showFaces, setShowFaces] = useState(false);
+    const [imageSize, setImageSize] = useState({ naturalWidth: 0, naturalHeight: 0, displayWidth: 0, displayHeight: 0 });
+
+
     const formatDateTime = (dateTimeString) => {
         if (!dateTimeString) return '';
         try {
             const date = new Date(dateTimeString);
             if (isNaN(date.getTime())) {
-                /* Handle cases where backend might send non-standard format, e.g., "2023-10-26 10:30:00" */
-                /* Try parsing manually if default Date constructor fails for 'T' separator */
                 const parts = dateTimeString.split(/[-T :]/).map(Number);
-                /* Assuming format yyyy-MM-ddTHH:mm:ss */
                 if (parts.length >= 6) {
                     date.setFullYear(parts[0], parts[1] - 1, parts[2]);
                     date.setHours(parts[3], parts[4], parts[5]);
                 } else {
-                    return dateTimeString; /* Return original if still unparseable */
+                    return dateTimeString;
                 }
             }
-
             const day = String(date.getDate()).padStart(2, '0');
             const month = String(date.getMonth() + 1).padStart(2, '0');
             const year = date.getFullYear();
@@ -72,16 +83,31 @@ export default function Lightbox({
             return `${day}-${month}-${year} ${hours}:${minutes}:${seconds}`;
         } catch (e) {
             console.error("Error formatting date:", e);
-            return dateTimeString; /* Fallback to original string on error */
+            return dateTimeString;
         }
     };
+
+    // Fetch faces when a new photo is selected
+    useEffect(() => {
+        if (selectedPhoto && selectedPhoto.id) {
+            setFaces([]);
+            setShowFaces(false);
+            setImageSize({ naturalWidth: 0, naturalHeight: 0, displayWidth: 0, displayHeight: 0 });
+
+            fetch(`/api/faces/photo/${selectedPhoto.id}`)
+                .then(response => response.ok ? response.json() : [])
+                .then(data => setFaces(data))
+                .catch(error => console.error('Error fetching faces:', error));
+        }
+    }, [selectedPhoto]);
+
 
     useEffect(() => {
         if (selectedPhoto) {
             let formattedDate = '';
             if (selectedPhoto.fullDateTime) {
                 const date = new Date(selectedPhoto.fullDateTime);
-                if (!isNaN(date.getTime())) { /* Check if date is valid */
+                if (!isNaN(date.getTime())) {
                     const year = date.getFullYear();
                     const month = String(date.getMonth() + 1).padStart(2, '0');
                     const day = String(date.getDate()).padStart(2, '0');
@@ -91,12 +117,15 @@ export default function Lightbox({
                 }
             }
             setNewDate(formattedDate);
-
             setIsEditingImage(false);
             if (editorInstance.current) {
                 editorInstance.current.destroy();
                 editorInstance.current = null;
             }
+            // Reset zoom and pan when photo changes
+            setZoomScale(1);
+            setPanX(0);
+            setPanY(0);
         }
     }, [selectedPhoto]);
 
@@ -106,19 +135,14 @@ export default function Lightbox({
     const hasPrevious = currentIndex > 0;
     const hasNext = currentIndex !== -1 && currentIndex < photos.length - 1;
 
-
     const handlePrevious = (e) => {
         if (e) e.stopPropagation();
-        if (hasPrevious && !isEditingImage) {
-            onNavigate(photos[currentIndex - 1]);
-        }
+        if (hasPrevious && !isEditingImage) onNavigate(photos[currentIndex - 1]);
     };
 
     const handleNext = (e) => {
         if (e) e.stopPropagation();
-        if (hasNext && !isEditingImage) {
-            onNavigate(photos[currentIndex + 1]);
-        }
+        if (hasNext && !isEditingImage) onNavigate(photos[currentIndex + 1]);
     };
 
     const handleSaveDate = () => {
@@ -131,24 +155,13 @@ export default function Lightbox({
             setIsLoading(true);
             try {
                 const dataURL = editorInstance.current.toDataURL({ format: 'jpeg', quality: 1 });
-                console.log('Generated DataURL:', dataURL.substring(0, 100) + '...');
-
                 const response = await fetch(dataURL);
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
                 const blob = await response.blob();
-                console.log('Generated Blob:', blob);
-
                 if (blob && blob.size > 0) {
                     const formData = new FormData();
                     formData.append('file', blob, selectedPhoto.title);
                     formData.append('saveAsNew', saveAsNew);
-
-                    for (let pair of formData.entries()) {
-                        console.log(pair[0]+ ', ' + pair[1]);
-                    }
-
                     await onEditPhoto(selectedPhoto.id, formData);
                     setIsEditingImage(false);
                 } else {
@@ -162,6 +175,148 @@ export default function Lightbox({
         }
     };
 
+    const handleImageLoad = () => {
+        if (imageRef.current) {
+            const { naturalWidth, naturalHeight, clientWidth, clientHeight } = imageRef.current;
+            setImageSize({ naturalWidth, naturalHeight, displayWidth: clientWidth, displayHeight: clientHeight });
+        }
+    };
+
+    const clampPan = useCallback((newPanX, newPanY, currentScale) => {
+        const img = imageRef.current;
+        const container = zoomContainerRef.current;
+        if (!img || !container) return { x: 0, y: 0 };
+
+        // Get the actual rendered size of the image content within the container (before zoom transform)
+        // This accounts for object-fit: contain
+        const naturalImageWidth = img.naturalWidth;
+        const naturalImageHeight = img.naturalHeight;
+        const containerWidth = container.clientWidth;
+        const containerHeight = container.clientHeight;
+
+        let renderedImageWidth = naturalImageWidth;
+        let renderedImageHeight = naturalImageHeight;
+
+        const aspectRatioContainer = containerWidth / containerHeight;
+        const aspectRatioImage = naturalImageWidth / naturalImageHeight;
+
+        if (aspectRatioImage > aspectRatioContainer) {
+            // Image is wider than container, height is constrained
+            renderedImageWidth = containerWidth;
+            renderedImageHeight = containerWidth / aspectRatioImage;
+        } else {
+            // Image is taller than container, width is constrained
+            renderedImageHeight = containerHeight;
+            renderedImageWidth = containerHeight * aspectRatioImage;
+        }
+
+        // Now, apply the current zoom scale to these rendered dimensions
+        const scaledContentWidth = renderedImageWidth * currentScale;
+        const scaledContentHeight = renderedImageHeight * currentScale;
+
+        // Calculate the maximum allowed pan from the center
+        // The pan values are offsets from the center of the container
+        const maxPanRangeX = Math.max(0, (scaledContentWidth - containerWidth) / 2);
+        const maxPanRangeY = Math.max(0, (scaledContentHeight - containerHeight) / 2);
+
+        const clampedX = Math.max(-maxPanRangeX, Math.min(maxPanRangeX, newPanX));
+        const clampedY = Math.max(-maxPanRangeY, Math.min(maxPanRangeY, newPanY));
+
+        return { x: clampedX, y: clampedY };
+    }, []); // Dependencies: imageRef and zoomContainerRef are refs, so they don't change
+
+    // Zoom and Pan Handlers
+    const handleWheel = useCallback((e) => {
+        if (isEditingImage || selectedPhoto.contentType?.startsWith('video')) return;
+        e.preventDefault(); // Prevent page scrolling
+
+        const scaleAmount = 0.1;
+        const newScale = e.deltaY < 0 ? zoomScale * (1 + scaleAmount) : zoomScale / (1 + scaleAmount);
+
+        // Limit zoom scale
+        const clampedScale = Math.max(1, Math.min(newScale, 5)); // Min 1x, Max 5x zoom
+
+        if (clampedScale === zoomScale) {
+            // If scale didn't change (e.g., already at max/min zoom), ensure pan is clamped
+            const { x, y } = clampPan(panX, panY, zoomScale);
+            if (x !== panX || y !== panY) {
+                setPanX(x);
+                setPanY(y);
+            }
+            return;
+        }
+
+        const container = zoomContainerRef.current;
+        if (!container) return;
+
+        const containerRect = container.getBoundingClientRect();
+
+        // Mouse position relative to the container's top-left
+        const mouseX = e.clientX - containerRect.left;
+        const mouseY = e.clientY - containerRect.top;
+
+        // Mouse position relative to the *center* of the container
+        const mouseXRelativeToContainerCenter = mouseX - containerRect.width / 2;
+        const mouseYRelativeToContainerCenter = mouseY - containerRect.height / 2;
+
+        const ratio = clampedScale / zoomScale;
+
+        // Calculate new pan values to keep the point under the mouse fixed relative to the image content
+        // This formula is for transform-origin: center center
+        const newPanX = mouseXRelativeToContainerCenter * (1 - ratio) + panX * ratio;
+        const newPanY = mouseYRelativeToContainerCenter * (1 - ratio) + panY * ratio;
+
+        // Apply clamping to the new pan values
+        const { x: finalPanX, y: finalPanY } = clampPan(newPanX, newPanY, clampedScale);
+
+        setPanX(finalPanX);
+        setPanY(finalPanY);
+        setZoomScale(clampedScale);
+    }, [zoomScale, panX, panY, isEditingImage, selectedPhoto, clampPan]); // Added clampPan to dependencies
+
+    const handleMouseDown = useCallback((e) => {
+        if (isEditingImage || selectedPhoto.contentType?.startsWith('video') || zoomScale === 1) return;
+        e.preventDefault();
+        setIsDragging(true);
+        setStartX(e.clientX);
+        setStartY(e.clientY);
+    }, [zoomScale, isEditingImage, selectedPhoto]);
+
+    const handleMouseMove = useCallback((e) => {
+        if (!isDragging || isEditingImage || selectedPhoto.contentType?.startsWith('video')) return;
+        e.preventDefault();
+
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+
+        const newPanX = panX + dx;
+        const newPanY = panY + dy;
+
+        // Apply clamping to the new pan values
+        const { x: finalPanX, y: finalPanY } = clampPan(newPanX, newPanY, zoomScale);
+
+        setPanX(finalPanX);
+        setPanY(finalPanY);
+
+        // Update startX, startY for continuous dragging
+        setStartX(e.clientX);
+        setStartY(e.clientY);
+    }, [isDragging, startX, startY, panX, panY, zoomScale, isEditingImage, selectedPhoto, clampPan]); // Added clampPan to dependencies
+
+
+    const handleMouseUp = useCallback(() => {
+        setIsDragging(false);
+    }, []);
+
+    const handleMouseLeave = useCallback(() => {
+        setIsDragging(false); // Stop dragging if mouse leaves the container
+    }, []);
+
+
+    const scaleX = imageSize.naturalWidth > 0 ? imageSize.displayWidth / imageSize.naturalWidth : 0;
+    const scaleY = imageSize.naturalHeight > 0 ? imageSize.displayHeight / imageSize.naturalHeight : 0;
+
+
     useEffect(() => {
         const handleKeyDown = (e) => {
             if (isEditingImage) return;
@@ -169,54 +324,35 @@ export default function Lightbox({
             else if (e.key === 'ArrowRight') handleNext();
             else if (e.key === 'Escape') onClose();
         };
-
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [hasPrevious, hasNext, currentIndex, isEditingImage, onClose]);
 
-    const startImageEditing = useCallback(() => {
-        setIsEditingImage(true);
-    }, []);
+    const startImageEditing = useCallback(() => setIsEditingImage(true), []);
 
     useEffect(() => {
         if (isEditingImage && imageEditorRef.current && selectedPhoto) {
             editorInstance.current = new ImageEditor(imageEditorRef.current, {
                 includeUI: {
-                    loadImage: {
-                        path: `/api/photos/${selectedPhoto.id}/original`,
-                        name: selectedPhoto.title,
-                    },
+                    loadImage: { path: `/api/photos/${selectedPhoto.id}/original`, name: selectedPhoto.title },
                     menu: ['crop', 'rotate', 'flip', 'draw', 'shape', 'icon', 'text', 'filter'],
                     initMenu: 'crop',
                     menuBarPosition: 'bottom'
                 },
                 cssMaxWidth: window.innerWidth * 0.8,
                 cssMaxHeight: window.innerHeight * 0.8,
-                selectionStyle: {
-                    cornerSize: 20,
-                    rotatingPointOffset: 70,
-                },
+                selectionStyle: { cornerSize: 20, rotatingPointOffset: 70 },
                 usageStatistics: false,
             });
 
-            /* MutationObserver to detect visibility of the "Apply" button */
-            const observer = new MutationObserver((mutations) => {
-                let applyButtonFound = false;
-                /* Look for the "Apply" button within the editor's UI */
-                /* The class name might vary slightly, but 'apply' is common for the action button */
+            const observer = new MutationObserver(() => {
                 const applyButton = imageEditorRef.current?.querySelector('.tui-image-editor-menu-crop .tui-image-editor-button.apply');
-                if (applyButton && applyButton.offsetParent !== null) { /* offsetParent checks for display:none */
-                    applyButtonFound = true;
-                }
-                setIsApplyButtonVisible(applyButtonFound);
+                setIsApplyButtonVisible(!!(applyButton && applyButton.offsetParent !== null));
             });
-
-            /* Start observing the editor's root element for subtree changes */
             observer.observe(imageEditorRef.current, { childList: true, subtree: true, attributes: true });
 
-
             return () => {
-                observer.disconnect(); /* Disconnect observer on cleanup */
+                observer.disconnect();
                 if (editorInstance.current) {
                     editorInstance.current.destroy();
                     editorInstance.current = null;
@@ -225,89 +361,78 @@ export default function Lightbox({
         }
     }, [isEditingImage, selectedPhoto]);
 
-
     return (
         <div className="lightbox-overlay" onClick={isEditingImage ? undefined : onClose}>
             <style>{`
-                .tui-image-editor-header-buttons .tui-image-editor-load-btn {
-                    display: none !important;
-                }
-                .btn:disabled {
-                    background-color: #6c757d !important; /* A common disabled grey */
-                    color: #adb5bd !important; /* Lighter text */
-                    cursor: not-allowed !important;
-                    opacity: 0.6;
-                }
-                .btn-primary:disabled {
-                    background-color: #0056b3 !important; /* Darker blue for disabled primary */
-                    opacity: 0.6;
-                }
+                .tui-image-editor-header-buttons .tui-image-editor-load-btn { display: none !important; }
+                .btn:disabled { background-color: #6c757d !important; color: #adb5bd !important; cursor: not-allowed !important; opacity: 0.6; }
+                .btn-primary:disabled { background-color: #0056b3 !important; opacity: 0.6; }
+                .face-box { position: absolute; border: 2px solid rgba(255, 255, 0, 0.8); box-shadow: 0 0 10px rgba(0,0,0,0.5); border-radius: 4px; pointer-events: none; }
+                .face-thumbnail-container { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 8px; }
+                .face-item { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+                .face-thumbnail { width: 60px; height: 60px; border-radius: 4px; object-fit: cover; }
+                .face-item label { font-size: 12px; color: #ccc; }
             `}</style>
             <div className="lightbox-container" onClick={e => e.stopPropagation()}>
                 <div className="lightbox-content" style={{position: 'relative'}}>
-                    {isLoading && ( /* Loading overlay */
-                        <div style={{
-                            position: 'absolute',
-                            inset: 0,
-                            backgroundColor: 'rgba(0, 0, 0, 0.7)',
-                            display: 'flex',
-                            justifyContent: 'center',
-                            alignItems: 'center',
-                            color: 'white',
-                            fontSize: '24px',
-                            zIndex: 100
-                        }}>
+                    {isLoading && (
+                        <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0, 0, 0, 0.7)', display: 'flex', justifyContent: 'center', alignItems: 'center', color: 'white', fontSize: '24px', zIndex: 100 }}>
                             Saving...
                         </div>
                     )}
                     {isEditingImage ? (
-                        <div style={{
-                            position: 'absolute',
-                            inset: '40px',
-                            zIndex: 10,
-                            display: 'flex',
-                            flexDirection: 'column',
-                            width: 'calc(100% - 80px)',
-                            height: 'calc(100% - 80px)',
-                        }}>
+                        <div style={{ position: 'absolute', inset: '40px', zIndex: 10, display: 'flex', flexDirection: 'column', width: 'calc(100% - 80px)', height: 'calc(100% - 80px)' }}>
                             <div ref={imageEditorRef} style={{width: '100%', height: '100%'}}></div>
-                            {/* Removed explicit Undo/Redo buttons as tui-image-editor provides its own UI for these */}
                         </div>
                     ) : selectedPhoto.contentType?.startsWith('video') ? (
                         <video src={`/api/photos/${selectedPhoto.id}/stream`} controls autoPlay/>
                     ) : (
-                        <img src={`/api/photos/${selectedPhoto.id}/original`}/>
+                        <div
+                            ref={zoomContainerRef}
+                            className="zoom-container"
+                            onWheel={handleWheel}
+                            onMouseDown={handleMouseDown}
+                            onMouseMove={handleMouseMove}
+                            onMouseUp={handleMouseUp}
+                            onMouseLeave={handleMouseLeave}
+                            style={{
+                                transform: `scale(${zoomScale}) translate(${panX}px, ${panY}px)`,
+                                cursor: zoomScale > 1 && isDragging ? 'grabbing' : (zoomScale > 1 ? 'grab' : 'default'),
+                                transformOrigin: 'center center', // Changed to center center
+                                willChange: 'transform',
+                                display: 'flex', // To center the image within the container
+                                justifyContent: 'center',
+                                alignItems: 'center',
+                                width: '100%', // Ensure container fills lightbox-content
+                                height: '100%',
+                                overflow: 'hidden' // Hide overflow during pan/zoom
+                            }}
+                        >
+                            <img ref={imageRef} src={`/api/photos/${selectedPhoto.id}/original`} onLoad={handleImageLoad} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+                            {showFaces && faces.map((face, index) => (
+                                <div key={index} className="face-box" style={{
+                                    left: `${face.x * scaleX}px`,
+                                    top: `${face.y * scaleY}px`,
+                                    width: `${face.width * scaleX}px`,
+                                    height: `${face.height * scaleY}px`,
+                                }}></div>
+                            ))}
+                        </div>
                     )}
 
-                    {hasPrevious && !isEditingImage && (
-                        <button className="lightbox-nav-btn prev" onClick={handlePrevious}>
-                            <ChevronLeft size={32}/>
-                        </button>
-                    )}
-
-                    {hasNext && !isEditingImage && (
-                        <button className="lightbox-nav-btn next" onClick={handleNext}>
-                            <ChevronRight size={32}/>
-                        </button>
-                    )}
-
-                    {/* Removed the old position of "Move to Garbage" button */}
+                    {hasPrevious && !isEditingImage && <button className="lightbox-nav-btn prev" onClick={handlePrevious}><ChevronLeft size={32}/></button>}
+                    {hasNext && !isEditingImage && <button className="lightbox-nav-btn next" onClick={handleNext}><ChevronRight size={32}/></button>}
                 </div>
                 <div className="metadata-sidebar">
                     <div className="sidebar-header">
                         <h3>Information</h3>
-                        <button className="lightbox-close-btn" onClick={onClose}>
-                            <X size={24}/>
-                        </button>
+                        <button className="lightbox-close-btn" onClick={onClose}><X size={24}/></button>
                     </div>
                     <div className="sidebar-scroll-content">
                         {!selectedPhoto.contentType?.startsWith('video') && (
-                            <div style={{marginBottom: '10px'}}> {/* Adjusted margin-bottom */}
+                            <div style={{marginBottom: '10px'}}>
                                 {!isEditingImage ? (
-                                    <button className="btn" style={{width: '100%', justifyContent: 'center'}}
-                                            onClick={startImageEditing}>
-                                        <Edit size={16}/> Edit Image
-                                    </button>
+                                    <button className="btn" style={{width: '100%', justifyContent: 'center'}} onClick={startImageEditing}><Edit size={16}/> Edit Image</button>
                                 ) : (
                                     <div style={{display: 'flex', gap: '8px', justifyContent: 'center'}}>
                                         <button className="btn btn-primary" onClick={() => handleSaveEditedImage(false)} disabled={isLoading || isApplyButtonVisible}>Save</button>
@@ -318,64 +443,16 @@ export default function Lightbox({
                             </div>
                         )}
 
-                        {/* New "Add to Album" button */}
-                        {!isEditingImage && (
-                            <button className="btn" style={{width: '100%', justifyContent: 'center', marginBottom: '10px'}}
-                                    onClick={() => onShowAddToAlbumModal(selectedPhoto.id)}>
-                                <ImageIcon size={16}/> Add to Album
-                            </button>
-                        )}
+                        {!isEditingImage && <button className="btn" style={{width: '100%', justifyContent: 'center', marginBottom: '10px'}} onClick={() => onShowAddToAlbumModal(selectedPhoto.id)}><ImageIcon size={16}/> Add to Album</button>}
+                        {!isEditingImage && <button className="btn" style={{width: '100%', justifyContent: 'center', marginBottom: '10px'}} onClick={() => onShowRemoveFromAlbumModal(selectedPhoto.id)}><MinusCircle size={16}/> Remove from Album</button>}
 
-                        {/* New "Remove from Album" button */}
-                        {!isEditingImage && (
-                            <button className="btn" style={{width: '100%', justifyContent: 'center', marginBottom: '10px'}}
-                                    onClick={() => onShowRemoveFromAlbumModal(selectedPhoto.id)}>
-                                <MinusCircle size={16}/> Remove from Album
-                            </button>
-                        )}
-
-                        {/* Moved "Move to Garbage" button */}
                         {!isEditingImage && (pathname === '/garbage' ? (
                             <div style={{display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '10px'}}>
-                                <button className="btn" style={{
-                                    width: '100%',
-                                    justifyContent: 'center',
-                                    background: '#34c759',
-                                    color: 'white',
-                                    border: 'none'
-                                }} onClick={() => {
-                                    handleRestore([selectedPhoto.id]);
-                                    onClose();
-                                }}>
-                                    <RotateCcw size={18}/> Restore Asset
-                                </button>
-                                <button className="btn" style={{
-                                    width: '100%',
-                                    justifyContent: 'center',
-                                    background: '#ff3b30',
-                                    color: 'white',
-                                    border: 'none'
-                                }} onClick={() => {
-                                    handlePermanentDelete([selectedPhoto.id]);
-                                    onClose();
-                                }}>
-                                    <Trash2 size={18}/> Delete Permanently
-                                </button>
+                                <button className="btn" style={{ width: '100%', justifyContent: 'center', background: '#34c759', color: 'white', border: 'none' }} onClick={() => { handleRestore([selectedPhoto.id]); onClose(); }}><RotateCcw size={18}/> Restore Asset</button>
+                                <button className="btn" style={{ width: '100%', justifyContent: 'center', background: '#ff3b30', color: 'white', border: 'none' }} onClick={() => { handlePermanentDelete([selectedPhoto.id]); onClose(); }}><Trash2 size={18}/> Delete Permanently</button>
                             </div>
                         ) : (
-                            <button className="btn" style={{
-                                width: '100%',
-                                justifyContent: 'center',
-                                background: 'rgba(255,255,255,0.2)',
-                                color: 'white',
-                                border: 'none',
-                                marginBottom: '10px'
-                            }} onClick={() => {
-                                handleMoveToGarbage([selectedPhoto.id]);
-                                onClose();
-                            }}>
-                                <Trash2 size={18}/> Move to Garbage
-                            </button>
+                            <button className="btn" style={{ width: '100%', justifyContent: 'center', background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none', marginBottom: '10px' }} onClick={() => { handleMoveToGarbage([selectedPhoto.id]); onClose(); }}><Trash2 size={18}/> Move to Garbage</button>
                         ))}
 
                         <div className="metadata-group"><label>File Name</label><p>{selectedPhoto.title}</p></div>
@@ -383,17 +460,9 @@ export default function Lightbox({
                             <label><Calendar size={14}/> Date Taken</label>
                             {isEditingDate ? (
                                 <div style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
-                                    <input
-                                        type="datetime-local"
-                                        value={newDate}
-                                        onChange={(e) => setNewDate(e.target.value)}
-                                        className="modal-input"
-                                        style={{padding: '6px', fontSize: '13px'}}
-                                    />
-                                    <button className="btn" onClick={handleSaveDate} style={{padding: '6px'}}><Check
-                                        size={16}/></button>
-                                    <button className="btn" onClick={() => setIsEditingDate(false)}
-                                            style={{padding: '6px'}}><XCircle size={16}/></button>
+                                    <input type="datetime-local" value={newDate} onChange={(e) => setNewDate(e.target.value)} className="modal-input" style={{padding: '6px', fontSize: '13px'}}/>
+                                    <button className="btn" onClick={handleSaveDate} style={{padding: '6px'}}><XCircle size={16}/></button>
+                                    <button className="btn" onClick={() => setIsEditingDate(false)} style={{padding: '6px'}}><XCircle size={16}/></button>
                                 </div>
                             ) : (
                                 <p style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
@@ -402,35 +471,35 @@ export default function Lightbox({
                                 </p>
                             )}
                         </div>
-                        <div className="metadata-group">
-                            <label><Info size={14}/> Basic Details</label>
-                            <p>{selectedPhoto.resolution} • {selectedPhoto.size}</p>
-                        </div>
+                        <div className="metadata-group"><label><Info size={14}/> Basic Details</label><p>{selectedPhoto.resolution} • {selectedPhoto.size}</p></div>
                         {extMetadata && (
                             <div className="extended-meta">
                                 <div className="meta-divider">Technical</div>
-                                {extMetadata.aperture &&
-                                    <div className="metadata-group"><label><Zap size={14}/> Exposure</label>
-                                        <p>{extMetadata.aperture} • {extMetadata.shutterSpeed} •
-                                            ISO {extMetadata.iso}</p></div>}
-                                {extMetadata.lensModel &&
-                                    <div className="metadata-group"><label><Camera size={14}/> Lens</label>
-                                        <p>{extMetadata.lensModel}</p></div>}
-                                {extMetadata.codec &&
-                                    <div className="metadata-group"><label><Clock size={14}/> Video Info</label>
-                                        <p>{extMetadata.codec} • {extMetadata.frameRate} fps</p></div>}
-                                {extMetadata.latitude &&
-                                    <div className="metadata-group"><label><MapPin size={14}/> Location</label>
-                                        <p>{extMetadata.latitude.toFixed(4)}, {extMetadata.longitude.toFixed(4)}</p>
-                                    </div>}
+                                {extMetadata.aperture && <div className="metadata-group"><label><Zap size={14}/> Exposure</label><p>{extMetadata.aperture} • {extMetadata.shutterSpeed} • ISO {extMetadata.iso}</p></div>}
+                                {extMetadata.lensModel && <div className="metadata-group"><label><Camera size={14}/> Lens</label><p>{extMetadata.lensModel}</p></div>}
+                                {extMetadata.codec && <div className="metadata-group"><label><Clock size={14}/> Video Info</label><p>{extMetadata.codec} • {extMetadata.frameRate} fps</p></div>}
+                                {extMetadata.latitude && <div className="metadata-group"><label><MapPin size={14}/> Location</label><p>{extMetadata.latitude.toFixed(4)}, {extMetadata.longitude.toFixed(4)}</p></div>}
                             </div>
                         )}
-                        {selectedPhoto.fileSystemCreationDate && (
-                            <div className="metadata-group">
-                                <label><Calendar size={14}/> File System Date</label>
-                                <p>{formatDateTime(selectedPhoto.fileSystemCreationDate)}</p>
+                        {/* Faces Section */}
+                        {faces.length > 0 && (
+                            <div
+                                className="extended-meta"
+                                onMouseEnter={() => setShowFaces(true)}
+                                onMouseLeave={() => setShowFaces(false)}
+                            >
+                                <div className="meta-divider">Faces Detected</div>
+                                <div className="face-thumbnail-container">
+                                    {faces.map((face, index) => (
+                                        <div key={index} className="face-item">
+                                            {face.image && <img src={face.image} alt={`Face ${index + 1}`} className="face-thumbnail" />}
+                                            <label>Face {index + 1}</label>
+                                        </div>
+                                    ))}
+                                </div>
                             </div>
                         )}
+                        {selectedPhoto.fileSystemCreationDate && <div className="metadata-group"><label><Calendar size={14}/> File System Date</label><p>{formatDateTime(selectedPhoto.fileSystemCreationDate)}</p></div>}
                     </div>
                 </div>
             </div>

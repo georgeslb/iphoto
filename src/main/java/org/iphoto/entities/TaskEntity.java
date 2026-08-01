@@ -1,9 +1,7 @@
 package org.iphoto.entities;
 
 import jakarta.persistence.*;
-import lombok.Data;
-import lombok.EqualsAndHashCode;
-import lombok.NoArgsConstructor;
+import lombok.*;
 import org.iphoto.model.TaskStatus;
 
 import java.time.LocalDateTime;
@@ -13,8 +11,12 @@ import java.util.UUID;
 @Table(name = "tasks")
 @Data
 @EqualsAndHashCode(callSuper = false)
-@NoArgsConstructor
-public class TaskEntity {
+@Builder(toBuilder = true)
+@AllArgsConstructor(access = AccessLevel.PUBLIC)
+@NoArgsConstructor(access = AccessLevel.PUBLIC)
+@Setter(value = AccessLevel.PUBLIC)
+@Getter
+public class TaskEntity{
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
@@ -23,11 +25,16 @@ public class TaskEntity {
     @Column()
     private UUID photoId;
 
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id")
+    protected UserEntity user;
+
     @Column(nullable = false)
     private String taskType;
 
     @Column(nullable = false)
-    private String status = TaskStatus.PENDING.name();
+    private String status;
 
     @Column(columnDefinition = "TEXT")
     private String payload;
@@ -42,6 +49,7 @@ public class TaskEntity {
 
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+
 
     @PrePersist
     protected void onCreate() {

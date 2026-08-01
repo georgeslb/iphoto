@@ -6,11 +6,14 @@ import jakarta.annotation.PreDestroy;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.TaskEntity;
+import org.iphoto.exception.ServiceNotAvailableException;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.UploadStatus;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.repository.TaskRepository;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.security.access.annotation.Secured;
+import org.springframework.security.authentication.LockedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -41,8 +44,10 @@ public class TaskWorkerManager {
     private final DuplicationService duplicationService;
     private final PhotoUploadService photoUploadService;
     private final PhotoService photoService;
-    private final ExecutorService executorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+    private final FaceDetectionService faceDetectionService;
+    private final FaceRecognitionService faceRecognitionService;
 
+    private final ExecutorService executorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
 
 
     @Scheduled(fixedDelay = 5000)
@@ -74,11 +79,22 @@ public class TaskWorkerManager {
                 } else if (HASH_IMAGE.name().equals(task.getTaskType())) {
                     duplicationService.hashImage(task);
                     task.setStatus(TaskStatus.COMPLETED);
-                }
-                else if (CHECK_DUPLICATION.name().equals(task.getTaskType())) {
+                } else if (CHECK_DUPLICATION.name().equals(task.getTaskType())) {
                     duplicationService.checkDuplication(task);
+                } else if (ISOLATE_FACES.name().equals(task.getTaskType())) {
+                    try {
+                        faceDetectionService.detectAndSaveFaces(task);
+                    } catch (ServiceNotAvailableException e) {
+                        task.setStatus(TaskStatus.PENDING);
+                        task.setExecuteAt(null);
+                    }
+                } else if (FACE_RECOGNITION.name().equals(task.getTaskType())) {
+                    faceRecognitionService.groupFaces();
+                    task.setExecuteAt(LocalDateTime.now().plusSeconds(30));
+                    task.setStatus(TaskStatus.PENDING);
                 }
-            } catch (Exception e) {
+
+            } catch (Throwable e) {
                 log.error("Task failed", e);
                 task.setStatus(TaskStatus.FAILED);
                 task.setErrorMessage(e.getMessage());

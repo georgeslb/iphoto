@@ -21,6 +21,13 @@ function AlbumGridDisplay({
 
   return (
     <div className="content-body">
+      {/* Moved Create Album button here */}
+      <div style={{ marginBottom: '20px', display: 'flex', justifyContent: 'flex-start', marginTop: '10px' }}>
+          <button className="btn btn-primary" onClick={() => setShowCreateAlbumModal(true)}>
+              <Plus size={18}/> Create Album
+          </button>
+      </div>
+
       <div className="album-grid">
         {albums.map(album => {
           const isSelected = selectedIds.includes(album.id);
@@ -29,23 +36,23 @@ function AlbumGridDisplay({
               key={album.id}
               className={`album-card ${isSelected ? 'selected' : ''}`}
               onClick={() => {
-                if (selectedIds.length > 0) {
-                  setSelectedIds(v => v.includes(album.id) ? v.filter(i => i !== album.id) : [...v, album.id]);
-                } else {
+                // Only navigate if not in selection mode
+                if (selectedIds.length === 0) {
                   navigate(`/albums/${album.id}`);
                 }
+                // If in selection mode, the overlay handles the click
               }}
             >
               <div
                 className="select-overlay"
-                style={{ opacity: 1, pointerEvents: selectedIds.length > 0 ? 'all' : 'none' }} /* Ensure overlay is always visible but only interactive in selection mode */
+                // Removed pointerEvents conditional style
                 onClick={(e) => {
-                  e.stopPropagation();
+                  e.stopPropagation(); // Prevent click from bubbling to the album-card div
                   setSelectedIds(v => v.includes(album.id) ? v.filter(i => i !== album.id) : [...v, album.id]);
                 }}
               >
                 <div className={`check-circle ${isSelected ? 'checked' : ''}`}>
-                  {isSelected ? <Check size={14} /> : <Circle size={14} color="#ccc" />} {/* Corrected: show Circle when not selected */}
+                  {isSelected ? <Check size={14} /> : <Circle size={14} color="#ccc" />}
                 </div>
               </div>
 
@@ -59,13 +66,8 @@ function AlbumGridDisplay({
             </div>
           );
         })}
-        {albums.length === 0 && ( <div style={{textAlign: 'center', padding: '50px', color: '#888', gridColumn: '1/-1'}}> No albums created yet. Click "Create Album" to get started! </div>)}
-          <div>
-              <button className="btn btn-primary" onClick={() => setShowCreateAlbumModal(true)}
-                      style={{marginTop: '20px'}}>
-                  <Plus size={18}/> Create Album
-              </button>
-          </div>
+        {albums.length === 0 && ( <div style={{textAlign: 'center', padding: '50px', color: '#888', gridColumn: '1/-1'}}> No albums created yet. </div>)}
+      </div>
 
       <CreateAlbumModal
         show={showCreateAlbumModal}
@@ -77,7 +79,6 @@ function AlbumGridDisplay({
         albumCreationError={albumCreationError}
         handleCreateAlbum={handleCreateAlbum}
       />
-      </div>
     </div>
   )
 }

@@ -27,10 +27,10 @@ public class DuplicationUniquenessService {
     private final DuplicateRepository duplicateRepository;
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public TaskStatus consolidateDuplicates(PhotoEntity photo, Set<PhotoEntity> duplicatesPhotos) {
+    public TaskStatus consolidateDuplicates(PhotoEntity photo, Set<PhotoEntity> duplicatesPhotos) { // Added UserEntity parameter
         try {
             List<UUID> ids = duplicatesPhotos.stream().map(PhotoEntity::getId).toList();
-            List<DuplicateEntity> existingDuplicates =  duplicateRepository.findByPhotosIdIn(ids);
+            List<DuplicateEntity> existingDuplicates =  duplicateRepository.findByPhotosIdIn(ids); // Filter by user
             boolean addNewDuplicatePhoto = true;
             for (DuplicateEntity duplicate : existingDuplicates) {
                 if (duplicate.getPhotos().stream().map(PhotoEntity::getId)
@@ -47,8 +47,13 @@ public class DuplicationUniquenessService {
                 // create a new duplicate group
                 Set<PhotoEntity> duplicatesPhotosToAdd = new HashSet<>(duplicatesPhotos);
                 duplicatesPhotosToAdd.add(photo);
-                DuplicateEntity duplicateEntity = DuplicateEntity.builder().id(UUID.randomUUID())
-                        .photos(duplicatesPhotosToAdd).status(OPEN).hash(generateUniqueHash(duplicatesPhotosToAdd)).build();
+                DuplicateEntity duplicateEntity = DuplicateEntity.builder()
+                        .id(UUID.randomUUID())
+                        .user(photo.getUser()) // Set the user for the new duplicate group
+                        .photos(duplicatesPhotosToAdd)
+                        .status(OPEN)
+                        .hash(generateUniqueHash(duplicatesPhotosToAdd))
+                        .build();
                 duplicateRepository.saveAndFlush(duplicateEntity);
             }
            return TaskStatus.COMPLETED;

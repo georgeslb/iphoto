@@ -1,15 +1,18 @@
 package org.iphoto.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.persistence.EntityManager;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.TaskEntity;
+import org.iphoto.entities.UserEntity; // Import UserEntity
 import org.iphoto.model.PhotoEditRequest;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.TaskType;
 import org.iphoto.properties.IPhotoProperties;
+import org.iphoto.repository.FaceRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
@@ -45,9 +48,12 @@ public class EditPhotoService {
     private final TaskManagerService taskManagerService;
     private final ThumbnailService thumbnailService;
     private final IPhotoProperties iPhotoProperties;
+    private final FaceRepository faceRepository;
+    private final DuplicationService duplicationService;
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public PhotoEntity editImage(
+            UserEntity user, // Added UserEntity parameter
             UUID id,
             MultipartFile file,
             PhotoEditRequest request
@@ -56,7 +62,7 @@ public class EditPhotoService {
         // =========================
         // LOAD IMAGE
         // =========================
-        PhotoEntity photoEntity = photoRepository.findById(id)
+        PhotoEntity photoEntity = photoRepository.findByIdAndUser(id, user) // Filter by user
                 .orElseThrow(() -> new NoSuchElementException("Photo not found with ID: " + id));
 
         String originalImagePath = photoEntity.getOriginalPath();
@@ -100,14 +106,14 @@ public class EditPhotoService {
 
 
         if (dest.toFile().exists()) {
-            return updatePhotoInDatabase(file, request.saveAsNew(), newModifiedPhotoData, photoEntity);
+            return updatePhotoInDatabase(user, file, request.saveAsNew(), newModifiedPhotoData, photoEntity); // Pass user
         }
 
 
         return null;
     }
 
-    private PhotoEntity updatePhotoInDatabase(MultipartFile file, boolean saveNew, NewModifiedPhotoData newModifiedPhotoData, PhotoEntity originalPhoto) {
+    private PhotoEntity updatePhotoInDatabase(UserEntity user, MultipartFile file, boolean saveNew, NewModifiedPhotoData newModifiedPhotoData, PhotoEntity originalPhoto) { // Added UserEntity parameter
         if (saveNew) {
 
             Map<String, String> payload = new HashMap<>();
@@ -116,14 +122,15 @@ public class EditPhotoService {
                 payload.put("originalFileName", newModifiedPhotoData.getFileName());
                 payload.put("contentType", file.getContentType());
                 payload.put("fileSize", String.valueOf(Files.size(Path.of(newModifiedPhotoData.getTmpPath()))));
+                payload.put("userId", user.getId().toString()); // Add user ID to payload
                 UUID newId = UUID.randomUUID();
                 TaskEntity task = taskManagerService.createTaskEntityImmediately(TaskType.PROCESS_UPLOAD, newId, objectMapper.writeValueAsString(payload), null);
                 while (taskManagerService.getTask(task.getId()).isEmpty()
                         || taskManagerService.getTask(task.getId()).get().getStatus() == TaskStatus.PENDING
-                        || photoRepository.findById(newId).isEmpty()) {
+                        || photoRepository.findByIdAndUser(newId, user).isEmpty()) { // Filter by user
                     Thread.sleep(500);
                 }
-                return photoRepository.findById(newId).get();
+                return photoRepository.findByIdAndUser(newId, user).get(); // Filter by user
             } catch (Exception e) {
                 log.error(e.getMessage(), e);
                 throw new RuntimeException(e);
@@ -137,9 +144,12 @@ public class EditPhotoService {
                 originalPhoto.setFileSize(Files.size(Path.of(originalPhoto.getOriginalPath())));
                 originalPhoto.setWidth(workingImage.getWidth());
                 originalPhoto.setHeight(workingImage.getHeight());
-                taskManagerService.createTaskEntity(TaskType.HASH_IMAGE, originalPhoto.getId(), objectMapper.writeValueAsString(Map.of("photoId", originalPhoto.getId().toString())),  LocalDateTime.now().plusMinutes(2));
+                originalPhoto.getFaces().forEach(faceRepository::delete);
+                duplicationService.deleteDuplicatesForPhoto(originalPhoto);
+                taskManagerService.createTaskEntity(TaskType.HASH_IMAGE, originalPhoto.getId(), null,  LocalDateTime.now().plusMinutes(2));
+                taskManagerService.createTaskEntity(TaskType.ISOLATE_FACES, originalPhoto.getId(), null,  LocalDateTime.now().plusMinutes(3));
                 return photoRepository.save(originalPhoto);
-            } catch (IOException | NoSuchAlgorithmException e) {
+            } catch (Exception e) {
                 throw new RuntimeException(e);
             }
         }
@@ -374,4 +384,3 @@ public class EditPhotoService {
         String existingFile;
     }
 }
-

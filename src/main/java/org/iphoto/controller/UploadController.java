@@ -4,10 +4,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.TaskEntity;
+import org.iphoto.entities.UserEntity; // Import UserEntity
 import org.iphoto.model.TaskType;
 import org.iphoto.properties.IPhotoProperties;
+import org.iphoto.repository.UserRepository; // Import UserRepository
 import org.iphoto.service.TaskManagerService;
 import org.springframework.http.MediaType;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -21,6 +25,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.UUID;
 import java.util.stream.Stream;
 
@@ -33,7 +38,14 @@ public class UploadController {
     private final TaskManagerService taskManagerService;
     private final ObjectMapper objectMapper;
     private final IPhotoProperties iPhotoProperties;
+    private final UserRepository userRepository; // Inject UserRepository
 
+    private UserEntity getCurrentUser() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        String username = authentication.getName();
+        return userRepository.findByUsername(username)
+                .orElseThrow(() -> new NoSuchElementException("User not found: " + username));
+    }
 
     // Endpoint to receive individual file chunks
     @PostMapping(value = "/chunk", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -46,6 +58,8 @@ public class UploadController {
             @RequestParam("contentType") String contentType,
             @RequestParam(value = "albumId", required = false) UUID albumId,
             @RequestParam("chunk") MultipartFile chunk) throws IOException {
+
+        UserEntity currentUser = getCurrentUser(); // Get the current user
 
         log.info("Received chunk {}/{} for uploadId: {} - fileName: {}", chunkIndex, totalChunks, uploadId, fileName);
 
@@ -86,10 +100,11 @@ public class UploadController {
             if (albumId != null) {
                 payload.put("albumId", albumId.toString());
             }
+            payload.put("userId", currentUser.getId().toString()); // Add user ID to payload
 
             // generate photo UUID and add a new task
             TaskEntity task = taskManagerService
-                    .createTaskEntity(TaskType.PROCESS_UPLOAD, UUID.randomUUID(), objectMapper.writeValueAsString(payload), null);
+                    .createTaskEntity(currentUser, TaskType.PROCESS_UPLOAD, UUID.randomUUID(), objectMapper.writeValueAsString(payload), null);
 
 
 

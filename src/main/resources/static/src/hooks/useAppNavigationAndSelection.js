@@ -16,23 +16,29 @@ export function useAppNavigationAndSelection(
   // Sync route and selectedPhoto
   useEffect(() => {
     const assetMatch = location.pathname.match(/^\/asset\/(.+)$/);
-    if (!assetMatch) {
+    const albumPhotoMatch = location.pathname.match(/^\/albums\/[^/]+\/asset\/(.+)$/);
+    const photoIdMatch = assetMatch || albumPhotoMatch;
+
+    if (!photoIdMatch) {
       setSelectedPhoto(null);
-    } else if (!selectedPhoto && photos.length > 0) {
-      // If we land on a direct URL and photos are loaded, set it
-      const photo = photos.find(p => p.id === assetMatch[1]);
-      if (photo) setSelectedPhoto(photo);
-    } else if (!selectedPhoto && currentDuplicateGroup) {
-      // If we land on a direct URL inside duplicates
-      const photo = currentDuplicateGroup.photos.find(p => p.id === assetMatch[1]);
-      if (photo) setSelectedPhoto(photo);
-    } else if (!selectedPhoto) {
-      // Hard refresh on an asset URL without a pre-loaded grid
-      fetch(`/api/photos/${assetMatch[1]}`)
-          .then(res => res.ok ? res.json() : null)
-          .then(data => {
-            if (data) setSelectedPhoto(data);
-          });
+    } else {
+        const photoId = photoIdMatch[1];
+        if (!selectedPhoto && photos.length > 0) {
+            // If we land on a direct URL and photos are loaded, set it
+            const photo = photos.find(p => p.id === photoId);
+            if (photo) setSelectedPhoto(photo);
+        } else if (!selectedPhoto && currentDuplicateGroup) {
+            // If we land on a direct URL inside duplicates
+            const photo = currentDuplicateGroup.photos.find(p => p.id === photoId);
+            if (photo) setSelectedPhoto(photo);
+        } else if (!selectedPhoto) {
+            // Hard refresh on an asset URL without a pre-loaded grid
+            fetch(`/api/photos/${photoId}`)
+                .then(res => res.ok ? res.json() : null)
+                .then(data => {
+                    if (data) setSelectedPhoto(data);
+                });
+        }
     }
   }, [location.pathname, photos, selectedPhoto, currentDuplicateGroup]);
 
@@ -44,8 +50,17 @@ export function useAppNavigationAndSelection(
     // Persist the FULL background location object (with its internal React Router key)
     // This prevents the background <Routes> from unmounting and remounting all images
     const bgLoc = backgroundLocation || location;
-    navigate(`/asset/${photo.id}`, { state: { backgroundLocation: bgLoc }, replace: true });
-  }, [backgroundLocation, location, navigate, saveScrollPosition]);
+    
+    let targetUrl;
+    if (effectivePath.startsWith('/albums/')) {
+      const albumId = effectivePath.split('/')[2];
+      targetUrl = `/albums/${albumId}/asset/${photo.id}`;
+    } else {
+      targetUrl = `/asset/${photo.id}`;
+    }
+    
+    navigate(targetUrl, { state: { backgroundLocation: bgLoc }, replace: true });
+  }, [backgroundLocation, location, navigate, saveScrollPosition, effectivePath]);
 
   const handleCloseLightbox = useCallback(() => {
     setSelectedPhoto(null);

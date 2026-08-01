@@ -7,6 +7,7 @@ import org.springframework.stereotype.Repository;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 @Repository
@@ -17,4 +18,6 @@ public interface TaskRepository extends JpaRepository<TaskEntity, UUID> {
 
     @Query("SELECT t FROM TaskEntity t WHERE t.status = :status AND (t.executeAt IS NULL OR t.executeAt <= :now)")
     List<TaskEntity> findExecutableTasks(String status, LocalDateTime now);
+
+    List<TaskEntity> findByPhotoIdAndTaskTypeIn(UUID id, Set<String> taskTypes);
 }

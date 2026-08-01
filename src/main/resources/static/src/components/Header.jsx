@@ -19,7 +19,8 @@ export default function Header({
   duplicatesPage,
   fetchDuplicates,
   isLastDuplicateGroup,
-  handleDeleteAlbums
+  handleDeleteAlbums,
+  fileInputRef // Add fileInputRef to props
 }) {
   const selectionMode = selectedIds.length > 0;
   const isDuplicatesPage = pathname.startsWith('/duplicates');
@@ -77,18 +78,18 @@ export default function Header({
             {/* Removed "Create Album" button from here */}
             {pathname.startsWith('/albums/') && albumId ? (
               <>
-                <button className="btn btn-primary" onClick={() => document.getElementById('fIn').click()}><Upload size={18} /> Upload</button>
+                <button className="btn btn-primary" onClick={() => fileInputRef.current.click()}><Upload size={18} /> Upload</button>
                 <button className="btn" onClick={() => setShowCreateShareLinkModal(albumId)}><Link size={18} /> Create Share Link</button>
               </>
             ) : !isDuplicatesPage ? (
               <>
-                <button className="btn btn-primary" onClick={() => document.getElementById('fIn').click()}><Upload size={18} /> Upload</button>
+                <button className="btn btn-primary" onClick={() => fileInputRef.current.click()}><Upload size={18} /> Upload</button>
               </>
             ) : null}
           </>
         )}
       </div>
-      <input id="fIn" type="file" multiple onChange={handleUpload} style={{ display: 'none' }} />
+      <input id="fIn" type="file" multiple onChange={handleUpload} style={{ display: 'none' }} ref={fileInputRef} /> {/* Attach ref here */}
     </header>
   );
 }
