@@ -3,6 +3,7 @@ package org.iphoto.entities;
 import jakarta.persistence.*;
 import lombok.*;
 import org.iphoto.model.TaskStatus;
+import org.iphoto.model.TaskType;
 
 import java.time.LocalDateTime;
 import java.util.UUID;
@@ -31,7 +32,8 @@ public class TaskEntity{
     protected UserEntity user;
 
     @Column(nullable = false)
-    private String taskType;
+    @Enumerated(EnumType.STRING)
+    private TaskType taskType;
 
     @Column(nullable = false)
     private String status;

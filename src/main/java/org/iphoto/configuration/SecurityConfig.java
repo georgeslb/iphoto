@@ -29,6 +29,9 @@ public class SecurityConfig {
                                 "/api/logout"
                         ).permitAll()
 
+                        // Admin operations
+                        .requestMatchers("/admin/**").hasRole("ADMIN")
+
                         // React SPA
                         .requestMatchers(
                                 "/",

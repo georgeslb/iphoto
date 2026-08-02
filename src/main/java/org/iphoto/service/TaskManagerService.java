@@ -43,7 +43,7 @@ public class TaskManagerService {
                                        LocalDateTime executionDateTime) {
         TaskEntity task = TaskEntity.builder()
                 .user(user)
-                .taskType(taskType.name())
+                .taskType(taskType)
                 .photoId(photoId)
                 .payload(payload)
                 .executeAt(executionDateTime)
@@ -65,7 +65,7 @@ public class TaskManagerService {
                                        LocalDateTime executionDateTime) {
         TaskEntity task = TaskEntity.builder()
                 .user(user)
-                .taskType(taskType.name())
+                .taskType(taskType)
                 .photoId(photoId)
                 .payload(payload)
                 .executeAt(executionDateTime)

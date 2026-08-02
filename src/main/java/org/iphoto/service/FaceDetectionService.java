@@ -61,7 +61,7 @@ public class FaceDetectionService {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void detectAndSaveFaces(TaskEntity task) {
         if (!lock.tryLock()) {
-            throw new ServiceNotAvailableException("Face detection service is busy with task " + task.getId());
+            throw new ServiceNotAvailableException("Face detection service is busy with another task");
         }
         try {
             photoRepository.findById(task.getPhotoId()).ifPresent(photo -> { // Filter by user

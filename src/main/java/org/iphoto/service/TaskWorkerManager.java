@@ -75,30 +75,30 @@ public class TaskWorkerManager {
             TaskEntity task = taskRepository.findById(taskId).orElse(null);
             if (task == null) return;
             try {
-                if (PROCESS_UPLOAD.name().equals(task.getTaskType())) {
+                if (PROCESS_UPLOAD.equals(task.getTaskType())) {
                     processUpload(task);
-                } else if (PERMANENT_DELETE.name().equals(task.getTaskType())) {
+                } else if (PERMANENT_DELETE.equals(task.getTaskType())) {
                     handlePermanentDelete(task);
                     task.setStatus(TaskStatus.COMPLETED);
-                } else if (HASH_IMAGE.name().equals(task.getTaskType())) {
+                } else if (HASH_IMAGE.equals(task.getTaskType())) {
                     duplicationService.hashImage(task);
                     task.setStatus(TaskStatus.COMPLETED);
-                } else if (CHECK_DUPLICATION.name().equals(task.getTaskType())) {
+                } else if (CHECK_DUPLICATION.equals(task.getTaskType())) {
                     duplicationService.checkDuplication(task);
-                } else if (ISOLATE_FACES.name().equals(task.getTaskType())) {
-                    try {
-                        faceDetectionService.detectAndSaveFaces(task);
-                    } catch (ServiceNotAvailableException e) {
-                        task.setStatus(TaskStatus.PENDING);
-                        task.setExecuteAt(null);
-                    }
-                } else if (FACE_RECOGNITION.name().equals(task.getTaskType())) {
+                } else if (ISOLATE_FACES.equals(task.getTaskType())) {
+                    faceDetectionService.detectAndSaveFaces(task);
+                } else if (FACE_RECOGNITION.equals(task.getTaskType())) {
                     faceRecognitionService.groupFaces();
+                    // TODO to be updated
                     task.setExecuteAt(LocalDateTime.now().plusSeconds(30));
                     task.setStatus(TaskStatus.PENDING);
                 }
-
-            } catch (Throwable e) {
+            }
+            catch (ServiceNotAvailableException e) {
+                task.setStatus(TaskStatus.PENDING);
+                task.setExecuteAt(null);
+            }
+            catch (Throwable e) {
                 log.error("Task failed", e);
                 task.setStatus(TaskStatus.FAILED);
                 task.setErrorMessage(e.getMessage());

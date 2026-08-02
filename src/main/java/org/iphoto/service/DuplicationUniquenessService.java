@@ -95,4 +95,12 @@ public class DuplicationUniquenessService {
 
     }
 
+    public List<UUID> undoGenerateUniqueHash(String hexHash) {
+        Optional<DuplicateEntity> duplicateEntityOptional = duplicateRepository.findByHash(hexHash);
+        return duplicateEntityOptional.map(duplicateEntity ->
+                duplicateEntity.getPhotos().stream()
+                        .map(PhotoEntity::getId)
+                        .collect(Collectors.toList()))
+                .orElse(Collections.emptyList());
+    }
 }

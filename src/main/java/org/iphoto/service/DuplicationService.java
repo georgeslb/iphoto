@@ -1,6 +1,8 @@
 package org.iphoto.service;
 
+import lombok.AccessLevel;
 import lombok.RequiredArgsConstructor;
+import lombok.experimental.FieldDefaults;
 import lombok.extern.slf4j.Slf4j;
 import org.bytedeco.javacv.FFmpegFrameGrabber;
 import org.bytedeco.opencv.opencv_core.Mat;
@@ -8,11 +10,12 @@ import org.bytedeco.opencv.opencv_core.Size;
 import org.bytedeco.opencv.opencv_img_hash.AverageHash;
 import org.bytedeco.opencv.opencv_img_hash.PHash;
 import org.iphoto.entities.*;
+import org.iphoto.exception.DuplicationBatchInProgressException;
+import org.iphoto.exception.ServiceNotAvailableException;
 import org.iphoto.mappers.PhotoMapper;
 import org.iphoto.model.DuplicateGroupDTO;
 import org.iphoto.model.Photo;
 import org.iphoto.model.TaskStatus;
-import org.iphoto.model.TaskType;
 import org.iphoto.repository.DuplicateRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.springframework.data.domain.PageRequest;
@@ -24,6 +27,8 @@ import org.springframework.stereotype.Service;
 import java.nio.ByteBuffer;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 import static org.bytedeco.opencv.global.opencv_core.*;
@@ -35,13 +40,18 @@ import static org.iphoto.model.DuplicateStatus.OPEN;
 @Service
 @RequiredArgsConstructor
 @Slf4j
+@FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
 public class DuplicationService {
 
-    private final PhotoRepository photoRepository;
-    private final TaskManagerService taskManagerService;
-    private final DuplicateRepository duplicateRepository;
-    private final PhotoMapper photoMapper;
-    private final DuplicationUniquenessService duplicateUniquenessService;
+    private PhotoRepository photoRepository;
+    private DuplicateRepository duplicateRepository;
+    private PhotoMapper photoMapper;
+    private DuplicationUniquenessService duplicateUniquenessService;
+    private TaskMapper taskMapper;
+    private ReentrantLock mHashLock = new ReentrantLock();
+    private ReentrantLock checkDuplicationLock = new ReentrantLock();
+    private CopyOnWriteArrayList<UUID> duplicationInProgress = new CopyOnWriteArrayList<>();
+
     private static final int MAX_SIZE = 1000;
 
 
@@ -58,9 +68,11 @@ public class DuplicationService {
 
     }
 
-    public void processMovingToGarbage(Set<PhotoEntity> photosDeleted) { // Added UserEntity parameter
-        List<UUID> photoIds = photosDeleted.stream().map(PhotoEntity::getId).collect(Collectors.toList());
-        List<DuplicateEntity> duplicateEntities = duplicateRepository.findByPhotosIdIn(photoIds); // Filter by user
+    public void processMovingToGarbage(Set<PhotoEntity> photosMovedToGarbage) {
+        List<UUID> photoIds = photosMovedToGarbage.stream().map(PhotoEntity::getId).collect(Collectors.toList());
+        List<DuplicateEntity> duplicateEntities = duplicateRepository.findByPhotosIdIn(photoIds);
+        // in case we moved a photo to garbage, we don't remove photo from its duplication group
+        // in case only one photo stands in duplication group, remove duplication group
         duplicateEntities.forEach(duplicateEntity -> {
             if (duplicateEntity.getStatus() == OPEN && duplicateEntity.getPhotos()
                     .stream().filter(photoEntity -> !photoEntity.getIsGarbage()).count() < 2) {
@@ -69,9 +81,9 @@ public class DuplicationService {
         });
     }
 
-    public void restoreFromGarbage(List<PhotoEntity> photosRestored) { // Added UserEntity parameter
+    public void restoreFromGarbage(List<PhotoEntity> photosRestored) {
         List<UUID> photoIds = photosRestored.stream().map(PhotoEntity::getId).collect(Collectors.toList());
-        List<DuplicateEntity> duplicateEntities = duplicateRepository.findByPhotosIdIn(photoIds); // Filter by user
+        List<DuplicateEntity> duplicateEntities = duplicateRepository.findByPhotosIdIn(photoIds);
         duplicateEntities.forEach(duplicateEntity -> {
             if (duplicateEntity.getStatus() == CLOSED && duplicateEntity.getPhotos()
                     .stream().filter(photoEntity -> !photoEntity.getIsGarbage()).count() > 1) {
@@ -80,25 +92,39 @@ public class DuplicationService {
         });
     }
 
-    public void hashImage(TaskEntity task) { // Added UserEntity parameter
-        photoRepository
-                .findById(task.getPhotoId()).ifPresent(photo -> { // Filter by user
-                    try {
-                        if (photo.getContentType().contains("image")) {
-                            log.info("creating Perceptive Hash for photoId: {}", photo.getId());
-                            preprocess(photo);
-                            photoRepository.save(photo);
-                            taskManagerService.createTaskEntity(TaskType.CHECK_DUPLICATION, photo.getId(), null, LocalDateTime.now().plusMinutes(1));
+    public void hashImage(TaskEntity task) {
+        if (!mHashLock.tryLock()) {
+            throw new ServiceNotAvailableException("Face detection service is busy with another task");
+        }
+        try {
+            photoRepository
+                    .findById(task.getPhotoId()).ifPresent(photo -> { // Filter by user
+                        try {
+                            if (photo.getContentType().contains("image")) {
+                                log.info("creating Perceptive Hash for photoId: {}", photo.getId());
+                                preprocess(photo);
+                                photoRepository.save(photo);
+                                if (photo.getSpace().getType() == SpaceType.MAIN) {
+                                    taskMapper.updateTasksToAction(TaskMapper.Action.AFTER_PHOTO_HASH, photo.getId());
+                                }
+                            }
+                        } catch (Exception e) {
+                            log.warn(e.getMessage(), e);
+                            throw new RuntimeException(e);
                         }
-                    } catch (Exception e) {
-                        log.warn(e.getMessage(), e);
-                        throw new RuntimeException(e);
-                    }
-                });
+                    });
+        } finally {
+            mHashLock.unlock();
+        }
+
     }
 
-    public void closeDuplicates (UserEntity user, String hash) { // Added UserEntity parameter
-        duplicateRepository.findByHash(hash).ifPresent(duplicate -> { // Filter by user
+    public void closeDuplicates (String hash) {
+        List<UUID> photosInDuplicationGroup = duplicateUniquenessService.undoGenerateUniqueHash(hash);
+        if (duplicationInProgress.stream().anyMatch(photosInDuplicationGroup::contains)) {
+            throw new DuplicationBatchInProgressException();
+        }
+        duplicateRepository.findByHash(hash).ifPresent(duplicate -> {
             duplicate.setStatus(CLOSED);
             duplicateRepository.save(duplicate);
         });
@@ -266,46 +292,49 @@ public class DuplicationService {
     }
 
     public void checkDuplication(TaskEntity task) {
-        photoRepository
-                .findById(task.getPhotoId()).ifPresent(photo -> {
-                    //TODO when photo is moved to MAIN we should run Duplicate job
-                    if (photo.getSpace().getType() != SpaceType.MAIN) {
-                        task.setStatus(TaskStatus.IGNORED);
-                        task.setErrorMessage("photo " + photo.getId() + "  is not in main space, we don't look for duplicates");
-                        return;
-                    }
-                    Pageable pageable = PageRequest.of(0, 100);
-                    Slice<PhotoEntity> photosSlice;
-                    Set<PhotoEntity> duplicatesPhotos = new HashSet<>();
-                    do {
-                        photosSlice =
-                                photoRepository.findBySpaceIdAndDateTakenBetweenAndPhashNotNullAndMhashNotNullAndIsGarbageFalse(photo.getSpace().getId(), photo.getDateTaken().minusDays(1),
-                                        photo.getDateTaken().plusDays(1), pageable);
+        if (!checkDuplicationLock.tryLock()) {
+            throw new ServiceNotAvailableException("Duplication is busy with another task");
+        }
+        try {
+            duplicationInProgress.add(task.getPhotoId());
+            photoRepository
+                    .findById(task.getPhotoId()).ifPresent(photo -> {
 
-                        List<PhotoEntity> duplicatePhotosForIteration = compare(photo, photosSlice.getContent());
-                        if (!duplicatePhotosForIteration.isEmpty()) {
-                            duplicatesPhotos.addAll(duplicatePhotosForIteration);
-                        }
-                        pageable = photosSlice.nextPageable();
-
-                    } while (photosSlice.hasNext());
-
-                    if (!duplicatesPhotos.isEmpty()) {
-                        try {
-                            TaskStatus taskStatus = duplicateUniquenessService.consolidateDuplicates(photo, duplicatesPhotos); // Pass user
-                            if (taskStatus == TaskStatus.COMPLETED || taskStatus == TaskStatus.FAILED) {
-                                task.setStatus(taskStatus);
-                            } else {
-                                task.setStatus(TaskStatus.PENDING);
+                        Pageable pageable = PageRequest.of(0, 100);
+                        Slice<PhotoEntity> photosSlice;
+                        Set<PhotoEntity> duplicatesPhotos = new HashSet<>();
+                        do {
+                            photosSlice =
+                                    photoRepository.findBySpaceIdAndDateTakenBetweenAndPhashNotNullAndMhashNotNullAndIsGarbageFalse(photo.getSpace().getId(), photo.getDateTaken().minusDays(1),
+                                            photo.getDateTaken().plusDays(1), pageable);
+                            duplicationInProgress.addAll(photosSlice.getContent().stream().map(PhotoEntity::getId).toList());
+                            List<PhotoEntity> duplicatePhotosForIteration = compare(photo, photosSlice.getContent());
+                            if (!duplicatePhotosForIteration.isEmpty()) {
+                                duplicatesPhotos.addAll(duplicatePhotosForIteration);
                             }
-                        } catch (Exception e) {
-                            task.setStatus(TaskStatus.PENDING);
-                            task.setExecuteAt(LocalDateTime.now().plusMinutes(1));
+                            pageable = photosSlice.nextPageable();
+
+                        } while (photosSlice.hasNext());
+
+                        if (!duplicatesPhotos.isEmpty()) {
+                            try {
+                                TaskStatus taskStatus = duplicateUniquenessService.consolidateDuplicates(photo, duplicatesPhotos);
+                                if (taskStatus == TaskStatus.COMPLETED || taskStatus == TaskStatus.FAILED) {
+                                    task.setStatus(taskStatus);
+                                } else {
+                                    task.setStatus(TaskStatus.PENDING);
+                                }
+                            } catch (Exception e) {
+                                task.setStatus(TaskStatus.PENDING);
+                                task.setExecuteAt(LocalDateTime.now().plusMinutes(1));
+                            }
+                            return;
                         }
-                        return;
-                    }
-                    task.setStatus(TaskStatus.COMPLETED);
-                });
+                        task.setStatus(TaskStatus.COMPLETED);
+                    });
+        } finally {
+            checkDuplicationLock.unlock();
+        }
     }
 
 
@@ -327,7 +356,7 @@ public class DuplicationService {
                 .toList();
     }
 
-    public Slice<DuplicateGroupDTO> getDuplicates(UserEntity user, Pageable pageable) { // Added UserEntity parameter
+    public Slice<DuplicateGroupDTO> getDuplicates(Pageable pageable) { // Added UserEntity parameter
         // Pageable is equals to 1, we will see only one DuplicateEntity
         Slice<DuplicateEntity> hashesSlice = duplicateRepository.findByStatus(OPEN, pageable); // Filter by user
         List<DuplicateEntity> duplicateEntities = hashesSlice.getContent();

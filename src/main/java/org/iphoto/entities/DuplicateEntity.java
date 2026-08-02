@@ -8,18 +8,17 @@ import lombok.ToString;
 import lombok.experimental.SuperBuilder;
 import org.iphoto.model.DuplicateStatus;
 
-import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
 
 @Entity
 @Table(name = "duplicates")
+@EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true)
+@ToString(onlyExplicitlyIncluded = true)
 @Getter
 @Setter
 @SuperBuilder
-@EqualsAndHashCode(onlyExplicitlyIncluded = true) // Changed callSuper to true
-@ToString(onlyExplicitlyIncluded = true)
-public class DuplicateEntity { // Extends BaseEntity
+public class DuplicateEntity extends BaseEntity {
 
     @Id
     @ToString.Include
@@ -37,13 +36,7 @@ public class DuplicateEntity { // Extends BaseEntity
     @Enumerated(EnumType.STRING)
     private DuplicateStatus status;
 
-    @Column(unique = true) // This unique constraint might need to be adjusted to be unique per user
+    @Column(unique = true)
     private String hash;
-
-
-    public DuplicateEntity() {
-        super();
-    }
-
 
 }

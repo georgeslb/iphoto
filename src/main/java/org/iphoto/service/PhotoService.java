@@ -2,21 +2,21 @@ package org.iphoto.service;
 
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.iphoto.entities.*;
+import org.iphoto.entities.PersonEntity;
+import org.iphoto.entities.PhotoEntity;
+import org.iphoto.entities.SpaceEntity;
+import org.iphoto.entities.UserEntity;
+import org.iphoto.exception.PhotoDeletionException;
 import org.iphoto.mappers.PhotoMapper;
 import org.iphoto.model.AlbumDTO;
 import org.iphoto.model.Photo;
-import org.iphoto.model.TaskStatus;
-import org.iphoto.model.TaskType;
 import org.iphoto.model.request.PhotoEditRequest;
 import org.iphoto.repository.AlbumRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.repository.SpaceRepository;
-import org.iphoto.repository.TaskRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -34,11 +34,10 @@ public class PhotoService {
 
 
     private final PhotoRepository photoRepository;
-    private final TaskRepository taskRepository;
+    private final TaskMapper taskMapper;
     private final PhotoMapper photoMapper;
     private final AlbumService albumService;
     private final PhotoDeletionService photoDeletionService;
-    private final TaskManagerService taskManagerService;
     private final DuplicationService duplicationService;
     private final EditPhotoService editPhotoService;
     private final AlbumRepository albumRepository;
@@ -66,15 +65,8 @@ public class PhotoService {
             photo.setIsGarbage(false);
             photo.setGarbageAt(null);
             photoRepository.save(photo);
+            taskMapper.updateTasksToAction(TaskMapper.Action.PHOTO_REMOVED_FROM_GARBAGE, photo.getId());
 
-            List<TaskEntity> pendingDeletes = taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), LocalDateTime.now().plusYears(1), Collections.singletonList(photo.getId()));
-            for (TaskEntity task : pendingDeletes) {
-                if ("PERMANENT_DELETE".equals(task.getTaskType()) && photo.getId() != null) {
-                    task.setStatus(TaskStatus.IGNORED);
-                    task.setErrorMessage("Asset was restored by user, permanent delete task cancelled.");
-                    taskManagerService.updateTask(task);
-                }
-            }
         }
         duplicationService.restoreFromGarbage(photos);
     }
@@ -90,22 +82,29 @@ public class PhotoService {
             photo.setIsGarbage(true);
             photo.setGarbageAt(LocalDateTime.now());
             photoRepository.save(photo);
-
-            taskManagerService
-                    .createTaskEntity(TaskType.PERMANENT_DELETE, photo.getId(), null, LocalDateTime.now().plusDays(30));
+            taskMapper.updateTasksToAction(TaskMapper.Action.PHOTO_MOVED_TO_GARBAGE, photo.getId());
         }
 
         duplicationService.processMovingToGarbage(photos);
         photos.stream().map(PhotoEntity::getAlbums).flatMap(Collection::stream)
-                .forEach(album -> albumService.removePhotosFromAlbum(album.getId(), ids)); // Pass user to albumService
+                .forEach(album -> albumService.removePhotosFromAlbum(album.getId(), ids));
     }
 
+    /**
+     * called only from system
+     * @param photoId
+     */
     @Transactional
     public void permanentDeleteAssets(List<UUID> photoId) {
         Set<PhotoEntity> photos = photoRepository.findByIdIn(photoId);
         deleteAssets(photos);
     }
 
+    /**
+     *  called only by the user from frontend
+     * @param user
+     * @param ids
+     */
     @Transactional
     public void permanentDeleteAssets(UserEntity user, List<UUID> ids) {
         SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
@@ -119,17 +118,18 @@ public class PhotoService {
             try {
                 String originalPath = photo.getOriginalPath();
                 String thumbnailPath = photo.getThumbnailPath();
-                photoDeletionService.permanentDeleteAssets(photo); // Pass user to photoDeletionService
+                photoDeletionService.permanentDeleteAssets(photo);
                 try {
                     Files.deleteIfExists(Paths.get(originalPath));
                     if (thumbnailPath != null) {
                         Files.deleteIfExists(Paths.get(thumbnailPath));
                     }
                 } catch (IOException e) {
-                    throw new RuntimeException(e);
+                    throw new PhotoDeletionException("Error while deleting file fom file system", e);
                 }
             } catch (Exception e) {
                 log.error("can't delete photo with id {}", photo.getId(), e);
+                throw new PhotoDeletionException("can't delete photo with id {}", e);
             }
         });
     }
@@ -141,12 +141,6 @@ public class PhotoService {
         photoEntity.setDateTaken(newDate);
         photoRepository.save(photoEntity);
         return photoMapper.photoEntityToPhoto(photoEntity);
-    }
-
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public PhotoEntity fetchNewPhotoFromDatabaseAsync(UUID id) {
-        return photoRepository.findById(id)
-                .orElseThrow(() -> new NoSuchElementException("Photo not found with ID: " + id));
     }
 
     /**
@@ -182,6 +176,7 @@ public class PhotoService {
         photoRepository.findByIdIn(ids).forEach(photo -> {
             photo.setSpace(mainUserSpace);
             photoRepository.save(photo);
+            taskMapper.updateTasksToAction(TaskMapper.Action.PHOTO_MOVED_TO_MAIN, photo.getId());
         });
     }
 }

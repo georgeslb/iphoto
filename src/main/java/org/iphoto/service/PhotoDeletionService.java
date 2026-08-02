@@ -5,17 +5,13 @@ import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.AlbumEntity;
 import org.iphoto.entities.DuplicateEntity;
 import org.iphoto.entities.PhotoEntity;
-import org.iphoto.entities.TaskEntity;
-import org.iphoto.model.TaskStatus;
 import org.iphoto.repository.DuplicateRepository;
 import org.iphoto.repository.PhotoMetadataRepository;
 import org.iphoto.repository.PhotoRepository;
-import org.iphoto.repository.TaskRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -29,8 +25,8 @@ public class PhotoDeletionService {
     private final PhotoRepository photoRepository;
     private final PhotoMetadataRepository metadataRepository;
     private final AlbumService albumService;
-    private final TaskRepository taskRepository;
     private final DuplicateRepository duplicateRepository;
+    private final TaskMapper taskMapper;
 
     public void permanentDeleteAssets(PhotoEntity photo) { // Added UserEntity parameter
         // Copy collection first
@@ -47,9 +43,6 @@ public class PhotoDeletionService {
         // For now, we'll remove the specific photo from any duplicate groups it's part of.
         List<DuplicateEntity> duplicateEntities = duplicateRepository.findByPhotosIdIn(List.of(photo.getId()));
         for (DuplicateEntity duplicateEntity : duplicateEntities) {
-            // Ensure we only modify duplicate groups relevant to the current user's photos
-            // This is a simplification; a more robust solution might involve user-scoping DuplicateEntity
-            // or more complex logic to handle shared duplicate groups.
             if (duplicateEntity.getPhotos().contains(photo)) {
                 duplicateEntity.getPhotos().remove(photo);
                 if (duplicateEntity.getPhotos().isEmpty()) {
@@ -60,9 +53,8 @@ public class PhotoDeletionService {
             }
         }
 
-        metadataRepository.deleteById(photo.getId()); // Metadata is tied to photo ID, so delete directly
-        List<TaskEntity> pendingTasks = taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), LocalDateTime.now().plusYears(1), List.of(photo.getId()));
-        taskRepository.deleteAll(pendingTasks);
+        metadataRepository.deleteById(photo.getId());
+        taskMapper.updateTasksToAction(TaskMapper.Action.PHOTO_PERMANENTLY_DELETED, photo.getId());
         photoRepository.delete(photo);
 
     }

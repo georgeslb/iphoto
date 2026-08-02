@@ -9,14 +9,15 @@ import com.drew.metadata.exif.GpsDirectory;
 import com.drew.metadata.jpeg.JpegDirectory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.common.util.StringUtils;
+import lombok.AccessLevel;
 import lombok.AllArgsConstructor;
+import lombok.experimental.FieldDefaults;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.io.FilenameUtils;
 import org.bytedeco.javacv.FFmpegFrameGrabber;
 import org.iphoto.entities.*;
 import org.iphoto.exception.NoMatchUserSpaceException;
 import org.iphoto.exception.NoUserFoundException;
-import org.iphoto.model.TaskType;
 import org.iphoto.model.UploadStatus;
 import org.iphoto.properties.IPhotoProperties;
 import org.iphoto.repository.PhotoMetadataRepository;
@@ -45,17 +46,18 @@ import static org.iphoto.model.UploadStatus.SUCCESS;
 @AllArgsConstructor
 @Transactional(propagation = Propagation.REQUIRES_NEW)
 @Slf4j
+@FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
 public class PhotoUploadService {
 
-    private final PhotoRepository photoRepository;
-    private final PhotoMetadataRepository metadataRepository;
-    private final ThumbnailService thumbnailService;
-    private final IPhotoProperties iPhotoProperties;
-    private final ObjectMapper objectMapper;
-    private final TaskManagerService taskManagerService;
-    private final AlbumService albumService;
-    private final SpaceService spaceService;
-    private final UserService userService;
+    private PhotoRepository photoRepository;
+    private PhotoMetadataRepository metadataRepository;
+    private ThumbnailService thumbnailService;
+    private IPhotoProperties iPhotoProperties;
+    private ObjectMapper objectMapper;
+    private AlbumService albumService;
+    private SpaceService spaceService;
+    private UserService userService;
+    private TaskMapper taskMapper;
 
     public UploadStatus processNewAsset(TaskEntity task, Map<String, String> payload, File tempFile, String hash) throws IOException {
         String contentType = payload.get("contentType");
@@ -104,9 +106,7 @@ public class PhotoUploadService {
         if (payload.get("albumId") != null) {
             albumService.addPhotosToAlbum(UUID.fromString(payload.get("albumId")), List.of(photo.getId())); // Pass user to albumService
         }
-        taskManagerService.createTaskEntity(null, TaskType.HASH_IMAGE, photo.getId(), null,  LocalDateTime.now().plusMinutes(2)); // Pass user
-        taskManagerService.createTaskEntity(null, TaskType.ISOLATE_FACES, photo.getId(), null,  LocalDateTime.now().plusMinutes(3)); // Pass user
-
+        taskMapper.updateTasksToAction(TaskMapper.Action.ON_CREATE_PHOTO_ACTION, photo.getId());
         return SUCCESS;
     }
 
@@ -139,7 +139,7 @@ public class PhotoUploadService {
                 photo.setHeight(jpegDir.getImageHeight());
             }
         } catch (Exception e) {
-            //TODO
+            log.warn("can't extract image metadata from image {}", file.getAbsolutePath(), e);
         }
     }
 
@@ -158,7 +158,7 @@ public class PhotoUploadService {
             photo.setDateTaken(extractBestCreationDate(file));
             grabber.stop();
         } catch (Exception e) {
-            //TODO
+            log.warn("can't extract video metadata from video {}", file.getAbsolutePath(), e);
         }
     }
 

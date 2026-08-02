@@ -1,6 +1,7 @@
 package org.iphoto.repository;
 
 import org.iphoto.entities.TaskEntity;
+import org.iphoto.model.TaskType;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
@@ -19,5 +20,5 @@ public interface TaskRepository extends JpaRepository<TaskEntity, UUID> {
     @Query("SELECT t FROM TaskEntity t WHERE t.status = :status AND (t.executeAt IS NULL OR t.executeAt <= :now)")
     List<TaskEntity> findExecutableTasks(String status, LocalDateTime now);
 
-    List<TaskEntity> findByPhotoIdAndTaskTypeIn(UUID id, Set<String> taskTypes);
+    List<TaskEntity> findByPhotoIdAndTaskTypeIn(UUID id, Set<TaskType> taskTypes);
 }

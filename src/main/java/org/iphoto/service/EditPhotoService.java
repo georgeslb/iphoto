@@ -1,12 +1,15 @@
 package org.iphoto.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.AccessLevel;
 import lombok.AllArgsConstructor;
 import lombok.Data;
+import lombok.experimental.FieldDefaults;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.TaskEntity;
 import org.iphoto.entities.UserEntity; // Import UserEntity
+import org.iphoto.exception.AccessDeniedForPhotoChangesException;
 import org.iphoto.model.request.PhotoEditRequest;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.TaskType;
@@ -39,15 +42,17 @@ import java.util.*;
 @Service
 @AllArgsConstructor
 @Slf4j
+@FieldDefaults(makeFinal = true, level = AccessLevel.PRIVATE)
 public class EditPhotoService {
 
-    private final PhotoRepository photoRepository;
-    private final ObjectMapper objectMapper;
-    private final TaskManagerService taskManagerService;
-    private final ThumbnailService thumbnailService;
-    private final IPhotoProperties iPhotoProperties;
-    private final FaceRepository faceRepository;
-    private final DuplicationService duplicationService;
+    private PhotoRepository photoRepository;
+    private ObjectMapper objectMapper;
+    private TaskManagerService taskManagerService;
+    private ThumbnailService thumbnailService;
+    private IPhotoProperties iPhotoProperties;
+    private FaceRepository faceRepository;
+    private DuplicationService duplicationService;
+    private TaskMapper taskMapper;
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public PhotoEntity editImage(
@@ -63,6 +68,9 @@ public class EditPhotoService {
         PhotoEntity photoEntity = photoRepository.findById(id) // Filter by user
                 .orElseThrow(() -> new NoSuchElementException("Photo not found with ID: " + id));
 
+        if (!photoEntity.getSpace().getUser().getId().equals(user.getId())) {
+            throw new AccessDeniedForPhotoChangesException();
+        }
         String originalImagePath = photoEntity.getOriginalPath();
 
         File inputFile = new File(originalImagePath);
@@ -104,14 +112,14 @@ public class EditPhotoService {
 
 
         if (dest.toFile().exists()) {
-            return updatePhotoInDatabase(user, file, request.saveAsNew(), newModifiedPhotoData, photoEntity); // Pass user
+            return updatePhotoInDatabase(file, request.saveAsNew(), newModifiedPhotoData, photoEntity); // Pass user
         }
 
 
         return null;
     }
 
-    private PhotoEntity updatePhotoInDatabase(UserEntity user, MultipartFile file, boolean saveNew, NewModifiedPhotoData newModifiedPhotoData, PhotoEntity originalPhoto) { // Added UserEntity parameter
+    private PhotoEntity updatePhotoInDatabase(MultipartFile file, boolean saveNew, NewModifiedPhotoData newModifiedPhotoData, PhotoEntity originalPhoto) { // Added UserEntity parameter
         if (saveNew) {
 
             Map<String, String> payload = new HashMap<>();
@@ -120,15 +128,15 @@ public class EditPhotoService {
                 payload.put("originalFileName", newModifiedPhotoData.getFileName());
                 payload.put("contentType", file.getContentType());
                 payload.put("fileSize", String.valueOf(Files.size(Path.of(newModifiedPhotoData.getTmpPath()))));
-                payload.put("userId", user.getId().toString()); // Add user ID to payload
+                payload.put("userId", originalPhoto.getSpace().getUser().getId().toString()); // Add user ID to payload
                 UUID newId = UUID.randomUUID();
                 TaskEntity task = taskManagerService.createTaskEntityImmediately(TaskType.PROCESS_UPLOAD, newId, objectMapper.writeValueAsString(payload), null);
                 while (taskManagerService.getTask(task.getId()).isEmpty()
                         || taskManagerService.getTask(task.getId()).get().getStatus() == TaskStatus.PENDING
-                        || photoRepository.findById(newId).isEmpty()) { // Filter by user
+                        || photoRepository.findById(newId).isEmpty()) {
                     Thread.sleep(500);
                 }
-                return photoRepository.findById(newId).get(); // Filter by user
+                return photoRepository.findById(newId).get();
             } catch (Exception e) {
                 log.error(e.getMessage(), e);
                 throw new RuntimeException(e);
@@ -144,8 +152,7 @@ public class EditPhotoService {
                 originalPhoto.setHeight(workingImage.getHeight());
                 originalPhoto.getFaces().forEach(faceRepository::delete);
                 duplicationService.deleteDuplicatesForPhoto(originalPhoto);
-                taskManagerService.createTaskEntity(TaskType.HASH_IMAGE, originalPhoto.getId(), null,  LocalDateTime.now().plusMinutes(2));
-                taskManagerService.createTaskEntity(TaskType.ISOLATE_FACES, originalPhoto.getId(), null,  LocalDateTime.now().plusMinutes(3));
+                taskMapper.updateTasksToAction(TaskMapper.Action.ON_EDIT_PHOTO_ACTION, originalPhoto.getId());
                 return photoRepository.save(originalPhoto);
             } catch (Exception e) {
                 throw new RuntimeException(e);

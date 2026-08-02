@@ -114,8 +114,6 @@ public class UploadController {
             TaskEntity task = taskManagerService
                     .createTaskEntity(currentUser, TaskType.PROCESS_UPLOAD, UUID.randomUUID(), objectMapper.writeValueAsString(payload), null);
 
-
-
             log.info("Reassembled file {} and created task {}.", fileName, task.getId());
             return Map.of("status", "completed", "taskId", task.getId().toString());
         }

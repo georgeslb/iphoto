@@ -102,6 +102,38 @@ function UserManagement() {
         }
     };
 
+    const handleActivateFaceRecognition = async () => {
+        setError('');
+        setMessage('');
+        try {
+            const response = await fetch('/admin/activateFaceRecognition');
+            if (response.ok) {
+                setMessage('Face recognition activated successfully!');
+            } else {
+                setError('Failed to activate face recognition.');
+            }
+        } catch (err) {
+            setError('An error occurred while activating face recognition.');
+            console.error('Activate face recognition error:', err);
+        }
+    };
+
+    const handleUpdateImageTaskToDo = async () => {
+        setError('');
+        setMessage('');
+        try {
+            const response = await fetch('/admin/updateImageTaskToDo');
+            if (response.ok) {
+                setMessage('Image task updated successfully!');
+            } else {
+                setError('Failed to update image task.');
+            }
+        } catch (err) {
+            setError('An error occurred while updating image task.');
+            console.error('Update image task error:', err);
+        }
+    };
+
     return (
         <div className="user-management-container">
             <h2>User Management</h2>
@@ -169,6 +201,12 @@ function UserManagement() {
                     ))}
                 </tbody>
             </table>
+
+            <h3>Admin Operations</h3>
+            <div className="admin-operations">
+                <button onClick={handleActivateFaceRecognition}>Activate Face Recognition</button>
+                <button onClick={handleUpdateImageTaskToDo}>Update Image Task To Do</button>
+            </div>
         </div>
     );
 }
