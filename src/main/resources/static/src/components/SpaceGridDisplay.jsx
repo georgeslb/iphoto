@@ -19,6 +19,8 @@ function SpaceGridDisplay({
   spaces,
   fetchSpaces,
   handleDeleteSpaces,
+  showCreateButton = true, // New prop with a default value
+  isGarbage = false,
 }) {
   const { messages } = useLocale(); // Use the useLocale hook
   const navigate = useNavigate();
@@ -27,12 +29,16 @@ function SpaceGridDisplay({
     fetchSpaces();
   }, [fetchSpaces]);
 
+  console.log('Spaces in SpaceGridDisplay:', spaces);
+
   return (
     <div className="content-body">
       <div style={{ marginBottom: '20px', display: 'flex', justifyContent: 'flex-start', marginTop: '10px' }}>
-          <button className="btn btn-primary" onClick={() => setShowCreateSpaceModal(true)}>
-              <Plus size={18}/> {messages["createNewSpaceTitle"]}
-          </button>
+          {showCreateButton && (
+            <button className="btn btn-primary" onClick={() => setShowCreateSpaceModal(true)}>
+                <Plus size={18}/> {messages["createNewSpaceTitle"]}
+            </button>
+          )}
           {selectedIds.length > 0 && (
             <button className="btn" style={{marginLeft: '10px', backgroundColor: '#ff3b30', color: 'white'}} onClick={() => handleDeleteSpaces(selectedIds)}>
               <Trash2 size={18}/> {messages["deleteSelectedSpaces"]}
@@ -51,7 +57,7 @@ function SpaceGridDisplay({
                 if (selectedIds.length > 0) {
                   setSelectedIds(v => v.includes(space.id) ? v.filter(i => i !== space.id) : [...v, space.id]);
                 } else {
-                  navigate(`/spaces/${space.id}`);
+                  navigate(`/spaces/${space.id}`, { state: { fromGarbage: isGarbage } });
                 }
               }}
             >

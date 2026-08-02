@@ -6,9 +6,12 @@ import lombok.Getter;
 import lombok.Setter;
 import lombok.ToString;
 import lombok.experimental.SuperBuilder;
+import org.hibernate.annotations.OnDelete;
+import org.hibernate.annotations.OnDeleteAction;
 import org.springframework.data.domain.Persistable;
 
 import java.time.LocalDateTime;
+import java.util.Set;
 import java.util.UUID;
 
 import static jakarta.persistence.EnumType.STRING;
@@ -37,7 +40,7 @@ public final class SpaceEntity  implements Persistable<UUID> {
     private SpaceType type;
 
 
-    @ManyToOne(cascade = CascadeType.ALL)
+    @ManyToOne
     @JoinColumn(name = "user_id", nullable = false)
     @ToString.Include
     private UserEntity user;
@@ -49,9 +52,31 @@ public final class SpaceEntity  implements Persistable<UUID> {
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
+    @Column()
+    private Boolean isGarbage;
 
     @Transient
     private boolean isNew = true;
+
+    @OneToMany(mappedBy = "space", fetch = FetchType.LAZY, cascade = CascadeType.REMOVE)
+    @OnDelete(action = OnDeleteAction.CASCADE)
+    Set<PhotoEntity> photos;
+
+    @OneToMany(mappedBy = "space", fetch = FetchType.LAZY, cascade = CascadeType.REMOVE)
+    @OnDelete(action = OnDeleteAction.CASCADE)
+    Set<AlbumEntity> albums;
+
+    @OneToMany(mappedBy = "space", fetch = FetchType.LAZY, cascade = CascadeType.REMOVE)
+    @OnDelete(action = OnDeleteAction.CASCADE)
+    Set<DuplicateEntity> duplicates;
+
+    @OneToMany(mappedBy = "space", fetch = FetchType.LAZY, cascade = CascadeType.REMOVE)
+    @OnDelete(action = OnDeleteAction.CASCADE)
+    Set<PersonEntity> persons;
+
+    @OneToMany(mappedBy = "space", fetch = FetchType.LAZY, cascade = CascadeType.REMOVE)
+    @OnDelete(action = OnDeleteAction.CASCADE)
+    Set<ShareEntity> shares;
 
 
     @PrePersist

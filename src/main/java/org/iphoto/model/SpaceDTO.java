@@ -10,5 +10,7 @@ public record SpaceDTO(
     LocalDateTime createdAt,
     LocalDateTime updatedAt,
     boolean albumAllowed,
-    boolean allowCopyToMain
+    boolean allowCopyToMain,
+    boolean deletionAllowed,
+    boolean deleted
 ) {}

@@ -6,11 +6,13 @@ import org.iphoto.entities.UserEntity;
 import org.iphoto.repository.UserRepository;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.*;
 
 @Service
 @RequiredArgsConstructor
+@Transactional(readOnly = true)
 public class UserService {
 
     private final UserRepository userRepository;
@@ -29,11 +31,12 @@ public class UserService {
         return userRepository.findByUsername(username);
     }
 
+    @Transactional
     public UserEntity createUser(String username, String password, String role) {
-        UserEntity user = UserEntity.builder()
-                    .username(username)
-                    .password(passwordEncoder.encode(password))
-                    .role(role).build();
+        UserEntity user = userRepository.save(UserEntity.builder()
+                .username(username)
+                .password(passwordEncoder.encode(password))
+                .role(role).build());
         SpaceEntity defaultSpace = spaceService.createDefaultSpace(user);
         Set<SpaceEntity> spaces = new HashSet<>();
         spaces.add(defaultSpace);
@@ -41,10 +44,15 @@ public class UserService {
         return userRepository.save(user);
     }
 
+    @Transactional
     public void deleteUser(UUID id) {
-        userRepository.deleteById(id);
+        userRepository.findById(id).ifPresent(user -> {
+            spaceService.getAllSpaces(user).forEach(space -> spaceService.deleteSpace(space.id()));
+            userRepository.deleteById(id);
+        });
     }
 
+    @Transactional
     public Optional<UserEntity> resetPassword(UUID id, String newPassword) {
         return userRepository.findById(id).map(user -> {
             user.setPassword(passwordEncoder.encode(newPassword));

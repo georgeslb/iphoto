@@ -73,7 +73,7 @@ public class PhotoUploadService {
         if (StringUtils.isBlank(payload.get("spaceId"))) {
             space = spaceService.getDefaultSpaceForUser(user);
         } else {
-            space = spaceService.getSpaceByIdForUser(UUID.fromString(payload.get("spaceId")), user).orElseThrow(NoMatchUserSpaceException::new);
+            space = user.getSpaces().stream().filter(userSpace -> userSpace.getId().equals(UUID.fromString(payload.get("spaceId")))).findAny().orElseThrow(NoMatchUserSpaceException::new);
         }
 
         PhotoEntity photo = PhotoEntity.builder().id(task.getPhotoId())
@@ -85,6 +85,9 @@ public class PhotoUploadService {
                 .contentType(contentType)
                 .space(space)
                 .build();
+
+        spaceService.increaseSpacePhotoCount(space);
+
 
         photo.setNew(true);
 

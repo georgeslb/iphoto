@@ -6,16 +6,19 @@ import org.iphoto.entities.PersonEntity;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.SpaceEntity;
 import org.iphoto.entities.UserEntity;
+import org.iphoto.exception.NoMatchUserSpaceException;
 import org.iphoto.exception.PhotoDeletionException;
 import org.iphoto.mappers.PhotoMapper;
 import org.iphoto.model.AlbumDTO;
 import org.iphoto.model.Photo;
+import org.iphoto.model.SpaceDTO;
 import org.iphoto.model.request.PhotoEditRequest;
 import org.iphoto.repository.AlbumRepository;
 import org.iphoto.repository.PhotoRepository;
-import org.iphoto.repository.SpaceRepository;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Slice;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -41,27 +44,31 @@ public class PhotoService {
     private final DuplicationService duplicationService;
     private final EditPhotoService editPhotoService;
     private final AlbumRepository albumRepository;
-    private final SpaceRepository spaceRepository;
+    private final SpaceService spaceService;
 
-    public Page<Photo> getPhotos(SpaceEntity space, Pageable pageable) {
-        return photoRepository.findBySpaceIdAndIsGarbageFalse(space.getId(), pageable).map(photoMapper::photoEntityToPhoto);
+    public Page<Photo> getPhotos(UUID spaceId, Pageable pageable) {
+        return photoRepository.findBySpaceIdAndIsGarbageFalse(spaceId, pageable).map(photoMapper::photoEntityToPhoto);
     }
 
     public Page<Photo> getGarbagePhotos(UserEntity user, Pageable pageable) {
-        return photoRepository.findBySpaceInAndIsGarbageTrue(spaceRepository.findByUser(user), pageable).map(photoMapper::photoEntityToPhoto);
+        Set<UUID> allUserSpacesIds = spaceService.getAllSpaces(user).stream().map(SpaceDTO::id).collect(Collectors.toSet());
+        return photoRepository.findBySpaceIdInAndIsGarbageTrue(allUserSpacesIds, pageable).map(photoMapper::photoEntityToPhoto);
+    }
+
+    public Page<Photo> getSpacePhotos(UserEntity currentUser, UUID spaceId, Pageable pageable) {
+        SpaceDTO space = spaceService.getSpaceByIdForUser(spaceId, currentUser).orElseThrow(NoMatchUserSpaceException::new);
+        return getPhotos(space.id(), pageable);
     }
 
     @Transactional
-    public void restoreAssetsFromGarbage(List<UUID> ids) {
-        List<PhotoEntity> photos = ids.stream()
-                .map(photoRepository::findById)
-                .filter(Optional::isPresent)
-                .map(Optional::get)
-                .collect(Collectors.toList());
+    public void restoreAssetsFromGarbage(UserEntity currentUser, List<UUID> ids) {
+        List<PhotoEntity> photos =  photoRepository.findByIdIn(ids).stream().toList();
 
         for (PhotoEntity photo : photos) {
             if (photo == null || !photo.getIsGarbage()) continue;
-
+            SpaceEntity space = photo.getSpace();
+            if (!space.getUser().getId().equals(currentUser.getId())) continue;
+            space.setPhotoCount(space.getPhotoCount() + 1);
             photo.setIsGarbage(false);
             photo.setGarbageAt(null);
             photoRepository.save(photo);
@@ -78,7 +85,9 @@ public class PhotoService {
 
         for (PhotoEntity photo : photos) {
             if (photo == null || photo.getIsGarbage()) continue;
-            if (photo.getSpace().getUser().getId().equals(currentUser.getId())) continue;
+            SpaceEntity space = photo.getSpace();
+            if (!space.getUser().getId().equals(currentUser.getId())) continue;
+            spaceService.decreaseSpacePhotoCount(space);
             photo.setIsGarbage(true);
             photo.setGarbageAt(LocalDateTime.now());
             photoRepository.save(photo);
@@ -107,7 +116,7 @@ public class PhotoService {
      */
     @Transactional
     public void permanentDeleteAssets(UserEntity user, List<UUID> ids) {
-        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
+        SpaceEntity space = spaceService.getDefaultSpaceForUser(user);
         Set<PhotoEntity> photos = photoRepository.findBySpaceIdAndIdIn(space.getId(), ids);
         deleteAssets(photos);
 
@@ -172,11 +181,28 @@ public class PhotoService {
 
     @Transactional
     public void moveAssetsToMain(UserEntity user, List<UUID> ids) {
-        SpaceEntity mainUserSpace = spaceRepository.findByTypeEqualsMainAndUser(user);
+        SpaceEntity mainUserSpace = spaceService.getDefaultSpaceForUser(user);
         photoRepository.findByIdIn(ids).forEach(photo -> {
+            spaceService.decreaseSpacePhotoCount(photo.getSpace());
             photo.setSpace(mainUserSpace);
+            spaceService.increaseSpacePhotoCount(photo.getSpace());
             photoRepository.save(photo);
             taskMapper.updateTasksToAction(TaskMapper.Action.PHOTO_MOVED_TO_MAIN, photo.getId());
         });
     }
+
+    public void deletePhotoInSpace(UserEntity userEntity, UUID spaceId) {
+        Pageable pageable = PageRequest.of(0, 100);
+        Slice<PhotoEntity> photosSlice;
+        do {
+            // Filter photos by user
+            photosSlice = photoRepository.findBySpaceId(spaceId, pageable);
+            List<UUID> listToMoveToGarbage = photosSlice.getContent().stream().map(PhotoEntity::getId).toList();
+            permanentDeleteAssets(userEntity, listToMoveToGarbage);
+            pageable = photosSlice.nextPageable();
+
+        } while (photosSlice.hasNext());
+    }
+
+
 }

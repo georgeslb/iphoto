@@ -6,6 +6,8 @@ import lombok.Getter;
 import lombok.Setter;
 import lombok.ToString;
 import lombok.experimental.SuperBuilder;
+import org.hibernate.annotations.OnDelete;
+import org.hibernate.annotations.OnDeleteAction;
 
 import java.time.LocalDateTime;
 import java.util.UUID;
@@ -33,7 +35,8 @@ public class ShareEntity extends BaseEntity { // Extends BaseEntity
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
-    @ManyToOne
+    @ManyToOne(cascade = CascadeType.REMOVE)
+    @OnDelete(action = OnDeleteAction.CASCADE)
     AlbumEntity album;
 
     @Column(columnDefinition = "TEXT")

@@ -10,6 +10,9 @@ toujours le pb des thumbails à l'infini à l'actualisation -> done
 à la modification de l'image, pas de refraishissement -> done
 Thread sleep laisse opérationel même après le retour -> done
 
+Menu incorrect quand on sélection un espace dans le garbage
+Comptage des photos par espace incorrect
+Upload présent dans le space accessible depuis la garbage
 
 
 Feature

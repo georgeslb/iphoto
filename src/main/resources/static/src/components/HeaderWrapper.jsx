@@ -5,8 +5,12 @@ import Header from './Header';
 function HeaderWrapper({
   selectedIds,
   setSelectedIds,
+  selectedSpaceIds,
+  setSelectedSpaceIds,
   handleRestore,
   handlePermanentDelete,
+  handleRestoreSpaces,
+  handlePermanentDeleteSpaces,
   handleRemovePhotosFromAlbum,
   handleMoveToGarbage,
   setShowAddToAlbumModal,
@@ -27,6 +31,7 @@ function HeaderWrapper({
   allowCopyToMain, // Existing prop
   refreshAndMaintainScroll, // Existing prop
   isAlbumAllowedInCurrentSpace, // NEW PROP from App.jsx
+  fromGarbage,
 }) {
   const location = useLocation();
   const effectivePath = backgroundLocation?.pathname || location.pathname;
@@ -39,9 +44,13 @@ function HeaderWrapper({
       <Header
           selectedIds={selectedIds}
           setSelectedIds={setSelectedIds}
+          selectedSpaceIds={selectedSpaceIds}
+          setSelectedSpaceIds={setSelectedSpaceIds}
           pathname={effectivePath}
           handleRestore={handleRestore}
           handlePermanentDelete={handlePermanentDelete}
+          handleRestoreSpaces={handleRestoreSpaces}
+          handlePermanentDeleteSpaces={handlePermanentDeleteSpaces}
           handleRemovePhotosFromAlbum={() => handleRemovePhotosFromAlbum(albumId)}
           handleMoveToGarbage={handleMoveToGarbage}
           setShowAddToAlbumModal={setShowAddToAlbumModal}
@@ -62,6 +71,7 @@ function HeaderWrapper({
           allowCopyToMain={allowCopyToMain} // Pass existing prop
           refreshAndMaintainScroll={refreshAndMaintainScroll} // Pass existing prop
           isAlbumAllowedInCurrentSpace={isAlbumAllowedInCurrentSpace} // Pass new prop
+          fromGarbage={fromGarbage}
       />
   );
 }

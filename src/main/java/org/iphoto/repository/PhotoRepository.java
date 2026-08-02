@@ -3,7 +3,6 @@ package org.iphoto.repository;
 import org.iphoto.entities.AlbumEntity;
 import org.iphoto.entities.PersonEntity;
 import org.iphoto.entities.PhotoEntity;
-import org.iphoto.entities.SpaceEntity;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Slice;
@@ -21,7 +20,7 @@ public interface PhotoRepository extends JpaRepository<PhotoEntity, UUID> {
 
     Page<PhotoEntity> findBySpaceIdAndIsGarbageFalse(UUID spaceId, Pageable pageable);
     
-    Page<PhotoEntity> findBySpaceInAndIsGarbageTrue(Set<SpaceEntity> id, Pageable pageable);
+    Page<PhotoEntity> findBySpaceIdInAndIsGarbageTrue(Set<UUID> spaceIds, Pageable pageable);
 
 
     Page<PhotoEntity> findByIsGarbageFalseAndAlbums(AlbumEntity album, Pageable pageable);
@@ -36,6 +35,8 @@ public interface PhotoRepository extends JpaRepository<PhotoEntity, UUID> {
     Optional<PhotoEntity> findById(UUID id);
 
     Set<PhotoEntity> findBySpaceIdAndIdIn(UUID space, List<UUID> ids);
+
+    Page<PhotoEntity> findBySpaceId(UUID space, Pageable pageable);
 
     Optional<PhotoEntity> findByFileHash(String hash);
 

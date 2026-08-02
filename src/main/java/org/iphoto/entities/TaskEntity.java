@@ -26,10 +26,8 @@ public class TaskEntity{
     @Column()
     private UUID photoId;
 
-
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id")
-    protected UserEntity user;
+    @Column()
+    private UUID userId;
 
     @Column(nullable = false)
     @Enumerated(EnumType.STRING)

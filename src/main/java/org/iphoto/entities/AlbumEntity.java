@@ -41,7 +41,7 @@ public final class AlbumEntity extends BaseEntity { // Extends BaseEntity
     @ToString.Include
     private Integer photoCount;
 
-    @ManyToMany(fetch = FetchType.LAZY)
+    @ManyToMany
     @JoinTable(
         name = "album_photos",
         joinColumns = @JoinColumn(name = "album_id"),

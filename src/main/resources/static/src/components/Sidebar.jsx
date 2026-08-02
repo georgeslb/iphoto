@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { Image as ImageIcon, Library, Map as MapIcon, BookOpen, Copy, Trash2, Link as LinkIcon, Users, Settings, LayoutGrid } from 'lucide-react'; // Added LayoutGrid icon for Spaces
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
-export default function Sidebar({ pathname, isAuthenticated, userRole, handleLogout }) {
+export default function Sidebar({ pathname, isAuthenticated, userRole, handleLogout, fromGarbage }) {
   const { locale, setLocale, messages } = useLocale(); // Use the useLocale hook
 
   const handleLocaleChange = (e) => {
@@ -21,6 +21,8 @@ export default function Sidebar({ pathname, isAuthenticated, userRole, handleLog
     cursor: 'pointer'
   };
 
+  const isGarbageActive = pathname === '/garbage' || (fromGarbage && pathname.startsWith('/spaces'));
+
   return (
     <aside className="sidebar">
       <div className="sidebar-logo"><ImageIcon size={28} color="#007AFF" /> <h2>{messages["iPhotoTitle"]}</h2></div>
@@ -36,10 +38,10 @@ export default function Sidebar({ pathname, isAuthenticated, userRole, handleLog
             <Link to="/" className={`nav-item ${pathname === '/' ? 'active' : ''}`}><Library size={20} /> {messages["libraryLink"]}</Link>
             <Link to="/map" className={`nav-item ${pathname === '/map' ? 'active' : ''}`}><MapIcon size={20} /> {messages["mapLink"]}</Link>
             <Link to="/albums" className={`nav-item ${pathname.startsWith('/albums') ? 'active' : ''}`}><BookOpen size={20} /> {messages["albumsLink"]}</Link>
-            <Link to="/spaces" className={`nav-item ${pathname.startsWith('/spaces') ? 'active' : ''}`}><LayoutGrid size={20} /> {messages["spacesLink"]}</Link> {/* New Spaces link */}
+            <Link to="/spaces" className={`nav-item ${pathname.startsWith('/spaces') && !fromGarbage ? 'active' : ''}`}><LayoutGrid size={20} /> {messages["spacesLink"]}</Link> {/* New Spaces link */}
             <Link to="/persons" className={`nav-item ${pathname.startsWith('/persons') ? 'active' : ''}`}><Users size={20} /> {messages["personLink"]}</Link>
             <Link to="/duplicates" className={`nav-item ${pathname === '/duplicates' ? 'active' : ''}`}><Copy size={20} /> {messages["duplicatesLink"]}</Link>
-            <Link to="/garbage" className={`nav-item ${pathname === '/garbage' ? 'active' : ''}`}><Trash2 size={20} /> {messages["garbageLink"]}</Link>
+            <Link to="/garbage" className={`nav-item ${isGarbageActive ? 'active' : ''}`}><Trash2 size={20} /> {messages["garbageLink"]}</Link>
             <Link to="/share-links" className={`nav-item ${pathname === '/share-links' ? 'active' : ''}`}><LinkIcon size={20} /> {messages["shareLinksLink"]}</Link>
             {userRole === 'ADMIN' && (
               <Link to="/admin/users" className={`nav-item ${pathname === '/admin/users' ? 'active' : ''}`}><Settings size={20} /> {messages["userManagementLink"]}</Link>

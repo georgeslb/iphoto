@@ -26,6 +26,7 @@ export default function Header({
   allowCopyToMain, // Existing prop
   refreshAndMaintainScroll, // Existing prop
   isAlbumAllowedInCurrentSpace, // NEW PROP from HeaderWrapper
+  fromGarbage,
 }) {
   const { messages } = useLocale(); // Use the useLocale hook
   const selectionMode = selectedIds.length > 0;
@@ -78,7 +79,9 @@ export default function Header({
           <button className="btn" onClick={() => navigate('/albums')}><ArrowLeft size={18} /> {messages["backToAlbums"]}</button>
         )}
         {isSpacesPage && (
-          <button className="btn" onClick={() => navigate('/spaces')}><ArrowLeft size={18} /> {messages["backToSpaces"]}</button>
+          <button className="btn" onClick={() => navigate(fromGarbage ? '/garbage' : '/spaces')}>
+            <ArrowLeft size={18} /> {fromGarbage ? messages["backToGarbage"] : messages["backToSpaces"]}
+          </button>
         )}
       </div>
 

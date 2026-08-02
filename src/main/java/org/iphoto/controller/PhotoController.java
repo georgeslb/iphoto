@@ -63,14 +63,14 @@ public class PhotoController {
     public PageResponse<Photo> getPhotos(@PageableDefault(size = 50, sort = "dateTaken", direction = Sort.Direction.DESC) Pageable pageable) {
         UserEntity currentUser = getCurrentUser();
         SpaceEntity space = spaceService.getDefaultSpaceForUser(currentUser);
-        return PageResponse.from(photoService.getPhotos(space, pageable));
+        return PageResponse.from(photoService.getPhotos(space.getId(), pageable));
     }
 
     @GetMapping("/space/{spaceId}")
     public PageResponse<Photo> getPhotos(@PathVariable UUID spaceId, @PageableDefault(size = 50, sort = "dateTaken", direction = Sort.Direction.DESC) Pageable pageable) {
         UserEntity currentUser = getCurrentUser();
         return spaceService.getSpaceByIdForUser(spaceId, currentUser)
-                .map(space -> PageResponse.from(photoService.getPhotos(space, pageable)))
+                .map(space -> PageResponse.from(photoService.getPhotos(space.id(), pageable)))
                 .orElseGet(() -> PageResponse.from(Page.empty()));
     }
 
@@ -152,7 +152,8 @@ public class PhotoController {
 
     @PostMapping("/garbage/restore")
     public ResponseEntity<Void> restoreAssets(@RequestBody List<UUID> ids) {
-        photoService.restoreAssetsFromGarbage(ids);
+        UserEntity currentUser = getCurrentUser();
+        photoService.restoreAssetsFromGarbage(currentUser,ids);
         return ResponseEntity.ok().build();
     }
 

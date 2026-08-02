@@ -6,6 +6,8 @@ import lombok.Getter;
 import lombok.Setter;
 import lombok.ToString;
 import lombok.experimental.SuperBuilder;
+import org.hibernate.annotations.OnDelete;
+import org.hibernate.annotations.OnDeleteAction;
 
 import java.time.LocalDateTime;
 import java.util.*;
@@ -67,6 +69,10 @@ public class PhotoEntity extends BaseEntity  { // Extends BaseEntity
     private LocalDateTime garbageAt;
     private LocalDateTime createdAt;
 
+    @OneToOne(cascade = CascadeType.ALL, mappedBy = "photo")
+    @OnDelete(action = OnDeleteAction.CASCADE)
+    PhotoMetadataEntity photoMetadataEntity;
+
     @ManyToMany(mappedBy = "photos", cascade = {CascadeType.DETACH, CascadeType.MERGE, CascadeType.PERSIST, CascadeType.REFRESH})
     private Set<AlbumEntity> albums = new HashSet<>();
 
@@ -77,6 +83,7 @@ public class PhotoEntity extends BaseEntity  { // Extends BaseEntity
         orphanRemoval = true,
         fetch = FetchType.LAZY
     )
+    @OnDelete(action = OnDeleteAction.CASCADE)
     private List<FaceEntity> faces = new ArrayList<>();
 
 
