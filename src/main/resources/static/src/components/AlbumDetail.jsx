@@ -1,6 +1,7 @@
 import React from 'react';
 import { useParams } from 'react-router-dom';
 import PhotoGrid from './PhotoGrid'; // Assuming PhotoGrid is in the same components directory
+import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 function AlbumDetail({
   albums,
@@ -12,18 +13,19 @@ function AlbumDetail({
   handlePhotoClick,
   isLightboxOpen
 }) {
+  const { messages } = useLocale(); // Use the useLocale hook
   const { albumId } = useParams();
   const currentAlbum = albums.find(a => a.id === albumId);
 
-  if (!currentAlbum && albums.length > 0) return <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>Album not found.</div>;
-  if (!currentAlbum) return <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>Loading album...</div>;
+  if (!currentAlbum && albums.length > 0) return <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>{messages["albumNotFound"]}</div>;
+  if (!currentAlbum) return <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>{messages["loadingAlbum"]}</div>;
 
   return (
     <div className="content-body">
       <div className="album-detail-header">
         <h2>{currentAlbum.name}</h2>
         <p>{currentAlbum.description}</p>
-        <span className="count">{currentAlbum.photoCount} photos</span>
+        <span className="count">{messages["photosCount"](currentAlbum.photoCount)}</span>
       </div>
       {photos.length > 0 ? (
           <PhotoGrid
@@ -35,7 +37,7 @@ function AlbumDetail({
               setSelectedPhoto={handlePhotoClick}
               isLightboxOpen={isLightboxOpen}
           />
-      ) : <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>This album is empty. Add some photos!</div>}
+      ) : <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>{messages["albumEmpty"]}</div>}
     </div>
   );
 }

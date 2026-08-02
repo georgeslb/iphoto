@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 export function usePhotoData(effectivePath, isLightboxOpen) {
+  const { messages } = useLocale(); // Use the useLocale hook
   const [photos, setPhotos] = useState([]);
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(true);
@@ -31,9 +33,9 @@ export function usePhotoData(effectivePath, isLightboxOpen) {
         setPage(0); // Reset page to 0 when a full refresh is performed
       }
     } catch (err) {
-      console.error("Fetch photos failed:", err);
+      console.error(messages["fetchPhotosFailed"], err);
     }
-  }, []);
+  }, [messages]);
 
   useEffect(() => {
     // Determine effective path for fetching data

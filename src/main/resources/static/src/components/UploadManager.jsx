@@ -1,26 +1,28 @@
 import React, { useState, useCallback } from 'react';
 import { X } from 'lucide-react';
 import L from 'leaflet';
+import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 const CHUNK_SIZE = 1024 * 1024 * 5; // 5MB chunks
 
 function UploadManager({ refreshAndMaintainScroll, effectivePath, children, fileInputRef }) {
+  const { messages } = useLocale(); // Use the useLocale hook
   const [uploadQueue, setUploadQueue] = useState([]);
 
-  const pollTaskStatus = useCallback((uploadId, taskId) => {
+  const pollTaskStatus = useCallback(async (uploadId, taskId) => {
     const interval = setInterval(async () => {
       try {
         const res = await fetch(`/api/tasks/${taskId}`);
         if (!res.ok) {
-          throw new Error(`HTTP error! status: ${res.status}`);
+          throw new Error(messages["serverRespondedWithError"](res.status, res.statusText));
         }
         const task = await res.json();
 
         if (['COMPLETED', 'FAILED', 'IGNORED', 'TRASHED'].includes(task.status)) {
           clearInterval(interval);
           let finalStatus = task.status;
-          if (task.status === 'IGNORED') finalStatus = 'ALREADY IMPORTED';
-          if (task.status === 'TRASHED') finalStatus = 'ALREADY IMPORTED AND TRASHED';
+          if (task.status === 'IGNORED') finalStatus = messages["alreadyImported"];
+          if (task.status === 'TRASHED') finalStatus = messages["alreadyImportedAndTrashed"];
 
           setUploadQueue(prev => prev.map(item =>
               item.uploadId === uploadId ? { ...item, status: finalStatus, error: task.errorMessage, progress: 100 } : item
@@ -31,13 +33,13 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children, file
         }
       } catch (err) {
         clearInterval(interval);
-        console.error("Polling failed:", err);
+        console.error(messages["pollingFailed"](err.message));
         setUploadQueue(prev => prev.map(item =>
-              item.uploadId === uploadId ? { ...item, status: 'FAILED', error: `Polling failed: ${err.message}` } : item
+              item.uploadId === uploadId ? { ...item, status: 'FAILED', error: messages["pollingFailed"](err.message) } : item
           ));
       }
     }, 3000);
-  }, [refreshAndMaintainScroll]);
+  }, [refreshAndMaintainScroll, messages]);
 
   // Refactored upload logic to accept files directly
   const handleUploadFiles = useCallback(async (filesToUpload) => {
@@ -99,7 +101,7 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children, file
           const res = await fetch('/api/upload/chunk', { method: 'POST', body: formData });
           if (!res.ok) {
             const errorText = await res.text();
-            throw new Error(`Server responded with status ${res.status}: ${errorText}`);
+            throw new Error(messages["serverRespondedWithError"](res.status, errorText));
           }
           const data = await res.json();
 
@@ -114,9 +116,9 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children, file
             ));
           }
         } catch (err) {
-          console.error("Chunk upload failed:", err);
+          console.error(messages["chunkUploadFailed"], err);
           setUploadQueue(prev => prev.map(item =>
-              item.uploadId === uploadItem.uploadId ? { ...item, status: 'FAILED', error: `Upload failed: ${err.message}` } : item
+              item.uploadId === uploadItem.uploadId ? { ...item, status: 'FAILED', error: messages["uploadFailed"](err.message) } : item
           ));
           uploadFailed = true;
         }
@@ -130,7 +132,7 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children, file
     if (fileInputRef.current) {
       fileInputRef.current.value = null;
     }
-  }, [effectivePath, pollTaskStatus, refreshAndMaintainScroll, fileInputRef]); // Add fileInputRef to dependencies
+  }, [effectivePath, pollTaskStatus, refreshAndMaintainScroll, fileInputRef, messages]); // Add messages to dependencies
 
   // Original handleUpload for initial file selection
   const handleInitialUpload = useCallback((e) => {
@@ -158,7 +160,7 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children, file
       {children({ handleUpload: handleInitialUpload, uploadQueue, setUploadQueue, fileInputRef })}
       {uploadQueue.length > 0 && (
           <div className="upload-queue">
-            <div className="upload-queue-header"><span>Uploads ({uploadQueue.length})</span><X size={16} onClick={() => setUploadQueue([])} style={{cursor: 'pointer', opacity: 0.5}}/></div>
+            <div className="upload-queue-header"><span>{messages["uploads"](uploadQueue.length)}</span><X size={16} onClick={() => setUploadQueue([])} style={{cursor: 'pointer', opacity: 0.5}}/></div>
             <div className="upload-list">
               {uploadQueue.map(item => (
                   <div key={item.id} className="upload-item">
@@ -170,7 +172,7 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children, file
                       <div className="upload-item-error">
                         {item.error}
                         {item.status === 'FAILED' && (
-                          <button onClick={() => handleRetry(item.uploadId)} className="retry-button">Retry</button>
+                          <button onClick={() => handleRetry(item.uploadId)} className="retry-button">{messages["retry"]}</button>
                         )}
                       </div>
                     )}

@@ -1,5 +1,5 @@
 import React from 'react';
-import { useLocation } from 'react-router-dom'; // Keep useLocation for effectivePath calculation
+import { useLocation } from 'react-router-dom';
 import Header from './Header';
 
 function HeaderWrapper({
@@ -10,35 +10,30 @@ function HeaderWrapper({
   handleRemovePhotosFromAlbum,
   handleMoveToGarbage,
   setShowAddToAlbumModal,
-  setShowCreateShareLinkModal, // This is now the handler from App.jsx
+  setShowCreateShareLinkModal,
   handleUpload,
-  albumId, // Use the albumId passed as a prop
-  spaceId, // Add spaceId prop here
+  albumId,
+  spaceId,
   handleSetCoverPhoto,
   handleDeleteAlbums,
-  navigate, // navigate is passed as a prop
+  navigate,
   duplicatesPage,
   fetchDuplicates,
   isLastDuplicateGroup,
   photos,
   currentDuplicateGroup,
   backgroundLocation,
-  fileInputRef, // Add fileInputRef to props
-  allowCopyToMain, // New prop
-  refreshAndMaintainScroll // New prop
+  fileInputRef,
+  allowCopyToMain, // Existing prop
+  refreshAndMaintainScroll, // Existing prop
+  isAlbumAllowedInCurrentSpace, // NEW PROP from App.jsx
 }) {
   const location = useLocation();
-
   const effectivePath = backgroundLocation?.pathname || location.pathname;
-  // Removed redundant routeAlbumId calculation, use albumId prop directly
-
-  // console.log('HeaderWrapper: spaceId received as prop:', spaceId); // Removed for cleanup
-
-
   const singleSelectedPhoto = (selectedIds.length === 1)
       ? photos.find(p => p.id === selectedIds[0]) || currentDuplicateGroup?.photos?.find(p => p.id === selectedIds[0])
       : null;
-  const canSetCoverPhoto = singleSelectedPhoto && !singleSelectedPhoto.contentType.startsWith('video'); // Calculate here
+  const canSetCoverPhoto = singleSelectedPhoto && !singleSelectedPhoto.contentType.startsWith('video');
 
   return (
       <Header
@@ -47,25 +42,26 @@ function HeaderWrapper({
           pathname={effectivePath}
           handleRestore={handleRestore}
           handlePermanentDelete={handlePermanentDelete}
-          handleRemovePhotosFromAlbum={() => handleRemovePhotosFromAlbum(albumId)} // Use albumId prop
+          handleRemovePhotosFromAlbum={() => handleRemovePhotosFromAlbum(albumId)}
           handleMoveToGarbage={handleMoveToGarbage}
           setShowAddToAlbumModal={setShowAddToAlbumModal}
-          setShowCreateShareLinkModal={(albumIdFromHeader) => { // Call the prop handler
+          setShowCreateShareLinkModal={(albumIdFromHeader) => {
             setShowCreateShareLinkModal(albumIdFromHeader);
           }}
           handleUpload={handleUpload}
-          albumId={albumId} // Use the prop
-          spaceId={spaceId} // Pass spaceId prop to Header
-          canSetCoverPhoto={canSetCoverPhoto} // Use the calculated value
+          albumId={albumId}
+          spaceId={spaceId}
+          canSetCoverPhoto={canSetCoverPhoto}
           handleSetCoverPhoto={handleSetCoverPhoto}
           handleDeleteAlbums={handleDeleteAlbums}
-          navigate={navigate} // Use the prop
+          navigate={navigate}
           duplicatesPage={duplicatesPage}
           fetchDuplicates={fetchDuplicates}
           isLastDuplicateGroup={isLastDuplicateGroup}
-          fileInputRef={fileInputRef} // Pass fileInputRef to Header
-          allowCopyToMain={allowCopyToMain} // Pass allowCopyToMain
-          refreshAndMaintainScroll={refreshAndMaintainScroll} // Pass refresh function
+          fileInputRef={fileInputRef}
+          allowCopyToMain={allowCopyToMain} // Pass existing prop
+          refreshAndMaintainScroll={refreshAndMaintainScroll} // Pass existing prop
+          isAlbumAllowedInCurrentSpace={isAlbumAllowedInCurrentSpace} // Pass new prop
       />
   );
 }

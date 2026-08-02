@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
+import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 export default function Persons() {
+  const { messages } = useLocale(); // Use the useLocale hook
   const [persons, setPersons] = useState([]);
   const [editingId, setEditingId] = useState(null);
   const [newName, setNewName] = useState('');
@@ -11,8 +13,8 @@ export default function Persons() {
       .then(data => {
         setPersons(Array.isArray(data) ? data : (data.content || []));
       })
-      .catch(error => console.error('Error fetching persons:', error));
-  }, []);
+      .catch(error => console.error(messages["errorFetchingPersons"], error));
+  }, [messages]);
 
   const handleNameClick = (person) => {
     setEditingId(person.id);
@@ -35,14 +37,14 @@ export default function Persons() {
     })
     .then(response => {
       if (!response.ok) {
-        throw new Error('Network response was not ok');
+        throw new Error(messages["networkResponseNotOk"]);
       }
       // If response is OK, optimistically update the UI
       setPersons(persons.map(p => (p.id === person.id ? updatedPerson : p)));
       setEditingId(null);
     })
     .catch(error => {
-      console.error('Error updating person:', error);
+      console.error(messages["errorUpdatingPerson"], error);
       // Optionally, revert the change in the UI if the update fails
       setEditingId(null);
     });
@@ -53,7 +55,7 @@ export default function Persons() {
       <div className="photo-grid">
         {persons.map(person => (
           <div key={person.id} className="person-item">
-            <img src={person.coverPhoto?.image || ''} alt={person.name || 'Unknown person'} />
+            <img src={person.coverPhoto?.image || ''} alt={person.name || messages["unknownPerson"]} />
             {editingId === person.id ? (
               <input
                 type="text"
@@ -69,7 +71,7 @@ export default function Persons() {
                 className={`person-name ${!person.name ? 'person-name-placeholder' : ''}`}
                 onClick={() => handleNameClick(person)}
               >
-                {person.name || 'Who is this?'}
+                {person.name || messages["whoIsThis"]}
               </div>
             )}
           </div>

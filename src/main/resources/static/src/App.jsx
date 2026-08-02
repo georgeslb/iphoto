@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import 'leaflet/dist/leaflet.css'
 import './App.css'
+import { useLocale } from './LocaleContext.jsx'; // Import useLocale
 
 /* Removed L, markerIcon, markerShadow imports as they are not directly used in App.jsx */
 import Sidebar from './components/Sidebar'
@@ -37,6 +38,7 @@ import { useInitialDataFetch } from './hooks/useInitialDataFetch';
 /* Removed DefaultIcon definition as it's not used */
 
 function App() {
+  const { messages } = useLocale(); // Use the useLocale hook
   const navigate = useNavigate();
   const location = useLocation();
   const mainContentRef = useRef(null);
@@ -53,8 +55,6 @@ function App() {
   /* Derive albumId/spaceId from effectivePath */
   const currentAlbumId = effectivePath.startsWith('/albums/') ? effectivePath.split('/')[2] : null;
   const currentSpaceId = effectivePath.startsWith('/spaces/') ? effectivePath.split('/')[2] : null;
-
-  // Removed console.logs
 
 
   /* Declare selectedIds and setSelectedIds at the top level */
@@ -199,6 +199,9 @@ function App() {
     }
   }, [currentSpaceId, spaces]);
 
+  // Derive the flag for showing "Add to Album" button in a space
+  const isAlbumAllowedInCurrentSpace = currentSpaceId && currentSpaceDetails?.albumAllowed;
+
 
   const handleCreateSpace = useCallback(async () => {
     setSpaceCreationError('');
@@ -224,7 +227,7 @@ function App() {
   }, [newSpaceName, newSpaceDescription, fetchSpaces]);
 
   const handleDeleteSpaces = useCallback(async (idsToDelete) => {
-    if (!window.confirm(`Are you sure you want to delete ${idsToDelete.length} space(s)?`)) {
+    if (!window.confirm(messages["deleteSpacesConfirmation"](idsToDelete.length))) { // Use i18n message
       return;
     }
     try {
@@ -236,7 +239,7 @@ function App() {
     } catch (error) {
       console.error('Error deleting spaces:', error);
     }
-  }, [fetchSpaces]);
+  }, [fetchSpaces, messages]);
   // --- End Space Management ---
 
 
@@ -326,7 +329,7 @@ function App() {
   }, [fetchAlbumsForPhotos, setAlbumsPhotoBelongsTo, setSelectedPhoto, setShowRemoveFromAlbumModal]);
 
   if (loadingAuth) {
-    return <div>Loading authentication...</div>;
+    return <div>{messages["loadingAuthentication"]}</div>;
   }
 
   return (
@@ -365,8 +368,7 @@ function App() {
                       backgroundLocation={backgroundLocation}
                       albumId={currentAlbumId}
                       spaceId={currentSpaceId} // Pass currentSpaceId
-                      allowCopyToMain={currentSpaceDetails?.allowCopyToMain || false} // Pass allowCopyToMain
-                      refreshAndMaintainScroll={refreshAndMaintainScroll} // Pass refresh function
+                      isAlbumAllowedInCurrentSpace={isAlbumAllowedInCurrentSpace} // Pass the new flag
                       fileInputRef={fileInputRef} // Pass fileInputRef to HeaderWrapper
                   />
               )}
@@ -491,8 +493,8 @@ function App() {
                   } />
                   <Route path="/share-links" element={
                     <div className="content-body" style={{ textAlign: 'center', paddingTop: '40px' }}>
-                      <h2>Manage Share Links</h2>
-                      <p>This is where you will manage your share links.</p>
+                      <h2>{messages["manageShareLinks"]}</h2>
+                      <p>{messages["manageShareLinksDescription"]}</p>
                     </div>
                   } />
                   {userRole === 'ADMIN' && (

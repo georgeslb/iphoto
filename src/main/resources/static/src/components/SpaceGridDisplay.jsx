@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Image as ImageIcon, Check, Plus, Circle, Folder, Trash2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import CreateSpaceModal from './CreateSpaceModal'; // We'll create this next
+import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 function SpaceGridDisplay({
   selectedIds,
@@ -19,6 +20,7 @@ function SpaceGridDisplay({
   fetchSpaces,
   handleDeleteSpaces,
 }) {
+  const { messages } = useLocale(); // Use the useLocale hook
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -29,11 +31,11 @@ function SpaceGridDisplay({
     <div className="content-body">
       <div style={{ marginBottom: '20px', display: 'flex', justifyContent: 'flex-start', marginTop: '10px' }}>
           <button className="btn btn-primary" onClick={() => setShowCreateSpaceModal(true)}>
-              <Plus size={18}/> Create Space
+              <Plus size={18}/> {messages["createNewSpaceTitle"]}
           </button>
           {selectedIds.length > 0 && (
             <button className="btn" style={{marginLeft: '10px', backgroundColor: '#ff3b30', color: 'white'}} onClick={() => handleDeleteSpaces(selectedIds)}>
-              <Trash2 size={18}/> Delete Selected Spaces
+              <Trash2 size={18}/> {messages["deleteSelectedSpaces"]}
             </button>
           )}
       </div>
@@ -70,12 +72,12 @@ function SpaceGridDisplay({
               </div>
               <div className="album-info"> {/* Reusing album-info styling */}
                 <h3>{space.name}</h3>
-                <p>{space.photoCount} photos</p>
+                <p>{messages["photosCount"](space.photoCount)}</p>
               </div>
             </div>
           );
         })}
-        {spaces.length === 0 && ( <div style={{textAlign: 'center', padding: '50px', color: '#888', gridColumn: '1/-1'}}> No spaces created yet. Click "Create Space" to get started! </div>)}
+        {spaces.length === 0 && ( <div style={{textAlign: 'center', padding: '50px', color: '#888', gridColumn: '1/-1'}}> {messages["noSpacesCreatedYet"]} </div>)}
       </div>
 
       <CreateSpaceModal

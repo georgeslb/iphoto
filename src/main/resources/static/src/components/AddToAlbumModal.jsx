@@ -1,5 +1,6 @@
 import React from 'react';
 import { Image as ImageIcon, Check } from 'lucide-react';
+import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 function AddToAlbumModal({
   show,
@@ -12,6 +13,7 @@ function AddToAlbumModal({
   initialTargetAlbumIds, /* New prop */
   handleAddPhotosToAlbums
 }) {
+  const { messages } = useLocale(); // Use the useLocale hook
   if (!show) return null;
 
   const safeSelectedIds = Array.isArray(selectedIds) ? selectedIds : [];
@@ -39,8 +41,8 @@ function AddToAlbumModal({
   return (
     <div className="modal-overlay">
       <div className="modal-content">
-        <h2>Add to Album</h2>
-        <p>Select albums to add {safeSelectedIds.length} photo(s) to:</p>
+        <h2>{messages["addToAlbumModalTitle"]}</h2>
+        <p>{messages["addToAlbumModalDescription"](safeSelectedIds.length)}</p>
         <div className="album-list-selection">
           {albums.length > 0 ? albums.map(album => {
             const isSelected = safeTargetAlbumIds.includes(album.id);
@@ -57,21 +59,21 @@ function AddToAlbumModal({
                 </div>
                 <div className="album-select-info">
                   <h3>{album.name}</h3>
-                  <p>{album.photoCount} photos</p>
+                  <p>{messages["photosCount"](album.photoCount)}</p>
                 </div>
                 {isSelected && <div className="check-circle checked" style={{ marginLeft: 'auto', width: '22px', height: '22px' }}><Check size={14} /></div>}
               </div>
             );
-          }) : <p>No albums available. Create one first!</p>}
+          }) : <p>{messages["noAlbumsAvailable"]}</p>}
         </div>
         <div className="modal-actions">
-          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn" onClick={onClose}>{messages["cancel"]}</button>
           <button
             className="btn btn-primary"
             onClick={handleAddPhotosToAlbums}
             disabled={!hasNewAlbumsSelected} /* Disable if no new albums are selected */
           >
-            Add to Albums
+            {messages["addToAlbumsButton"]}
           </button>
         </div>
       </div>

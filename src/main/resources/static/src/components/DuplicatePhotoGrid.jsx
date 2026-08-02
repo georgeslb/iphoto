@@ -1,5 +1,6 @@
 import React from 'react';
 import { Check } from 'lucide-react';
+import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 function DuplicatePhotoGrid({
   currentDuplicateGroup,
@@ -11,14 +12,15 @@ function DuplicatePhotoGrid({
   isLastDuplicateGroup,
   handleFinishComparison
 }) {
+  const { messages } = useLocale(); // Use the useLocale hook
   if (!currentDuplicateGroup) {
-    return <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>No duplicates found. All clean!</div>;
+    return <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>{messages["noDuplicatesFound"]}</div>;
   }
 
   return (
     <div className="content-body" style={{ textAlign: 'center', paddingTop: '40px' }}>
       <div className="duplicate-group">
-        <h3 style={{ marginBottom: '30px' }}>Duplicate Group ({currentDuplicateGroup.photos.length} items)</h3>
+        <h3 style={{ marginBottom: '30px' }}>{messages["duplicateGroupTitle"](currentDuplicateGroup.photos.length)}</h3>
         <div className="photo-grid" style={{ justifyContent: 'center' }}>
           {currentDuplicateGroup.photos.map(p => {
             const aspectRatio = (p.width && p.height) ? (p.width / p.height) : 1;
@@ -53,9 +55,9 @@ function DuplicatePhotoGrid({
           })}
         </div>
         <div style={{ display: 'flex', justifyContent: 'center', gap: '20px', marginTop: '40px' }}>
-          <button className="btn" onClick={() => fetchDuplicates(duplicatesPage - 1)} disabled={duplicatesPage === 0}>Previous Group</button>
-          <button className="btn" style={{color: '#007aff', borderColor: '#007aff'}} onClick={handleFinishComparison}>Finish Comparison</button>
-          <button className="btn btn-primary" onClick={() => fetchDuplicates(duplicatesPage + 1)} disabled={isLastDuplicateGroup}>Next Group</button>
+          <button className="btn" onClick={() => fetchDuplicates(duplicatesPage - 1)} disabled={duplicatesPage === 0}>{messages["previousGroup"]}</button>
+          <button className="btn" style={{color: '#007aff', borderColor: '#007aff'}} onClick={handleFinishComparison}>{messages["finishComparison"]}</button>
+          <button className="btn btn-primary" onClick={() => fetchDuplicates(duplicatesPage + 1)} disabled={isLastDuplicateGroup}>{messages["nextGroup"]}</button>
         </div>
       </div>
     </div>

@@ -1,6 +1,8 @@
 import { useState, useCallback } from 'react';
+import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 export function useShareLinkManagement() {
+  const { messages } = useLocale(); // Use the useLocale hook
   const [showCreateShareLinkModal, setShowCreateShareLinkModal] = useState(false);
   const [albumIdForShareLink, setAlbumIdForShareLink] = useState(null);
   const [newShareLinkName, setNewShareLinkName] = useState('');
@@ -11,20 +13,20 @@ export function useShareLinkManagement() {
   const handleCreateShareLink = useCallback(async () => {
     setShareLinkCreationError(null);
     if (!newShareLinkName.trim()) {
-      setShareLinkCreationError("Link name cannot be empty.");
+      setShareLinkCreationError(messages["linkNameEmptyError"]);
       return;
     }
     const urlFriendlyRegex = /^[a-zA-Z0-9_-]+$/;
     if (!urlFriendlyRegex.test(newShareLinkName)) {
-      setShareLinkCreationError("Link name can only contain letters, numbers, hyphens, and underscores.");
+      setShareLinkCreationError(messages["linkNameInvalidError"]);
       return;
     }
     if (newShareLinkExpiresInDays <= 0) {
-      setShareLinkCreationError("Link availability must be at least 1 day.");
+      setShareLinkCreationError(messages["linkAvailabilityError"]);
       return;
     }
     if (!albumIdForShareLink) {
-      setShareLinkCreationError("No album selected for sharing.");
+      setShareLinkCreationError(messages["noAlbumSelectedError"]);
       return;
     }
 
@@ -41,9 +43,9 @@ export function useShareLinkManagement() {
       });
       if (!res.ok) {
         const errorData = await res.json();
-        throw new Error(errorData.message || `Failed to create share link: ${res.status}`);
+        throw new Error(errorData.message || messages["failedToCreateShareLink"](res.status));
       }
-      alert(`Share link "${albumIdForShareLink}"/"${newShareLinkName}" created successfully!`);
+      alert(messages["shareLinkCreatedSuccess"](albumIdForShareLink, newShareLinkName));
       setNewShareLinkName('');
       setNewShareLinkPassword('');
       setNewShareLinkExpiresInDays(7);
@@ -51,9 +53,9 @@ export function useShareLinkManagement() {
       setShowCreateShareLinkModal(false);
     } catch (err) {
       setShareLinkCreationError(err.message);
-      console.error("Error creating share link:", err);
+      console.error(messages["errorCreatingShareLink"], err);
     }
-  }, [newShareLinkName, newShareLinkPassword, newShareLinkExpiresInDays, albumIdForShareLink]);
+  }, [newShareLinkName, newShareLinkPassword, newShareLinkExpiresInDays, albumIdForShareLink, messages]);
 
   const handleShowCreateShareLinkModal = useCallback((albumId) => {
     setAlbumIdForShareLink(albumId);

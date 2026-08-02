@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
+import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 export function usePhotoMetadata(selectedPhoto) {
+  const { messages } = useLocale(); // Use the useLocale hook
   const [extMetadata, setExtMetadata] = useState(null);
 
   useEffect(() => {
@@ -9,11 +11,11 @@ export function usePhotoMetadata(selectedPhoto) {
       fetch(`/api/photos/${selectedPhoto.id}/metadata`)
         .then(res => res.ok ? res.json() : null)
         .then(setExtMetadata)
-        .catch(err => console.error("Failed to fetch metadata:", err));
+        .catch(err => console.error(messages["failedToFetchMetadata"], err));
     } else {
       setExtMetadata(null); // Clear metadata if no photo is selected
     }
-  }, [selectedPhoto]);
+  }, [selectedPhoto, messages]);
 
   return extMetadata;
 }

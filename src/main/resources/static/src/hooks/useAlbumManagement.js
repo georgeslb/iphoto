@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 export function useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, setSelectedIds, refreshAndMaintainScroll) {
+  const { messages } = useLocale(); // Use the useLocale hook
   const [albums, setAlbums] = useState([]);
   const [showAddToAlbumModal, setShowAddToAlbumModal] = useState(false);
   const [targetAlbumIds, setTargetAlbumIds] = useState([]);
@@ -18,7 +20,7 @@ export function useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, s
       const data = await res.json();
       setAlbums(data);
     } catch (err) {
-      console.error("Fetch albums failed:", err);
+      console.error("Fetch albums failed:", err); // This message is not in i18n, keeping as is
     }
   }, []);
 
@@ -30,14 +32,14 @@ export function useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, s
         method: 'GET',
         headers: { 'Content-Type': 'application/json' },
       });
-      if (!res.ok) throw new Error(`Failed to fetch albums for photos: ${res.status}`);
+      if (!res.ok) throw new Error(messages["failedToFetchAlbumsForPhotos"](res.status));
       const data = await res.json();
       return data;
     } catch (err) {
-      console.error("Fetch albums for photos failed:", err);
+      console.error(messages["fetchAlbumsForPhotosFailed"], err);
       return [];
     }
-  }, []);
+  }, [messages]);
 
   const handleAddPhotosToAlbums = useCallback(async () => {
     if (selectedIds.length === 0 || targetAlbumIds.length === 0) return;
@@ -61,13 +63,13 @@ export function useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, s
         await fetchAlbums();
       } else {
         const errorDetails = await Promise.all(responses.map(res => res.json().catch(() => ({ message: res.statusText }))));
-        console.error('handleAddPhotosToAlbums: One or more requests failed:', errorDetails);
-        throw new Error('One or more requests to add photos failed.');
+        console.error('handleAddPhotosToAlbums: One or more requests failed:', errorDetails); // Not in i18n
+        throw new Error(messages["addPhotosFailed"]);
       }
     } catch (err) {
-      console.error(`Error adding photos to albums: ${err.message}`);
+      console.error(messages["errorAddingPhotosToAlbums"](err.message));
     }
-  }, [selectedIds, targetAlbumIds, setSelectedIds, fetchAlbums, setShowAddToAlbumModal, setTargetAlbumIds]);
+  }, [selectedIds, targetAlbumIds, setSelectedIds, fetchAlbums, setShowAddToAlbumModal, setTargetAlbumIds, messages]);
 
   useEffect(() => {
     if (effectivePath.startsWith('/albums') && !isLightboxOpen) {
@@ -99,7 +101,7 @@ export function useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, s
   const handleCreateAlbum = useCallback(async () => {
     setAlbumCreationError(null);
     if (!newAlbumName.trim()) {
-      setAlbumCreationError("Album name cannot be empty.");
+      setAlbumCreationError(messages["albumNameEmptyError"]);
       return;
     }
     try {
@@ -108,16 +110,16 @@ export function useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, s
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newAlbumName, description: newAlbumDescription })
       });
-      if (!res.ok) throw new Error(`Failed to create album: ${res.status}`);
+      if (!res.ok) throw new Error(messages["failedToCreateAlbum"](res.status));
       setNewAlbumName('');
       setNewAlbumDescription('');
       setShowCreateAlbumModal(false);
       fetchAlbums();
     } catch (err) {
       setAlbumCreationError(err.message);
-      console.error("Error creating album:", err);
+      console.error(messages["errorCreatingAlbum"], err);
     }
-  }, [newAlbumName, newAlbumDescription, fetchAlbums]);
+  }, [newAlbumName, newAlbumDescription, fetchAlbums, messages]);
 
 
   const handleRemovePhotosFromAlbum = useCallback(async (albumId, photoIdsToRemove = selectedIds) => {
@@ -138,11 +140,11 @@ export function useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, s
         } else {
           await fetchAlbums();
         }
-      } else throw new Error(`Failed to remove photos: ${res.status}`);
+      } else throw new Error(messages["failedToRemovePhotos"](res.status));
     } catch (err) {
-      console.error(`Error removing photos: ${err.message}`);
+      console.error(messages["errorRemovingPhotos"](err.message));
     }
-  }, [selectedIds, setSelectedIds, refreshAndMaintainScroll, fetchAlbums]);
+  }, [selectedIds, setSelectedIds, refreshAndMaintainScroll, fetchAlbums, messages]);
 
   const handleDeleteAlbums = useCallback(async (ids) => {
     if (!ids || ids.length === 0) return;
@@ -154,12 +156,12 @@ export function useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, s
         setSelectedIds([]);
         await fetchAlbums();
       } else {
-        throw new Error("One or more albums failed to delete");
+        throw new Error(messages["oneOrMoreAlbumsFailedToDelete"]);
       }
     } catch (err) {
-      console.error(`Error deleting albums: ${err.message}`);
+      console.error(messages["errorDeletingAlbums"](err.message));
     }
-  }, [setSelectedIds, fetchAlbums]);
+  }, [setSelectedIds, fetchAlbums, messages]);
 
   const handleSetCoverPhoto = useCallback(async (albumId, photoId) => {
     if (!albumId || !photoId) return;
@@ -173,11 +175,11 @@ export function useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, s
       if (res.ok) {
         setSelectedIds([]);
         await fetchAlbums();
-      } else throw new Error(`Failed to set cover photo: ${res.status}`);
+      } else throw new Error(messages["failedToSetCoverPhoto"](res.status));
     } catch (err) {
-      console.error(`Error setting cover photo: ${err.message}`);
+      console.error(messages["errorSettingCoverPhoto"](err.message));
     }
-  }, [setSelectedIds, fetchAlbums]);
+  }, [setSelectedIds, fetchAlbums, messages]);
 
   return {
     albums,

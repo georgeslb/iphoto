@@ -1,23 +1,25 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Check } from 'lucide-react';
+import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
-export default function PhotoGrid({ 
-  photos, 
-  hasMore, 
-  setPage, 
-  selectedIds, 
-  setSelectedIds, 
+export default function PhotoGrid({
+  photos,
+  hasMore,
+  setPage,
+  selectedIds,
+  setSelectedIds,
   setSelectedPhoto,
   isLightboxOpen // Accept the new prop
 }) {
+  const { messages } = useLocale(); // Use the useLocale hook
   const [hoveredVideoId, setHoveredVideoId] = useState(null);
   const observerTarget = useRef(null);
 
   const groups = {};
-  photos.forEach(p => { 
-    const key = p.groupDate || 'Other'; 
-    if (!groups[key]) groups[key] = []; 
-    groups[key].push(p); 
+  photos.forEach(p => {
+    const key = p.groupDate || messages["otherGroup"];
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(p);
   });
 
   const handleSelectGroup = (groupPhotos, e) => {
@@ -66,13 +68,13 @@ export default function PhotoGrid({
         const groupPhotos = groups[day];
         const groupIds = groupPhotos.map(p => p.id);
         const allSelected = groupPhotos.length > 0 && groupIds.every(id => selectedIds.includes(id));
-        
+
         return (
           <div key={day} className="day-group">
             <div className="day-header" style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <h3>{day}</h3>
-              <div 
-                className={`check-circle day-check ${allSelected ? 'checked' : ''}`} 
+              <div
+                className={`check-circle day-check ${allSelected ? 'checked' : ''}`}
                 style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '20px', height: '20px', borderRadius: '50%', border: '2px solid #ccc' }}
                 onClick={(e) => handleSelectGroup(groupPhotos, e)}
               >
@@ -100,8 +102,8 @@ export default function PhotoGrid({
                     onMouseEnter={() => p.contentType?.startsWith('video') && setHoveredVideoId(p.id)}
                     onMouseLeave={() => setHoveredVideoId(null)}
                   >
-                    <div 
-                      className="select-overlay" 
+                    <div
+                      className="select-overlay"
                       onClick={(e) => {
                         e.stopPropagation(); // Don't trigger the card's onClick
                         setSelectedIds(v => v.includes(p.id) ? v.filter(i => i !== p.id) : [...v, p.id]);
@@ -129,13 +131,13 @@ export default function PhotoGrid({
           </div>
         )
       })}
-      
+
       {/* Intersection Observer Target */}
-      <div 
-        ref={observerTarget} 
+      <div
+        ref={observerTarget}
         style={{ height: '20px', margin: '20px 0', display: 'flex', justifyContent: 'center', alignItems: 'center' }}
       >
-        {hasMore && <span style={{ color: '#888' }}>Loading more photos...</span>}
+        {hasMore && <span style={{ color: '#888' }}>{messages["loadingMorePhotos"]}</span>}
       </div>
     </div>
   );

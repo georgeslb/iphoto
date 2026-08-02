@@ -2,6 +2,7 @@ import React from 'react';
 import { Image as ImageIcon, Check, Plus, Circle } from 'lucide-react'; /* Keep Circle for unchecked state */
 import { useNavigate } from 'react-router-dom';
 import CreateAlbumModal from './CreateAlbumModal'; // Import CreateAlbumModal
+import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 
 function AlbumGridDisplay({
@@ -17,6 +18,7 @@ function AlbumGridDisplay({
   showCreateAlbumModal,
   setShowCreateAlbumModal,
 }) {
+  const { messages } = useLocale(); // Use the useLocale hook
   const navigate = useNavigate();
 
   return (
@@ -24,7 +26,7 @@ function AlbumGridDisplay({
       {/* Moved Create Album button here */}
       <div style={{ marginBottom: '20px', display: 'flex', justifyContent: 'flex-start', marginTop: '10px' }}>
           <button className="btn btn-primary" onClick={() => setShowCreateAlbumModal(true)}>
-              <Plus size={18}/> Create Album
+              <Plus size={18}/> {messages["createAlbumButton"]}
           </button>
       </div>
 
@@ -61,12 +63,12 @@ function AlbumGridDisplay({
               </div>
               <div className="album-info">
                 <h3>{album.name}</h3>
-                <p>{album.photoCount} photos</p>
+                <p>{messages["photosCount"](album.photoCount)}</p>
               </div>
             </div>
           );
         })}
-        {albums.length === 0 && ( <div style={{textAlign: 'center', padding: '50px', color: '#888', gridColumn: '1/-1'}}> No albums created yet. </div>)}
+        {albums.length === 0 && ( <div style={{textAlign: 'center', padding: '50px', color: '#888', gridColumn: '1/-1'}}> {messages["noAlbumsCreatedYet"]} </div>)}
       </div>
 
       <CreateAlbumModal

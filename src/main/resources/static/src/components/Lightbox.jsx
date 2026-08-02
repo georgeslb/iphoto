@@ -21,6 +21,7 @@ import {
 import 'tui-image-editor/dist/tui-image-editor.css';
 import 'tui-color-picker/dist/tui-color-picker.css';
 import ImageEditor from 'tui-image-editor';
+import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 export default function Lightbox({
                                      selectedPhoto,
@@ -37,6 +38,7 @@ export default function Lightbox({
                                      onShowAddToAlbumModal,
                                      onShowRemoveFromAlbumModal
                                  }) {
+    const { messages } = useLocale(); // Use the useLocale hook
     const [isEditingDate, setIsEditingDate] = useState(false);
     const [newDate, setNewDate] = useState('');
     const [isEditingImage, setIsEditingImage] = useState(false);
@@ -85,7 +87,7 @@ export default function Lightbox({
             const seconds = String(date.getSeconds()).padStart(2, '0');
             return `${day}-${month}-${year} ${hours}:${minutes}:${seconds}`;
         } catch (e) {
-            console.error("Error formatting date:", e);
+            console.error(messages["errorFormattingDate"], e);
             return dateTimeString;
         }
     };
@@ -100,18 +102,18 @@ export default function Lightbox({
             fetch(`/api/faces/photo/${selectedPhoto.id}`)
                 .then(response => response.ok ? response.json() : [])
                 .then(data => setFaces(data))
-                .catch(error => console.error('Error fetching faces:', error));
+                .catch(error => console.error(messages["errorFetchingFaces"], error));
 
             // Fetch SpaceDTO for albumAllowed property
             fetch(`/api/photos/${selectedPhoto.id}/space`)
                 .then(response => response.ok ? response.json() : { albumAllowed: false })
                 .then(data => setAlbumAllowed(data.albumAllowed))
                 .catch(error => {
-                    console.error('Error fetching space info:', error);
+                    console.error(messages["errorFetchingSpaceInfo"], error);
                     setAlbumAllowed(false); // Default to false on error
                 });
         }
-    }, [selectedPhoto]);
+    }, [selectedPhoto, messages]);
 
 
     useEffect(() => {
@@ -168,7 +170,7 @@ export default function Lightbox({
             try {
                 const dataURL = editorInstance.current.toDataURL({ format: 'jpeg', quality: 1 });
                 const response = await fetch(dataURL);
-                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                if (!response.ok) throw new Error(messages["httpError"](response.status));
                 const blob = await response.blob();
                 if (blob && blob.size > 0) {
                     const formData = new FormData();
@@ -177,10 +179,10 @@ export default function Lightbox({
                     await onEditPhoto(selectedPhoto.id, formData);
                     setIsEditingImage(false);
                 } else {
-                    console.error('Blob is empty or invalid.');
+                    console.error(messages["blobEmptyOrInvalid"]);
                 }
             } catch (error) {
-                console.error('Error saving edited image:', error);
+                console.error(messages["errorSavingEditedImage"], error);
             } finally {
                 setIsLoading(false);
             }
@@ -389,7 +391,7 @@ export default function Lightbox({
                 <div className="lightbox-content" style={{position: 'relative'}}>
                     {isLoading && (
                         <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0, 0, 0, 0.7)', display: 'flex', justifyContent: 'center', alignItems: 'center', color: 'white', fontSize: '24px', zIndex: 100 }}>
-                            Saving...
+                            {messages["saving"]}
                         </div>
                     )}
                     {isEditingImage ? (
@@ -437,39 +439,39 @@ export default function Lightbox({
                 </div>
                 <div className="metadata-sidebar">
                     <div className="sidebar-header">
-                        <h3>Information</h3>
+                        <h3>{messages["information"]}</h3>
                         <button className="lightbox-close-btn" onClick={onClose}><X size={24}/></button>
                     </div>
                     <div className="sidebar-scroll-content">
                         {!selectedPhoto.contentType?.startsWith('video') && (
                             <div style={{marginBottom: '10px'}}>
                                 {!isEditingImage ? (
-                                    <button className="btn" style={{width: '100%', justifyContent: 'center'}} onClick={startImageEditing}><Edit size={16}/> Edit Image</button>
+                                    <button className="btn" style={{width: '100%', justifyContent: 'center'}} onClick={startImageEditing}><Edit size={16}/> {messages["editImage"]}</button>
                                 ) : (
                                     <div style={{display: 'flex', gap: '8px', justifyContent: 'center'}}>
-                                        <button className="btn btn-primary" onClick={() => handleSaveEditedImage(false)} disabled={isLoading || isApplyButtonVisible}>Save</button>
-                                        <button className="btn btn-primary" onClick={() => handleSaveEditedImage(true)} disabled={isLoading || isApplyButtonVisible}>Save as New</button>
-                                        <button className="btn" onClick={() => setIsEditingImage(false)} disabled={isLoading}>Cancel</button>
+                                        <button className="btn btn-primary" onClick={() => handleSaveEditedImage(false)} disabled={isLoading || isApplyButtonVisible}>{messages["save"]}</button>
+                                        <button className="btn btn-primary" onClick={() => handleSaveEditedImage(true)} disabled={isLoading || isApplyButtonVisible}>{messages["saveAsNew"]}</button>
+                                        <button className="btn" onClick={() => setIsEditingImage(false)} disabled={isLoading}>{messages["cancel"]}</button>
                                     </div>
                                 )}
                             </div>
                         )}
 
-                        {albumAllowed && !isEditingImage && <button className="btn" style={{width: '100%', justifyContent: 'center', marginBottom: '10px'}} onClick={() => onShowAddToAlbumModal(selectedPhoto.id)}><ImageIcon size={16}/> Add to Album</button>}
-                        {albumAllowed && !isEditingImage && <button className="btn" style={{width: '100%', justifyContent: 'center', marginBottom: '10px'}} onClick={() => onShowRemoveFromAlbumModal(selectedPhoto.id)}><MinusCircle size={16}/> Remove from Album</button>}
+                        {albumAllowed && !isEditingImage && <button className="btn" style={{width: '100%', justifyContent: 'center', marginBottom: '10px'}} onClick={() => onShowAddToAlbumModal(selectedPhoto.id)}><ImageIcon size={16}/> {messages["addToAlbumLightbox"]}</button>}
+                        {albumAllowed && !isEditingImage && <button className="btn" style={{width: '100%', justifyContent: 'center', marginBottom: '10px'}} onClick={() => onShowRemoveFromAlbumModal(selectedPhoto.id)}><MinusCircle size={16}/> {messages["removeFromAlbumLightbox"]}</button>}
 
                         {!isEditingImage && (pathname === '/garbage' ? (
                             <div style={{display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '10px'}}>
-                                <button className="btn" style={{ width: '100%', justifyContent: 'center', background: '#34c759', color: 'white', border: 'none' }} onClick={() => { handleRestore([selectedPhoto.id]); onClose(); }}><RotateCcw size={18}/> Restore Asset</button>
-                                <button className="btn" style={{ width: '100%', justifyContent: 'center', background: '#ff3b30', color: 'white', border: 'none' }} onClick={() => { handlePermanentDelete([selectedPhoto.id]); onClose(); }}><Trash2 size={18}/> Delete Permanently</button>
+                                <button className="btn" style={{ width: '100%', justifyContent: 'center', background: '#34c759', color: 'white', border: 'none' }} onClick={() => { handleRestore([selectedPhoto.id]); onClose(); }}><RotateCcw size={18}/> {messages["restoreAsset"]}</button>
+                                <button className="btn" style={{ width: '100%', justifyContent: 'center', background: '#ff3b30', color: 'white', border: 'none' }} onClick={() => { handlePermanentDelete([selectedPhoto.id]); onClose(); }}><Trash2 size={18}/> {messages["deletePermanentlyLightbox"]}</button>
                             </div>
                         ) : (
-                            <button className="btn" style={{ width: '100%', justifyContent: 'center', background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none', marginBottom: '10px' }} onClick={() => { handleMoveToGarbage([selectedPhoto.id]); onClose(); }}><Trash2 size={18}/> Move to Garbage</button>
+                            <button className="btn" style={{ width: '100%', justifyContent: 'center', background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none', marginBottom: '10px' }} onClick={() => { handleMoveToGarbage([selectedPhoto.id]); onClose(); }}><Trash2 size={18}/> {messages["moveToGarbageLightbox"]}</button>
                         ))}
 
-                        <div className="metadata-group"><label>File Name</label><p>{selectedPhoto.title}</p></div>
+                        <div className="metadata-group"><label>{messages["fileName"]}</label><p>{selectedPhoto.title}</p></div>
                         <div className="metadata-group">
-                            <label><Calendar size={14}/> Date Taken</label>
+                            <label><Calendar size={14}/> {messages["dateTaken"]}</label>
                             {isEditingDate ? (
                                 <div style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
                                     <input type="datetime-local" value={newDate} onChange={(e) => setNewDate(e.target.value)} className="modal-input" style={{padding: '6px', fontSize: '13px'}}/>
@@ -483,14 +485,14 @@ export default function Lightbox({
                                 </p>
                             )}
                         </div>
-                        <div className="metadata-group"><label><Info size={14}/> Basic Details</label><p>{selectedPhoto.resolution} • {selectedPhoto.size}</p></div>
+                        <div className="metadata-group"><label><Info size={14}/> {messages["basicDetails"]}</label><p>{selectedPhoto.resolution} • {selectedPhoto.size}</p></div>
                         {extMetadata && (
                             <div className="extended-meta">
-                                <div className="meta-divider">Technical</div>
-                                {extMetadata.aperture && <div className="metadata-group"><label><Zap size={14}/> Exposure</label><p>{extMetadata.aperture} • {extMetadata.shutterSpeed} • ISO {extMetadata.iso}</p></div>}
-                                {extMetadata.lensModel && <div className="metadata-group"><label><Camera size={14}/> Lens</label><p>{extMetadata.lensModel}</p></div>}
-                                {extMetadata.codec && <div className="metadata-group"><label><Clock size={14}/> Video Info</label><p>{extMetadata.codec} • {extMetadata.frameRate} fps</p></div>}
-                                {extMetadata.latitude && <div className="metadata-group"><label><MapPin size={14}/> Location</label><p>{extMetadata.latitude.toFixed(4)}, {extMetadata.longitude.toFixed(4)}</p></div>}
+                                <div className="meta-divider">{messages["technical"]}</div>
+                                {extMetadata.aperture && <div className="metadata-group"><label><Zap size={14}/> {messages["exposure"]}</label><p>{extMetadata.aperture} • {extMetadata.shutterSpeed} • ISO {extMetadata.iso}</p></div>}
+                                {extMetadata.lensModel && <div className="metadata-group"><label><Camera size={14}/> {messages["lens"]}</label><p>{extMetadata.lensModel}</p></div>}
+                                {extMetadata.codec && <div className="metadata-group"><label><Clock size={14}/> {messages["videoInfo"]}</label><p>{extMetadata.codec} • {extMetadata.frameRate} fps</p></div>}
+                                {extMetadata.latitude && <div className="metadata-group"><label><MapPin size={14}/> {messages["location"]}</label><p>{extMetadata.latitude.toFixed(4)}, {extMetadata.longitude.toFixed(4)}</p></div>}
                             </div>
                         )}
                         {/* Faces Section */}
@@ -500,18 +502,18 @@ export default function Lightbox({
                                 onMouseEnter={() => setShowFaces(true)}
                                 onMouseLeave={() => setShowFaces(false)}
                             >
-                                <div className="meta-divider">Faces Detected</div>
+                                <div className="meta-divider">{messages["facesDetected"]}</div>
                                 <div className="face-thumbnail-container">
                                     {faces.map((face, index) => (
                                         <div key={index} className="face-item">
-                                            {face.image && <img src={face.image} alt={`Face ${index + 1}`} className="face-thumbnail" />}
-                                            <label>Face {index + 1}</label>
+                                            {face.image && <img src={face.image} alt={messages["faceLabel"](index)} className="face-thumbnail" />}
+                                            <label>{messages["faceLabel"](index)}</label>
                                         </div>
                                     ))}
                                 </div>
                             </div>
                         )}
-                        {selectedPhoto.fileSystemCreationDate && <div className="metadata-group"><label><Calendar size={14}/> File System Date</label><p>{formatDateTime(selectedPhoto.fileSystemCreationDate)}</p></div>}
+                        {selectedPhoto.fileSystemCreationDate && <div className="metadata-group"><label><Calendar size={14}/> {messages["fileSystemDate"]}</label><p>{formatDateTime(selectedPhoto.fileSystemCreationDate)}</p></div>}
                     </div>
                 </div>
             </div>

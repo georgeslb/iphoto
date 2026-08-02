@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import './UserManagement.css'; // For styling
+import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 function UserManagement() {
+    const { messages } = useLocale(); // Use the useLocale hook
     const [users, setUsers] = useState([]);
     const [newUser, setNewUser] = useState({ username: '', password: '', role: 'USER' });
     const [error, setError] = useState('');
@@ -18,10 +20,10 @@ function UserManagement() {
                 const data = await response.json();
                 setUsers(data);
             } else {
-                setError('Failed to fetch users.');
+                setError(messages["failedToFetchUsers"]);
             }
         } catch (err) {
-            setError('An error occurred while fetching users.');
+            setError(messages["errorFetchingUsers"]);
             console.error('Fetch users error:', err);
         }
     };
@@ -40,21 +42,21 @@ function UserManagement() {
             });
 
             if (response.ok) {
-                setMessage('User created successfully!');
+                setMessage(messages["userCreatedSuccessfully"]);
                 setNewUser({ username: '', password: '', role: 'USER' });
                 fetchUsers(); // Refresh the list
             } else {
                 const errorData = await response.json();
-                setError(errorData.message || 'Failed to create user.');
+                setError(errorData.message || messages["failedToCreateUser"]);
             }
         } catch (err) {
-            setError('An error occurred while creating user.');
+            setError(messages["errorCreatingUser"]);
             console.error('Create user error:', err);
         }
     };
 
     const handleDeleteUser = async (userId) => {
-        if (!window.confirm('Are you sure you want to delete this user?')) {
+        if (!window.confirm(messages["deleteUserConfirmation"])) {
             return;
         }
         setError('');
@@ -65,19 +67,19 @@ function UserManagement() {
             });
 
             if (response.ok) {
-                setMessage('User deleted successfully!');
+                setMessage(messages["userDeletedSuccessfully"]);
                 fetchUsers(); // Refresh the list
             } else {
-                setError('Failed to delete user.');
+                setError(messages["failedToDeleteUser"]);
             }
         } catch (err) {
-            setError('An error occurred while deleting user.');
+            setError(messages["errorDeletingUser"]);
             console.error('Delete user error:', err);
         }
     };
 
     const handleResetPassword = async (userId) => {
-        const newPassword = window.prompt('Enter new password:');
+        const newPassword = window.prompt(messages["resetPasswordPrompt"]);
         if (!newPassword) return;
 
         setError('');
@@ -92,12 +94,12 @@ function UserManagement() {
             });
 
             if (response.ok) {
-                setMessage('Password reset successfully!');
+                setMessage(messages["passwordResetSuccessfully"]);
             } else {
-                setError('Failed to reset password.');
+                setError(messages["failedToResetPassword"]);
             }
         } catch (err) {
-            setError('An error occurred while resetting password.');
+            setError(messages["errorResettingPassword"]);
             console.error('Reset password error:', err);
         }
     };
@@ -108,12 +110,12 @@ function UserManagement() {
         try {
             const response = await fetch('/admin/activateFaceRecognition');
             if (response.ok) {
-                setMessage('Face recognition activated successfully!');
+                setMessage(messages["faceRecognitionActivatedSuccessfully"]);
             } else {
-                setError('Failed to activate face recognition.');
+                setError(messages["failedToActivateFaceRecognition"]);
             }
         } catch (err) {
-            setError('An error occurred while activating face recognition.');
+            setError(messages["errorActivatingFaceRecognition"]);
             console.error('Activate face recognition error:', err);
         }
     };
@@ -124,27 +126,27 @@ function UserManagement() {
         try {
             const response = await fetch('/admin/updateImageTaskToDo');
             if (response.ok) {
-                setMessage('Image task updated successfully!');
+                setMessage(messages["imageTaskUpdatedSuccessfully"]);
             } else {
-                setError('Failed to update image task.');
+                setError(messages["failedToUpdateImageTask"]);
             }
         } catch (err) {
-            setError('An error occurred while updating image task.');
+            setError(messages["errorUpdatingImageTask"]);
             console.error('Update image task error:', err);
         }
     };
 
     return (
         <div className="user-management-container">
-            <h2>User Management</h2>
+            <h2>{messages["userManagementTitle"]}</h2>
 
             {error && <p className="error-message">{error}</p>}
             {message && <p className="success-message">{message}</p>}
 
-            <h3>Create New User</h3>
+            <h3>{messages["createNewUserTitle"]}</h3>
             <form onSubmit={handleCreateUser} className="create-user-form">
                 <div className="form-group">
-                    <label htmlFor="newUsername">Username:</label>
+                    <label htmlFor="newUsername">{messages["usernameLabel"]}</label>
                     <input
                         type="text"
                         id="newUsername"
@@ -154,7 +156,7 @@ function UserManagement() {
                     />
                 </div>
                 <div className="form-group">
-                    <label htmlFor="newPassword">Password:</label>
+                    <label htmlFor="newPassword">{messages["passwordLabel"]}</label>
                     <input
                         type="password"
                         id="newPassword"
@@ -164,7 +166,7 @@ function UserManagement() {
                     />
                 </div>
                 <div className="form-group">
-                    <label htmlFor="newRole">Role:</label>
+                    <label htmlFor="newRole">{messages["tableHeaderRole"]}:</label>
                     <select
                         id="newRole"
                         value={newUser.role}
@@ -174,17 +176,17 @@ function UserManagement() {
                         <option value="ADMIN">ADMIN</option>
                     </select>
                 </div>
-                <button type="submit">Create User</button>
+                <button type="submit">{messages["createNewUserTitle"]}</button>
             </form>
 
-            <h3>Existing Users</h3>
+            <h3>{messages["existingUsersTitle"]}</h3>
             <table className="users-table">
                 <thead>
                     <tr>
-                        <th>ID</th>
-                        <th>Username</th>
-                        <th>Role</th>
-                        <th>Actions</th>
+                        <th>{messages["tableHeaderId"]}</th>
+                        <th>{messages["tableHeaderUsername"]}</th>
+                        <th>{messages["tableHeaderRole"]}</th>
+                        <th>{messages["tableHeaderActions"]}</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -194,18 +196,18 @@ function UserManagement() {
                             <td>{user.username}</td>
                             <td>{user.role}</td>
                             <td>
-                                <button onClick={() => handleResetPassword(user.id)}>Reset Password</button>
-                                <button onClick={() => handleDeleteUser(user.id)} disabled={user.role === 'ADMIN' && users.filter(u => u.role === 'ADMIN').length === 1}>Delete</button>
+                                <button onClick={() => handleResetPassword(user.id)}>{messages["resetPasswordButton"]}</button>
+                                <button onClick={() => handleDeleteUser(user.id)} disabled={user.role === 'ADMIN' && users.filter(u => u.role === 'ADMIN').length === 1}>{messages["deleteButton"]}</button>
                             </td>
                         </tr>
                     ))}
                 </tbody>
             </table>
 
-            <h3>Admin Operations</h3>
+            <h3>{messages["adminOperationsTitle"]}</h3>
             <div className="admin-operations">
-                <button onClick={handleActivateFaceRecognition}>Activate Face Recognition</button>
-                <button onClick={handleUpdateImageTaskToDo}>Update Image Task To Do</button>
+                <button onClick={handleActivateFaceRecognition}>{messages["activateFaceRecognition"]}</button>
+                <button onClick={handleUpdateImageTaskToDo}>{messages["updateImageTaskToDo"]}</button>
             </div>
         </div>
     );

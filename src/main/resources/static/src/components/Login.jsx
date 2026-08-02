@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import './Login.css'; // Assuming you'll create a Login.css for styling
+import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 function Login() {
+    const { messages } = useLocale(); // Use the useLocale hook
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
     const [error, setError] = useState('');
@@ -26,10 +28,10 @@ function Login() {
                 navigate('/');
             } else {
                 // Login failed
-                setError('Invalid username or password');
+                setError(messages["invalidCredentialsError"]);
             }
         } catch (err) {
-            setError('An error occurred. Please try again.');
+            setError(messages["loginGenericError"]);
             console.error('Login error:', err);
         }
     };
@@ -37,10 +39,10 @@ function Login() {
     return (
         <div className="login-container">
             <form onSubmit={handleSubmit} className="login-form">
-                <h2>Login</h2>
+                <h2>{messages["loginTitle"]}</h2>
                 {error && <p className="error-message">{error}</p>}
                 <div className="form-group">
-                    <label htmlFor="username">Username:</label>
+                    <label htmlFor="username">{messages["usernameLabel"]}</label>
                     <input
                         type="text"
                         id="username"
@@ -50,7 +52,7 @@ function Login() {
                     />
                 </div>
                 <div className="form-group">
-                    <label htmlFor="password">Password:</label>
+                    <label htmlFor="password">{messages["passwordLabel"]}</label>
                     <input
                         type="password"
                         id="password"
@@ -59,7 +61,7 @@ function Login() {
                         required
                     />
                 </div>
-                <button type="submit" className="login-button">Log In</button>
+                <button type="submit" className="login-button">{messages["loginButton"]}</button>
             </form>
         </div>
     );

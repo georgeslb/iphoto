@@ -1,17 +1,19 @@
 import { useCallback } from 'react';
+import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, handleCloseLightbox, selectedIds, setSelectedIds) { // Added selectedIds, setSelectedIds as props
+  const { messages } = useLocale(); // Use the useLocale hook
   // const [selectedIds, setSelectedIds] = useState([]); // Removed internal state
 
   const handleMoveToGarbage = useCallback(async (ids) => {
-    if (!window.confirm(`Trash ${ids.length} item(s)?`)) return;
+    if (!window.confirm(messages["trashConfirmation"](ids.length))) return;
 
     const res = await fetch('/api/photos/garbage', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ids) });
     if (res.ok) {
       setSelectedIds([]);
       await refreshAndMaintainScroll();
     }
-  }, [refreshAndMaintainScroll, setSelectedIds]); // Added setSelectedIds to dependencies
+  }, [refreshAndMaintainScroll, setSelectedIds, messages]); // Added messages to dependencies
 
   const handleRestore = useCallback(async (ids) => {
     const res = await fetch('/api/photos/garbage/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ids) });
@@ -22,13 +24,13 @@ export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, hand
   }, [refreshAndMaintainScroll, setSelectedIds]); // Added setSelectedIds to dependencies
 
   const handlePermanentDelete = useCallback(async (ids) => {
-    if (!window.confirm(`Permanently delete ${ids.length} item(s)? This cannot be undone.`)) return;
+    if (!window.confirm(messages["permanentDeleteConfirmation"](ids.length))) return;
     const res = await fetch('/api/photos/garbage/permanent', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ids) });
     if (res.ok) {
       setSelectedIds([]);
       await refreshAndMaintainScroll();
     }
-  }, [refreshAndMaintainScroll, setSelectedIds]); // Added setSelectedIds to dependencies
+  }, [refreshAndMaintainScroll, setSelectedIds, messages]); // Added messages to dependencies
 
   const handleUpdateDate = useCallback(async (photoId, newDateValue) => {
     try {
@@ -42,12 +44,12 @@ export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, hand
         setSelectedPhoto(updatedPhoto);
         await refreshAndMaintainScroll();
       } else {
-        throw new Error(`Failed to update date: ${res.status}`);
+        throw new Error(messages["failedToUpdateDate"](res.status));
       }
     } catch (err) {
-      alert(`Error updating date: ${err.message}`);
+      alert(messages["errorUpdatingDate"](err.message));
     }
-  }, [refreshAndMaintainScroll, setSelectedPhoto]);
+  }, [refreshAndMaintainScroll, setSelectedPhoto, messages]);
 
   const handleEditPhoto = useCallback(async (photoId, editData) => {
     try {
@@ -61,17 +63,17 @@ export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, hand
         if (!editData.saveAsNew) {
           setSelectedPhoto(updatedPhoto);
         } else {
-          alert("New photo is being processed and will appear shortly!");
+          alert(messages["newPhotoProcessing"]);
           handleCloseLightbox();
         }
         await refreshAndMaintainScroll();
       } else {
-        throw new Error(`Failed to edit photo: ${res.status}`);
+        throw new Error(messages["failedToEditPhoto"](res.status));
       }
     } catch (err) {
-      alert(`Error editing photo: ${err.message}`);
+      alert(messages["errorEditingPhoto"](err.message));
     }
-  }, [refreshAndMaintainScroll, setSelectedPhoto, handleCloseLightbox]);
+  }, [refreshAndMaintainScroll, setSelectedPhoto, handleCloseLightbox, messages]);
 
   return {
     // selectedIds, // No longer returned as internal state

@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
 import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import { Lock } from 'lucide-react';
+import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 export default function ShareLoginPage() {
+  const { messages } = useLocale(); // Use the useLocale hook
   const { name } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
@@ -16,7 +18,7 @@ export default function ShareLoginPage() {
     // This should ideally not happen if ShareLinkPage redirects correctly
     return (
       <div className="content-body" style={{ textAlign: 'center', paddingTop: '40px', color: '#ff3b30' }}>
-        Error: Share ID not provided for login.
+        {messages["errorPrefix"]}{messages["shareIdNotProvided"]}
       </div>
     );
   }
@@ -36,10 +38,10 @@ export default function ShareLoginPage() {
 
       if (!res.ok) {
         if (res.status === 401) {
-          setAuthError('Incorrect password.');
+          setAuthError(messages["incorrectPassword"]);
         } else {
           const errorData = await res.json();
-          setAuthError(errorData.message || `Authentication failed: ${res.statusText}`);
+          setAuthError(errorData.message || messages["authenticationFailed"](res.statusText));
         }
         return;
       }
@@ -49,12 +51,12 @@ export default function ShareLoginPage() {
       if (data.albumId) {
         navigate(`/albums/${data.albumId}`); // Redirect to album
       } else {
-        setAuthError("Authentication successful, but album ID not received.");
+        setAuthError(messages["albumIdNotReceived"]);
       }
 
     } catch (err) {
       console.error("Error during share link login:", err);
-      setAuthError("An unexpected error occurred during login.");
+      setAuthError(messages["shareLoginUnexpectedError"]);
     } finally {
       setLoading(false);
     }
@@ -63,13 +65,13 @@ export default function ShareLoginPage() {
   return (
     <div className="modal-overlay">
       <div className="modal-content">
-        <h2><Lock size={24} /> Protected Link: {name}</h2>
-        <p>This link is password protected. Please enter the password to access.</p>
+        <h2><Lock size={24} /> {messages["protectedLink"](name)}</h2>
+        <p>{messages["passwordProtectedMessage"]}</p>
         {authError && <div className="error-message">{authError}</div>}
         <form onSubmit={handlePasswordSubmit}>
           <input
             type="password"
-            placeholder="Enter password"
+            placeholder={messages["enterPasswordPlaceholder"]}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             className="modal-input"
@@ -78,7 +80,7 @@ export default function ShareLoginPage() {
           />
           <div className="modal-actions">
             <button type="submit" className="btn btn-primary" disabled={loading}>
-              {loading ? 'Unlocking...' : 'Unlock'}
+              {loading ? messages["unlockingButton"] : messages["unlockButton"]}
             </button>
           </div>
         </form>

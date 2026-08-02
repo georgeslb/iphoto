@@ -1,6 +1,8 @@
 import { useState, useCallback } from 'react';
+import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 export function useDuplicateManagement() {
+  const { messages } = useLocale(); // Use the useLocale hook
   const [duplicatesPage, setDuplicatesPage] = useState(0);
   const [currentDuplicateGroup, setCurrentDuplicateGroup] = useState(null);
   const [isLastDuplicateGroup, setIsLastDuplicateGroup] = useState(false);
@@ -25,8 +27,8 @@ export function useDuplicateManagement() {
           window.history.replaceState(null, '', `/duplicates`);
         }
       }
-    } catch(err) { console.error("Fetch duplicates failed", err); }
-  }, []);
+    } catch(err) { console.error(messages["fetchDuplicatesFailed"], err); }
+  }, [messages]);
 
   const handleFinishComparison = useCallback(async () => {
     if (!currentDuplicateGroup) return;
@@ -39,12 +41,12 @@ export function useDuplicateManagement() {
       if (res.ok) {
         await fetchDuplicates(duplicatesPage);
       } else {
-        throw new Error('Failed to finish comparison');
+        throw new Error(messages["failedToFinishComparison"]);
       }
     } catch (err) {
-      alert(`Error: ${err.message}`);
+      alert(messages["errorAlert"](err.message));
     }
-  }, [currentDuplicateGroup, duplicatesPage, fetchDuplicates]);
+  }, [currentDuplicateGroup, duplicatesPage, fetchDuplicates, messages]);
 
   return {
     duplicatesPage,
