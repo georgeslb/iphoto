@@ -9,6 +9,7 @@ import org.iphoto.mappers.PhotoMapper;
 import org.iphoto.mappers.PhotoMetadataMapper;
 import org.iphoto.model.*;
 import org.iphoto.model.request.PhotoEditRequest;
+import org.iphoto.model.request.PhotoSelectionRequest;
 import org.iphoto.model.request.UpdatePhotoDateRequest;
 import org.iphoto.repository.PhotoMetadataRepository;
 import org.iphoto.repository.UserRepository;
@@ -114,6 +115,12 @@ public class PhotoController {
     public PageResponse<Photo> getGarbage(@PageableDefault(size = 50, sort = "garbageAt", direction = Sort.Direction.DESC) Pageable pageable) {
         UserEntity currentUser = getCurrentUser();
         return PageResponse.from(photoService.getGarbagePhotos(currentUser, pageable));
+    }
+
+    @PostMapping("/selected")
+    public PhotoSelectionDTO getSelection(@RequestBody PhotoSelectionRequest photoSelectionRequest) {
+        UserEntity currentUser = getCurrentUser();
+        return photoService.getSelection(photoSelectionRequest);
     }
 
     @PostMapping("/garbage")

@@ -9,4 +9,8 @@ public class PhotoDeletionException extends RuntimeException {
     public PhotoDeletionException() {
 
     }
+
+    public PhotoDeletionException(String message) {
+        super(message);
+    }
 }

@@ -18,6 +18,8 @@ import org.bytedeco.javacv.FFmpegFrameGrabber;
 import org.iphoto.entities.*;
 import org.iphoto.exception.NoMatchUserSpaceException;
 import org.iphoto.exception.NoUserFoundException;
+import org.iphoto.exception.PhotoRetryableErrorException;
+import org.iphoto.model.TaskStatus;
 import org.iphoto.model.UploadStatus;
 import org.iphoto.properties.IPhotoProperties;
 import org.iphoto.repository.PhotoMetadataRepository;
@@ -36,7 +38,9 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -85,8 +89,16 @@ public class PhotoUploadService {
                 .contentType(contentType)
                 .space(space)
                 .build();
+        log.info ("upload photo {} in space {} ", task.getId(), space.getName());
+        try {
+            spaceService.increaseSpacePhotoCount(space);
+        } catch (PhotoRetryableErrorException e) {
+            task.setErrorMessage(e.getMessage());
+            task.setStatus(TaskStatus.PENDING);
+            task.setExecuteAt(LocalDateTime.now().plusMinutes(1));
+            return UploadStatus.PENDING;
+        }
 
-        spaceService.increaseSpacePhotoCount(space);
 
 
         photo.setNew(true);

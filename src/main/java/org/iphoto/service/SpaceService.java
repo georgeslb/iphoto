@@ -13,12 +13,15 @@ import org.iphoto.model.SpaceDTO;
 import org.iphoto.model.request.SpaceCreateRequest;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.repository.SpaceRepository;
+import org.iphoto.exception.PhotoRetryableErrorException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ConcurrentModificationException;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.locks.ReentrantLock;
 
 @Service
 @RequiredArgsConstructor
@@ -28,6 +31,7 @@ public class SpaceService {
 
     private final SpaceRepository spaceRepository;
     private final PhotoRepository photoRepository;
+    private final ReentrantLock lock = new ReentrantLock();
 
     public SpaceEntity getDefaultSpaceForUser(UserEntity user) {
         return spaceRepository.findByTypeEqualsMainAndUser(user);
@@ -82,16 +86,51 @@ public class SpaceService {
     }
 
     public void increaseSpacePhotoCount(SpaceEntity space) {
-        increaseSpacePhotoCount(space, 1);
+        boolean photoCountNotUpdated = true;
+        int count = 0;
+        while (photoCountNotUpdated && count < 5) {
+            count = count + 1;
+            try {
+                increaseSpacePhotoCount(space, 1);
+                photoCountNotUpdated = false;
+            } catch (ConcurrentModificationException e) {
+                log.info("can't increment count in space {}, count {}", space.getName(), count);
+               if (count >= 5 ) {
+                   log.warn("can't increment upload, should retry in space {}, count {}", space.getName(), count);
+                   throw new PhotoRetryableErrorException("can't increment upload, should retry");
+               }
+            }
+        }
     }
 
     public void decreaseSpacePhotoCount(SpaceEntity space) {
-        increaseSpacePhotoCount(space, -1);
+        boolean photoCountNotUpdated = true;
+        int count = 0;
+        while (photoCountNotUpdated && count < 5) {
+            count = count + 1;
+            try {
+                increaseSpacePhotoCount(space, -1);
+                photoCountNotUpdated = false;
+            } catch (ConcurrentModificationException e) {
+                log.info("can't increment count in space {}, count {}", space.getName(), count);
+                if (count >= 5 ) {
+                    log.warn("can't increment upload, should retry in space {}, count {}", space.getName(), count);
+                    throw new PhotoRetryableErrorException("can't increment upload, should retry");
+                }
+            }
+        }
     }
 
     public void increaseSpacePhotoCount(SpaceEntity space, int delta) {
-        space.setPhotoCount(space.getPhotoCount() + delta);
-        spaceRepository.save(space);
+            if (!lock.tryLock()) {
+                log.warn("lock in progress");
+                throw new ConcurrentModificationException();
+            }
+            log.info ("space {} photo count {} before", space.getName(), space.getPhotoCount());
+            space.setPhotoCount(space.getPhotoCount() + delta);
+            log.info ("space {} photo count {} after", space.getName(), space.getPhotoCount());
+            spaceRepository.save(space);
+            lock.unlock();
     }
 
     public List<SpaceDTO> getGarbageSpaces(UserEntity currentUser) {

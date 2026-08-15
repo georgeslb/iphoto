@@ -47,7 +47,7 @@ public final class SpaceEntity  implements Persistable<UUID> {
 
     @Column()
     @ToString.Include
-    private Integer photoCount;
+    private volatile Integer photoCount;
 
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

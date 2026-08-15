@@ -2,17 +2,16 @@ package org.iphoto.service;
 
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.iphoto.entities.PersonEntity;
-import org.iphoto.entities.PhotoEntity;
-import org.iphoto.entities.SpaceEntity;
-import org.iphoto.entities.UserEntity;
+import org.iphoto.entities.*;
 import org.iphoto.exception.NoMatchUserSpaceException;
 import org.iphoto.exception.PhotoDeletionException;
 import org.iphoto.mappers.PhotoMapper;
 import org.iphoto.model.AlbumDTO;
 import org.iphoto.model.Photo;
+import org.iphoto.model.PhotoSelectionDTO;
 import org.iphoto.model.SpaceDTO;
 import org.iphoto.model.request.PhotoEditRequest;
+import org.iphoto.model.request.PhotoSelectionRequest;
 import org.iphoto.repository.AlbumRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.springframework.data.domain.Page;
@@ -45,6 +44,7 @@ public class PhotoService {
     private final EditPhotoService editPhotoService;
     private final AlbumRepository albumRepository;
     private final SpaceService spaceService;
+    final MenuService menuService;
 
     public Page<Photo> getPhotos(UUID spaceId, Pageable pageable) {
         return photoRepository.findBySpaceIdAndIsGarbageFalse(spaceId, pageable).map(photoMapper::photoEntityToPhoto);
@@ -106,7 +106,7 @@ public class PhotoService {
     @Transactional
     public void permanentDeleteAssets(List<UUID> photoId) {
         Set<PhotoEntity> photos = photoRepository.findByIdIn(photoId);
-        deleteAssets(photos);
+        deleteAssets(null, photos);
     }
 
     /**
@@ -116,26 +116,31 @@ public class PhotoService {
      */
     @Transactional
     public void permanentDeleteAssets(UserEntity user, List<UUID> ids) {
-        SpaceEntity space = spaceService.getDefaultSpaceForUser(user);
-        Set<PhotoEntity> photos = photoRepository.findBySpaceIdAndIdIn(space.getId(), ids);
-        deleteAssets(photos);
+        List<SpaceDTO> userSpaces = spaceService.getAllSpaces(user);
+        Set<PhotoEntity> photos = photoRepository.findByIdIn(ids);
+        deleteAssets(userSpaces, photos);
 
     }
 
-    private void deleteAssets(Set<PhotoEntity> photos) {
-        photos.parallelStream().forEach(photo -> {
+    private void deleteAssets(List<SpaceDTO> userSpaces, Set<PhotoEntity> photos) {
+        photos.forEach(photo -> {
             try {
                 String originalPath = photo.getOriginalPath();
                 String thumbnailPath = photo.getThumbnailPath();
-                photoDeletionService.permanentDeleteAssets(photo);
-                try {
-                    Files.deleteIfExists(Paths.get(originalPath));
-                    if (thumbnailPath != null) {
-                        Files.deleteIfExists(Paths.get(thumbnailPath));
+                if (userSpaces == null || userSpaces.stream().anyMatch(userSpace -> userSpace.id().equals(photo.getSpace().getId()))) {
+                    photoDeletionService.permanentDeleteAssets(photo);
+                    try {
+                        Files.deleteIfExists(Paths.get(originalPath));
+                        if (thumbnailPath != null) {
+                            Files.deleteIfExists(Paths.get(thumbnailPath));
+                        }
+                    } catch (IOException e) {
+                        throw new PhotoDeletionException("Error while deleting file fom file system", e);
                     }
-                } catch (IOException e) {
-                    throw new PhotoDeletionException("Error while deleting file fom file system", e);
+                } else {
+                    throw new PhotoDeletionException("user trying to delete unauthorized asset");
                 }
+
             } catch (Exception e) {
                 log.error("can't delete photo with id {}", photo.getId(), e);
                 throw new PhotoDeletionException("can't delete photo with id {}", e);
@@ -205,4 +210,56 @@ public class PhotoService {
     }
 
 
+    public PhotoSelectionDTO getSelection(PhotoSelectionRequest photoSelectionRequest) {
+        boolean canBeDeleted = false, canBePermanentlyDeleted = false, canBeMovedToMain = false,
+                canBeMovedToAlbum = false, canBeRemovedFromAlbum = false, canBeModified = false,
+                canBeSetAsCover = false, canBeRestored = false;
+        Set<PhotoEntity> selectedPhotos = photoRepository.findByIdIn(photoSelectionRequest.photosId());
+        if (selectedPhotos.isEmpty()) {
+            return new PhotoSelectionDTO(menuService.getSelection(photoSelectionRequest.menuSelectionRequest()), false, false, false, false, false, false, false, false);
+        } else {
+            Set<SpaceEntity> spaces = new HashSet<>();
+            Set<PhotoEntity> photosGarbage = new HashSet<>();
+            Set<PhotoEntity> photosNotGarbage = new HashSet<>();
+            for (PhotoEntity photoEntity : selectedPhotos) {
+                spaces.add(photoEntity.getSpace());
+                if (photoEntity.getIsGarbage()) {
+                    photosGarbage.add(photoEntity);
+                } else {
+                    photosNotGarbage.add(photoEntity);
+                }
+            }
+            if (!photosNotGarbage.isEmpty() && photosGarbage.isEmpty() &&
+                    spaces.size() == 1) {
+                canBeDeleted = true;
+            }
+
+            if (!photosNotGarbage.isEmpty() && photosGarbage.isEmpty() &&
+                    spaces.size() == 1
+                    && spaces.stream().findAny().get().getType() == SpaceType.MAIN) {
+                canBeMovedToAlbum = true;
+                canBeRemovedFromAlbum = true;
+            }
+            if (photoSelectionRequest.menuSelectionRequest().lightbox()) {
+                canBeModified = true;
+            }
+            if (spaces.size() == 1
+                    && spaces.stream().findAny().get().getType() != SpaceType.MAIN
+                    && !photosNotGarbage.isEmpty() && photosGarbage.isEmpty()) {
+                canBeMovedToMain = true;
+            }
+            if (!photosGarbage.isEmpty() && photosNotGarbage.isEmpty()
+                    && photoSelectionRequest.menuSelectionRequest().menu().contains("garbage")) {
+                canBePermanentlyDeleted = true;
+                canBeRestored = true;
+            }
+            if (photoSelectionRequest.menuSelectionRequest().menu().contains("album")
+                    && photoSelectionRequest.menuSelectionRequest().albumIds() != null
+                    && photoSelectionRequest.menuSelectionRequest().albumIds().size() == 1
+                    && albumRepository.existsById(photoSelectionRequest.menuSelectionRequest().albumIds().get(0))) {
+                canBeSetAsCover = true;
+            }
+            return new PhotoSelectionDTO(menuService.getSelection(photoSelectionRequest.menuSelectionRequest()), canBeDeleted, canBePermanentlyDeleted, canBeMovedToMain, canBeMovedToAlbum, canBeRemovedFromAlbum, canBeModified, canBeSetAsCover, canBeRestored);
+        }
+    }
 }
