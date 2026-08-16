@@ -13,6 +13,8 @@ import UploadManager from './components/UploadManager';
 import HeaderWrapper from './components/HeaderWrapper';
 import AddToAlbumModal from './components/AddToAlbumModal';
 import CreateShareLinkModal from './components/CreateShareLinkModal';
+import CreateAlbumModal from './components/CreateAlbumModal';
+import CreateSpaceModal from './components/CreateSpaceModal';
 import AlbumDetail from './components/AlbumDetail';
 import AlbumGridDisplay from './components/AlbumGridDisplay';
 import DuplicatePhotoGrid from './components/DuplicatePhotoGrid';
@@ -31,10 +33,14 @@ import { useDuplicateManagement } from './hooks/useDuplicateManagement';
 import { useScrollRestoration } from './hooks/useScrollRestoration';
 import { usePhotoActions } from './hooks/usePhotoActions';
 import { useSpaceActions } from './hooks/useSpaceActions';
+import { useSpaceManagement } from './hooks/useSpaceManagement';
 import { usePhotoMetadata } from './hooks/usePhotoMetadata';
 import { useMapAssets } from './hooks/useMapAssets';
 import { useAppNavigationAndSelection } from './hooks/useAppNavigationAndSelection';
 import { useInitialDataFetch } from './hooks/useInitialDataFetch';
+import { useMenuSelection } from './hooks/useMenuSelection.js';
+import { useAuth } from './hooks/useAuth';
+import { useRouteContext } from './hooks/useRouteContext';
 
 /* Removed DefaultIcon definition as it's not used */
 
@@ -45,78 +51,32 @@ function App() {
   const mainContentRef = useRef(null);
   const fileInputRef = useRef(null); // Declare fileInputRef here
 
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [userRole, setUserRole] = useState(null);
-  const [loadingAuth, setLoadingAuth] = useState(true);
+  const { isAuthenticated, userRole, loadingAuth, handleLogout } = useAuth(navigate, location);
 
-  const backgroundLocation = location.state?.backgroundLocation;
-  const effectivePath = backgroundLocation?.pathname || location.pathname;
-  const isLightboxOpen = location.pathname.startsWith('/asset/') || /^\/albums\/[^/]+\/asset\//.test(location.pathname) || /^\/spaces\/[^/]+\/asset\//.test(location.pathname); // Updated for spaces
-
-  /* Derive albumId/spaceId from effectivePath */
-  const currentAlbumId = effectivePath.startsWith('/albums/') ? effectivePath.split('/')[2] : null;
-  const currentSpaceId = effectivePath.startsWith('/spaces/') ? effectivePath.split('/')[2] : null;
-  const fromGarbage = location.state?.fromGarbage || false;
+  const {
+    backgroundLocation,
+    effectivePath,
+    isLightboxOpen,
+    currentAlbumId,
+    currentSpaceId,
+    fromGarbage,
+    selectedMenu,
+  } = useRouteContext(location);
 
 
   /* Declare selectedIds and setSelectedIds at the top level */
   const [selectedIds, setSelectedIds] = useState([]);
+  const [selectedAlbumIds, setSelectedAlbumIds] = useState([]);
+  const [selectedSpaceIds, setSelectedSpaceIds] = useState([]); // For deleting multiple spaces
+  const { photos, setPage, hasMore, fetchPhotos } = usePhotoData(effectivePath, isLightboxOpen);
 
-  const checkAuthStatus = useCallback(async () => {
-    try {
-      const response = await fetch('/api/user/me');
-      if (response.ok) {
-        const userData = await response.json();
-        setIsAuthenticated(true);
-        setUserRole(userData.role);
-        if (location.pathname === '/login') {
-          navigate('/'); // Redirect from login page if already authenticated
-        }
-      } else {
-        setIsAuthenticated(false);
-        setUserRole(null);
-        if (location.pathname !== '/login' && !location.pathname.startsWith('/share')) {
-          navigate('/login'); // Redirect to login if not authenticated and not on a share page
-        }
-      }
-    } catch (error) {
-      console.error('Error checking authentication status:', error);
-      setIsAuthenticated(false);
-      setUserRole(null);
-      if (location.pathname !== '/login' && !location.pathname.startsWith('/share')) {
-        navigate('/login');
-      }
-    } finally {
-      setLoadingAuth(false);
-    }
-  }, [navigate, location.pathname]);
-
-  useEffect(() => {
-    checkAuthStatus();
-  }, [checkAuthStatus]);
-
-  const handleLogout = async () => {
-    try {
-      await fetch('/api/logout', { method: 'POST' });
-      setIsAuthenticated(false);
-      setUserRole(null);
-      navigate('/login');
-    } catch (error) {
-      console.error('Error logging out:', error);
-    }
-  };
-
-
-  const { photos, setPhotos, page, setPage, hasMore, fetchPhotos } = usePhotoData(effectivePath, isLightboxOpen);
   const { saveScrollPosition } = useScrollRestoration(mainContentRef, isLightboxOpen, photos);
 
   const {
     duplicatesPage,
     setDuplicatesPage,
     currentDuplicateGroup,
-    setCurrentDuplicateGroup,
     isLastDuplicateGroup,
-    setIsLastDuplicateGroup,
     fetchDuplicates,
     handleFinishComparison,
   } = useDuplicateManagement();
@@ -126,7 +86,32 @@ function App() {
     setSelectedPhoto,
     handlePhotoClick,
     handleCloseLightbox,
-  } = useAppNavigationAndSelection(photos, currentDuplicateGroup, backgroundLocation, effectivePath, saveScrollPosition); /* Pass saveScrollPosition directly */
+  } = useAppNavigationAndSelection(photos, currentDuplicateGroup, backgroundLocation, effectivePath, saveScrollPosition);
+
+  let [photoSelection, setPhotoSelection] = useState({
+    menuSelection: {
+      canUpload: false,
+      canCreateAlbum: false,
+      canDeleteAlbum: false,
+      canCreateSpace: false,
+      canDeleteSpace: false,
+      canPermanentlyDeleteSpace: false,
+      canRestoreSpace: false,
+      canAddAAShareLink: false,
+    },
+    canBeDeleted: false, canBePermanentlyDeleted: false, canBeMovedToMain: false,
+    canBeMovedToAlbum: false, canBeRemovedFromAlbum: false, canBeModified: false,
+    canBeSetAsCover: false, canBeRestored: false
+  });
+
+  useMenuSelection(effectivePath, currentSpaceId, currentAlbumId, isLightboxOpen, selectedAlbumIds, selectedSpaceIds, selectedIds, selectedPhoto, setPhotoSelection);
+
+  useEffect(() => {
+    // Reset both selections when the path changes
+    setSelectedIds([]);
+    setSelectedAlbumIds([]);
+    setSelectedSpaceIds([]);
+  }, [location.pathname]);
 
   const extMetadata = usePhotoMetadata(selectedPhoto);
   const mapAssets = useMapAssets(effectivePath);
@@ -137,7 +122,6 @@ function App() {
   /* Call useAlbumManagement first, passing the current (possibly no-op) refreshAndMaintainScroll */
   const {
     albums,
-    setAlbums,
     showCreateAlbumModal,
     setShowCreateAlbumModal,
     showAddToAlbumModal,
@@ -150,7 +134,6 @@ function App() {
     newAlbumDescription,
     setNewAlbumDescription,
     albumCreationError,
-    setAlbumCreationError,
     fetchAlbums,
     fetchAlbumsForPhotos, /* Get this for RemoveFromAlbumModal */
     handleCreateAlbum,
@@ -164,111 +147,21 @@ function App() {
     setAlbumsPhotoBelongsTo,
   } = useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, setSelectedIds, refreshAndMaintainScroll);
 
-  // --- Space Management ---
-  const [spaces, setSpaces] = useState([]);
-  const [garbageSpaces, setGarbageSpaces] = useState([]);
-  const [newSpaceName, setNewSpaceName] = useState('');
-  const [newSpaceDescription, setNewSpaceDescription] = useState('');
-  const [spaceCreationError, setSpaceCreationError] = useState('');
-  const [showCreateSpaceModal, setShowCreateSpaceModal] = useState(false);
-  const [selectedSpaceIds, setSelectedSpaceIds] = useState([]); // For deleting multiple spaces
-  const [currentSpaceDetails, setCurrentSpaceDetails] = useState(null); // New state for current space details
-
-  const fetchSpaces = useCallback(async () => {
-    try {
-      const response = await fetch('/api/spaces');
-      if (response.ok) {
-        const data = await response.json();
-        setSpaces(data);
-      } else {
-        console.error('Failed to fetch spaces');
-      }
-    } catch (error) {
-      console.error('Error fetching spaces:', error);
-    }
-  }, []);
-
-  const fetchGarbageSpaces = useCallback(async () => {
-    try {
-      const response = await fetch('/api/spaces/garbage');
-      if (response.ok) {
-        const data = await response.json();
-        setGarbageSpaces(Array.isArray(data.content) ? data.content : []);
-      } else {
-        console.error('Failed to fetch garbage spaces');
-        setGarbageSpaces([]);
-      }
-    } catch (error) {
-      console.error('Error fetching garbage spaces:', error);
-      setGarbageSpaces([]);
-    }
-  }, []);
-
-
-  useEffect(() => {
-    fetchSpaces();
-  }, [fetchSpaces]);
-
-  useEffect(() => {
-    if (effectivePath === '/garbage' || effectivePath.startsWith('/spaces/')) {
-      fetchGarbageSpaces();
-    }
-  }, [effectivePath, fetchGarbageSpaces]);
-
-
-  // Effect to set currentSpaceDetails when currentSpaceId or spaces change
-  useEffect(() => {
-    if (currentSpaceId) {
-      const allSpaces = [...spaces, ...garbageSpaces];
-      const foundSpace = allSpaces.find(space => space.id === currentSpaceId);
-      setCurrentSpaceDetails(foundSpace || null);
-    } else {
-      setCurrentSpaceDetails(null);
-    }
-  }, [currentSpaceId, spaces, garbageSpaces]);
-
-  // Derive the flag for showing "Add to Album" button in a space
-  const isAlbumAllowedInCurrentSpace = currentSpaceId && currentSpaceDetails?.albumAllowed;
-
-
-  const handleCreateSpace = useCallback(async () => {
-    setSpaceCreationError('');
-    try {
-      const response = await fetch('/api/spaces', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newSpaceName, description: newSpaceDescription }),
-      });
-      if (response.ok) {
-        setNewSpaceName('');
-        setNewSpaceDescription('');
-        setShowCreateSpaceModal(false);
-        fetchSpaces();
-      } else {
-        const errorData = await response.json();
-        setSpaceCreationError(errorData.message || 'Failed to create space.');
-      }
-    } catch (error) {
-      console.error('Error creating space:', error);
-      setSpaceCreationError('An unexpected error occurred.');
-    }
-  }, [newSpaceName, newSpaceDescription, fetchSpaces]);
-
-  const handleDeleteSpaces = useCallback(async (idsToDelete) => {
-    if (!window.confirm(messages["deleteSpacesConfirmation"](idsToDelete.length))) { // Use i18n message
-      return;
-    }
-    try {
-      for (const id of idsToDelete) {
-        await fetch(`/api/spaces/${id}`, { method: 'DELETE' });
-      }
-      setSelectedSpaceIds([]); // Clear selection
-      fetchSpaces(); // Refresh list
-    } catch (error) {
-      console.error('Error deleting spaces:', error);
-    }
-  }, [fetchSpaces, messages]);
-  // --- End Space Management ---
+  const {
+    spaces,
+    garbageSpaces,
+    newSpaceName,
+    setNewSpaceName,
+    newSpaceDescription,
+    setNewSpaceDescription,
+    spaceCreationError,
+    showCreateSpaceModal,
+    setShowCreateSpaceModal,
+    fetchSpaces,
+    fetchGarbageSpaces,
+    handleCreateSpace,
+    handleDeleteSpaces,
+  } = useSpaceManagement(selectedMenu, setSelectedSpaceIds);
 
 
   /* Define the actual refreshAndMaintainScroll function using useCallback */
@@ -280,17 +173,15 @@ function App() {
       return;
     }
 
-    const type = effectivePath === '/garbage' ? 'garbage' : (effectivePath.startsWith('/albums/') ? 'album' : (effectivePath.startsWith('/spaces/') ? 'space' : 'library'));
-    const albumId = type === 'album' ? effectivePath.split('/')[2] : null;
-    const spaceId = type === 'space' ? effectivePath.split('/')[2] : null;
+
 
     // Use the fetchPhotos from usePhotoData to refresh the current view
     // This will reset the photos and fetch the first page (page 0)
-    await fetchPhotos(0, true, type, albumId, spaceId);
+    await fetchPhotos(0, true, selectedMenu, currentAlbumId, currentSpaceId);
 
     await fetchAlbums(); /* fetchAlbums is now available from useAlbumManagement */
     await fetchSpaces(); // Fetch spaces as well
-    if (type === 'garbage') {
+    if (selectedMenu === 'garbage') {
       await fetchGarbageSpaces();
     }
 
@@ -315,12 +206,12 @@ function App() {
     handlePermanentDelete,
     handleUpdateDate,
     handleEditPhoto,
-  } = usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, handleCloseLightbox, selectedIds, setSelectedIds);
+  } = usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, selectedIds, setSelectedIds);
 
   const {
     handleRestoreSpaces,
     handlePermanentDeleteSpaces,
-  } = useSpaceActions(refreshAndMaintainScroll, selectedSpaceIds, setSelectedSpaceIds);
+  } = useSpaceActions(refreshAndMaintainScroll, setSelectedSpaceIds);
 
 
   const {
@@ -335,7 +226,6 @@ function App() {
     newShareLinkExpiresInDays,
     setNewShareLinkExpiresInDays,
     shareLinkCreationError,
-    setShareLinkCreationError,
     handleCreateShareLink,
     handleShowCreateShareLinkModal,
   } = useShareLinkManagement();
@@ -368,6 +258,23 @@ function App() {
     return <div>{messages["loadingAuthentication"]}</div>;
   }
 
+  const libraryPhotoGrid = (
+    <PhotoGrid photos={photos} type={selectedMenu} hasMore={hasMore} setPage={setPage} selectedIds={selectedIds} setSelectedIds={setSelectedIds} setSelectedPhoto={handlePhotoClick} isLightboxOpen={isLightboxOpen} />
+  );
+
+  const albumDetailElement = (
+    <AlbumDetail
+        albums={albums}
+        photos={photos}
+        hasMore={hasMore}
+        setPage={setPage}
+        selectedIds={selectedIds}
+        setSelectedIds={setSelectedIds}
+        handlePhotoClick={handlePhotoClick}
+        isLightboxOpen={isLightboxOpen}
+    />
+  );
+
   return (
       <div className="app-container">
         {isAuthenticated && (
@@ -388,7 +295,11 @@ function App() {
                       selectedIds={selectedIds}
                       setSelectedIds={setSelectedIds}
                       selectedSpaceIds={selectedSpaceIds}
+                      selectedAlbumIds={selectedAlbumIds}
                       setSelectedSpaceIds={setSelectedSpaceIds}
+                      setSelectedAlbumIds={setSelectedAlbumIds}
+                      menuSpaceId={currentSpaceId}
+                      menuAlbumId={currentAlbumId}
                       handleRestore={handleRestore}
                       handlePermanentDelete={handlePermanentDelete}
                       handleRestoreSpaces={handleRestoreSpaces}
@@ -400,18 +311,16 @@ function App() {
                       handleUpload={handleUpload}
                       handleSetCoverPhoto={handleSetCoverPhoto}
                       handleDeleteAlbums={handleDeleteAlbums}
+                      handleDeleteSpaces={handleDeleteSpaces}
+                      setShowCreateAlbumModal={setShowCreateAlbumModal}
+                      setShowCreateSpaceModal={setShowCreateSpaceModal}
                       navigate={navigate}
                       duplicatesPage={duplicatesPage}
                       fetchDuplicates={fetchDuplicates}
                       isLastDuplicateGroup={isLastDuplicateGroup}
-                      photos={photos}
-                      currentDuplicateGroup={currentDuplicateGroup}
                       backgroundLocation={backgroundLocation}
-                      albumId={currentAlbumId}
-                      spaceId={currentSpaceId} // Pass currentSpaceId
-                      isAlbumAllowedInCurrentSpace={isAlbumAllowedInCurrentSpace} // Pass the new flag
-                      allowCopyToMain={currentSpaceDetails?.allowCopyToMain}
-                      fileInputRef={fileInputRef} // Pass fileInputRef to HeaderWrapper
+                      photoSelection={photoSelection}
+                      fileInputRef={fileInputRef}
                       fromGarbage={fromGarbage}
                       refreshAndMaintainScroll={refreshAndMaintainScroll}
                   />
@@ -423,37 +332,23 @@ function App() {
             <Route path="/login" element={<Login />} />
             {isAuthenticated ? (
                 <>
-                  <Route path="/" element={
-                    <PhotoGrid photos={photos} hasMore={hasMore} setPage={setPage} selectedIds={selectedIds} setSelectedIds={setSelectedIds} setSelectedPhoto={handlePhotoClick} isLightboxOpen={isLightboxOpen} />
-                  } />
+                  <Route path="/" element={libraryPhotoGrid} />
                   <Route path="/garbage" element={
                     <>
                       <h2 style={{padding: '20px 20px 0 20px'}}>{messages["spaces"] || 'Spaces'}</h2>
                       <SpaceGridDisplay
                           spaces={garbageSpaces}
-                          selectedIds={selectedSpaceIds}
-                          setSelectedIds={setSelectedSpaceIds}
-                          showCreateSpaceModal={false}
-                          setShowCreateSpaceModal={() => {}}
-                          newSpaceName=""
-                          setNewSpaceName={() => {}}
-                          newSpaceDescription=""
-                          setNewSpaceDescription={() => {}}
-                          spaceCreationError=""
-                          setSpaceCreationError={() => {}}
-                          handleCreateSpace={() => {}}
+                          selectedSpaceIds={selectedSpaceIds}
+                          setSelectedSpaceIds={setSelectedSpaceIds}
+                          setSelectedIds={setSelectedIds}
                           fetchSpaces={fetchGarbageSpaces}
-                          handleDeleteSpaces={handlePermanentDeleteSpaces}
-                          showCreateButton={false}
-                          isGarbage={true}
+                          selectionMenu={selectedMenu}
                       />
                       <h2 style={{padding: '20px 20px 0 20px'}}>{messages["photos"] || 'Photos'}</h2>
-                      <PhotoGrid photos={photos} hasMore={hasMore} setPage={setPage} selectedIds={selectedIds} setSelectedIds={setSelectedIds} setSelectedPhoto={handlePhotoClick} isLightboxOpen={isLightboxOpen} />
+                      {libraryPhotoGrid}
                     </>
                   } />
-                  <Route path="/asset/:photoId" element={
-                    <PhotoGrid photos={photos} hasMore={hasMore} setPage={setPage} selectedIds={selectedIds} setSelectedIds={setSelectedIds} setSelectedPhoto={handlePhotoClick} isLightboxOpen={isLightboxOpen} />
-                  } />
+                  <Route path="/asset/:photoId" element={libraryPhotoGrid} />
                   <Route path="/map" element={
                     isLightboxOpen ? null : (
                         <MapView mapAssets={mapAssets} handlePhotoClick={handlePhotoClick} />
@@ -477,77 +372,23 @@ function App() {
                   <Route path="/albums" element={
                     <AlbumGridDisplay
                         albums={albums}
-                        selectedIds={selectedIds}
-                        setSelectedIds={setSelectedIds}
-                        newAlbumName={newAlbumName}
-                        setNewAlbumName={setNewAlbumName}
-                        newAlbumDescription={newAlbumDescription}
-                        setNewAlbumDescription={setNewAlbumDescription}
-                        albumCreationError={albumCreationError}
-                        setAlbumCreationError={setAlbumCreationError}
-                        handleCreateAlbum={handleCreateAlbum}
-                        showCreateAlbumModal={showCreateAlbumModal}
-                        setShowCreateAlbumModal={setShowCreateAlbumModal}
+                        selectedIds={selectedAlbumIds}
+                        setSelectedIds={setSelectedAlbumIds}
                     />
                   } />
-                  <Route path="/albums/:albumId" element={
-                    <AlbumDetail
-                        albums={albums}
-                        photos={photos}
-                        hasMore={hasMore}
-                        setPage={setPage}
-                        selectedIds={selectedIds}
-                        setSelectedIds={setSelectedIds}
-                        handlePhotoClick={handlePhotoClick}
-                        isLightboxOpen={isLightboxOpen}
-                    />
-                  } />
-                  <Route path="/albums/:albumId/asset/:photoId" element={
-                    <AlbumDetail
-                        albums={albums}
-                        photos={photos}
-                        hasMore={hasMore}
-                        setPage={setPage}
-                        selectedIds={selectedIds}
-                        setSelectedIds={setSelectedIds}
-                        handlePhotoClick={handlePhotoClick}
-                        isLightboxOpen={isLightboxOpen}
-                    />
-                  } />
+                  <Route path="/albums/:albumId" element={albumDetailElement} />
+                  <Route path="/albums/:albumId/asset/:photoId" element={albumDetailElement} />
                   {/* New Space Routes */}
                   <Route path="/spaces" element={
                     <SpaceGridDisplay
                         spaces={spaces}
-                        selectedIds={selectedSpaceIds}
-                        setSelectedIds={setSelectedSpaceIds}
-                        newSpaceName={newSpaceName}
-                        setNewSpaceName={setNewSpaceName}
-                        newSpaceDescription={newSpaceDescription}
-                        setNewSpaceDescription={setNewSpaceDescription}
-                        spaceCreationError={spaceCreationError}
-                        setSpaceCreationError={setSpaceCreationError}
-                        handleCreateSpace={handleCreateSpace}
-                        showCreateSpaceModal={showCreateSpaceModal}
-                        setShowCreateSpaceModal={setShowCreateSpaceModal}
+                        selectedSpaceIds={selectedSpaceIds}
+                        setSelectedSpaceIds={setSelectedSpaceIds}
                         fetchSpaces={fetchSpaces}
-                        handleDeleteSpaces={handleDeleteSpaces}
                     />
                   } />
                   <Route path="/spaces/:spaceId" element={
                     <SpaceDetail
-                        spaces={[...spaces, ...garbageSpaces]}
-                        photos={photos}
-                        hasMore={hasMore}
-                        setPage={setPage}
-                        selectedIds={selectedIds}
-                        setSelectedIds={setSelectedIds}
-                        handlePhotoClick={handlePhotoClick}
-                        isLightboxOpen={isLightboxOpen}
-                    />
-                  } />
-                  <Route path="/spaces/:spaceId/asset/:photoId" element={
-                    <SpaceDetail
-                        spaces={[...spaces, ...garbageSpaces]}
                         photos={photos}
                         hasMore={hasMore}
                         setPage={setPage}
@@ -593,6 +434,29 @@ function App() {
             onEditPhoto={handleEditPhoto}
             onShowAddToAlbumModal={handleShowAddToAlbumModalForLightbox}
             onShowRemoveFromAlbumModal={handleShowRemoveFromAlbumModalForLightbox}
+            photoSelection={photoSelection}
+        />
+
+        <CreateAlbumModal
+            show={showCreateAlbumModal}
+            onClose={() => setShowCreateAlbumModal(false)}
+            newAlbumName={newAlbumName}
+            setNewAlbumName={setNewAlbumName}
+            newAlbumDescription={newAlbumDescription}
+            setNewAlbumDescription={setNewAlbumDescription}
+            albumCreationError={albumCreationError}
+            handleCreateAlbum={handleCreateAlbum}
+        />
+
+        <CreateSpaceModal
+            show={showCreateSpaceModal}
+            onClose={() => setShowCreateSpaceModal(false)}
+            newSpaceName={newSpaceName}
+            setNewSpaceName={setNewSpaceName}
+            newSpaceDescription={newSpaceDescription}
+            setNewSpaceDescription={setNewSpaceDescription}
+            spaceCreationError={spaceCreationError}
+            handleCreateSpace={handleCreateSpace}
         />
 
         <AddToAlbumModal

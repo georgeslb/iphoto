@@ -1,13 +1,12 @@
 import React from 'react';
-import { Image as ImageIcon, Check } from 'lucide-react';
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
+import AlbumSelectionList from './AlbumSelectionList';
 
 function AddToAlbumModal({
   show,
   onClose,
   albums,
   selectedIds,
-  setSelectedIds,
   targetAlbumIds,
   setTargetAlbumIds,
   initialTargetAlbumIds, /* New prop */
@@ -21,11 +20,6 @@ function AddToAlbumModal({
   const safeInitialTargetAlbumIds = Array.isArray(initialTargetAlbumIds) ? initialTargetAlbumIds : [];
 
   const handleToggleAlbumSelection = (albumId) => {
-    /* Prevent deselection of albums that were initially selected */
-    if (safeInitialTargetAlbumIds.includes(albumId)) {
-      return;
-    }
-
     setTargetAlbumIds(prev => {
       const currentAlbums = Array.isArray(prev) ? prev : [];
       return currentAlbums.includes(albumId)
@@ -43,29 +37,14 @@ function AddToAlbumModal({
       <div className="modal-content">
         <h2>{messages["addToAlbumModalTitle"]}</h2>
         <p>{messages["addToAlbumModalDescription"](safeSelectedIds.length)}</p>
-        <div className="album-list-selection">
-          {albums.length > 0 ? albums.map(album => {
-            const isSelected = safeTargetAlbumIds.includes(album.id);
-            const isInitiallySelected = safeInitialTargetAlbumIds.includes(album.id);
-
-            return (
-              <div
-                key={album.id}
-                className={`album-select-item ${isSelected ? 'selected' : ''} ${isInitiallySelected ? 'locked' : ''}`} /* Add 'locked' class */
-                onClick={() => handleToggleAlbumSelection(album.id)}
-              >
-                <div className="album-cover-small">
-                  {album.coverPhoto ? <img src={album.coverPhoto.url} alt={album.name} /> : <div className="album-placeholder-small"><ImageIcon size={24} color="#888" /></div>}
-                </div>
-                <div className="album-select-info">
-                  <h3>{album.name}</h3>
-                  <p>{messages["photosCount"](album.photoCount)}</p>
-                </div>
-                {isSelected && <div className="check-circle checked" style={{ marginLeft: 'auto', width: '22px', height: '22px' }}><Check size={14} /></div>}
-              </div>
-            );
-          }) : <p>{messages["noAlbumsAvailable"]}</p>}
-        </div>
+        <AlbumSelectionList
+          albums={albums}
+          selectedIds={safeTargetAlbumIds}
+          lockedIds={safeInitialTargetAlbumIds}
+          onToggle={handleToggleAlbumSelection}
+          variant="add"
+          emptyMessage={messages["noAlbumsAvailable"]}
+        />
         <div className="modal-actions">
           <button className="btn" onClick={onClose}>{messages["cancel"]}</button>
           <button

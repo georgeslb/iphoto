@@ -24,13 +24,37 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 .logout-button { width: 100%; text-align: left; background: none; border: none; color: var(--text-main); font-size: 16px; font-weight: 500; cursor: pointer; padding: 10px 16px; border-radius: 10px; transition: background 0.2s ease; }
 .logout-button:hover { background: #e0e0e5; }
 
+.sidebar-toggle {
+  display: none;
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 1100;
+  width: 40px;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+  background: white;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.sidebar-backdrop {
+  display: none;
+}
+
 
 /* Main Area */
 .main-content { flex: 1; overflow-y: auto; background: white; }
 .header { position: sticky; top: 0; background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(20px); padding: 16px 40px; display: flex; justify-content: space-between; align-items: center; z-index: 50; border-bottom: 1px solid rgba(0,0,0,0.05); }
 .content-body { padding: 0 40px 40px 40px; }
 
-/* Masonry-style Masonry Grid */
+.map-view-container { height: 100%; }
+.map-view-container .leaflet-container { height: 100%; width: 100%; }
+
+/* Masonry-style Grid */
 .day-group { margin-top: 32px; }
 .day-header { position: sticky; top: 73px; background: white; padding: 12px 0; z-index: 40; display: flex; align-items: baseline; gap: 12px; }
 
@@ -88,8 +112,10 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 /* UI Components */
 .btn { display: inline-flex; align-items: center; gap: 8px; padding: 8px 16px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; border: 1px solid var(--border-color); background: white; transition: all 0.2s ease; }
 .btn:hover { background: #f5f5f7; }
+.btn:disabled { background-color: #6c757d; color: #adb5bd; cursor: not-allowed; opacity: 0.6; }
 .btn-primary { background: var(--primary-color); color: white; border: none; }
 .btn-primary:hover { background: #006ee6; }
+.btn-primary:disabled { background-color: #0056b3; opacity: 0.6; }
 
 /* Lightbox */
 .lightbox-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: black; display: flex; z-index: 2000; }
@@ -265,7 +291,7 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 .upload-item-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
 .status-text { font-weight: 700; text-transform: uppercase; font-size: 10px; padding-left: 4px; }
 .status-text.COMPLETED { color: #34c759; }
-.status-text.FAILED, .status-text.ALREADYIMPORTED, .status-text.ALREADYIMPORTEDANDTRASHED { color: #ff3b30; }
+.status-text.FAILED, .status-text.IGNORED, .status-text.TRASHED { color: #ff3b30; }
 .upload-item-error {
   color: #ff3b30;
   font-size: 10px;
@@ -275,7 +301,7 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   justify-content: space-between;
 }
 .retry-button {
-  background-color: #007aff;
+  background-color: var(--primary-color);
   color: white;
   border: none;
   padding: 4px 8px;
@@ -285,7 +311,7 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   margin-left: 8px;
 }
 .retry-button:hover {
-  background-color: #0056b3;
+  background-color: #006ee6;
 }
 
 
@@ -317,18 +343,11 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   outline-offset: -4px;
 }
 
-/* This rule was causing the issue. Removed opacity: 0 */
 .album-card .select-overlay {
   position: absolute;
   top: 8px;
   left: 8px;
   z-index: 5;
-  opacity: 1; /* Changed from 0 to 1 to always be visible */
-  transition: opacity 0.2s ease;
-}
-
-/* This rule is now redundant for opacity, but keeps the hover effect if any other styles are added */
-.album-card:hover .select-overlay, .album-card.selected .select-overlay {
   opacity: 1;
 }
 
@@ -490,7 +509,7 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 .album-select-item.selected {
   background: #eef5ff;
   border-color: var(--primary-color);
-  box-shadow: 0 44px 12px rgba(0, 122, 255, 0.1);
+  box-shadow: 0 4px 12px rgba(0, 122, 255, 0.1);
 }
 
 /* New style for remove mode selection */
@@ -576,10 +595,6 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   font-size: 15px;
   color: var(--text-secondary);
 }
-.tie-btn-load.tui-image-editor-header-logo {
-  display: none !important;
-}
-
 /* Persons Page Styles */
 .person-item {
   width: 100px;
@@ -642,4 +657,110 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 .person-name-input:focus {
   border-color: var(--primary-color);
   box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.2);
+}
+
+/* ==================== Responsive (tablet/phone) ==================== */
+@media (max-width: 768px) {
+  .sidebar-toggle {
+    display: flex;
+  }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    z-index: 1000;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    box-shadow: 4px 0 20px rgba(0, 0, 0, 0.15);
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+  }
+
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 900;
+  }
+
+  .header {
+    padding: 12px 16px 12px 64px;
+  }
+
+  .day-header {
+    top: 57px;
+  }
+
+  .content-body {
+    padding: 0 16px 24px 16px;
+  }
+
+  .header-actions {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    max-width: 100%;
+  }
+
+  .photo-card {
+    height: 130px;
+  }
+
+  .album-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 12px;
+  }
+
+  .modal-content {
+    width: 100%;
+    padding: 20px;
+  }
+
+  .lightbox-content {
+    padding: 16px;
+  }
+
+  .lightbox-container {
+    flex-direction: column;
+  }
+
+  .metadata-sidebar {
+    width: 100%;
+    max-height: 45vh;
+    border-left: none;
+    border-top: 1px solid #333;
+    padding: 16px;
+  }
+
+  .lightbox-nav-btn {
+    width: 40px;
+    height: 40px;
+  }
+
+  .upload-queue {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    width: auto;
+  }
+}
+
+@media (max-width: 480px) {
+  .photo-card {
+    height: 100px;
+  }
+
+  .album-grid {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 8px;
+  }
+
+  .modal-content {
+    padding: 16px;
+  }
 }

@@ -1,4 +1,6 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
+import Cropper from 'react-cropper';
+import 'cropperjs/dist/cropper.css';
 import {
     Calendar,
     Camera,
@@ -9,18 +11,17 @@ import {
     Info,
     MapPin,
     RotateCcw,
+    RotateCw,
     Trash2,
     X,
     XCircle,
     Zap,
+    ZoomIn,
+    ZoomOut,
     Image as ImageIcon,
-    MinusCircle,
-    Users
+    MinusCircle
 } from 'lucide-react';
 
-import 'tui-image-editor/dist/tui-image-editor.css';
-import 'tui-color-picker/dist/tui-color-picker.css';
-import ImageEditor from 'tui-image-editor';
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 export default function Lightbox({
@@ -36,17 +37,18 @@ export default function Lightbox({
                                      onUpdateDate,
                                      onEditPhoto,
                                      onShowAddToAlbumModal,
-                                     onShowRemoveFromAlbumModal
+                                     onShowRemoveFromAlbumModal,
+                                     photoSelection
                                  }) {
     const { messages } = useLocale(); // Use the useLocale hook
     const [isEditingDate, setIsEditingDate] = useState(false);
     const [newDate, setNewDate] = useState('');
     const [isEditingImage, setIsEditingImage] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
-    const [isApplyButtonVisible, setIsApplyButtonVisible] = useState(false);
-    const imageEditorRef = useRef(null);
-    const editorInstance = useRef(null);
     const imageRef = useRef(null);
+
+    // Ref to the cropperjs instance (react-cropper), used for the crop/rotate/zoom image editor
+    const cropperRef = useRef(null);
     const zoomContainerRef = useRef(null); // Ref for the zoomable container
 
     // State for zoom and pan
@@ -132,10 +134,6 @@ export default function Lightbox({
             }
             setNewDate(formattedDate);
             setIsEditingImage(false);
-            if (editorInstance.current) {
-                editorInstance.current.destroy();
-                editorInstance.current = null;
-            }
             // Reset zoom and pan when photo changes
             setZoomScale(1);
             setPanX(0);
@@ -143,9 +141,7 @@ export default function Lightbox({
         }
     }, [selectedPhoto]);
 
-    if (!selectedPhoto) return null;
-
-    const currentIndex = photos.findIndex(p => p.id === selectedPhoto.id);
+    const currentIndex = selectedPhoto ? photos.findIndex(p => p.id === selectedPhoto.id) : -1;
     const hasPrevious = currentIndex > 0;
     const hasNext = currentIndex !== -1 && currentIndex < photos.length - 1;
 
@@ -164,28 +160,35 @@ export default function Lightbox({
         setIsEditingDate(false);
     };
 
+    const handleCancelEditing = () => {
+        // The <Cropper> unmounts when isEditingImage flips false, so cropperjs's
+        // internal crop box/rotation/zoom state is discarded with it — nothing to reset here.
+        setIsEditingImage(false);
+    };
+
     const handleSaveEditedImage = async (saveAsNew) => {
-        if (editorInstance.current) {
-            setIsLoading(true);
-            try {
-                const dataURL = editorInstance.current.toDataURL({ format: 'jpeg', quality: 1 });
-                const response = await fetch(dataURL);
-                if (!response.ok) throw new Error(messages["httpError"](response.status));
-                const blob = await response.blob();
-                if (blob && blob.size > 0) {
-                    const formData = new FormData();
-                    formData.append('file', blob, selectedPhoto.title);
-                    formData.append('saveAsNew', saveAsNew);
-                    await onEditPhoto(selectedPhoto.id, formData);
-                    setIsEditingImage(false);
-                } else {
-                    console.error(messages["blobEmptyOrInvalid"]);
-                }
-            } catch (error) {
-                console.error(messages["errorSavingEditedImage"], error);
-            } finally {
-                setIsLoading(false);
+        const cropper = cropperRef.current?.cropper;
+        if (!cropper) return;
+        setIsLoading(true);
+        try {
+            // getCroppedCanvas() renders at the crop box's actual (full-resolution) pixel
+            // size by default — it reads from the original image data, not the on-screen
+            // preview — so this keeps full quality regardless of zoom/rotation applied.
+            const canvas = cropper.getCroppedCanvas({ imageSmoothingEnabled: true, imageSmoothingQuality: 'high' });
+            const blob = canvas ? await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 1)) : null;
+            if (blob && blob.size > 0) {
+                const formData = new FormData();
+                formData.append('file', blob, selectedPhoto.title);
+                formData.append('saveAsNew', saveAsNew);
+                await onEditPhoto(selectedPhoto.id, formData);
+                setIsEditingImage(false);
+            } else {
+                console.error(messages["blobEmptyOrInvalid"]);
             }
+        } catch (error) {
+            console.error(messages["errorSavingEditedImage"], error);
+        } finally {
+            setIsLoading(false);
         }
     };
 
@@ -288,6 +291,17 @@ export default function Lightbox({
         setZoomScale(clampedScale);
     }, [zoomScale, panX, panY, isEditingImage, selectedPhoto, clampPan]); // Added clampPan to dependencies
 
+    // React attaches its synthetic wheel listener as passive (for scroll performance), so
+    // calling preventDefault() from a JSX onWheel handler throws "Unable to preventDefault
+    // inside passive event listener invocation" and never actually stops page scroll. Attach
+    // a real, non-passive listener via the DOM instead.
+    useEffect(() => {
+        const container = zoomContainerRef.current;
+        if (!container) return;
+        container.addEventListener('wheel', handleWheel, { passive: false });
+        return () => container.removeEventListener('wheel', handleWheel);
+    }, [handleWheel]);
+
     const handleMouseDown = useCallback((e) => {
         if (isEditingImage || selectedPhoto.contentType?.startsWith('video') || zoomScale === 1) return;
         e.preventDefault();
@@ -344,43 +358,15 @@ export default function Lightbox({
 
     const startImageEditing = useCallback(() => setIsEditingImage(true), []);
 
-    useEffect(() => {
-        if (isEditingImage && imageEditorRef.current && selectedPhoto) {
-            editorInstance.current = new ImageEditor(imageEditorRef.current, {
-                includeUI: {
-                    loadImage: { path: `/api/photos/${selectedPhoto.id}/original`, name: selectedPhoto.title },
-                    menu: ['crop', 'rotate', 'flip', 'draw', 'shape', 'icon', 'text', 'filter'],
-                    initMenu: 'crop',
-                    menuBarPosition: 'bottom'
-                },
-                cssMaxWidth: window.innerWidth * 0.8,
-                cssMaxHeight: window.innerHeight * 0.8,
-                selectionStyle: { cornerSize: 20, rotatingPointOffset: 70 },
-                usageStatistics: false,
-            });
+    if (!selectedPhoto) return null;
 
-            const observer = new MutationObserver(() => {
-                const applyButton = imageEditorRef.current?.querySelector('.tui-image-editor-menu-crop .tui-image-editor-button.apply');
-                setIsApplyButtonVisible(!!(applyButton && applyButton.offsetParent !== null));
-            });
-            observer.observe(imageEditorRef.current, { childList: true, subtree: true, attributes: true });
-
-            return () => {
-                observer.disconnect();
-                if (editorInstance.current) {
-                    editorInstance.current.destroy();
-                    editorInstance.current = null;
-                }
-            };
-        }
-    }, [isEditingImage, selectedPhoto]);
+    // The id stays the same when a photo is edited in place ("Save"), but the file
+    // changes, so bust the browser's URL-keyed cache with the (fresh) content hash.
+    const mediaCacheParam = selectedPhoto.fileHash ? `?v=${selectedPhoto.fileHash}` : '';
 
     return (
         <div className="lightbox-overlay" onClick={isEditingImage ? undefined : onClose}>
             <style>{`
-                .tui-image-editor-header-buttons .tui-image-editor-load-btn { display: none !important; }
-                .btn:disabled { background-color: #6c757d !important; color: #adb5bd !important; cursor: not-allowed !important; opacity: 0.6; }
-                .btn-primary:disabled { background-color: #0056b3 !important; opacity: 0.6; }
                 .face-box { position: absolute; border: 2px solid rgba(255, 255, 0, 0.8); box-shadow: 0 0 10px rgba(0,0,0,0.5); border-radius: 4px; pointer-events: none; }
                 .face-thumbnail-container { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 8px; }
                 .face-item { display: flex; flex-direction: column; align-items: center; gap: 4px; }
@@ -396,15 +382,37 @@ export default function Lightbox({
                     )}
                     {isEditingImage ? (
                         <div style={{ position: 'absolute', inset: '40px', zIndex: 10, display: 'flex', flexDirection: 'column', width: 'calc(100% - 80px)', height: 'calc(100% - 80px)' }}>
-                            <div ref={imageEditorRef} style={{width: '100%', height: '100%'}}></div>
+                            <div style={{ position: 'relative', flex: 1, minHeight: 0, overflow: 'hidden', background: '#000' }}>
+                                <Cropper
+                                    ref={cropperRef}
+                                    src={`/api/photos/${selectedPhoto.id}/original${mediaCacheParam}`}
+                                    style={{ height: '100%', width: '100%' }}
+                                    viewMode={1}
+                                    dragMode="crop"
+                                    autoCropArea={1}
+                                    background={false}
+                                    checkOrientation={false}
+                                    guides={true}
+                                    responsive={true}
+                                    zoomable={true}
+                                    rotatable={true}
+                                    cropBoxMovable={true}
+                                    cropBoxResizable={true}
+                                />
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '16px', padding: '12px 0', color: 'white', flexShrink: 0 }}>
+                                <button className="btn" title={messages["rotateLeft"]} onClick={() => cropperRef.current?.cropper.rotate(-90)}><RotateCcw size={18}/></button>
+                                <button className="btn" title={messages["rotateRight"]} onClick={() => cropperRef.current?.cropper.rotate(90)}><RotateCw size={18}/></button>
+                                <button className="btn" title={messages["zoomOut"]} onClick={() => cropperRef.current?.cropper.zoom(-0.1)}><ZoomOut size={18}/></button>
+                                <button className="btn" title={messages["zoomIn"]} onClick={() => cropperRef.current?.cropper.zoom(0.1)}><ZoomIn size={18}/></button>
+                            </div>
                         </div>
                     ) : selectedPhoto.contentType?.startsWith('video') ? (
-                        <video src={`/api/photos/${selectedPhoto.id}/stream`} controls autoPlay/>
+                        <video src={`/api/photos/${selectedPhoto.id}/stream${mediaCacheParam}`} controls autoPlay/>
                     ) : (
                         <div
                             ref={zoomContainerRef}
                             className="zoom-container"
-                            onWheel={handleWheel}
                             onMouseDown={handleMouseDown}
                             onMouseMove={handleMouseMove}
                             onMouseUp={handleMouseUp}
@@ -422,7 +430,7 @@ export default function Lightbox({
                                 overflow: 'hidden' // Hide overflow during pan/zoom
                             }}
                         >
-                            <img ref={imageRef} src={`/api/photos/${selectedPhoto.id}/original`} onLoad={handleImageLoad} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+                            <img ref={imageRef} src={`/api/photos/${selectedPhoto.id}/original${mediaCacheParam}`} onLoad={handleImageLoad} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
                             {showFaces && faces.map((face, index) => (
                                 <div key={index} className="face-box" style={{
                                     left: `${face.x * scaleX}px`,
@@ -443,31 +451,29 @@ export default function Lightbox({
                         <button className="lightbox-close-btn" onClick={onClose}><X size={24}/></button>
                     </div>
                     <div className="sidebar-scroll-content">
-                        {!selectedPhoto.contentType?.startsWith('video') && (
+                        {photoSelection.canBeModified && !isEditingImage && (
                             <div style={{marginBottom: '10px'}}>
-                                {!isEditingImage ? (
-                                    <button className="btn" style={{width: '100%', justifyContent: 'center'}} onClick={startImageEditing}><Edit size={16}/> {messages["editImage"]}</button>
-                                ) : (
-                                    <div style={{display: 'flex', gap: '8px', justifyContent: 'center'}}>
-                                        <button className="btn btn-primary" onClick={() => handleSaveEditedImage(false)} disabled={isLoading || isApplyButtonVisible}>{messages["save"]}</button>
-                                        <button className="btn btn-primary" onClick={() => handleSaveEditedImage(true)} disabled={isLoading || isApplyButtonVisible}>{messages["saveAsNew"]}</button>
-                                        <button className="btn" onClick={() => setIsEditingImage(false)} disabled={isLoading}>{messages["cancel"]}</button>
-                                    </div>
-                                )}
+                                <button className="btn" style={{width: '100%', justifyContent: 'center'}} onClick={startImageEditing}><Edit size={16}/> {messages["editImage"]}</button>
+                            </div>
+                        )}
+                        {isEditingImage && (
+                            <div style={{display: 'flex', gap: '8px', justifyContent: 'center', marginBottom: '10px'}}>
+                                <button className="btn btn-primary" onClick={() => handleSaveEditedImage(false)} disabled={isLoading}>{messages["save"]}</button>
+                                <button className="btn btn-primary" onClick={() => handleSaveEditedImage(true)} disabled={isLoading}>{messages["saveAsNew"]}</button>
+                                <button className="btn" onClick={handleCancelEditing} disabled={isLoading}>{messages["cancel"]}</button>
                             </div>
                         )}
 
-                        {albumAllowed && !isEditingImage && <button className="btn" style={{width: '100%', justifyContent: 'center', marginBottom: '10px'}} onClick={() => onShowAddToAlbumModal(selectedPhoto.id)}><ImageIcon size={16}/> {messages["addToAlbumLightbox"]}</button>}
-                        {albumAllowed && !isEditingImage && <button className="btn" style={{width: '100%', justifyContent: 'center', marginBottom: '10px'}} onClick={() => onShowRemoveFromAlbumModal(selectedPhoto.id)}><MinusCircle size={16}/> {messages["removeFromAlbumLightbox"]}</button>}
+                        {photoSelection.canBeMovedToAlbum && !isEditingImage && <button className="btn" style={{width: '100%', justifyContent: 'center', marginBottom: '10px'}} onClick={() => onShowAddToAlbumModal(selectedPhoto.id)}><ImageIcon size={16}/> {messages["addToAlbumLightbox"]}</button>}
+                        {photoSelection.canBeRemovedFromAlbum && !isEditingImage && <button className="btn" style={{width: '100%', justifyContent: 'center', marginBottom: '10px'}} onClick={() => onShowRemoveFromAlbumModal(selectedPhoto.id)}><MinusCircle size={16}/> {messages["removeFromAlbumLightbox"]}</button>}
 
-                        {!isEditingImage && (pathname === '/garbage' ? (
-                            <div style={{display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '10px'}}>
-                                <button className="btn" style={{ width: '100%', justifyContent: 'center', background: '#34c759', color: 'white', border: 'none' }} onClick={() => { handleRestore([selectedPhoto.id]); onClose(); }}><RotateCcw size={18}/> {messages["restoreAsset"]}</button>
-                                <button className="btn" style={{ width: '100%', justifyContent: 'center', background: '#ff3b30', color: 'white', border: 'none' }} onClick={() => { handlePermanentDelete([selectedPhoto.id]); onClose(); }}><Trash2 size={18}/> {messages["deletePermanentlyLightbox"]}</button>
-                            </div>
-                        ) : (
-                            <button className="btn" style={{ width: '100%', justifyContent: 'center', background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none', marginBottom: '10px' }} onClick={() => { handleMoveToGarbage([selectedPhoto.id]); onClose(); }}><Trash2 size={18}/> {messages["moveToGarbageLightbox"]}</button>
-                        ))}
+                        {!isEditingImage && (
+                            <>
+                                {photoSelection.canBeRestored && <button className="btn" style={{ width: '100%', justifyContent: 'center', background: '#34c759', color: 'white', border: 'none', marginBottom: '10px' }} onClick={() => { handleRestore([selectedPhoto.id]); onClose(); }}><RotateCcw size={18}/> {messages["restoreAsset"]}</button>}
+                                {photoSelection.canBePermanentlyDeleted && <button className="btn" style={{ width: '100%', justifyContent: 'center', background: '#ff3b30', color: 'white', border: 'none', marginBottom: '10px' }} onClick={() => { handlePermanentDelete([selectedPhoto.id]); onClose(); }}><Trash2 size={18}/> {messages["deletePermanentlyLightbox"]}</button>}
+                                {photoSelection.canBeDeleted && <button className="btn" style={{ width: '100%', justifyContent: 'center', background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none', marginBottom: '10px' }} onClick={() => { handleMoveToGarbage([selectedPhoto.id]); onClose(); }}><Trash2 size={18}/> {messages["moveToGarbageLightbox"]}</button>}
+                            </>
+                        )}
 
                         <div className="metadata-group"><label>{messages["fileName"]}</label><p>{selectedPhoto.title}</p></div>
                         <div className="metadata-group">
@@ -481,7 +487,7 @@ export default function Lightbox({
                             ) : (
                                 <p style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
                                     {formatDateTime(selectedPhoto.fullDateTime)}
-                                    <Edit size={14} onClick={() => setIsEditingDate(true)} className="edit-icon"/>
+                                    {photoSelection.canBeModified && <Edit size={14} onClick={() => setIsEditingDate(true)} className="edit-icon"/>}
                                 </p>
                             )}
                         </div>

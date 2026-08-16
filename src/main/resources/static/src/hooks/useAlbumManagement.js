@@ -72,10 +72,10 @@ export function useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, s
   }, [selectedIds, targetAlbumIds, setSelectedIds, fetchAlbums, setShowAddToAlbumModal, setTargetAlbumIds, messages]);
 
   useEffect(() => {
-    if (effectivePath.startsWith('/albums') && !isLightboxOpen) {
+    if (effectivePath === '/albums') {
       fetchAlbums();
     }
-  }, [effectivePath, fetchAlbums, isLightboxOpen]);
+  }, [effectivePath, fetchAlbums]);
 
   useEffect(() => {
     if (showAddToAlbumModal) {

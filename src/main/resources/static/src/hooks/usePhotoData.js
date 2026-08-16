@@ -1,13 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
+import { useLocale } from '../LocaleContext.jsx';
 
 export function usePhotoData(effectivePath, isLightboxOpen) {
-  const { messages } = useLocale(); // Use the useLocale hook
+  const { messages } = useLocale();
   const [photos, setPhotos] = useState([]);
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(true);
 
-  const fetchPhotos = useCallback(async (pageNum, reset = false, type = 'library', albumId = null, spaceId = null) => { // Added spaceId parameter
+  const fetchPhotos = useCallback(async (pageNum, reset = false, type = 'library', albumId = null, spaceId = null) => {
     try {
       let endpoint = '/api/photos';
       let sort = 'dateTaken,desc';
@@ -17,61 +17,59 @@ export function usePhotoData(effectivePath, isLightboxOpen) {
         sort = 'garbageAt,desc';
       } else if (type === 'album' && albumId) {
         endpoint = `/api/albums/${albumId}/photos`;
-      } else if (type === 'space' && spaceId) { // New condition for spaces
+      } else if (type === 'space' && spaceId) {
         endpoint = `/api/spaces/${spaceId}/photos`;
       }
 
-      const res = await fetch(`${endpoint}?page=${pageNum}&size=50&sort=${sort}`);
+      const res = await fetch(`${endpoint}?page=${pageNum}&size=20&sort=${sort}`);
       const data = await res.json();
 
       const content = Array.isArray(data) ? data : (data.content || []);
       const isLast = Array.isArray(data) ? true : (data.last === undefined ? true : data.last);
 
-      setPhotos(prev => reset ? content : [...prev, ...content]);
+      setPhotos(prev => (reset ? content : [...prev, ...content]));
       setHasMore(!isLast);
       if (reset) {
-        setPage(0); // Reset page to 0 when a full refresh is performed
+        setPage(0);
       }
     } catch (err) {
       console.error(messages["fetchPhotosFailed"], err);
     }
   }, [messages]);
 
-  useEffect(() => {
-    // Determine effective path for fetching data
-    const currentSection = effectivePath.split('/')[1] || 'library';
+  const loadPhotos = useCallback((page, reset) => {
+    const albumMatch = effectivePath.match(/^\/albums\/(.+)$/);
+    const spaceMatch = effectivePath.match(/^\/spaces\/(.+)$/);
 
-    // Ignore direct navigation to an asset (handled by Lightbox and fallback logic)
-    if (isLightboxOpen) return;
+    let type = 'library', albumId = null, spaceId = null;
 
-    // Reset photos and page when section changes (except for duplicates, which has its own management)
-    if (!effectivePath.startsWith('/duplicates')) {
-      setPhotos([]);
-      setPage(0);
-      setHasMore(true);
+    if (effectivePath === '/') {
+        type = 'library';
+    } else if (effectivePath === '/garbage') {
+        type = 'garbage';
+    } else if (albumMatch) {
+        type = 'album';
+        albumId = albumMatch[1];
+    } else if (spaceMatch) {
+        type = 'space';
+        spaceId = spaceMatch[1];
     }
 
-    const albumMatch = effectivePath.match(/^\/albums\/(.+)$/);
-    const spaceMatch = effectivePath.match(/^\/spaces\/(.+)$/); // New: Match for space paths
+    fetchPhotos(page, reset, type, albumId, spaceId);
+  }, [effectivePath, fetchPhotos]);
 
-    if (effectivePath === '/') fetchPhotos(0, true, 'library');
-    else if (effectivePath === '/garbage') fetchPhotos(0, true, 'garbage');
-    else if (albumMatch) fetchPhotos(0, true, 'album', albumMatch[1]);
-    else if (spaceMatch) fetchPhotos(0, true, 'space', null, spaceMatch[1]); // New: Handle space paths
-    // Note: Duplicates and Map views are handled by their own components/hooks
-  }, [effectivePath, fetchPhotos, isLightboxOpen]);
+  useEffect(() => {
+    if (isLightboxOpen) return;
+
+    const isDuplicates = effectivePath.startsWith('/duplicates');
+    loadPhotos(0, !isDuplicates);
+  }, [effectivePath, loadPhotos, isLightboxOpen]);
 
   useEffect(() => {
     if (page > 0) {
-      const albumMatch = effectivePath.match(/^\/albums\/(.+)$/);
-      const spaceMatch = effectivePath.match(/^\/spaces\/(.+)$/); // New: Match for space paths
-
-      if (effectivePath === '/') fetchPhotos(page, false, 'library');
-      else if (effectivePath === '/garbage') fetchPhotos(page, false, 'garbage');
-      else if (albumMatch) fetchPhotos(page, false, 'album', albumMatch[1]);
-      else if (spaceMatch) fetchPhotos(page, false, 'space', null, spaceMatch[1]); // New: Handle space paths
+      loadPhotos(page, false);
     }
-  }, [page, fetchPhotos, effectivePath]);
+  }, [page, loadPhotos]);
 
   return { photos, setPhotos, page, setPage, hasMore, fetchPhotos };
 }

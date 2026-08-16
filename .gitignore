@@ -42,3 +42,7 @@ build/
 /.idea/
 /frontend/
 /node_modules/
+/src/main/resources/static/.idea/inspectionProfiles/Project_Default.xml
+/src/main/resources/static/.idea/.gitignore
+/src/main/resources/static/.idea/modules.xml
+/src/main/resources/static/.idea/vcs.xml

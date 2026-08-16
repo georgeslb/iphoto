@@ -1,10 +1,16 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Image as ImageIcon, Library, Map as MapIcon, BookOpen, Copy, Trash2, Link as LinkIcon, Users, Settings, LayoutGrid } from 'lucide-react'; // Added LayoutGrid icon for Spaces
+import { Image as ImageIcon, Library, Map as MapIcon, BookOpen, Copy, Trash2, Link as LinkIcon, Users, Settings, LayoutGrid, Menu, X } from 'lucide-react'; // Added LayoutGrid icon for Spaces
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 export default function Sidebar({ pathname, isAuthenticated, userRole, handleLogout, fromGarbage }) {
   const { locale, setLocale, messages } = useLocale(); // Use the useLocale hook
+  const [isOpen, setIsOpen] = useState(false);
+
+  // Close the mobile drawer whenever the route changes
+  useEffect(() => {
+    setIsOpen(false);
+  }, [pathname]);
 
   const handleLocaleChange = (e) => {
     setLocale(e.target.value);
@@ -24,7 +30,18 @@ export default function Sidebar({ pathname, isAuthenticated, userRole, handleLog
   const isGarbageActive = pathname === '/garbage' || (fromGarbage && pathname.startsWith('/spaces'));
 
   return (
-    <aside className="sidebar">
+    <>
+      {isAuthenticated && (
+        <button
+          className="sidebar-toggle"
+          onClick={() => setIsOpen(o => !o)}
+          aria-label={messages["toggleMenu"]}
+        >
+          {isOpen ? <X size={22} /> : <Menu size={22} />}
+        </button>
+      )}
+      {isOpen && <div className="sidebar-backdrop" onClick={() => setIsOpen(false)} />}
+      <aside className={`sidebar ${isOpen ? 'open' : ''}`}>
       <div className="sidebar-logo"><ImageIcon size={28} color="#007AFF" /> <h2>{messages["iPhotoTitle"]}</h2></div>
       <nav className="nav-section">
         {isAuthenticated && (
@@ -54,6 +71,7 @@ export default function Sidebar({ pathname, isAuthenticated, userRole, handleLog
           <button onClick={handleLogout} className="nav-item logout-button">{messages["logoutButton"]}</button>
         </div>
       )}
-    </aside>
+      </aside>
+    </>
   );
 }

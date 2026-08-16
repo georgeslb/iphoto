@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import { useLocale } from '../LocaleContext.jsx';
 
-export function useSpaceActions(refreshAndMaintainScroll, selectedIds, setSelectedIds) {
+export function useSpaceActions(refreshAndMaintainScroll, setSelectedIds) {
   const { messages } = useLocale();
 
   const handleRestoreSpaces = useCallback(async (ids) => {
@@ -9,8 +9,10 @@ export function useSpaceActions(refreshAndMaintainScroll, selectedIds, setSelect
     if (res.ok) {
       setSelectedIds([]);
       await refreshAndMaintainScroll();
+    } else {
+      alert(messages["failedToRestore"](res.status));
     }
-  }, [refreshAndMaintainScroll, setSelectedIds]);
+  }, [refreshAndMaintainScroll, setSelectedIds, messages]);
 
   const handlePermanentDeleteSpaces = useCallback(async (ids) => {
     if (!window.confirm(messages["permanentDeleteConfirmation"](ids.length))) return;
@@ -18,6 +20,8 @@ export function useSpaceActions(refreshAndMaintainScroll, selectedIds, setSelect
     if (res.ok) {
       setSelectedIds([]);
       await refreshAndMaintainScroll();
+    } else {
+      alert(messages["failedToPermanentlyDelete"](res.status));
     }
   }, [refreshAndMaintainScroll, setSelectedIds, messages]);
 

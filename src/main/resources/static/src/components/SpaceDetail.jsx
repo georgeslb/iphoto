@@ -2,9 +2,9 @@ import React from 'react';
 import { useParams } from 'react-router-dom';
 import PhotoGrid from './PhotoGrid'; // Assuming PhotoGrid is in the same components directory
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
+import { useEntityById } from '../hooks/useEntityById';
 
 function SpaceDetail({
-  spaces, // Now receiving spaces instead of albums
   photos,
   hasMore,
   setPage,
@@ -15,10 +15,11 @@ function SpaceDetail({
 }) {
   const { messages } = useLocale(); // Use the useLocale hook
   const { spaceId } = useParams();
-  const currentSpace = spaces.find(s => s.id === spaceId);
+  const { entity: currentSpace, loading, error } = useEntityById(spaceId, '/api/spaces');
 
-  if (!currentSpace && spaces.length > 0) return <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>{messages["spaceNotFound"]}</div>;
-  if (!currentSpace) return <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>{messages["loadingSpace"]}</div>;
+  if (loading) return <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>{messages["loadingSpace"]}</div>;
+  if (error) return <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>Error: {error.message}</div>;
+  if (!currentSpace) return <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>{messages["spaceNotFound"]}</div>;
 
   return (
     <div className="content-body">

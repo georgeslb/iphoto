@@ -1,87 +1,36 @@
 import React from 'react';
-import { Image as ImageIcon, Check, Plus, Circle } from 'lucide-react'; /* Keep Circle for unchecked state */
+import { Image as ImageIcon } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import CreateAlbumModal from './CreateAlbumModal'; // Import CreateAlbumModal
-import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
-
+import { useLocale } from '../LocaleContext.jsx';
+import EntityGridDisplay from './EntityGridDisplay';
 
 function AlbumGridDisplay({
   albums,
   selectedIds,
   setSelectedIds,
-  newAlbumName,
-  setNewAlbumName,
-  newAlbumDescription,
-  setNewAlbumDescription,
-  albumCreationError,
-  handleCreateAlbum,
-  showCreateAlbumModal,
-  setShowCreateAlbumModal,
 }) {
-  const { messages } = useLocale(); // Use the useLocale hook
+  const { messages } = useLocale();
   const navigate = useNavigate();
 
+  const toggle = (id) => setSelectedIds(v => v.includes(id) ? v.filter(i => i !== id) : [...v, id]);
+
   return (
-    <div className="content-body">
-      {/* Moved Create Album button here */}
-      <div style={{ marginBottom: '20px', display: 'flex', justifyContent: 'flex-start', marginTop: '10px' }}>
-          <button className="btn btn-primary" onClick={() => setShowCreateAlbumModal(true)}>
-              <Plus size={18}/> {messages["createAlbumButton"]}
-          </button>
-      </div>
-
-      <div className="album-grid">
-        {albums.map(album => {
-          const isSelected = selectedIds.includes(album.id);
-          return (
-            <div
-              key={album.id}
-              className={`album-card ${isSelected ? 'selected' : ''}`}
-              onClick={() => {
-                // Only navigate if not in selection mode
-                if (selectedIds.length === 0) {
-                  navigate(`/albums/${album.id}`);
-                }
-                // If in selection mode, the overlay handles the click
-              }}
-            >
-              <div
-                className="select-overlay"
-                // Removed pointerEvents conditional style
-                onClick={(e) => {
-                  e.stopPropagation(); // Prevent click from bubbling to the album-card div
-                  setSelectedIds(v => v.includes(album.id) ? v.filter(i => i !== album.id) : [...v, album.id]);
-                }}
-              >
-                <div className={`check-circle ${isSelected ? 'checked' : ''}`}>
-                  {isSelected ? <Check size={14} /> : <Circle size={14} color="#ccc" />}
-                </div>
-              </div>
-
-              <div className="album-cover">
-                {album.coverPhoto ? <img src={album.coverPhoto.url} alt={album.name} /> : <div className="album-placeholder"><ImageIcon size={48} color="#888" /></div>}
-              </div>
-              <div className="album-info">
-                <h3>{album.name}</h3>
-                <p>{messages["photosCount"](album.photoCount)}</p>
-              </div>
-            </div>
-          );
-        })}
-        {albums.length === 0 && ( <div style={{textAlign: 'center', padding: '50px', color: '#888', gridColumn: '1/-1'}}> {messages["noAlbumsCreatedYet"]} </div>)}
-      </div>
-
-      <CreateAlbumModal
-        show={showCreateAlbumModal}
-        onClose={() => setShowCreateAlbumModal(false)}
-        newAlbumName={newAlbumName}
-        setNewAlbumName={setNewAlbumName}
-        newAlbumDescription={newAlbumDescription}
-        setNewAlbumDescription={setNewAlbumDescription}
-        albumCreationError={albumCreationError}
-        handleCreateAlbum={handleCreateAlbum}
-      />
-    </div>
+    <EntityGridDisplay
+      items={albums.map(album => ({ ...album, photoCountLabel: messages["photosCount"](album.photoCount) }))}
+      selectedIds={selectedIds}
+      onToggleSelect={toggle}
+      onOpen={(album) => navigate(`/albums/${album.id}`)}
+      renderCover={(album) => (
+        album.coverPhoto ? (
+          <img src={`/api/photos/${album.coverPhoto.id}/thumbnail`} alt={album.name} className="album-cover" />
+        ) : (
+          <div className="album-cover">
+            <div className="album-placeholder"><ImageIcon size={48} color="#888" /></div>
+          </div>
+        )
+      )}
+      emptyMessage={messages["noAlbumsCreatedYet"]}
+    />
   )
 }
 

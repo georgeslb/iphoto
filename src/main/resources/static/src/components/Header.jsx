@@ -1,46 +1,53 @@
 import React, { useCallback } from 'react';
-import { X, Upload, Plus, Trash2, RotateCcw, ImageIcon, ArrowLeft, ChevronLeft, ChevronRight, Link, Home } from 'lucide-react'; // Added Home icon
+import { X, Upload, Plus, Trash2, RotateCcw, ImageIcon, ArrowLeft, ChevronLeft, ChevronRight, Link, Home, MinusCircle, FolderX,  ArchiveRestore} from 'lucide-react'; // Added Home icon
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 export default function Header({
   selectedIds,
   setSelectedIds,
+  selectedSpaceIds,
+  selectedAlbumIds,
+  setSelectedSpaceIds,
+  setSelectedAlbumIds,
+  menuSpaceId,
+  menuAlbumId,
   pathname,
   handleRestore,
   handlePermanentDelete,
+  handleRestoreSpaces,
+  handlePermanentDeleteSpaces,
   handleRemovePhotosFromAlbum,
   handleMoveToGarbage,
   setShowAddToAlbumModal,
   setShowCreateShareLinkModal,
   handleUpload,
-  albumId,
-  spaceId,
-  canSetCoverPhoto,
   handleSetCoverPhoto,
   navigate,
   duplicatesPage,
   fetchDuplicates,
   isLastDuplicateGroup,
   handleDeleteAlbums,
+  handleDeleteSpaces,
+  setShowCreateAlbumModal,
+  setShowCreateSpaceModal,
   fileInputRef,
-  allowCopyToMain, // Existing prop
+  photoSelection,
   refreshAndMaintainScroll, // Existing prop
-  isAlbumAllowedInCurrentSpace, // NEW PROP from HeaderWrapper
   fromGarbage,
 }) {
   const { messages } = useLocale(); // Use the useLocale hook
-  const selectionMode = selectedIds.length > 0;
+  const selectionMode = selectedIds.length > 0 || selectedSpaceIds.length > 0 || selectedAlbumIds.length > 0;
   const isDuplicatesPage = pathname.startsWith('/duplicates');
-  const isAlbumsMainPage = pathname === '/albums';
-  const isSpacesPage = pathname.startsWith('/spaces/') && spaceId; // Check if it's a space detail page and spaceId is present
-
+  const selectionCount = pathname === '/spaces' ? selectedSpaceIds.length : pathname === '/albums' ? selectedAlbumIds.length : selectedIds.length
+  const isSpacesPage = pathname.startsWith('/spaces/') && menuSpaceId;
+  const menuSelection = photoSelection.menuSelection
   const handleUploadClick = useCallback(() => {
     if (fileInputRef.current) {
-      fileInputRef.current.dataset.albumId = albumId || '';
-      fileInputRef.current.dataset.spaceId = spaceId || '';
+      fileInputRef.current.dataset.albumId = menuAlbumId || '';
+      fileInputRef.current.dataset.spaceId = menuSpaceId || '';
       fileInputRef.current.click();
     }
-  }, [albumId, spaceId, fileInputRef]);
+  }, [menuAlbumId, menuSpaceId, fileInputRef]);
 
   const handleMoveToMain = useCallback(async () => {
     if (selectedIds.length === 0) return;
@@ -75,74 +82,68 @@ export default function Header({
   return (
     <header className="header">
       <div>
-        {pathname.startsWith('/albums/') && albumId && (
-          <button className="btn" onClick={() => navigate('/albums')}><ArrowLeft size={18} /> {messages["backToAlbums"]}</button>
+        {pathname.startsWith('/albums/') && menuAlbumId && (
+          <button className="btn" onClick={() => navigate('/albums')} title={messages["backToAlbums"]}><ArrowLeft size={18} /></button>
         )}
         {isSpacesPage && (
-          <button className="btn" onClick={() => navigate(fromGarbage ? '/garbage' : '/spaces')}>
-            <ArrowLeft size={18} /> {fromGarbage ? messages["backToGarbage"] : messages["backToSpaces"]}
+          <button className="btn" onClick={() => navigate(fromGarbage ? '/garbage' : '/spaces')} title={fromGarbage ? messages["backToGarbage"] : messages["backToSpaces"]}>
+            <ArrowLeft size={18} />
           </button>
         )}
       </div>
 
-      <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-        {selectionMode ? (
+      <div className="header-actions" style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+        {selectionMode && (
           <>
-            <button className="btn" onClick={() => setSelectedIds([])}><X size={18}/> {messages["cancel"]}</button>
-            <span style={{fontWeight: 600}}>{messages["selectedCount"](selectedIds.length)}</span>
-            {pathname === '/garbage' ? (
-              <>
-                <button className="btn" style={{color: '#34c759'}} onClick={() => handleRestore(selectedIds)} disabled={selectedIds.length === 0}><RotateCcw size={18}/> {messages["restore"]}</button>
-                <button className="btn" style={{color: '#ff3b30'}} onClick={() => handlePermanentDelete(selectedIds)} disabled={selectedIds.length === 0}><Trash2 size={18}/> {messages["deletePermanently"]}</button>
-              </>
-            ) : pathname.startsWith('/albums/') && albumId ? (
-              <>
-                {canSetCoverPhoto && (
-                  <button className="btn btn-primary" onClick={() => handleSetCoverPhoto(albumId, selectedIds[0])}>
-                    <ImageIcon size={18}/> {messages["setAsCover"]}
-                  </button>
-                )}
-                <button className="btn" style={{color: '#ff3b30'}} onClick={() => handleRemovePhotosFromAlbum(albumId)} disabled={selectedIds.length === 0}><Trash2 size={18}/> {messages["removeFromAlbum"]}</button>
-              </>
-            ) : isAlbumsMainPage ? (
-              <>
-                <button className="btn" style={{color: '#ff3b30'}} onClick={() => handleDeleteAlbums(selectedIds)} disabled={selectedIds.length === 0}><Trash2 size={18}/> {messages["deleteAlbums"]}</button>
-              </>
-            ) : ( // Default actions for main library or spaces
-              <>
-                {isSpacesPage && allowCopyToMain && (
-                  <button className="btn" style={{backgroundColor: '#28a745', color: 'white'}} onClick={handleMoveToMain} disabled={selectedIds.length === 0}><Home size={18}/> {messages["moveToMain"]}</button>
-                )}
-                {/* Conditional rendering for Add to Album button */}
-                {(pathname === '/' || (isSpacesPage && isAlbumAllowedInCurrentSpace)) && (
-                  <button className="btn btn-primary" onClick={() => setShowAddToAlbumModal(true)} disabled={selectedIds.length === 0}><Plus size={18}/> {messages["addToAlbum"]}</button>
-                )}
-                <button className="btn" style={{color: '#ff3b30'}} onClick={() => handleMoveToGarbage(selectedIds)} disabled={selectedIds.length === 0}><Trash2 size={18}/> {messages["moveToGarbage"]}</button>
-              </>
+            <button className="btn" onClick={() => {setSelectedIds([]); setSelectedAlbumIds([]); setSelectedSpaceIds([])}} title={messages["cancel"]}><X size={18}/></button>
+            <span style={{fontWeight: 600}}>{messages["selectedCount"](selectionCount)}</span>
+            {photoSelection.canBeRestored && <button className="btn" style={{color: '#34c759'}} onClick={() => handleRestore(selectedIds)} title={messages["restore"]}><RotateCcw size={18}/></button>}
+            {menuSelection.canRestoreSpace && <button className="btn" style={{color: '#34c759'}} onClick={() => handleRestoreSpaces(selectedSpaceIds)} title={messages["restore"]}><ArchiveRestore size={18}/></button>}
+            {photoSelection.canBePermanentlyDeleted && <button className="btn" style={{color: '#ff3b30'}} onClick={() => handlePermanentDelete(selectedIds)} title={messages["deletePermanently"]}><Trash2 size={18}/></button>}
+            {menuSelection.canPermanentlyDeleteSpace && <button className="btn" style={{color: '#ff3b30'}} onClick={() => handlePermanentDeleteSpaces(selectedSpaceIds)} title={messages["deletePermanently"]}><FolderX  size={18}/></button>}
+            {photoSelection.canBeSetAsCover && <button className="btn btn-primary" onClick={() => handleSetCoverPhoto(menuAlbumId, selectedIds[0])} title={messages["setAsCover"]}><ImageIcon size={18}/></button>}
+            {photoSelection.canBeRemovedFromAlbum && <button className="btn" style={{color: '#ff3b30'}} onClick={() => handleRemovePhotosFromAlbum(menuAlbumId)} title={messages["removeFromAlbum"]}><MinusCircle size={18}/></button>}
+            {menuSelection.canDeleteAlbum && <button className="btn" style={{color: '#ff3b30'}} onClick={() => handleDeleteAlbums(selectedAlbumIds)} title={messages["deleteAlbums"]}><Trash2 size={18}/></button>}
+            {menuSelection.canDeleteSpace && <button className="btn" style={{color: '#ff3b30'}} onClick={() => handleDeleteSpaces(selectedSpaceIds)} title={messages["deleteSelectedSpaces"]}><FolderX  size={18}/></button>}
+            {photoSelection.canBeMovedToMain && <button className="btn" style={{backgroundColor: '#28a745', color: 'white'}} onClick={handleMoveToMain} title={messages["moveToMain"]}><Home size={18}/></button>}
+            {photoSelection.canBeMovedToAlbum && <button className="btn btn-primary" onClick={() => setShowAddToAlbumModal(true)} title={messages["addToAlbum"]}><Plus size={18}/></button>}
+            {photoSelection.canBeDeleted && <button className="btn" style={{color: '#ff3b30'}} onClick={() => handleMoveToGarbage(selectedIds)} title={messages["moveToGarbage"]}><Trash2 size={18}/></button>}
+
+          </>
+        )}
+
+        {
+          <>
+            {menuSelection.canUpload && (
+                <button className="btn btn-primary" onClick={handleUploadClick} title={messages["upload"]}><Upload
+                    size={18}/></button>
+            )}
+            {menuSelection.canCreateAlbum && (
+                <button className="btn btn-primary" onClick={() => setShowCreateAlbumModal(true)}
+                        title={messages["createNewAlbumTitle"]}>
+                  <Plus size={18}/></button>
+
+            )}
+            {menuSelection.canCreateSpace && (
+                <button className="btn btn-primary" onClick={() => setShowCreateSpaceModal(true)} title={messages["createNewSpaceTitle"]}>
+                  <Plus size={18}/>
+                </button>
+            )}
+            {menuSelection.canAddAAShareLinkToAlbum && (
+                <button className="btn" onClick={() => setShowCreateShareLinkModal(menuAlbumId)} title={messages["createShareLink"]}><Link size={18} /></button>
             )}
           </>
-        ) : (
+        }
+
+        {/* Duplicates navigation buttons, always visible if on duplicates page and not in selection mode */}
+        {!selectionMode && pathname.startsWith('/duplicates') && (
           <>
-            {isDuplicatesPage && (
-              <>
-                <button className="btn" onClick={() => fetchDuplicates(duplicatesPage - 1)} disabled={duplicatesPage === 0}><ChevronLeft size={18}/> {messages["prevGroup"]}</button>
-                <button className="btn btn-primary" onClick={() => fetchDuplicates(duplicatesPage + 1)} disabled={isLastDuplicateGroup}> {messages["nextGroup"]} <ChevronRight size={18}/></button>
-              </>
-            )}
-
-            {/* Upload button logic */}
-            {(pathname === '/' || pathname.startsWith('/albums/') || isSpacesPage) && (
-              <button className="btn btn-primary" onClick={handleUploadClick}><Upload size={18} /> {messages["upload"]}</button>
-            )}
-
-            {/* Create Share Link button for albums */}
-            {pathname.startsWith('/albums/') && albumId && (
-              <button className="btn" onClick={() => setShowCreateShareLinkModal(albumId)}><Link size={18} /> {messages["createShareLink"]}</button>
-            )}
+            <button className="btn" onClick={() => fetchDuplicates(duplicatesPage - 1)} disabled={duplicatesPage === 0} title={messages["prevGroup"]}><ChevronLeft size={18}/></button>
+            <button className="btn btn-primary" onClick={() => fetchDuplicates(duplicatesPage + 1)} disabled={isLastDuplicateGroup} title={messages["nextGroup"]}><ChevronRight size={18}/></button>
           </>
         )}
       </div>
-      <input id="fIn" type="file" multiple onChange={handleUpload} style={{ display: 'none' }} ref={fileInputRef} />
+      <input id="fIn" type="file" multiple accept="image/*,video/*" onChange={handleUpload} style={{ display: 'none' }} ref={fileInputRef} />
     </header>
   );
 }

@@ -2,9 +2,9 @@ import React from 'react';
 import { useParams } from 'react-router-dom';
 import PhotoGrid from './PhotoGrid'; // Assuming PhotoGrid is in the same components directory
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
+import { useEntityById } from '../hooks/useEntityById';
 
 function AlbumDetail({
-  albums,
   photos,
   hasMore,
   setPage,
@@ -15,10 +15,11 @@ function AlbumDetail({
 }) {
   const { messages } = useLocale(); // Use the useLocale hook
   const { albumId } = useParams();
-  const currentAlbum = albums.find(a => a.id === albumId);
+  const { entity: currentAlbum, loading, error } = useEntityById(albumId, '/api/albums');
 
-  if (!currentAlbum && albums.length > 0) return <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>{messages["albumNotFound"]}</div>;
-  if (!currentAlbum) return <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>{messages["loadingAlbum"]}</div>;
+  if (loading) return <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>{messages["loadingAlbum"]}</div>;
+  if (error) return <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>Error: {error.message}</div>;
+  if (!currentAlbum) return <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>{messages["albumNotFound"]}</div>;
 
   return (
     <div className="content-body">

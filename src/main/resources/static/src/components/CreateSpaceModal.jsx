@@ -1,5 +1,6 @@
 import React from 'react';
-import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
+import { useLocale } from '../LocaleContext.jsx';
+import CreateEntityModal from './CreateEntityModal';
 
 function CreateSpaceModal({
   show,
@@ -11,22 +12,22 @@ function CreateSpaceModal({
   spaceCreationError,
   handleCreateSpace
 }) {
-  const { messages } = useLocale(); // Use the useLocale hook
-  if (!show) return null;
+  const { messages } = useLocale();
 
   return (
-    <div className="modal-overlay">
-      <div className="modal-content">
-        <h2>{messages["createNewSpaceTitle"]}</h2>
-        {spaceCreationError && <div className="error-message">{spaceCreationError}</div>}
-        <input type="text" placeholder={messages["spaceNamePlaceholder"]} value={newSpaceName} onChange={(e) => setNewSpaceName(e.target.value)} className="modal-input" />
-        <textarea placeholder={messages["spaceDescriptionPlaceholder"]} value={newSpaceDescription} onChange={(e) => setNewSpaceDescription(e.target.value)} className="modal-textarea" />
-        <div className="modal-actions">
-          <button className="btn" onClick={onClose}>{messages["cancel"]}</button>
-          <button className="btn btn-primary" onClick={handleCreateSpace}>{messages["createButton"]}</button>
-        </div>
-      </div>
-    </div>
+    <CreateEntityModal
+      show={show}
+      onClose={onClose}
+      title={messages["createNewSpaceTitle"]}
+      name={newSpaceName}
+      setName={setNewSpaceName}
+      namePlaceholder={messages["spaceNamePlaceholder"]}
+      description={newSpaceDescription}
+      setDescription={setNewSpaceDescription}
+      descriptionPlaceholder={messages["spaceDescriptionPlaceholder"]}
+      error={spaceCreationError}
+      onSubmit={handleCreateSpace}
+    />
   );
 }
 

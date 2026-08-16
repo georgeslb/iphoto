@@ -45,7 +45,7 @@
     box-sizing: border-box; /* Include padding in width */
 }
 
-.error-message {
+.login-form .error-message {
     color: #e74c3c;
     margin-bottom: 15px;
     font-size: 14px;
@@ -54,7 +54,7 @@
 .login-button {
     width: 100%;
     padding: 12px;
-    background-color: #007bff; /* Primary blue */
+    background-color: var(--primary-color);
     color: white;
     border: none;
     border-radius: 4px;
@@ -64,5 +64,11 @@
 }
 
 .login-button:hover {
-    background-color: #0056b3; /* Darker blue on hover */
+    background-color: #006ee6;
+}
+
+@media (max-width: 480px) {
+    .login-form {
+        padding: 24px;
+    }
 }

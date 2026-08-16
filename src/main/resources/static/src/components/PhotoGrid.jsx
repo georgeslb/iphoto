@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Check } from 'lucide-react';
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 export default function PhotoGrid({
   photos,
   hasMore,
+  type,
   setPage,
   selectedIds,
   setSelectedIds,
@@ -14,8 +15,51 @@ export default function PhotoGrid({
   const { messages } = useLocale(); // Use the useLocale hook
   const [hoveredVideoId, setHoveredVideoId] = useState(null);
   const observerTarget = useRef(null);
+  const lastClickedIndexRef = useRef(null);
+
+  const photoIndexById = useMemo(() => {
+    const map = new Map();
+    photos.forEach((p, i) => map.set(p.id, i));
+    return map;
+  }, [photos]);
+
+  const selectRange = (toIndex) => {
+    const fromIndex = lastClickedIndexRef.current;
+    const start = Math.min(fromIndex, toIndex);
+    const end = Math.max(fromIndex, toIndex);
+    const rangeIds = photos.slice(start, end + 1).map(p => p.id);
+    setSelectedIds(v => Array.from(new Set([...v, ...rangeIds])));
+  };
+
+  const handlePhotoClick = (p, e) => {
+    const index = photoIndexById.get(p.id);
+    if (e.shiftKey && lastClickedIndexRef.current !== null) {
+      selectRange(index);
+      return;
+    }
+    lastClickedIndexRef.current = index;
+    if (selectedIds.length > 0) {
+      // If we are already selecting items, a click on the card should toggle selection
+      setSelectedIds(v => v.includes(p.id) ? v.filter(i => i !== p.id) : [...v, p.id]);
+    } else {
+      // Otherwise open lightbox
+      setSelectedPhoto(p);
+    }
+  };
+
+  const handleOverlayClick = (p, e) => {
+    e.stopPropagation(); // Don't trigger the card's onClick
+    const index = photoIndexById.get(p.id);
+    if (e.shiftKey && lastClickedIndexRef.current !== null) {
+      selectRange(index);
+      return;
+    }
+    lastClickedIndexRef.current = index;
+    setSelectedIds(v => v.includes(p.id) ? v.filter(i => i !== p.id) : [...v, p.id]);
+  };
 
   const groups = {};
+
   photos.forEach(p => {
     const key = p.groupDate || messages["otherGroup"];
     if (!groups[key]) groups[key] = [];
@@ -54,7 +98,6 @@ export default function PhotoGrid({
     if (currentTarget) {
       observer.observe(currentTarget);
     }
-
     return () => {
       if (currentTarget) {
         observer.unobserve(currentTarget);
@@ -82,32 +125,21 @@ export default function PhotoGrid({
               </div>
             </div>
             <div className="photo-grid">
-              {groupPhotos.map(p => {
+              {groupPhotos.map((p, index) => {
                 const aspectRatio = (p.width && p.height) ? (p.width / p.height) : 1;
                 const isSelected = selectedIds.includes(p.id);
                 return (
                   <div
-                    key={p.id}
+                    key={`${p.id}-${index}`}
                     className={`photo-card ${isSelected ? 'selected' : ''}`}
                     style={{ flexBasis: `${aspectRatio * 220}px` }}
-                    onClick={() => {
-                      if (selectedIds.length > 0) {
-                         // If we are already selecting items, a click on the card should toggle selection
-                         setSelectedIds(v => v.includes(p.id) ? v.filter(i => i !== p.id) : [...v, p.id]);
-                      } else {
-                         // Otherwise open lightbox
-                         setSelectedPhoto(p);
-                      }
-                    }}
+                    onClick={(e) => handlePhotoClick(p, e)}
                     onMouseEnter={() => p.contentType?.startsWith('video') && setHoveredVideoId(p.id)}
                     onMouseLeave={() => setHoveredVideoId(null)}
                   >
                     <div
                       className="select-overlay"
-                      onClick={(e) => {
-                        e.stopPropagation(); // Don't trigger the card's onClick
-                        setSelectedIds(v => v.includes(p.id) ? v.filter(i => i !== p.id) : [...v, p.id]);
-                      }}
+                      onClick={(e) => handleOverlayClick(p, e)}
                     >
                       <div className={`check-circle ${isSelected ? 'checked' : ''}`}>
                         {isSelected && <Check size={14} />}

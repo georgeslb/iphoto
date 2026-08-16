@@ -48,8 +48,8 @@ export default function ShareLoginPage() {
 
       // Authentication successful, backend should have set session
       const data = await res.json(); // Expecting ShareResponse
-      if (data.albumId) {
-        navigate(`/albums/${data.albumId}`); // Redirect to album
+      if (data.selectedAlbumIds) {
+        navigate(`/albums/${data.selectedAlbumIds}`); // Redirect to album
       } else {
         setAuthError(messages["albumIdNotReceived"]);
       }

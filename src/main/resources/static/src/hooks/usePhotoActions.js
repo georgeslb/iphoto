@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
-export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, handleCloseLightbox, selectedIds, setSelectedIds) { // Added selectedIds, setSelectedIds as props
+export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, selectedIds, setSelectedIds) { // Added selectedIds, setSelectedIds as props
   const { messages } = useLocale(); // Use the useLocale hook
   // const [selectedIds, setSelectedIds] = useState([]); // Removed internal state
 
@@ -12,16 +12,20 @@ export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, hand
     if (res.ok) {
       setSelectedIds([]);
       await refreshAndMaintainScroll();
+    } else {
+      alert(messages["failedToMoveToGarbage"](res.status));
     }
-  }, [refreshAndMaintainScroll, setSelectedIds, messages]); // Added messages to dependencies
+  }, [refreshAndMaintainScroll, setSelectedIds, messages]);
 
   const handleRestore = useCallback(async (ids) => {
     const res = await fetch('/api/photos/garbage/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ids) });
     if (res.ok) {
       setSelectedIds([]);
       await refreshAndMaintainScroll();
+    } else {
+      alert(messages["failedToRestore"](res.status));
     }
-  }, [refreshAndMaintainScroll, setSelectedIds]); // Added setSelectedIds to dependencies
+  }, [refreshAndMaintainScroll, setSelectedIds, messages]);
 
   const handlePermanentDelete = useCallback(async (ids) => {
     if (!window.confirm(messages["permanentDeleteConfirmation"](ids.length))) return;
@@ -29,8 +33,10 @@ export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, hand
     if (res.ok) {
       setSelectedIds([]);
       await refreshAndMaintainScroll();
+    } else {
+      alert(messages["failedToPermanentlyDelete"](res.status));
     }
-  }, [refreshAndMaintainScroll, setSelectedIds, messages]); // Added messages to dependencies
+  }, [refreshAndMaintainScroll, setSelectedIds, messages]);
 
   const handleUpdateDate = useCallback(async (photoId, newDateValue) => {
     try {
@@ -53,27 +59,27 @@ export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, hand
 
   const handleEditPhoto = useCallback(async (photoId, editData) => {
     try {
-      console.log(editData);
       const res = await fetch(`/api/photos/${photoId}/edit`, {
         method: 'POST',
         body: editData,
       });
       if (res.ok) {
         const updatedPhoto = await res.json();
-        if (!editData.saveAsNew) {
-          setSelectedPhoto(updatedPhoto);
-        } else {
-          alert(messages["newPhotoProcessing"]);
-          handleCloseLightbox();
-        }
+        // Both "Save" (same id, overwritten file) and "Save New" (freshly
+        // created asset) return the resulting photo's id in the response body;
+        // refresh the grid, then land the lightbox on that asset by id.
+        // Use handlePhotoClick (not the raw setter) so the URL (/asset/:id or
+        // /albums/:albumId/asset/:id) is updated too — otherwise "Save New" would
+        // leave the address bar pointing at the old photo's id.
         await refreshAndMaintainScroll();
+        handlePhotoClick(updatedPhoto);
       } else {
         throw new Error(messages["failedToEditPhoto"](res.status));
       }
     } catch (err) {
       alert(messages["errorEditingPhoto"](err.message));
     }
-  }, [refreshAndMaintainScroll, setSelectedPhoto, handleCloseLightbox, messages]);
+  }, [refreshAndMaintainScroll, handlePhotoClick, messages]);
 
   return {
     // selectedIds, // No longer returned as internal state

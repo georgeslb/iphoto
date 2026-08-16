@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Image as ImageIcon, Check, X } from 'lucide-react';
+import { useLocale } from '../LocaleContext.jsx';
+import AlbumSelectionList from './AlbumSelectionList';
 
 function RemoveFromAlbumModal({
   show,
@@ -9,30 +10,32 @@ function RemoveFromAlbumModal({
   handleRemovePhotosFromAlbum,
   fetchAlbumsForPhotos,
 }) {
+  const { messages } = useLocale();
   const [albumsToRemoveFrom, setAlbumsToRemoveFrom] = useState([]);
+  const [validationError, setValidationError] = useState(null);
 
   useEffect(() => {
     if (show && photoId) {
       fetchAlbumsForPhotos([photoId]);
       setAlbumsToRemoveFrom([]);
+      setValidationError(null);
     } else if (!show) {
       setAlbumsToRemoveFrom([]);
+      setValidationError(null);
     }
   }, [show, photoId, fetchAlbumsForPhotos]);
 
   if (!show) return null;
 
   const handleToggleAlbumSelection = (albumId) => {
-    setAlbumsToRemoveFrom(prev => {
-      return prev.includes(albumId)
-        ? prev.filter(id => id !== albumId)
-        : prev.concat(albumId);
-    });
+    setAlbumsToRemoveFrom(prev =>
+      prev.includes(albumId) ? prev.filter(id => id !== albumId) : prev.concat(albumId)
+    );
   };
 
   const handleConfirmRemove = async () => {
     if (albumsToRemoveFrom.length === 0) {
-      alert("Please select at least one album to remove the photo from.");
+      setValidationError(messages["selectAtLeastOneAlbumToRemove"]);
       return;
     }
     await Promise.all(albumsToRemoveFrom.map(albumId =>
@@ -44,37 +47,24 @@ function RemoveFromAlbumModal({
   return (
     <div className="modal-overlay">
       <div className="modal-content">
-        <h2>Remove from Album</h2>
-        <p>Select albums to remove this photo from:</p>
-        <div className="album-list-selection">
-          {albumsPhotoBelongsTo.length > 0 ? albumsPhotoBelongsTo.map(album => {
-            const isSelectedForRemoval = albumsToRemoveFrom.includes(album.id);
-            return (
-              <div
-                key={album.id}
-                className={`album-select-item ${isSelectedForRemoval ? 'remove-selected' : ''}`}
-                onClick={() => handleToggleAlbumSelection(album.id)}
-              >
-                <div className="album-cover-small">
-                  {album.coverPhoto ? <img src={album.coverPhoto.url} alt={album.name} /> : <div className="album-placeholder-small"><ImageIcon size={24} color="#888" /></div>}
-                </div>
-                <div className="album-select-info">
-                  <h3>{album.name}</h3>
-                  <p>{album.photoCount} photos</p>
-                </div>
-                {isSelectedForRemoval && <div className="check-circle checked" style={{ marginLeft: 'auto', width: '22px', height: '22px', backgroundColor: '#ff3b30', borderColor: '#ff3b30' }}><X size={14} /></div>}
-              </div>
-            );
-          }) : <p>This photo does not belong to any albums.</p>}
-        </div>
+        <h2>{messages["removeFromAlbumModalTitle"]}</h2>
+        <p>{messages["removeFromAlbumModalDescription"]}</p>
+        {validationError && <div className="error-message">{validationError}</div>}
+        <AlbumSelectionList
+          albums={albumsPhotoBelongsTo}
+          selectedIds={albumsToRemoveFrom}
+          onToggle={handleToggleAlbumSelection}
+          variant="remove"
+          emptyMessage={messages["photoNotInAnyAlbums"]}
+        />
         <div className="modal-actions">
-          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn" onClick={onClose}>{messages["cancel"]}</button>
           <button
             className="btn btn-primary"
             onClick={handleConfirmRemove}
             disabled={albumsToRemoveFrom.length === 0}
           >
-            Remove from Selected Albums
+            {messages["removeFromSelectedAlbumsButton"]}
           </button>
         </div>
       </div>

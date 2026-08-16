@@ -6,7 +6,11 @@ function HeaderWrapper({
   selectedIds,
   setSelectedIds,
   selectedSpaceIds,
+  selectedAlbumIds,
   setSelectedSpaceIds,
+  setSelectedAlbumIds,
+  menuSpaceId,
+  menuAlbumId,
   handleRestore,
   handlePermanentDelete,
   handleRestoreSpaces,
@@ -16,61 +20,57 @@ function HeaderWrapper({
   setShowAddToAlbumModal,
   setShowCreateShareLinkModal,
   handleUpload,
-  albumId,
-  spaceId,
   handleSetCoverPhoto,
   handleDeleteAlbums,
+  handleDeleteSpaces,
+  setShowCreateAlbumModal,
+  setShowCreateSpaceModal,
   navigate,
   duplicatesPage,
   fetchDuplicates,
   isLastDuplicateGroup,
-  photos,
-  currentDuplicateGroup,
   backgroundLocation,
   fileInputRef,
-  allowCopyToMain, // Existing prop
+  photoSelection,
   refreshAndMaintainScroll, // Existing prop
-  isAlbumAllowedInCurrentSpace, // NEW PROP from App.jsx
   fromGarbage,
 }) {
   const location = useLocation();
   const effectivePath = backgroundLocation?.pathname || location.pathname;
-  const singleSelectedPhoto = (selectedIds.length === 1)
-      ? photos.find(p => p.id === selectedIds[0]) || currentDuplicateGroup?.photos?.find(p => p.id === selectedIds[0])
-      : null;
-  const canSetCoverPhoto = singleSelectedPhoto && !singleSelectedPhoto.contentType.startsWith('video');
 
   return (
       <Header
           selectedIds={selectedIds}
           setSelectedIds={setSelectedIds}
           selectedSpaceIds={selectedSpaceIds}
+          selectedAlbumIds={selectedAlbumIds}
           setSelectedSpaceIds={setSelectedSpaceIds}
+          setSelectedAlbumIds={setSelectedAlbumIds}
+          menuSpaceId={menuSpaceId}
+          menuAlbumId={menuAlbumId}
           pathname={effectivePath}
           handleRestore={handleRestore}
           handlePermanentDelete={handlePermanentDelete}
           handleRestoreSpaces={handleRestoreSpaces}
           handlePermanentDeleteSpaces={handlePermanentDeleteSpaces}
-          handleRemovePhotosFromAlbum={() => handleRemovePhotosFromAlbum(albumId)}
+          handleRemovePhotosFromAlbum={handleRemovePhotosFromAlbum}
           handleMoveToGarbage={handleMoveToGarbage}
           setShowAddToAlbumModal={setShowAddToAlbumModal}
-          setShowCreateShareLinkModal={(albumIdFromHeader) => {
-            setShowCreateShareLinkModal(albumIdFromHeader);
-          }}
+          setShowCreateShareLinkModal={setShowCreateShareLinkModal}
           handleUpload={handleUpload}
-          albumId={albumId}
-          spaceId={spaceId}
-          canSetCoverPhoto={canSetCoverPhoto}
+
           handleSetCoverPhoto={handleSetCoverPhoto}
           handleDeleteAlbums={handleDeleteAlbums}
+          handleDeleteSpaces={handleDeleteSpaces}
+          setShowCreateAlbumModal={setShowCreateAlbumModal}
+          setShowCreateSpaceModal={setShowCreateSpaceModal}
           navigate={navigate}
           duplicatesPage={duplicatesPage}
           fetchDuplicates={fetchDuplicates}
           isLastDuplicateGroup={isLastDuplicateGroup}
           fileInputRef={fileInputRef}
-          allowCopyToMain={allowCopyToMain} // Pass existing prop
+          photoSelection={photoSelection}
           refreshAndMaintainScroll={refreshAndMaintainScroll} // Pass existing prop
-          isAlbumAllowedInCurrentSpace={isAlbumAllowedInCurrentSpace} // Pass new prop
           fromGarbage={fromGarbage}
       />
   );

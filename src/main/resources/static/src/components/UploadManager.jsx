@@ -17,18 +17,18 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children, file
           throw new Error(messages["serverRespondedWithError"](res.status, res.statusText));
         }
         const task = await res.json();
+        const isTerminal = ['COMPLETED', 'FAILED', 'IGNORED', 'TRASHED'].includes(task.status);
 
-        if (['COMPLETED', 'FAILED', 'IGNORED', 'TRASHED'].includes(task.status)) {
-          clearInterval(interval);
-          let finalStatus = task.status;
-          if (task.status === 'IGNORED') finalStatus = messages["alreadyImported"];
-          if (task.status === 'TRASHED') finalStatus = messages["alreadyImportedAndTrashed"];
-
+        if (isTerminal || task.status === 'PENDING') {
           setUploadQueue(prev => prev.map(item =>
-              item.uploadId === uploadId ? { ...item, status: finalStatus, error: task.errorMessage, progress: 100 } : item
+              item.uploadId === uploadId ? { ...item, status: task.status, error: task.errorMessage, progress: 100 } : item
           ));
-          if (task.status === 'COMPLETED') {
-            refreshAndMaintainScroll();
+
+          if (isTerminal) {
+            clearInterval(interval);
+            if (task.status === 'COMPLETED') {
+              refreshAndMaintainScroll();
+            }
           }
         }
       } catch (err) {
@@ -50,13 +50,43 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children, file
       return;
     }
 
+    // Only photos and videos are supported; anything else is rejected up front
+    // so it doesn't reach the backend as an unusable contentType.
+    const acceptedFiles = filesToUpload.filter(file => file.type.startsWith('image/') || file.type.startsWith('video/'));
+    const rejectedFiles = filesToUpload.filter(file => !(file.type.startsWith('image/') || file.type.startsWith('video/')));
+
+    if (rejectedFiles.length) {
+      const rejectedItems = rejectedFiles.map(file => ({
+        id: Math.random().toString(36).substr(2, 9),
+        uploadId: L.Util.stamp(file),
+        name: file.name,
+        status: 'FAILED',
+        progress: 0,
+        fileSize: file.size,
+        contentType: file.type,
+        totalChunks: 0,
+        uploadedChunks: 0,
+        taskId: null,
+        error: messages["unsupportedFileType"](file.name),
+        file: null,
+      }));
+      setUploadQueue(prev => [...rejectedItems, ...prev]);
+    }
+
+    if (!acceptedFiles.length) {
+      if (fileInputRef.current) {
+        fileInputRef.current.value = null;
+      }
+      return;
+    }
+
     // Get albumId and spaceId from the dataset of the file input element
     const currentAlbumId = fileInputRef.current?.dataset.albumId || '';
     const currentSpaceId = fileInputRef.current?.dataset.spaceId || '';
     // Removed console.logs
 
 
-    const newUploadItems = filesToUpload.map(file => ({
+    const newUploadItems = acceptedFiles.map(file => ({
       id: Math.random().toString(36).substr(2, 9),
       uploadId: L.Util.stamp(file),
       name: file.name,
@@ -139,6 +169,16 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children, file
     handleUploadFiles(Array.from(e.target.files || []));
   }, [handleUploadFiles]);
 
+  const statusLabels = {
+    UPLOADING: messages["uploading"],
+    PROCESSING: messages["processing"],
+    COMPLETED: messages["completed"],
+    FAILED: messages["failed"],
+    IGNORED: messages["alreadyImported"],
+    TRASHED: messages["alreadyImportedAndTrashed"],
+    PENDING: messages["pending"],
+  };
+
   // Function to retry a failed upload
   const handleRetry = useCallback((uploadId) => {
     setUploadQueue(prev => {
@@ -166,12 +206,12 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children, file
                   <div key={item.id} className="upload-item">
                     <div className="upload-item-info">
                       <span className="upload-item-name" title={item.name}>{item.name}</span>
-                      <span className={`status-text ${item.status?.replace(/\s/g, '')}`}>{item.status}</span>
+                      <span className={`status-text ${item.status}`}>{statusLabels[item.status] || item.status}</span>
                     </div>
                     {item.error && (
                       <div className="upload-item-error">
                         {item.error}
-                        {item.status === 'FAILED' && (
+                        {item.status === 'FAILED' && item.file && (
                           <button onClick={() => handleRetry(item.uploadId)} className="retry-button">{messages["retry"]}</button>
                         )}
                       </div>

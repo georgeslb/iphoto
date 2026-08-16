@@ -29,9 +29,9 @@ export default function ShareLinkPage() {
         return;
       }
 
-      if (data.protected === false && data.albumId) {
+      if (data.protected === false && data.selectedAlbumIds) {
         // Not protected, redirect directly to album
-        navigate(`/albums/${data.albumId}`);
+        navigate(`/albums/${data.selectedAlbumIds}`);
       } else if (data.protected === true && data.shareId) {
         // Protected, redirect to login page for this share link
         navigate(`/share/${name}/login`, { state: { shareId: data.shareId } });
