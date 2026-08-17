@@ -11,6 +11,7 @@ import org.iphoto.model.request.AlbumCreateRequest;
 import org.iphoto.model.request.AlbumUpdateRequest;
 import org.iphoto.repository.AlbumRepository;
 import org.iphoto.repository.PhotoRepository;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -128,11 +129,10 @@ public class AlbumService {
     }
 
     @Transactional(readOnly = true)
-    public List<Photo> getAlbumPhotos(UUID albumId, Pageable pageable) {
+    public Page<Photo> getAlbumPhotos(UUID albumId, Pageable pageable) {
         AlbumEntity album = getAlbum(albumId);
-        return photoRepository.findByIsGarbageFalseAndAlbums(album, pageable).stream()
-                .map(photoMapper::photoEntityToPhoto)
-                .collect(Collectors.toList());
+        return photoRepository.findByIsGarbageFalseAndAlbums(album, pageable)
+                .map(photoMapper::photoEntityToPhoto);
     }
 
     public AlbumDTO convertToDto(AlbumEntity album) { // Added UserEntity parameter

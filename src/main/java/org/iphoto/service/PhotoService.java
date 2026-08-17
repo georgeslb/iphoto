@@ -2,6 +2,7 @@ package org.iphoto.service;
 
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.collections4.CollectionUtils;
 import org.iphoto.entities.*;
 import org.iphoto.exception.NoMatchUserSpaceException;
 import org.iphoto.exception.PhotoDeletionException;
@@ -210,7 +211,7 @@ public class PhotoService {
     }
 
 
-    public PhotoSelectionDTO getSelection(PhotoSelectionRequest photoSelectionRequest) {
+    public PhotoSelectionDTO getSelection(PhotoSelectionRequest photoSelectionRequest, UserEntity user) {
         boolean canBeDeleted = false, canBePermanentlyDeleted = false, canBeMovedToMain = false,
                 canBeMovedToAlbum = false, canBeRemovedFromAlbum = false, canBeModified = false,
                 canBeSetAsCover = false, canBeRestored = false;
@@ -219,47 +220,56 @@ public class PhotoService {
             return new PhotoSelectionDTO(menuService.getSelection(photoSelectionRequest.menuSelectionRequest()), false, false, false, false, false, false, false, false);
         } else {
             Set<SpaceEntity> spaces = new HashSet<>();
-            Set<PhotoEntity> photosGarbage = new HashSet<>();
-            Set<PhotoEntity> photosNotGarbage = new HashSet<>();
-            for (PhotoEntity photoEntity : selectedPhotos) {
-                spaces.add(photoEntity.getSpace());
-                if (photoEntity.getIsGarbage()) {
-                    photosGarbage.add(photoEntity);
-                } else {
-                    photosNotGarbage.add(photoEntity);
-                }
+            boolean isGarbageMenu = photoSelectionRequest.menuSelectionRequest().menu().contains("garbage");
+            if (CollectionUtils.isNotEmpty(photoSelectionRequest.menuSelectionRequest().spaceIds())) {
+                spaces = photoSelectionRequest.menuSelectionRequest().spaceIds().stream()
+                        .map(spaceService::getSpaceById)
+                        .filter(Optional::isPresent)
+                        .map(Optional::get)
+                        .filter(spaceEntity -> spaceEntity.getUser().getId().equals(user.getId())).collect(Collectors.toSet());
             }
-            if (!photosNotGarbage.isEmpty() && photosGarbage.isEmpty() &&
-                    spaces.size() == 1) {
+
+            if (!isGarbageMenu) {
                 canBeDeleted = true;
             }
 
-            if (!photosNotGarbage.isEmpty() && photosGarbage.isEmpty() &&
+            boolean isAlbumMenu = photoSelectionRequest.menuSelectionRequest().menu().contains("album");
+            if (!isGarbageMenu &&
                     spaces.size() == 1
                     && spaces.stream().findAny().get().getType() == SpaceType.MAIN) {
                 canBeMovedToAlbum = true;
-                canBeRemovedFromAlbum = true;
+                if (isAlbumMenu & isAlbumSelected(photoSelectionRequest)) {
+                    canBeRemovedFromAlbum = true;
+                }
             }
-            if (photoSelectionRequest.menuSelectionRequest().lightbox()) {
+            if (photoSelectionRequest.menuSelectionRequest().menu().equals("lightbox")) {
                 canBeModified = true;
+                canBeMovedToAlbum = true;
+                canBeRemovedFromAlbum = true;
+                if (CollectionUtils.isNotEmpty(selectedPhotos) && selectedPhotos.size() == 1 && selectedPhotos.stream().anyMatch(photoEntity -> photoEntity.getSpace().getType() != SpaceType.MAIN)) {
+                    canBeMovedToMain = true;
+                }
             }
             if (spaces.size() == 1
                     && spaces.stream().findAny().get().getType() != SpaceType.MAIN
-                    && !photosNotGarbage.isEmpty() && photosGarbage.isEmpty()) {
+                    && !isGarbageMenu) {
                 canBeMovedToMain = true;
             }
-            if (!photosGarbage.isEmpty() && photosNotGarbage.isEmpty()
-                    && photoSelectionRequest.menuSelectionRequest().menu().contains("garbage")) {
+            if (isGarbageMenu && CollectionUtils.isNotEmpty(photoSelectionRequest.photosId())) {
                 canBePermanentlyDeleted = true;
                 canBeRestored = true;
             }
-            if (photoSelectionRequest.menuSelectionRequest().menu().contains("album")
-                    && photoSelectionRequest.menuSelectionRequest().albumIds() != null
-                    && photoSelectionRequest.menuSelectionRequest().albumIds().size() == 1
-                    && albumRepository.existsById(photoSelectionRequest.menuSelectionRequest().albumIds().get(0))) {
+            if (isAlbumMenu
+                    && isAlbumSelected(photoSelectionRequest)) {
                 canBeSetAsCover = true;
             }
             return new PhotoSelectionDTO(menuService.getSelection(photoSelectionRequest.menuSelectionRequest()), canBeDeleted, canBePermanentlyDeleted, canBeMovedToMain, canBeMovedToAlbum, canBeRemovedFromAlbum, canBeModified, canBeSetAsCover, canBeRestored);
         }
+    }
+
+    private boolean isAlbumSelected(PhotoSelectionRequest photoSelectionRequest) {
+        return photoSelectionRequest.menuSelectionRequest().albumIds() != null
+                && photoSelectionRequest.menuSelectionRequest().albumIds().size() == 1
+                && albumRepository.existsById(photoSelectionRequest.menuSelectionRequest().albumIds().get(0));
     }
 }

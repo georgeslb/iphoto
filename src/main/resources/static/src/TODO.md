@@ -47,14 +47,14 @@ new work is identified or completed, so nothing gets lost between sessions.
       inlined its default shape directly into `photoSelection`'s initial state.
 - [x] Removed a leftover `console.log(menuAlbumId)` debug statement in `Header.jsx`.
 - [x] **Bug fix** in `HeaderWrapper.jsx`: `handleRemovePhotosFromAlbum` was wrapped as
-      `() => handleRemovePhotosFromAlbum(albumId)`, referencing an `albumId` that was never
+      `() => handleRemovePhotosFromAlbum(albumId)`, referencing an `albumIds` that was never
       destructured in scope (only `menuAlbumId` was) — this threw a `ReferenceError` any time a
       user clicked "Remove from Album" in the Header (the bulk-action button, not the Lightbox's
       `RemoveFromAlbumModal`, which is a separate working code path). Fixed by passing the handler
       straight through, matching how `Header.jsx` already calls it
       (`onClick={() => handleRemovePhotosFromAlbum(menuAlbumId)}`) and how every other handler in
       `HeaderWrapper.jsx` is wired. Also removed dead props `photos`, `currentDuplicateGroup`,
-      `spaceId`, `albumId` that `App.jsx` was passing into `HeaderWrapper` but that were never
+      `spaceIds`, `albumIds` that `App.jsx` was passing into `HeaderWrapper` but that were never
       used/destructured there, and simplified a pointless identity-wrapper around
       `setShowCreateShareLinkModal`.
 - [x] `App.jsx` shrunk from 653 → 499 lines (~24%), pure extraction/dedup, no behavior change:
@@ -459,6 +459,184 @@ new work is identified or completed, so nothing gets lost between sessions.
         regression), `hooks/useSpaceActions.test.js` (5 tests), and
         `hooks/useShareLinkManagement.test.js` (8 tests) — 27 new tests. Total suite: 59
         tests across 10 files, all passing; lint unchanged at 10 pre-existing problems.
+- [x] **Bug fix, `components/UploadManager.jsx`**: when client-side image/video type
+      filtering was added (see the "contentType" migration above), rejected files were
+      queued with `file: null`. The Retry button only renders when
+      `item.status === 'FAILED' && item.file`, so a client-rejected upload silently lost
+      the Retry option that every other failed upload (network/server errors) still has —
+      a real regression from before that filtering existed, when an unsupported file was
+      rejected server-side instead and always kept its `file`/retry. Fixed by keeping the
+      real `File` object (`file: file` instead of `file: null`) on rejected-item queue
+      entries; retrying a genuinely unsupported file just re-runs the same client-side
+      check and fails the same way again, which is fine — no different from retrying any
+      other failure that's expected to fail again. Added `components/UploadManager.test.jsx`
+      (2 tests): one regression test asserting Retry renders after a type rejection
+      (verified it fails against the pre-fix code), and one covering the existing
+      genuine-server-failure retry path end-to-end (click Retry → fetch called again).
+      Total suite: 61 tests across 11 files.
+- [x] **Feature**: after an upload finishes, a "Show" link appears on that item in the
+      upload queue (`components/UploadManager.jsx`). Clicking it opens a lightweight
+      preview popup of the new asset — `components/UploadPreviewModal.jsx`, "same as
+      Lightbox but without the sidecar": reuses the `.lightbox-overlay`/
+      `.lightbox-container`/`.lightbox-content` CSS classes so it looks consistent, but
+      has no `.metadata-sidebar`, no prev/next nav, no edit/delete actions — just the
+      full image/video plus a close button (click outside, `X`, or Escape). Deliberately
+      **not** a route/navigation change — the user stays on exactly the page they were
+      on; the popup is just an overlay.
+      - Backend: `TaskDTO` (`model/TaskDTO.java`) only exposed `id`/`status`; added
+        `photoId`. `TaskEntity.photoId` is generated up front at task creation
+        (`UploadController.java`, `UUID.randomUUID()`) and reused as the final
+        `PhotoEntity`'s id in `PhotoUploadService.processNewAsset`, so it's already
+        correct and available even mid-poll, not just once `COMPLETED`. Updated
+        `TaskService.getTask`'s mapping to include it (only call site).
+      - Frontend: `pollTaskStatus` now stores `task.photoId` onto the matching queue item.
+        `UploadPreviewModal` takes just a `photoId` + `onClose`, fetches
+        `GET /api/photos/{photoId}` itself (same fallback-fetch pattern already used in
+        `useAppNavigationAndSelection.js` for hard-refreshed asset URLs) to get
+        `contentType`/`fileHash`/`title`, then renders `<img>`/`<video>` against
+        `/original` or `/stream` with the usual `?v=fileHash` cache-busting.
+      - First iteration of this feature scrolled the grid to the card and highlighted it
+        in place instead of popping up a preview (`data-photo-id` on `PhotoGrid.jsx`'s
+        card, `.just-uploaded-highlight` CSS pulse) — superseded by this popup approach
+        per explicit user request; the scroll/highlight code and its
+        `data-photo-id` attribute were removed again.
+      - `components/UploadManager.test.jsx` covers: "Show" button appears once
+        `COMPLETED` with a `photoId`; clicking it renders the popup's `<img>` with the
+        correct cache-busted `src` and no `.metadata-sidebar` in the DOM; Escape closes
+        it.
+      - **Explicitly out of scope** (per user decision): no equivalent for Space uploads.
+        Note for later: this would *not* actually need a new `/spaces/:spaceId/asset/:photoId`
+        route (the app's `backgroundLocation` trick means the visible page is whatever
+        `backgroundLocation.pathname` resolves to, regardless of the real URL) — the real gap
+        is that `useAppNavigationAndSelection.js`'s `photoIdMatch` regex and `handlePhotoClick`'s
+        URL-building only branch on `/asset/` and `/albums/.../asset/`, never `/spaces/.../asset/`,
+        so opening a photo from a Space today always falls through to plain `/asset/:photoId`
+        (Library context) — same gap already flagged elsewhere in this file. Doesn't matter for
+        this popup (it never navigates/routes at all), but relevant if this gets picked up later.
+      - **Follow-up**: the user independently reshaped the chunk-upload completion response
+        on the backend (`UploadController.java`, `model/UploadChunkResponse.java`) from a flat
+        `{status, taskId}` map to `{status, chunkIndex, task}` where `task` is a full `TaskDTO`
+        (`id`/`status`/`photoId`) — consistent with what `GET /api/tasks/{id}` already returns.
+        Updated `UploadManager.jsx` (frontend only, per explicit instruction not to touch the
+        already-changed backend) to read `data.task.id`/`data.task.photoId` instead of the old
+        `data.taskId`, and to seed `photoId` on the item immediately from that first response
+        rather than waiting for the first poll tick (previously up to 3s later for no reason,
+        since the backend generates `photoId` at task-creation time — see above). Updated the
+        mocked chunk-upload response shape in `UploadManager.test.jsx` to match.
+      - **UX refinement, per explicit user feedback**: three changes to the above.
+        1. The preview link's eligibility rule is now explicit: available for every queue-item
+           status **except `PENDING` and `FAILED`** (`canPreview = item.photoId && status !==
+           'PENDING' && status !== 'FAILED'` in `UploadManager.jsx`), not just `COMPLETED`.
+           Note found while live-testing this against the real backend (not just mocks): the
+           item's status briefly goes `UPLOADING` → `PROCESSING` (frontend-optimistic, set the
+           instant the last chunk lands) → **`PENDING`** (the *real* backend task status once
+           polling starts, if the worker hasn't picked it up yet) → `COMPLETED`. So there's a
+           genuine window where the link is clickable (`PROCESSING`) before the backend has
+           actually created the `Photo` row yet, and `GET /api/photos/{id}` legitimately 404s if
+           clicked right then — confirmed live. This is expected given "except PENDING and
+           FAILED" was the explicit spec (PROCESSING is intentionally included); the popup's
+           existing "Loading..." fallback (never turns into an error state) is the only concession
+           to that race today — not hardened further since it wasn't asked for.
+        2. No more separate "Show" button — the file name itself (`upload-item-name`) is now the
+           click target when `canPreview` is true, rendered as a real `<button>` (for
+           accessibility/keyboard support) with a `.upload-item-name-link` modifier class
+           (button-chrome reset + `var(--primary-color)`, underline on hover) instead of a plain
+           `<span>`. Removed the now-unused `viewUploadedAsset` i18n key (en/fr) and the old
+           `.view-asset-link` CSS rule.
+        3. `UploadPreviewModal.jsx` no longer reuses the full-screen `.lightbox-overlay` styling.
+           New `.upload-preview-overlay` is a `position: fixed; inset: 0` **transparent**
+           click-catcher (for click-outside-to-close only — no dark backdrop), and
+           `.upload-preview-popup` is a small centered card (`max-width/height: min(90vw/vh,
+           480px)`, dark card background, rounded corners, shadow) so the page behind — where the
+           user is actively uploading — stays fully visible around it. Close button repositioned
+           to sit just inside the card's corner (`top/right: 8px`) instead of the old far-corner
+           lightbox positioning.
+        - Updated `UploadManager.test.jsx` throughout: clicks the file-name button instead of a
+          "Show" button; added a `describe('UploadManager preview link eligibility')` block
+          covering the FAILED-item case (no link) and a PENDING→COMPLETED transition (no link
+          while PENDING, appears once past it).
+        - **Test-flakiness gotcha hit and fixed**: the two popup-behavior tests used to finish
+          (via `findByRole`) as soon as `photoId` arrived — before their own `pollTaskStatus`
+          `setInterval` ever ticked once (3s), since eligibility no longer waits for a poll at
+          all. That left a live `setInterval` still pending when the test function returned, so
+          Vitest moved on to the *next* test while it was still ticking in real time — and when it
+          eventually fired, it called that *next* test's `global.fetch` mock (fetch is looked up
+          on `globalThis` at call time, not closure-captured), corrupting a counter-based mock in
+          the PENDING/COMPLETED eligibility test with an extra, unexpected call. Fixed by having
+          both popup tests explicitly `await screen.findByText('COMPLETED', ...)` at the end so
+          the interval actually clears itself (`isTerminal` → `clearInterval`) before the test
+          exits. General lesson: any test whose component starts a `setInterval`/`setTimeout` that
+          only self-clears on a *later* state needs to wait for that terminal state before
+          finishing, even if the assertions it cares about resolve earlier — otherwise the timer
+          outlives the test and can corrupt whatever runs next.
+        - Verified live against the real backend (not just mocks) via a scratch Playwright
+          script: uploaded a real JPEG, watched the file name link appear/disappear correctly as
+          status moved `PROCESSING` → `PENDING` → `COMPLETED`, confirmed the popup has a
+          transparent overlay (`getComputedStyle(...).backgroundColor` = `rgba(0,0,0,0)`) and a
+          small (~144×144 for that test image) centered card, with the Library grid still fully
+          visible behind it.
+- [x] **Simplification + bug fix**: `POST /api/photos/selected` request contract
+      (`hooks/useMenuSelection.js`, backend `MenuSelectionRequest`/`PhotoService.getSelection` —
+      backend side done by the user directly). Two changes, requested together:
+      1. Dropped the separate `lightbox: boolean` field. When the Lightbox is open, `menu` is now
+         simply `"lightbox"` (overriding whatever the underlying page's menu would otherwise be —
+         `"library"`/`"album"`/`"space"`/`"garbage"`/etc.), instead of sending both the page menu
+         *and* a `lightbox` flag alongside it.
+      2. **Real, pre-existing bug found and fixed while touching this same request**: the frontend
+         sent JSON keys `spaceId`/`albumId` (singular), but the backend record's fields are
+         `spaceIds`/`albumIds` (plural) — Jackson doesn't fail on an unrecognized/missing property
+         by default, so those always deserialized to `null` server-side. Confirmed live against
+         the real backend with a real album id: `canBeSetAsCover` was `false` under the old
+         `albumId` key and `true` under `albumIds` for the identical request otherwise. This
+         silently broke `canBeSetAsCover`, the album-menu branch of `canBeRemovedFromAlbum`, and
+         the space-based `canBeMovedToAlbum`/`canBeMovedToMain` checks — i.e. real user-facing
+         capability flags were wrong for as long as this mismatch existed. Fixed by renaming the
+         request body keys in `useMenuSelection.js` to `spaceIds`/`albumIds`.
+      - Added regression tests in `hooks/useMenuSelection.test.js`: `menu` becomes `"lightbox"`
+        with no `lightbox` property in the payload when the Lightbox is open (overriding the
+        underlying album/space/garbage menu); the request body uses `spaceIds`/`albumIds`, not
+        `spaceId`/`albumId`.
+      - Updated `specification.md` (§3 Header, §5.2 `POST /api/photos/selected`) to describe the
+        new contract.
+- [x] **Feature**: "Move to Main Space" action in the Lightbox sidebar
+      (`components/Lightbox.jsx`), gated by `photoSelection.canBeMovedToMain` — same flag
+      `Header.jsx` already uses for its own "Move to Main" button, so visibility is consistent
+      between the grid bulk-action and the single-photo Lightbox action.
+      - Added `handleMoveToMain(ids)` to `hooks/usePhotoActions.js`, mirroring
+        `handleMoveToGarbage`'s shape (`POST /api/photos/main`, clears selection + refreshes on
+        success, alerts on failure) but without a confirmation dialog — matches `handleRestore`,
+        and every other single-photo Lightbox action button, none of which confirm.
+      - Threaded `handleMoveToMain` through `App.jsx` → `LightboxWrapper.jsx` → `Lightbox.jsx`
+        (new prop at each level, same pattern as `handleMoveToGarbage`/`handleRestore`).
+      - Button used a `Home` icon, placed after "Move to Garbage" in the sidebar's action list
+        (later restyled along with every other Lightbox action button — see next entry).
+      - Added `hooks/usePhotoActions.test.js` coverage (success clears selection + refreshes;
+        failure alerts instead of failing silently) mirroring the existing `handleRestore` tests.
+- [x] **Visual refresh, Lightbox metadata sidebar** (`App.css`, `components/Lightbox.jsx`), per
+      explicit user feedback that it "looks a bit old." Two changes:
+      1. **Action buttons**: previously a mix of plain white `.btn` pills and solid saturated
+         fills (`#34c759` green, `#ff3b30` red, `#28a745` green, `rgba(255,255,255,0.2)` grey) —
+         every button looked like its own disconnected block, and "Move to Garbage" (soft/
+         reversible) had no visual distinction from "Delete Permanently" (destructive/permanent).
+         Replaced with one `.lightbox-action-btn` family in `App.css`: a neutral translucent-
+         outline base (`rgba(255,255,255,0.06)` fill, subtle border) plus `.primary`/`.success`/
+         `.danger` modifiers using tinted-outline versions of the app's existing semantic colors
+         (`var(--primary-color)`, `#34c759`, `#ff3b30`) instead of solid fills — color now signals
+         meaning (Edit Image = primary CTA; Restore/Move to Main = positive; Delete Permanently =
+         destructive) rather than being applied inconsistently. Also reordered the action list by
+         severity (positive actions → neutral Move to Garbage → destructive Delete Permanently)
+         instead of the previous arbitrary order.
+      2. **Metadata rows**: `.metadata-group label` (File Name / Date Taken / Basic Details /
+         etc.) now matches `.meta-divider`'s existing uppercase-muted-label style (`11px`,
+         `#86868b`, uppercase, letter-spacing) instead of a plain 13px grey label — makes the
+         "field name" hierarchy consistent across the whole sidebar instead of only the
+         "TECHNICAL" section header looking that way. Softened `.metadata-group`'s divider from
+         `rgba(255,255,255,0.1)` to `rgba(255,255,255,0.06)` so rows read as loosely grouped
+         rather than hard-ruled.
+      - No JS/behavior changes — pure CSS + className swaps (removed inline `style={{...}}` button
+        styling from `Lightbox.jsx` in favor of the new shared classes). Verified visually via a
+        scratch Playwright screenshot before/after; 69/69 tests still pass (none of them assert on
+        button styling/order), lint clean, build succeeds.
 
 ## Open / Not Yet Done
 

@@ -21,10 +21,17 @@ public interface PhotoMapper {
 
         String res = (entity.getWidth() != null && entity.getHeight() != null) ? entity.getWidth() + "x" + entity.getHeight() : "Unknown";
 
+        String thumbnailUrl = "/api/photos/" + entity.getId() + "/thumbnail";
+        if (entity.getFileHash() != null) {
+            // Cache-bust the browser's URL-keyed image cache: the id stays the same
+            // when a photo is edited in place, but the underlying file (and hash) changes.
+            thumbnailUrl += "?v=" + entity.getFileHash();
+        }
+
         return new Photo(
                 entity.getId().toString(),
                 entity.getFileName(),
-                "/api/photos/" + entity.getId() + "/thumbnail",
+                thumbnailUrl,
                 dateTaken,
                 fullDateTime, // New field
                 yearMonth,

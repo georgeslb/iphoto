@@ -47,7 +47,7 @@ This document outlines the functionality and behavior of the IPHOTO web applicat
 The application is a Single Page Application (SPA) with a consistent layout:
 
 *   **Sidebar:** A persistent navigation sidebar on the left, providing access to the main sections of the application (Library, Albums, Spaces, Map, etc.) and the logout button. **Responsive:** on screens ≤768px it becomes a collapsible drawer (`components/Sidebar.jsx` owns its own open/closed state) with a fixed hamburger toggle button, closing automatically on navigation.
-*   **Header:** A context-aware header that appears above the main content. It displays actions relevant to the current view and selection (e.g., "Delete", "Add to Album", "Upload"). **Button visibility is backend-driven, not computed client-side**: the frontend POSTs the current menu context (`menu`, `spaceId`, `albumId`, `lightbox`) and selected photo IDs to `/api/photos/selected`, and the backend returns capability flags (e.g. `canBeRestored`, `canBeDeleted`, `canBeMovedToMain`, `canBeMovedToAlbum`, `canBeRemovedFromAlbum`, `canBeSetAsCover`, `canBePermanentlyDeleted`) plus a nested `menuSelection` object with menu-level flags (`canUpload`, `canCreateAlbum`, `canDeleteAlbum`, `canCreateSpace`, `canDeleteSpace`, `canRestoreSpace`, `canPermanentlyDeleteSpace`, `canAddAAShareLinkToAlbum`). `Header.jsx` renders buttons purely by reading these flags — it does not decide on its own whether an action is allowed for a given menu/selection combination.
+*   **Header:** A context-aware header that appears above the main content. It displays actions relevant to the current view and selection (e.g., "Delete", "Add to Album", "Upload"). **Button visibility is backend-driven, not computed client-side**: the frontend POSTs the current menu context (`menu`, `spaceIds`, `albumIds` — no separate `lightbox` flag; when the Lightbox is open, `menu` is simply `"lightbox"`, overriding whatever the underlying page's menu would otherwise be) and selected photo IDs to `/api/photos/selected`, and the backend returns capability flags (e.g. `canBeRestored`, `canBeDeleted`, `canBeMovedToMain`, `canBeMovedToAlbum`, `canBeRemovedFromAlbum`, `canBeSetAsCover`, `canBePermanentlyDeleted`) plus a nested `menuSelection` object with menu-level flags (`canUpload`, `canCreateAlbum`, `canDeleteAlbum`, `canCreateSpace`, `canDeleteSpace`, `canRestoreSpace`, `canPermanentlyDeleteSpace`, `canAddAAShareLinkToAlbum`). `Header.jsx` renders buttons purely by reading these flags — it does not decide on its own whether an action is allowed for a given menu/selection combination.
 *   **Main Content Area:** The central part of the screen that displays the primary content, such as photo grids, album details, or maps.
 *   **Lightbox:** A full-screen modal view for inspecting a single photo in detail. It provides navigation to the previous/next photo and access to actions for that specific photo. **Responsive:** the photo and the metadata sidebar sit side-by-side on desktop, but stack vertically on screens ≤768px (metadata panel becomes a scrollable panel below the photo, capped at 45vh).
 *   **Responsive design:** the app targets full phone support (breakpoints at 768px and 480px),
@@ -83,7 +83,22 @@ This section describes the application's features. For the corresponding backend
     uniformly to every menu that uses it (Library, Garbage, Album detail, Space detail). The
     Duplicates comparison view (`DuplicatePhotoGrid.jsx`) has its own separate, simpler selection
     UI and does not use this range-select behavior.
-*   **Upload:** Users can upload new photos. A progress manager shows the status of ongoing uploads.
+*   **Upload:** Users can upload new photos. A progress manager (`components/UploadManager.jsx`)
+    shows the status of ongoing uploads, chunk-by-chunk; the completion response of
+    `POST /api/upload/chunk` includes a `task` object (`{id, status, photoId}` — `photoId` is
+    generated up front at task creation, so it's valid immediately, not just once `COMPLETED`),
+    which is then polled via `GET /api/tasks/{id}` until the backend processing task finishes.
+    Once a queue item has a `photoId` and its status is anything **other than `PENDING` or
+    `FAILED`**, its file name becomes a clickable link (no separate "Show" button) that opens
+    `components/UploadPreviewModal.jsx` — a small, standard-sized popup (not a full-screen
+    takeover: transparent click-outside-to-close overlay, no dark backdrop, so the page behind
+    stays fully visible) showing just the image/video, no metadata sidebar, no prev/next nav, no
+    edit/delete actions — without navigating away from the current page. Note: the item's status
+    can genuinely be `PROCESSING` (frontend-optimistic, set right when the last chunk lands)
+    before later reverting to `PENDING` once polling reveals the backend worker hasn't actually
+    picked up the task yet — during that `PROCESSING` window the link is clickable per spec, but
+    the photo row may not exist yet server-side, so the popup can transiently show its loading
+    state until `GET /api/photos/{id}` succeeds.
 *   **Actions:**
     *   **Move to Garbage:** Soft-deletes selected photos.
     *   **Move to Main Space:** Moves a photo from its current space to the default "Main" space.
@@ -94,7 +109,10 @@ This section describes the application's features. For the corresponding backend
     *   Displays a high-resolution version of the photo.
     *   Shows extended metadata (camera, lens, etc.).
     *   Allows navigation between photos in the current collection (e.g., album, search results).
-    *   Provides access to individual photo actions (delete, add to album, etc.).
+    *   Provides access to individual photo actions (delete, add to album, move to Main Space,
+        etc.), each gated by its own `photoSelection` capability flag (e.g. "Move to Main Space"
+        only shows when `canBeMovedToMain` is true — same backend-driven pattern as the Header,
+        see Section 3).
     *   **Image editing (crop/rotate/zoom):** available when `photoSelection.canBeModified` is
         true. Uses `react-cropper` (`cropperjs`, `components/Lightbox.jsx`), not a full annotation
         suite — only crop, rotate (90° buttons, or drag Cropper.js's own rotate handle), and zoom
@@ -187,10 +205,12 @@ This section lists the primary API endpoints the frontend application calls to i
 *   `POST /api/photos/{id}/edit`: Edits a photo.
 *   `GET /api/photos/{id}/metadata`: Fetches extended metadata for a single photo.
 *   `GET /api/map-assets?path={effectivePath}`: Fetches assets to be displayed on the map view.
-*   `POST /api/photos/selected`: Given the current menu context (`menu`, `spaceId`, `albumId`,
-    `lightbox`) and a list of selected photo IDs, returns which actions/buttons should be shown
-    (see Section 3, Header). This is the backend authority for UI capability flags — the frontend
-    does not derive these itself.
+*   `POST /api/photos/selected`: Given the current menu context (`menu`, `spaceIds`, `albumIds`)
+    and a list of selected photo IDs, returns which actions/buttons should be shown (see Section 3,
+    Header). `menu` is `"lightbox"` whenever the Lightbox is open, overriding the underlying
+    page's menu (`"library"`/`"album"`/`"space"`/`"garbage"`/etc.) — there is no separate boolean
+    flag for it. This is the backend authority for UI capability flags — the frontend does not
+    derive these itself.
 
 ### 5.3. Album Management
 *   `GET /api/albums`: Fetches the list of all albums visible to the user.

@@ -91,7 +91,7 @@ public class ShareController {
             return ResponseEntity.ok(
                     Map.of(
                             "protected", false,
-                            "albumId", share.albumId()
+                            "albumIds", share.albumId()
                     )
             );
         }
@@ -103,7 +103,7 @@ public class ShareController {
             return ResponseEntity.ok(
                     Map.of(
                             "protected", false,
-                            "albumId", share.albumId()
+                            "albumIds", share.albumId()
                     )
             );
         }

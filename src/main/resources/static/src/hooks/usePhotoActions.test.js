@@ -67,6 +67,34 @@ describe('usePhotoActions', () => {
     });
   });
 
+  describe('handleMoveToMain', () => {
+    it('clears selection and refreshes on success', async () => {
+      global.fetch = vi.fn(() => jsonResponse({}));
+      const { result, setSelectedIds, refreshAndMaintainScroll } = renderPhotoActions();
+
+      await act(async () => {
+        await result.current.handleMoveToMain(['p1']);
+      });
+
+      expect(global.fetch).toHaveBeenCalledWith('/api/photos/main', expect.objectContaining({ method: 'POST', body: JSON.stringify(['p1']) }));
+      expect(setSelectedIds).toHaveBeenCalledWith([]);
+      expect(refreshAndMaintainScroll).toHaveBeenCalled();
+    });
+
+    it('alerts the user on failure instead of failing silently', async () => {
+      const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+      global.fetch = vi.fn(() => jsonResponse({}, false, 500));
+      const { result, setSelectedIds } = renderPhotoActions();
+
+      await act(async () => {
+        await result.current.handleMoveToMain(['p1']);
+      });
+
+      expect(alertSpy).toHaveBeenCalled();
+      expect(setSelectedIds).not.toHaveBeenCalled();
+    });
+  });
+
   describe('handleRestore', () => {
     it('clears selection and refreshes on success', async () => {
       global.fetch = vi.fn(() => jsonResponse({}));

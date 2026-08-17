@@ -120,7 +120,7 @@ public class PhotoController {
     @PostMapping("/selected")
     public PhotoSelectionDTO getSelection(@RequestBody PhotoSelectionRequest photoSelectionRequest) {
         UserEntity currentUser = getCurrentUser();
-        return photoService.getSelection(photoSelectionRequest);
+        return photoService.getSelection(photoSelectionRequest, currentUser);
     }
 
     @PostMapping("/garbage")

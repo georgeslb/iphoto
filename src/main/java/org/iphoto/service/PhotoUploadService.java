@@ -14,6 +14,7 @@ import lombok.AllArgsConstructor;
 import lombok.experimental.FieldDefaults;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.io.FilenameUtils;
+import org.apache.tomcat.util.http.fileupload.FileUploadException;
 import org.bytedeco.javacv.FFmpegFrameGrabber;
 import org.iphoto.entities.*;
 import org.iphoto.exception.NoMatchUserSpaceException;
@@ -38,9 +39,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
-import java.time.temporal.ChronoUnit;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -74,10 +73,11 @@ public class PhotoUploadService {
         UserEntity user = userService.findById(UUID.fromString(payload.get("userId"))).orElseThrow(NoUserFoundException::new);
 
         SpaceEntity space;
-        if (StringUtils.isBlank(payload.get("spaceId"))) {
+        String spaceId = payload.get("spaceId");
+        if (StringUtils.isBlank(spaceId)) {
             space = spaceService.getDefaultSpaceForUser(user);
         } else {
-            space = user.getSpaces().stream().filter(userSpace -> userSpace.getId().equals(UUID.fromString(payload.get("spaceId")))).findAny().orElseThrow(NoMatchUserSpaceException::new);
+            space = user.getSpaces().stream().filter(userSpace -> userSpace.getId().equals(UUID.fromString(spaceId))).findAny().orElseThrow(NoMatchUserSpaceException::new);
         }
 
         PhotoEntity photo = PhotoEntity.builder().id(task.getPhotoId())
@@ -111,6 +111,10 @@ public class PhotoUploadService {
                 extractImageMetadata(finalPath.toFile(), photo, metadataEntity, rawMetadata);
             else if (contentType.startsWith("video"))
                 extractVideoMetadata(finalPath.toFile(), photo, metadataEntity);
+            else
+                throw new FileUploadException("contentType " + contentType + " is not allowed");
+        } else {
+            throw new FileUploadException("contentType is empty");
         }
 
 
@@ -118,8 +122,9 @@ public class PhotoUploadService {
 
         photoRepository.save(photo);
         metadataRepository.save(metadataEntity);
-        if (payload.get("albumId") != null) {
-            albumService.addPhotosToAlbum(UUID.fromString(payload.get("albumId")), List.of(photo.getId())); // Pass user to albumService
+        String albumId = payload.get("albumId");
+        if (albumId != null) {
+            albumService.addPhotosToAlbum(UUID.fromString(albumId), List.of(photo.getId())); // Pass user to albumService
         }
         taskMapper.updateTasksToAction(TaskMapper.Action.ON_CREATE_PHOTO_ACTION, photo.getId());
         return SUCCESS;
@@ -135,7 +140,7 @@ public class PhotoUploadService {
                 }
             }
             ExifSubIFDDirectory dateDir = metadata.getFirstDirectoryOfType(ExifSubIFDDirectory.class);
-            photo.setDateTaken(extractBestCreationDate(file));
+            photo.setDateTaken(extractBestCreationDate(file, photo));
             if (dateDir != null) {
                 meta.setAperture(dateDir.getString(ExifSubIFDDirectory.TAG_FNUMBER));
                 meta.setShutterSpeed(dateDir.getString(ExifSubIFDDirectory.TAG_EXPOSURE_TIME));
@@ -170,7 +175,7 @@ public class PhotoUploadService {
             }
             photo.setDuration(grabber.getLengthInTime() / 1000);
             meta.setCodec(grabber.getVideoCodecName());
-            photo.setDateTaken(extractBestCreationDate(file));
+            photo.setDateTaken(extractBestCreationDate(file, photo));
             grabber.stop();
         } catch (Exception e) {
             log.warn("can't extract video metadata from video {}", file.getAbsolutePath(), e);
@@ -178,7 +183,7 @@ public class PhotoUploadService {
     }
 
 
-    public LocalDateTime extractBestCreationDate(File file) {
+    public LocalDateTime extractBestCreationDate(File file, PhotoEntity photo) {
 
         try {
 
@@ -196,7 +201,7 @@ public class PhotoUploadService {
 
             // 3. Filename date
             LocalDateTime filenameDate =
-                    extractDateFromFilename(file.getName());
+                    extractDateFromFilename(photo.getFileName());
 
             if (filenameDate != null) {
                 return filenameDate;

@@ -5,11 +5,15 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.TaskEntity;
 import org.iphoto.entities.UserEntity; // Import UserEntity
+import org.iphoto.model.TaskDTO;
 import org.iphoto.model.TaskType;
+import org.iphoto.model.UploadChunkResponse;
 import org.iphoto.properties.IPhotoProperties;
 import org.iphoto.repository.UserRepository; // Import UserRepository
 import org.iphoto.service.TaskManagerService;
+import org.iphoto.service.TaskService;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -39,6 +43,7 @@ public class UploadController {
     private final ObjectMapper objectMapper;
     private final IPhotoProperties iPhotoProperties;
     private final UserRepository userRepository; // Inject UserRepository
+    private final TaskService taskService;
 
     private UserEntity getCurrentUser() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
@@ -49,7 +54,7 @@ public class UploadController {
 
     // Endpoint to receive individual file chunks
     @PostMapping(value = "/chunk", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public Map<String, String> uploadChunk(
+    public ResponseEntity<UploadChunkResponse> uploadChunk(
             @RequestParam("uploadId") String uploadId,
             @RequestParam("fileName") String fileName,
             @RequestParam("fileSize") long fileSize,
@@ -111,13 +116,13 @@ public class UploadController {
             payload.put("userId", currentUser.getId().toString()); // Add user ID to payload
 
             // generate photo UUID and add a new task
-            TaskEntity task = taskManagerService
+            TaskEntity taskEntity = taskManagerService
                     .createTaskEntity(currentUser, TaskType.PROCESS_UPLOAD, UUID.randomUUID(), objectMapper.writeValueAsString(payload), null);
+            TaskDTO taskDTO = new TaskDTO(taskEntity.getId(), taskEntity.getStatus().toString(), taskEntity.getPhotoId());
+            log.info("Reassembled file {} and created task {}.", fileName, taskEntity.getId());
+            return ResponseEntity.ok(new UploadChunkResponse("completed", null, taskDTO));
 
-            log.info("Reassembled file {} and created task {}.", fileName, task.getId());
-            return Map.of("status", "completed", "taskId", task.getId().toString());
         }
-
-        return Map.of("status", "AWAITING_CHUNKS", "chunkIndex", String.valueOf(chunkIndex));
+        return ResponseEntity.ok(new UploadChunkResponse("AWAITING_CHUNKS", String.valueOf(chunkIndex), null));
     }
 }

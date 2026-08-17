@@ -27,6 +27,16 @@ export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, hand
     }
   }, [refreshAndMaintainScroll, setSelectedIds, messages]);
 
+  const handleMoveToMain = useCallback(async (ids) => {
+    const res = await fetch('/api/photos/main', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ids) });
+    if (res.ok) {
+      setSelectedIds([]);
+      await refreshAndMaintainScroll();
+    } else {
+      alert(messages["failedToMoveToMain"](res.status));
+    }
+  }, [refreshAndMaintainScroll, setSelectedIds, messages]);
+
   const handlePermanentDelete = useCallback(async (ids) => {
     if (!window.confirm(messages["permanentDeleteConfirmation"](ids.length))) return;
     const res = await fetch('/api/photos/garbage/permanent', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ids) });
@@ -85,6 +95,7 @@ export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, hand
     // selectedIds, // No longer returned as internal state
     // setSelectedIds, // No longer returned as internal state
     handleMoveToGarbage,
+    handleMoveToMain,
     handleRestore,
     handlePermanentDelete,
     handleUpdateDate,

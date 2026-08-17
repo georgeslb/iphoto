@@ -29,11 +29,14 @@ export function useMenuSelection(pathname, spaceId, albumId, isLightboxOpen, sel
       }
     }
 
+    if (isLightboxOpen) {
+      menu = 'lightbox';
+    }
+
     const menuSelectionRequest = {
       menu: menu,
-      spaceId: reqSpaceIds || [],
-      albumId: reqAlbumIds || [],
-      lightbox: !!isLightboxOpen,
+      spaceIds: reqSpaceIds || [],
+      albumIds: reqAlbumIds || [],
     };
 
     const request = {

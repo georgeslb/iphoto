@@ -9,6 +9,7 @@ import org.iphoto.model.request.AlbumUpdateRequest;
 import org.iphoto.repository.UserRepository;
 import org.iphoto.service.AlbumService;
 import org.iphoto.service.SpaceService;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
@@ -101,10 +102,10 @@ public class AlbumController extends AbstractBaseController {
     }
 
     @GetMapping("/{id}/photos")
-    public ResponseEntity<List<Photo>> getAlbumPhotos(@PathVariable UUID id, @PageableDefault(size = 50, sort = "dateTaken", direction = Sort.Direction.DESC) Pageable pageable) {
+    public ResponseEntity<Page<Photo>> getAlbumPhotos(@PathVariable UUID id, @PageableDefault(size = 50, sort = "dateTaken", direction = Sort.Direction.DESC) Pageable pageable) {
         UserEntity currentUser = getCurrentUser();
         try {
-            List<Photo> photos = albumService.getAlbumPhotos(id, pageable);
+            Page<Photo> photos = albumService.getAlbumPhotos(id, pageable);
             return ResponseEntity.ok(photos);
         } catch (NoSuchElementException e) {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);

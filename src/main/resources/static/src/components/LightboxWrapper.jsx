@@ -8,6 +8,7 @@ function LightboxWrapper({
   extMetadata,
   backgroundLocation,
   handleMoveToGarbage,
+  handleMoveToMain,
   handleRestore,
   handlePermanentDelete,
   photos, // Main photos array
@@ -38,6 +39,7 @@ function LightboxWrapper({
       extMetadata={extMetadata}
       pathname={backgroundLocation?.pathname || window.location.pathname} // Use window.location.pathname as a fallback
       handleMoveToGarbage={handleMoveToGarbage}
+      handleMoveToMain={handleMoveToMain}
       handleRestore={handleRestore}
       handlePermanentDelete={handlePermanentDelete}
       photos={getActivePhotosContext()}

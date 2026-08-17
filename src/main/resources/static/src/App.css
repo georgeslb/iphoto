@@ -190,11 +190,49 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   background: #777;
 }
 
+/* Lightbox sidebar action buttons: one tinted-outline family instead of a stack of solid
+   white/colored blocks, so actions read as a coherent group with color only for meaning
+   (primary call-to-action / positive / destructive), not decoration. */
+.lightbox-action-btn {
+  width: 100%;
+  justify-content: center;
+  margin-bottom: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #e0e0e5;
+}
+.lightbox-action-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+.lightbox-action-btn.primary {
+  background: var(--primary-color);
+  border-color: var(--primary-color);
+  color: white;
+}
+.lightbox-action-btn.primary:hover {
+  background: #006ee6;
+}
+.lightbox-action-btn.success {
+  background: rgba(52, 199, 89, 0.14);
+  border-color: rgba(52, 199, 89, 0.4);
+  color: #34c759;
+}
+.lightbox-action-btn.success:hover {
+  background: rgba(52, 199, 89, 0.24);
+}
+.lightbox-action-btn.danger {
+  background: rgba(255, 59, 48, 0.14);
+  border-color: rgba(255, 59, 48, 0.4);
+  color: #ff6961;
+}
+.lightbox-action-btn.danger:hover {
+  background: rgba(255, 59, 48, 0.24);
+}
 
 .metadata-group {
-  margin-bottom: 15px; /* Spacing between groups */
-  padding-bottom: 15px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1); /* Subtle separator */
+  margin-bottom: 14px; /* Spacing between groups */
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06); /* Softer separator */
 }
 
 .metadata-group:last-of-type {
@@ -207,10 +245,12 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   display: flex;
   align-items: center;
   gap: 8px;
-  font-weight: 500;
-  color: #b0b0b5; /* Slightly lighter label color */
-  margin-bottom: 5px;
-  font-size: 13px;
+  font-weight: 600;
+  color: #86868b; /* Matches .meta-divider's label color for a consistent field-name style */
+  margin-bottom: 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 .metadata-group p {
@@ -289,6 +329,19 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 .upload-item { font-size: 11px; padding: 6px 0; border-bottom: 1px solid #f9f9f9; }
 .upload-item-info { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
 .upload-item-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+button.upload-item-name.upload-item-name-link {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  text-align: left;
+  color: var(--primary-color);
+  cursor: pointer;
+}
+button.upload-item-name.upload-item-name-link:hover {
+  text-decoration: underline;
+}
 .status-text { font-weight: 700; text-transform: uppercase; font-size: 10px; padding-left: 4px; }
 .status-text.COMPLETED { color: #34c759; }
 .status-text.FAILED, .status-text.IGNORED, .status-text.TRASHED { color: #ff3b30; }
@@ -312,6 +365,50 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 }
 .retry-button:hover {
   background-color: #006ee6;
+}
+.upload-preview-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2200;
+  /* No darkened backdrop — the page behind (where the user is uploading) stays fully
+     visible. This is a click-catcher for "click outside to close", not a screen dim. */
+  background: transparent;
+}
+.upload-preview-popup {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: #1c1c1e;
+  border-radius: 12px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+  padding: 12px;
+  max-width: min(90vw, 480px);
+  max-height: min(90vh, 480px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.upload-preview-popup img,
+.upload-preview-popup video {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 6px;
+}
+.upload-preview-loading {
+  color: white;
+  padding: 40px;
+  font-size: 13px;
+}
+.upload-preview-close-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 20;
+  color: white;
+  background: rgba(0, 0, 0, 0.5);
 }
 
 

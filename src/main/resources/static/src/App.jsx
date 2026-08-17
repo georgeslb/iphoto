@@ -202,6 +202,7 @@ function App() {
 
   const {
     handleMoveToGarbage,
+    handleMoveToMain,
     handleRestore,
     handlePermanentDelete,
     handleUpdateDate,
@@ -425,6 +426,7 @@ function App() {
             extMetadata={extMetadata}
             backgroundLocation={backgroundLocation}
             handleMoveToGarbage={handleMoveToGarbage}
+            handleMoveToMain={handleMoveToMain}
             handleRestore={handleRestore}
             handlePermanentDelete={handlePermanentDelete}
             photos={photos}

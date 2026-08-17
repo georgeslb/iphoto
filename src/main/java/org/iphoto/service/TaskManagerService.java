@@ -69,6 +69,7 @@ public class TaskManagerService {
                 .photoId(photoId)
                 .payload(payload)
                 .executeAt(executionDateTime)
+                .status(TaskStatus.PENDING.name())
                 .build();
         return taskRepository.saveAndFlush(task);
     }

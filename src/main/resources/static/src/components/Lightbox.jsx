@@ -8,6 +8,7 @@ import {
     ChevronRight,
     Clock,
     Edit,
+    Home,
     Info,
     MapPin,
     RotateCcw,
@@ -30,6 +31,7 @@ export default function Lightbox({
                                      extMetadata,
                                      pathname,
                                      handleMoveToGarbage,
+                                     handleMoveToMain,
                                      handleRestore,
                                      handlePermanentDelete,
                                      photos,
@@ -452,9 +454,7 @@ export default function Lightbox({
                     </div>
                     <div className="sidebar-scroll-content">
                         {photoSelection.canBeModified && !isEditingImage && (
-                            <div style={{marginBottom: '10px'}}>
-                                <button className="btn" style={{width: '100%', justifyContent: 'center'}} onClick={startImageEditing}><Edit size={16}/> {messages["editImage"]}</button>
-                            </div>
+                            <button className="btn lightbox-action-btn primary" onClick={startImageEditing}><Edit size={16}/> {messages["editImage"]}</button>
                         )}
                         {isEditingImage && (
                             <div style={{display: 'flex', gap: '8px', justifyContent: 'center', marginBottom: '10px'}}>
@@ -464,14 +464,15 @@ export default function Lightbox({
                             </div>
                         )}
 
-                        {photoSelection.canBeMovedToAlbum && !isEditingImage && <button className="btn" style={{width: '100%', justifyContent: 'center', marginBottom: '10px'}} onClick={() => onShowAddToAlbumModal(selectedPhoto.id)}><ImageIcon size={16}/> {messages["addToAlbumLightbox"]}</button>}
-                        {photoSelection.canBeRemovedFromAlbum && !isEditingImage && <button className="btn" style={{width: '100%', justifyContent: 'center', marginBottom: '10px'}} onClick={() => onShowRemoveFromAlbumModal(selectedPhoto.id)}><MinusCircle size={16}/> {messages["removeFromAlbumLightbox"]}</button>}
+                        {photoSelection.canBeMovedToAlbum && !isEditingImage && <button className="btn lightbox-action-btn" onClick={() => onShowAddToAlbumModal(selectedPhoto.id)}><ImageIcon size={16}/> {messages["addToAlbumLightbox"]}</button>}
+                        {photoSelection.canBeRemovedFromAlbum && !isEditingImage && <button className="btn lightbox-action-btn" onClick={() => onShowRemoveFromAlbumModal(selectedPhoto.id)}><MinusCircle size={16}/> {messages["removeFromAlbumLightbox"]}</button>}
 
                         {!isEditingImage && (
                             <>
-                                {photoSelection.canBeRestored && <button className="btn" style={{ width: '100%', justifyContent: 'center', background: '#34c759', color: 'white', border: 'none', marginBottom: '10px' }} onClick={() => { handleRestore([selectedPhoto.id]); onClose(); }}><RotateCcw size={18}/> {messages["restoreAsset"]}</button>}
-                                {photoSelection.canBePermanentlyDeleted && <button className="btn" style={{ width: '100%', justifyContent: 'center', background: '#ff3b30', color: 'white', border: 'none', marginBottom: '10px' }} onClick={() => { handlePermanentDelete([selectedPhoto.id]); onClose(); }}><Trash2 size={18}/> {messages["deletePermanentlyLightbox"]}</button>}
-                                {photoSelection.canBeDeleted && <button className="btn" style={{ width: '100%', justifyContent: 'center', background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none', marginBottom: '10px' }} onClick={() => { handleMoveToGarbage([selectedPhoto.id]); onClose(); }}><Trash2 size={18}/> {messages["moveToGarbageLightbox"]}</button>}
+                                {photoSelection.canBeRestored && <button className="btn lightbox-action-btn success" onClick={() => { handleRestore([selectedPhoto.id]); onClose(); }}><RotateCcw size={18}/> {messages["restoreAsset"]}</button>}
+                                {photoSelection.canBeMovedToMain && <button className="btn lightbox-action-btn success" onClick={() => { handleMoveToMain([selectedPhoto.id]); onClose(); }}><Home size={18}/> {messages["moveToMainLightbox"]}</button>}
+                                {photoSelection.canBeDeleted && <button className="btn lightbox-action-btn" onClick={() => { handleMoveToGarbage([selectedPhoto.id]); onClose(); }}><Trash2 size={18}/> {messages["moveToGarbageLightbox"]}</button>}
+                                {photoSelection.canBePermanentlyDeleted && <button className="btn lightbox-action-btn danger" onClick={() => { handlePermanentDelete([selectedPhoto.id]); onClose(); }}><Trash2 size={18}/> {messages["deletePermanentlyLightbox"]}</button>}
                             </>
                         )}
 

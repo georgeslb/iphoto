@@ -2,12 +2,14 @@ import React, { useState, useCallback } from 'react';
 import { X } from 'lucide-react';
 import L from 'leaflet';
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
+import UploadPreviewModal from './UploadPreviewModal.jsx';
 
 const CHUNK_SIZE = 1024 * 1024 * 5; // 5MB chunks
 
 function UploadManager({ refreshAndMaintainScroll, effectivePath, children, fileInputRef }) {
   const { messages } = useLocale(); // Use the useLocale hook
   const [uploadQueue, setUploadQueue] = useState([]);
+  const [previewPhotoId, setPreviewPhotoId] = useState(null);
 
   const pollTaskStatus = useCallback(async (uploadId, taskId) => {
     const interval = setInterval(async () => {
@@ -21,7 +23,7 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children, file
 
         if (isTerminal || task.status === 'PENDING') {
           setUploadQueue(prev => prev.map(item =>
-              item.uploadId === uploadId ? { ...item, status: task.status, error: task.errorMessage, progress: 100 } : item
+              item.uploadId === uploadId ? { ...item, status: task.status, error: task.errorMessage, progress: 100, photoId: task.photoId } : item
           ));
 
           if (isTerminal) {
@@ -68,7 +70,7 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children, file
         uploadedChunks: 0,
         taskId: null,
         error: messages["unsupportedFileType"](file.name),
-        file: null,
+        file: file,
       }));
       setUploadQueue(prev => [...rejectedItems, ...prev]);
     }
@@ -99,6 +101,7 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children, file
       taskId: null,
       error: null,
       file: file, // Store the actual File object
+      photoId: null,
     }));
 
     // Add new items to the queue or update existing ones if retrying
@@ -137,9 +140,9 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children, file
 
           if (data.status === 'completed') {
             setUploadQueue(prev => prev.map(item =>
-                item.uploadId === uploadItem.uploadId ? { ...item, status: 'PROCESSING', taskId: data.taskId, uploadedChunks: item.totalChunks, progress: 100 } : item
+                item.uploadId === uploadItem.uploadId ? { ...item, status: 'PROCESSING', taskId: data.task.id, photoId: data.task.photoId, uploadedChunks: item.totalChunks, progress: 100 } : item
             ));
-            pollTaskStatus(uploadItem.uploadId, data.taskId);
+            pollTaskStatus(uploadItem.uploadId, data.task.id);
           } else {
             setUploadQueue(prev => prev.map(item =>
                 item.uploadId === uploadItem.uploadId ? { ...item, uploadedChunks: item.uploadedChunks + 1, progress: Math.round(((item.uploadedChunks + 1) / item.totalChunks) * 100) } : item
@@ -195,6 +198,13 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children, file
     });
   }, [handleUploadFiles]);
 
+  // Opens the newly uploaded asset in a lightweight preview popup (image/video only, no
+  // metadata sidebar) without navigating away from the current page.
+  const handleViewUploadedAsset = useCallback((item) => {
+    if (!item.photoId) return;
+    setPreviewPhotoId(item.photoId);
+  }, []);
+
   return (
     <>
       {children({ handleUpload: handleInitialUpload, uploadQueue, setUploadQueue, fileInputRef })}
@@ -202,10 +212,16 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children, file
           <div className="upload-queue">
             <div className="upload-queue-header"><span>{messages["uploads"](uploadQueue.length)}</span><X size={16} onClick={() => setUploadQueue([])} style={{cursor: 'pointer', opacity: 0.5}}/></div>
             <div className="upload-list">
-              {uploadQueue.map(item => (
+              {uploadQueue.map(item => {
+                const canPreview = item.photoId && item.status !== 'PENDING' && item.status !== 'FAILED';
+                return (
                   <div key={item.id} className="upload-item">
                     <div className="upload-item-info">
-                      <span className="upload-item-name" title={item.name}>{item.name}</span>
+                      {canPreview ? (
+                        <button type="button" onClick={() => handleViewUploadedAsset(item)} className="upload-item-name upload-item-name-link" title={item.name}>{item.name}</button>
+                      ) : (
+                        <span className="upload-item-name" title={item.name}>{item.name}</span>
+                      )}
                       <span className={`status-text ${item.status}`}>{statusLabels[item.status] || item.status}</span>
                     </div>
                     {item.error && (
@@ -222,9 +238,13 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children, file
                         </div>
                     )}
                   </div>
-              ))}
+                );
+              })}
             </div>
           </div>
+      )}
+      {previewPhotoId && (
+        <UploadPreviewModal photoId={previewPhotoId} onClose={() => setPreviewPhotoId(null)} />
       )}
     </>
   );

@@ -141,6 +141,7 @@ public class TaskWorkerManager {
         return photoRepository.findByFileHash(hash).map(photoEntity -> {
             try {
                 Files.deleteIfExists(tempFile.toPath());
+                task.setPhotoId(photoEntity.getId());
                 if (photoEntity.getIsGarbage()) {
                     return TRASHED;
                 }

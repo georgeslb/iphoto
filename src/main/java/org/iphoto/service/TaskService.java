@@ -20,7 +20,7 @@ public class TaskService {
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Optional<TaskDTO> getTask(UUID taskId) {
-        return taskRepository.findById(taskId).map(taskEntity -> new TaskDTO(taskEntity.getId(), taskEntity.getStatus().toString()));
+        return taskRepository.findById(taskId).map(taskEntity -> new TaskDTO(taskEntity.getId(), taskEntity.getStatus().toString(), taskEntity.getPhotoId()));
     }
 
 }
