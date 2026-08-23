@@ -76,6 +76,36 @@ This section describes the application's features. For the corresponding backend
         Prev/Next-group buttons rather than infinite scroll — this is a deliberate different UX
         (decide-per-group), not an oversight, and is not expected to follow the same
         pagination/scroll-restoration contract as the other list views.
+*   **Inline duplicate grouping:** each `Photo` returned by the photo-listing endpoints can carry a
+    `duplicates: Photo[]` field (backend `Photo.java`/`PhotoMapper`, populated via
+    `DuplicationService.getDuplicates(PhotoEntity)`) — the other members of its duplicate cluster, if
+    any. **Backend status: only `GET /api/photos` (library) and `GET /api/photos/space/{spaceId}`
+    populate this today; `GET /api/photos/garbage` (`PhotoService.getGarbagePhotos`) and
+    `GET /api/albums/{id}/photos` (`AlbumService.getAlbumPhotos`) do not yet** — not fixed here since
+    this was frontend-only scope; the frontend degrades gracefully (`p.duplicates || []`) wherever
+    it's absent, it just won't show grouping there until the backend adds it.
+    `components/PhotoGrid.jsx` clusters each photo with its `duplicates` into one display item
+    (`consumedIds` prevents a duplicate from also rendering as its own separate top-level card) and
+    renders it two ways:
+    - **Collapsed (default):** one card for the "primary" photo (the first one encountered in the
+      list) with a `.duplicate-badge` pill (count + `Layers` icon) overlaid bottom-left. Clicking the
+      badge expands the group; clicking the card itself behaves like any normal photo card (select or
+      open Lightbox) — only the primary is individually interactable while collapsed.
+    - **Expanded:** a `.duplicate-cluster` wrapper (dashed outline) with a real, always-in-flow
+      header row (`.duplicate-cluster-header` — count label + collapse button) above a row of full
+      cards, one per member, each sized larger (`EXPANDED_CLUSTER_CARD_SIZE = 360`, vs. the normal
+      grid's 220) so the photos are actually comparable at a glance. The header is deliberately laid
+      out in normal flow rather than as an absolutely-positioned overlay on the card row — an earlier
+      version used a negative-offset floating collapse button, which could end up visually clipped
+      under the sticky day-group header depending on scroll position.
+      - Each expanded member also gets its own `.duplicate-remove-btn` (trash icon, bottom-left),
+        calling `handleMoveToGarbage([memberId])` directly — a one-click removal, **only rendered
+        while the group is expanded** (per explicit user request; the initial version relied solely
+        on the existing select-checkbox + Header bulk-action flow, superseded here). The checkbox
+        overlay is still present too, so bulk multi-select still works alongside the per-card icon.
+        `handleMoveToGarbage` is threaded down from `usePhotoActions.js` through `App.jsx` →
+        `PhotoGrid`/`AlbumDetail`/`SpaceDetail` (same confirm-dialog/refresh behavior as the Header's
+        bulk action, since it's the exact same function).
 *   **Photo Selection:** Users can select one or more photos in the grid to perform bulk actions.
     Shift+click selects the contiguous range between the last-clicked photo and the one just
     clicked (standard range-select, like Finder/Gmail/Photos apps), in addition to the normal
@@ -157,6 +187,48 @@ This section describes the application's features. For the corresponding backend
 
 *   **Duplicate Detection:**
     *   A dedicated view (`/duplicates`) allows users to review and manage photos that the system has identified as duplicates.
+    *   Backend detection (`DuplicationService.java`) runs in two tiers per candidate pair, within the same Space:
+        1.  **Global hash tier:** pHash and averageHash (OpenCV `img_hash`, 64-bit each) are compared via
+            Hamming distance. A tight match (pHash ≤ 12 AND averageHash ≤ 10) confirms a duplicate
+            directly — this is the cheap, fast path for near-exact re-uploads/recompressions.
+        2.  **Feature-matching tier:** global hashes summarize the whole image as one signature, so they
+            miss crops, rotations beyond EXIF correction, and localized edits. When hashes are merely
+            "plausible" (pHash ≤ 24 OR averageHash ≤ 20) but not tight enough for tier 1, the service falls
+            back to ORB keypoint matching + RANSAC homography (`confirmWithFeatureMatching` /
+            `countHomographyInliers`) to confirm the two images share a consistent geometric structure,
+            not just coincidentally-similar global hashes. This tier is only run on the "plausible" band,
+            not on every pair, to keep cost bounded.
+        *   **ORB descriptors are precomputed and persisted, not recomputed per comparison.**
+            `PhotoEntity.orbDescriptors` (raw ORB descriptor matrix, row-major, 32 bytes/keypoint) and
+            `PhotoEntity.orbKeypoints` (keypoint x/y as 4-byte floats, index-aligned with the descriptor
+            rows) are computed once in `DuplicationService.preprocess`/`computeAndStoreOrbFeatures`, on the
+            same rotated+resized grayscale image used for pHash/averageHash, and saved alongside them at
+            upload/hash time. `confirmWithFeatureMatching` only reconstructs a `Mat`/point array from these
+            stored bytes — it no longer re-reads either image from disk or re-runs ORB detection at
+            comparison time. Bonus fix from this: the old per-comparison path loaded the image with
+            `IMREAD_GRAYSCALE` directly and skipped `autoRotate`, so EXIF-rotated photos were being
+            feature-matched unrotated; the persisted path is rotation-correct since it reuses `preprocess`'s
+            pipeline. Photos hashed before this change have no stored descriptors — `confirmWithFeatureMatching`
+            logs and returns `false` (not a crash) for those until they're re-hashed.
+        *   Known limitation: candidates are still gated by the tier-1 hash band before feature matching
+            runs, so a very heavy crop/zoom that pushes both hashes outside that band is still missed.
+            Not fixed — would require running ORB on every pair in the space, which is a much bigger
+            perf tradeoff than the current design.
+        *   Diagnostic logging: `evaluatePair` logs hash distances and the tier-by-tier verdict for every
+            compared pair; `confirmWithFeatureMatching` logs keypoint/good-match/inlier counts against
+            their thresholds; `checkDuplication` logs the per-photo scan window and final duplicate set.
+            Added to debug a false-positive report — check these logs first before assuming the fix
+            requires tightening a threshold rather than a genuine grouping/logic bug.
+    *   Grouping (`DuplicationUniquenessService.consolidateDuplicates`) treats duplicate clusters as
+        connected components, not per-pair matches: when a newly-detected duplicate touches one or more
+        existing `DuplicateEntity` groups (`findByPhotosIdIn`), all of them are merged into a single
+        group (one kept id, `hash` recomputed from the full membership, the other touched groups
+        deleted) rather than only ever extending the first candidate. A previously `CLOSED` group is
+        reopened to `OPEN` when a new duplicate is folded into it, since it now has a new photo to
+        review. This replaced an earlier version of the join condition that was self-contradictory
+        (required the existing group to be both a subset of, and larger than, the newly-detected set)
+        and was therefore unreachable — every detected duplicate used to spawn its own overlapping
+        group instead of joining/merging with existing ones.
 *   **Map View:**
     *   A world map (`/map`) displays photos based on their embedded geolocation data.
 *   **Persons View:**

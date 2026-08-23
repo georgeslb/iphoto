@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocale } from '../LocaleContext.jsx';
 
 export function usePhotoData(effectivePath, isLightboxOpen) {
@@ -6,6 +6,7 @@ export function usePhotoData(effectivePath, isLightboxOpen) {
   const [photos, setPhotos] = useState([]);
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(true);
+  const loadedPathRef = useRef(null);
 
   const fetchPhotos = useCallback(async (pageNum, reset = false, type = 'library', albumId = null, spaceId = null) => {
     try {
@@ -60,6 +61,15 @@ export function usePhotoData(effectivePath, isLightboxOpen) {
 
   useEffect(() => {
     if (isLightboxOpen) return;
+
+    // Only (re)load from page 0 when the view actually changed, or this is the very first
+    // load for it (e.g. landing directly on an /asset/:id URL before the grid ever loaded,
+    // where the load was deferred while the Lightbox was open). Do NOT reset just because the
+    // Lightbox closed on the same view — the background grid is still valid and may already
+    // have several pages loaded; resetting here used to silently drop all of them, requiring
+    // the user to scroll back down to re-trigger loading past page 0.
+    if (loadedPathRef.current === effectivePath) return;
+    loadedPathRef.current = effectivePath;
 
     const isDuplicates = effectivePath.startsWith('/duplicates');
     loadPhotos(0, !isDuplicates);

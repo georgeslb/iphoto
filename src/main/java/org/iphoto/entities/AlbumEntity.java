@@ -12,7 +12,7 @@ import java.util.Set;
 import java.util.UUID;
 
 @Entity
-@Table(name = "albums")
+@Table(name = "albums", uniqueConstraints = {@UniqueConstraint(name = "name_space_unique_albums", columnNames = { "name", "space_id"})})
 @EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true) // Changed callSuper to true
 @SuperBuilder
 @Getter
@@ -25,7 +25,7 @@ public final class AlbumEntity extends BaseEntity { // Extends BaseEntity
     @EqualsAndHashCode.Include
     private UUID id;
 
-    @Column(nullable = false, unique = true) // This unique constraint might need to be adjusted to be unique per user
+    @Column(nullable = false) // This unique constraint might need to be adjusted to be unique per user
     @ToString.Include
     private String name;
 
@@ -51,9 +51,6 @@ public final class AlbumEntity extends BaseEntity { // Extends BaseEntity
 
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
-
-    @OneToMany(fetch = FetchType.LAZY)
-    Set<ShareEntity> shares;
 
     @Override
     public UUID getId() {

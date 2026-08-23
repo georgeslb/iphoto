@@ -1,5 +1,6 @@
 package org.iphoto.service;
 
+import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.BaseEntity;
@@ -9,18 +10,19 @@ import org.iphoto.entities.UserEntity;
 import org.iphoto.exception.MainSpaceDeletionConfigurationException;
 import org.iphoto.exception.NoMatchUserSpaceException;
 import org.iphoto.exception.NoPhotoInSpace;
+import org.iphoto.exception.SpaceLockingException;
 import org.iphoto.model.SpaceDTO;
 import org.iphoto.model.request.SpaceCreateRequest;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.repository.SpaceRepository;
-import org.iphoto.exception.PhotoRetryableErrorException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.ConcurrentModificationException;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 
 @Service
@@ -31,7 +33,9 @@ public class SpaceService {
 
     private final SpaceRepository spaceRepository;
     private final PhotoRepository photoRepository;
-    private final ReentrantLock lock = new ReentrantLock();
+
+    Map<UUID, AutoClosableLock> locks = new ConcurrentHashMap<>();
+
 
     public SpaceEntity getDefaultSpaceForUser(UserEntity user) {
         return spaceRepository.findByTypeEqualsMainAndUser(user);
@@ -77,6 +81,15 @@ public class SpaceService {
         spaceRepository.save(space);
     }
 
+    public AutoClosableLock lockSpace (SpaceEntity space) {
+        locks.putIfAbsent(space.getId(), new AutoClosableLock());
+        if (!locks.get(space.getId()).tryLock()) {
+            log.warn("space is locked");
+            throw new SpaceLockingException("lock space " + space.getId() +  " not possible");
+        }
+        return locks.get(space.getId());
+    }
+
     public SpaceDTO getPhotoSpace(UserEntity currentUser, UUID id) {
         return photoRepository.findById(id)
                 .filter(photoEntity -> photoEntity.getSpace().getUser().getId().equals(currentUser.getId()))
@@ -86,51 +99,18 @@ public class SpaceService {
     }
 
     public void increaseSpacePhotoCount(SpaceEntity space) {
-        boolean photoCountNotUpdated = true;
-        int count = 0;
-        while (photoCountNotUpdated && count < 5) {
-            count = count + 1;
-            try {
-                increaseSpacePhotoCount(space, 1);
-                photoCountNotUpdated = false;
-            } catch (ConcurrentModificationException e) {
-                log.info("can't increment count in space {}, count {}", space.getName(), count);
-               if (count >= 5 ) {
-                   log.warn("can't increment upload, should retry in space {}, count {}", space.getName(), count);
-                   throw new PhotoRetryableErrorException("can't increment upload, should retry");
-               }
-            }
-        }
+        increaseSpacePhotoCount(space, 1);
     }
 
     public void decreaseSpacePhotoCount(SpaceEntity space) {
-        boolean photoCountNotUpdated = true;
-        int count = 0;
-        while (photoCountNotUpdated && count < 5) {
-            count = count + 1;
-            try {
-                increaseSpacePhotoCount(space, -1);
-                photoCountNotUpdated = false;
-            } catch (ConcurrentModificationException e) {
-                log.info("can't increment count in space {}, count {}", space.getName(), count);
-                if (count >= 5 ) {
-                    log.warn("can't increment upload, should retry in space {}, count {}", space.getName(), count);
-                    throw new PhotoRetryableErrorException("can't increment upload, should retry");
-                }
-            }
-        }
+        increaseSpacePhotoCount(space, -1);
     }
 
     public void increaseSpacePhotoCount(SpaceEntity space, int delta) {
-            if (!lock.tryLock()) {
-                log.warn("lock in progress");
-                throw new ConcurrentModificationException();
-            }
             log.info ("space {} photo count {} before", space.getName(), space.getPhotoCount());
             space.setPhotoCount(space.getPhotoCount() + delta);
             log.info ("space {} photo count {} after", space.getName(), space.getPhotoCount());
             spaceRepository.save(space);
-            lock.unlock();
     }
 
     public List<SpaceDTO> getGarbageSpaces(UserEntity currentUser) {
@@ -148,5 +128,12 @@ public class SpaceService {
 
     public void deleteSpace(UUID spaceId) {
         spaceRepository.deleteById(spaceId);
+    }
+
+    public static class AutoClosableLock extends ReentrantLock implements AutoCloseable {
+        @Override
+        public void close() throws Exception {
+            this.unlock();
+        }
     }
 }

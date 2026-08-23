@@ -37,8 +37,10 @@ public class DuplicationUniquenessService {
                         .filter(id -> !id.equals(photo.getId()))
                         .allMatch(ids::contains) && duplicate.getPhotos().size() - 1 >= ids.size()) {
                     // photo should be added to duplicate group
-                    duplicate.getPhotos().add(photo);
-                    duplicateRepository.saveAndFlush(duplicate);
+                    if (duplicate.getPhotos().stream().noneMatch(p -> p.getId().equals(photo.getId()))) {
+                        duplicate.getPhotos().add(photo);
+                        duplicateRepository.saveAndFlush(duplicate);
+                    }
                     addNewDuplicatePhoto = false;
                     break;
                 }
@@ -50,6 +52,7 @@ public class DuplicationUniquenessService {
                 DuplicateEntity duplicateEntity = DuplicateEntity.builder()
                         .id(UUID.randomUUID())
                         .photos(duplicatesPhotosToAdd)
+                        .space(photo.getSpace())
                         .status(OPEN)
                         .hash(generateUniqueHash(duplicatesPhotosToAdd))
                         .build();

@@ -638,6 +638,195 @@ new work is identified or completed, so nothing gets lost between sessions.
         scratch Playwright screenshot before/after; 69/69 tests still pass (none of them assert on
         button styling/order), lint clean, build succeeds.
 
+- [x] **Backend improvement**: `DuplicationService.java`'s duplicate detection was found to be
+      "not very powerful" (global pHash/averageHash comparison only). Added a second tier:
+      ORB keypoint feature matching + RANSAC homography (`confirmWithFeatureMatching`,
+      `countHomographyInliers`), used to confirm duplicates the whole-image hashes alone can't
+      distinguish from "just similar" (crops, rotations beyond EXIF correction, localized edits).
+      Two-tier design agreed with the user, since running ORB on every pair in a space would be
+      much more expensive than a 64-bit Hamming distance:
+      1. Tight hash match (pHash ≤ 12 AND averageHash ≤ 10, unchanged) → confirmed directly, no
+         ORB needed (cheap fast path for near-exact re-uploads/recompressions).
+      2. Looser "plausible" band (pHash ≤ 24 OR averageHash ≤ 20) → falls back to ORB matching;
+         only confirmed as a duplicate if enough good matches (≥15, Hamming distance ≤ 64) also
+         agree on a single geometric transform (≥10 RANSAC inliers) — the homography check exists
+         specifically to reject coincidental keypoint matches on repetitive textures (foliage,
+         brick walls, etc.) that would otherwise false-positive a plain match-count threshold.
+      - Confirmed via a live curl check that `fileHash`-based exact-duplicate blocking already
+        happens at upload time (`PhotoUploadService.java`), so this service's job is specifically
+        near-duplicates, not byte-identical files — no exact-hash tier was added here, it would be
+        redundant.
+      - Known limitation (not fixed, scope tradeoff): a very heavy crop/zoom that pushes both
+        hashes outside the "plausible" band is still never compared, since ORB is gated behind the
+        tier-1 hash band rather than run on every pair in the space. Documented in
+        specification.md §4.3.
+      - Verified with `javac` directly against the `~/.m2` classpath (no `mvn` available in this
+        shell) — compiles cleanly. **Not run/tested against real photos yet** — the user should
+        build and try it against their own library before trusting the new thresholds.
+- [x] **Backend bug fix**: `DuplicationUniquenessService.consolidateDuplicates` — the "join an
+      existing duplicate group" condition was `group ⊆ ids && group.size() - 1 >= ids.size()`.
+      The subset check already implies `group.size() <= ids.size()`, which directly contradicts
+      `group.size() >= ids.size() + 1` — the two can never both be true (outside a narrow
+      self-referential edge case), so **the join branch was dead code**: every detected duplicate
+      always created a brand-new, overlapping `DuplicateEntity` group instead of extending one
+      that already existed. Rewrote the method to treat duplicate clusters as connected
+      components: it now merges *every* existing group touched by the newly-detected duplicates
+      (not just the first candidate) into one group — keeps one group's id, recomputes `hash` from
+      the full merged membership (the old code never recomputed `hash` after mutating membership
+      either, even on the rare path where joining did fire), deletes the other touched groups, and
+      reopens the kept group to `OPEN` status if it had previously been `CLOSED` (a new duplicate
+      means there's something new to review). Found by careful reading of the boolean logic (not
+      live-tested against real duplicate data — no existing duplicate groups in the dev DB to
+      exercise the merge path against). Verified with `javac` against the `~/.m2` classpath;
+      compiles cleanly. Documented in specification.md §4.3.
+
+- [x] **Feature**: inline duplicate grouping in `PhotoGrid.jsx` (Library/Album/Space/Garbage grid),
+      consuming the backend's per-photo `duplicates: Photo[]` field.
+      - Clusters each photo with its `duplicates` into one display item (`consumedIds` set prevents
+        a duplicate photo from also rendering as its own separate top-level card later in the same
+        list). Renders collapsed by default (one card + a `.duplicate-badge` count pill, click to
+        expand) or expanded (`.duplicate-cluster` wrapper showing every member as its own full card
+        with the existing checkbox overlay, plus a collapse button).
+      - Deliberately reused the app's existing select-then-Header-bulk-action pattern for moving an
+        expanded duplicate to the garbage, instead of adding a new per-card delete button/confirm
+        dialog — matches how deletion already works everywhere else in the grid (and in
+        `DuplicatePhotoGrid.jsx`'s own comparison view). Worth flagging if the user actually wanted
+        a dedicated one-click trash icon per duplicate instead.
+      - **Backend gap found while implementing** (not fixed, out of frontend scope): only
+        `PhotoService.getPhotos`/`getSpacePhotos` (library + space) populate `duplicates` on the
+        `Photo` DTO; `getGarbagePhotos` and `AlbumService.getAlbumPhotos` don't call
+        `duplicationService.getDuplicates(entity)` yet, so grouping silently won't show there until
+        that's added — frontend handles this gracefully (`p.duplicates || []`), no crash, just no
+        grouping UI on those two views yet.
+      - Added `PhotoGrid.test.jsx` coverage: collapsed cluster renders as one card with a badge (not
+        N separate cards), expand shows every member as its own selectable card, collapse folds back,
+        and an individual expanded duplicate can be selected via its checkbox (feeding the existing
+        bulk Move-to-Garbage flow). 72/72 tests pass, lint clean, build succeeds. Not verified live
+        in a browser — no existing duplicate-group data in the dev DB to exercise it against; the
+        user should try it against real duplicate data once available.
+
+- [x] **Bug fix**: reported symptom — opening the Lightbox for a photo on the 2nd (or last)
+      page, then closing it, briefly flashed the Login page before landing back on the
+      library, and the grid only showed the first couple of pages afterward (needed a manual
+      scroll up/down to resume loading). Two separate root causes, both fixed:
+      1. `hooks/usePhotoData.js`'s load-on-path-change effect had `isLightboxOpen` in its
+         dependency array with no guard against it merely toggling closed on the *same*
+         `effectivePath` — so every Lightbox close re-ran `loadPhotos(0, reset=true)`,
+         silently discarding any pages loaded past page 0. Fixed with a `loadedPathRef` that
+         only allows the reset when `effectivePath` actually changed (or this is the first
+         load for it, e.g. landing directly on an `/asset/:id` URL — the case the
+         `isLightboxOpen` guard originally existed for, still preserved).
+      2. `hooks/useAuth.js`'s `checkAuthStatus` (the `/api/user/me` fetch) was keyed on
+         `location.pathname` in its `useCallback` deps, so the *whole session check re-ran on
+         every client-side navigation* — including the navigate-back that happens when closing
+         the Lightbox. Any transient hiccup on that extra, unnecessary fetch could flip
+         `isAuthenticated` to false and bounce to `/login`, then bounce right back once a
+         subsequent check succeeded — exactly the observed flash. Split into two effects: the
+         actual `/api/user/me` fetch now runs once on mount only; a separate, network-free
+         effect reacts to `location.pathname`/`isAuthenticated`/`loadingAuth` purely to decide
+         redirects, using already-known state instead of re-verifying the session.
+      - Added regression coverage in `usePhotoData.test.js` (Lightbox close on the same view
+        doesn't re-fetch/drop loaded pages; closing after landing directly on an asset URL
+        still triggers the deferred first load). `useAuth.test.js`'s existing suite still
+        passes unchanged (asserts the same redirect outcomes, now decided without a second
+        fetch). 74/74 tests pass, lint clean, build succeeds. Not verified live against the
+        exact reported scenario (2nd/last page + close) — the logic is a direct match for the
+        symptom, but worth confirming against the real backend.
+
+- [x] **Regression fix (introduced by the previous entry, same session)**: the `useAuth.js`
+      "run checkAuthStatus once on mount only" fix broke logging in at all. `Login.jsx` had zero
+      connection to `useAuth`'s state — it just did `navigate('/')` after a successful
+      `POST /api/login` and relied entirely on the *old* behavior of `checkAuthStatus` re-running
+      on every `location.pathname` change to notice the freshly-established session. Once that
+      re-run-on-navigate behavior was removed, `isAuthenticated` never flipped to `true` after a
+      correct login, and the new redirect effect (correctly, given stale state) immediately bounced
+      back to `/login` — i.e. "can't log in anymore" even with the right credentials.
+      - Fixed by returning `checkAuthStatus` from `useAuth.js` and threading it down to both
+        `<Login>` routes and `<ShareLoginPage>` (`App.jsx`); each now calls
+        `await checkAuthStatus()` right after its login POST succeeds, before navigating —
+        re-verifying the session on demand instead of relying on incidental re-checks.
+      - Also fixed `ShareLoginPage.jsx` for the identical root cause: it navigates to
+        `/albums/:albumId`, which is only reachable inside `App.jsx`'s `isAuthenticated` branch,
+        and depended on the same removed side-effect.
+      - Added `components/Login.test.jsx` (new file) to lock this in: success calls
+        `checkAuthStatus` then navigates to `/`; failure does neither. 76/76 tests pass, lint
+        clean, build succeeds. **Could not verify live against the user's real account** (no
+        credentials available in this session) — the user should confirm login works again.
+
+- [x] **Follow-up on duplicate grouping**, per direct user feedback on the initial version:
+      1. "Can't see the top of the window" for the expanded cluster: the collapse button was an
+         absolutely-positioned `top:-10px` overlay poking above the cluster's own box — plausible
+         culprit is it getting visually clipped under `.day-header`'s `position: sticky` depending
+         on scroll position (first row of a day-group especially). Restructured the expanded
+         cluster to a real in-flow header row (`.duplicate-cluster-header`) above the card row
+         instead of an overlaid badge, so there's nothing that can end up hidden behind the sticky
+         header regardless of scroll position.
+      2. "Make the window larger": expanded-cluster member cards now render at 360px
+         (`EXPANDED_CLUSTER_CARD_SIZE` in `PhotoGrid.jsx`) instead of the grid's normal 220px, via
+         a new `size` param on the shared `renderPhotoCard` helper — normal single cards and the
+         collapsed cluster's primary card are unaffected (still 220px).
+      3. Added a per-card garbage icon (`.duplicate-remove-btn`, `Trash2`) on each member,
+         **visible only while the group is expanded** — calls
+         `handleMoveToGarbage([memberId])` directly, one click, no need to select+use the Header
+         bulk action first. This explicitly supersedes the initial version's design choice (select
+         checkbox + existing Header bulk action only, no per-card button) — the user asked for the
+         dedicated icon after all. Both mechanisms coexist now (checkbox still selects for bulk
+         actions too). Required threading `handleMoveToGarbage` as a new prop through
+         `PhotoGrid`/`AlbumDetail`/`SpaceDetail` from `App.jsx` (it already existed via
+         `usePhotoActions`, just wasn't passed down to the grid before).
+      - Extended `PhotoGrid.test.jsx`: remove icon absent while collapsed, present once expanded
+        (one per member), clicking it calls `handleMoveToGarbage` with just that member's id. 77/77
+        tests pass, lint clean, build succeeds. Not verified live in a browser (no duplicate-group
+        data in the dev DB) — the sticky-header-clipping diagnosis for issue #1 is a plausible
+        explanation fitting the description, not something directly observed/reproduced here.
+- [x] **Diagnostic logging**, per request to investigate too many false-positive duplicates:
+      `DuplicationService.evaluatePair` now logs pHash/mHash distances against both the strong and
+      candidate thresholds for every pair, plus an explicit verdict (strong-hash match / outside
+      candidate band / feature-match confirmed / feature-match rejected).
+      `confirmWithFeatureMatching` logs keypoint counts, good-match count vs. `ORB_MIN_GOOD_MATCHES`,
+      and homography inlier count vs. `ORB_MIN_INLIERS`. `checkDuplication` logs the date window
+      scanned per photo, candidate page sizes, and the final duplicate set. Not yet run against
+      real data — next step once logs come back is to see which gate (hash thresholds vs. ORB/
+      homography thresholds) is actually letting false positives through, then tighten the
+      relevant constant.
+- [x] **Bug fix**: reported symptom — a failed upload (`Uploads` panel showing `FAILED` with no
+      error text and no Retry button, e.g. `IMG_20260504_162457.jpg`). Root cause: the Retry
+      button lived inside `{item.error && (...)}` in `UploadManager.jsx`, but
+      `TaskWorkerManager.processTask`'s catch-all did `task.setErrorMessage(e.getMessage())` — for
+      exceptions with no message (confirmed: `NoUserFoundException`, `NoMatchUserSpaceException`
+      both have only a no-arg constructor, so `getMessage()` is always null), `errorMessage` came
+      back `null` from `/api/tasks/{id}`, so the whole error block — text *and* Retry button —
+      silently never rendered even though the item was genuinely `FAILED`. Fixed both sides:
+      backend now falls back to `e.getClass().getSimpleName()` when `getMessage()` is null, and
+      frontend now renders the error block (with a new `unknownUploadError` fallback string) and
+      the Retry button whenever `item.status === 'FAILED'`, independent of whether `item.error` is
+      set. Added a regression test in `UploadManager.test.jsx` covering a task that fails via
+      polling with `errorMessage: null`. 78/78 tests pass (including the two pre-existing Retry
+      tests for client-rejected files and server chunk-upload failure, which already covered the
+      cases where `error` was non-null).
+- [x] **Backend perf/correctness refactor**: ORB descriptors/keypoints are now computed once at
+      upload time and persisted, instead of being recomputed (reload both images from disk + rerun
+      ORB detection) on every candidate comparison. `PhotoEntity` gained `orbDescriptors` (raw ORB
+      descriptor matrix bytes, row-major, `ORB_DESCRIPTOR_COLS`=32 bytes/keypoint) and
+      `orbKeypoints` (keypoint x/y as 4-byte floats, index-aligned with the descriptor rows) —
+      `BYTEA` columns picked up automatically via `ddl-auto: update`, no manual migration needed.
+      `DuplicationService.preprocess` now also calls the new `computeAndStoreOrbFeatures` on the
+      same rotated+resized image already used for pHash/averageHash (grayscale via `cvtColor`).
+      `confirmWithFeatureMatching` was rewritten to reconstruct a `Mat`/point array from the two
+      photos' stored bytes (`bytesToDescriptorMat`, `bytesToPoints`) instead of loading images —
+      `loadGrayscaleForFeatureMatching` and the old `KeyPointVector`-based
+      `countHomographyInliers` overload were removed as dead code. Side effect worth noting: the
+      old per-comparison path used `imread(path, IMREAD_GRAYSCALE)` directly and never called
+      `autoRotate`, so EXIF-rotated photos were compared unrotated for the feature-matching tier
+      specifically (pHash/averageHash were unaffected, they always went through `preprocess`) —
+      that's now fixed as a byproduct, since the stored descriptors come from the same
+      rotate-then-resize pipeline as the hashes. Photos hashed before this change have no stored
+      descriptors yet; `confirmWithFeatureMatching` logs and returns `false` for those (candidate
+      pairs just fall through to "not confirmed") until they're re-hashed — not currently
+      backfilled, no migration/re-hash job was requested. Verified via direct `javac` compilation
+      against the `~/.m2` classpath (no `mvn` available in this shell) — not run against real
+      photos.
+
 ## Open / Not Yet Done
 
 - [ ] More regression tests worth adding, deliberately left out of the initial batch to keep

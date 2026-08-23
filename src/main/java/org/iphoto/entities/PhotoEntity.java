@@ -13,7 +13,7 @@ import java.time.LocalDateTime;
 import java.util.*;
 
 @Entity
-@Table(name = "photos")
+@Table(name = "photos", uniqueConstraints = {@UniqueConstraint(name = "hash_user_unique_photos", columnNames = { "file_hash", "user_id"})})
 @EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true) // Changed callSuper to true
 @ToString(onlyExplicitlyIncluded = true)
 @Getter
@@ -35,10 +35,15 @@ public class PhotoEntity extends BaseEntity  { // Extends BaseEntity
     @ToString.Include
     private String originalPath;
 
+    @ManyToOne
+    @JoinColumn(name = "user_id", nullable = false)
+    @ToString.Include
+    private UserEntity user;
+
     @Column(length = 1024)
     private String thumbnailPath;
 
-    @Column(unique = true) // This unique constraint might need to be adjusted to be unique per user
+    @Column(nullable = false)
     @ToString.Include
     @EqualsAndHashCode.Include
     private String fileHash;
@@ -66,6 +71,16 @@ public class PhotoEntity extends BaseEntity  { // Extends BaseEntity
     @Column(columnDefinition = "BYTEA")
     private byte[] mhash;
 
+    // Raw ORB descriptor matrix (row-major, ORB_DESCRIPTOR_COLS bytes per keypoint) computed once
+    // at upload time, so duplicate confirmation doesn't need to reload the image and re-run ORB
+    // detection for every candidate pair. See DuplicationService.
+    @Column(columnDefinition = "BYTEA")
+    private byte[] orbDescriptors;
+
+    // Keypoint (x, y) pairs as 4-byte floats, index-aligned with orbDescriptors' rows.
+    @Column(columnDefinition = "BYTEA")
+    private byte[] orbKeypoints;
+
     private LocalDateTime garbageAt;
     private LocalDateTime createdAt;
 
@@ -85,7 +100,6 @@ public class PhotoEntity extends BaseEntity  { // Extends BaseEntity
     )
     @OnDelete(action = OnDeleteAction.CASCADE)
     private List<FaceEntity> faces = new ArrayList<>();
-
 
     @Override
     public boolean isNew() {

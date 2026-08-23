@@ -3,7 +3,7 @@ import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import { Lock } from 'lucide-react';
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
-export default function ShareLoginPage() {
+export default function ShareLoginPage({ checkAuthStatus }) {
   const { messages } = useLocale(); // Use the useLocale hook
   const { name } = useParams();
   const location = useLocation();
@@ -49,6 +49,13 @@ export default function ShareLoginPage() {
       // Authentication successful, backend should have set session
       const data = await res.json(); // Expecting ShareResponse
       if (data.selectedAlbumIds) {
+        // /albums/:albumId is only reachable once the app-wide `isAuthenticated` state is
+        // true (see App.jsx routing). That state no longer re-verifies itself on every
+        // navigation (useAuth.js), so it must be refreshed explicitly here before navigating,
+        // the same way the main Login form does.
+        if (checkAuthStatus) {
+          await checkAuthStatus();
+        }
         navigate(`/albums/${data.selectedAlbumIds}`); // Redirect to album
       } else {
         setAuthError(messages["albumIdNotReceived"]);

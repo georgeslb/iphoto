@@ -6,6 +6,8 @@ import lombok.Getter;
 import lombok.Setter;
 import lombok.ToString;
 import lombok.experimental.SuperBuilder;
+import org.hibernate.annotations.OnDelete;
+import org.hibernate.annotations.OnDeleteAction;
 import org.iphoto.model.DuplicateStatus;
 
 import java.util.Set;
@@ -28,9 +30,10 @@ public class DuplicateEntity extends BaseEntity {
     @ManyToMany(fetch = FetchType.LAZY)
     @JoinTable(
             name = "duplicate_photos",
-            joinColumns = @JoinColumn(name = "duplicate_id"),
+            joinColumns = @JoinColumn(name = "duplicate_id" ),
             inverseJoinColumns = @JoinColumn(name = "photo_id")
     )
+    @OnDelete(action = OnDeleteAction.CASCADE)
     private Set<PhotoEntity> photos;
 
     @Enumerated(EnumType.STRING)
@@ -39,4 +42,7 @@ public class DuplicateEntity extends BaseEntity {
     @Column(unique = true)
     private String hash;
 
+    public DuplicateEntity() {
+
+    }
 }

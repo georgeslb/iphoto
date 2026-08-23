@@ -1,6 +1,7 @@
 package org.iphoto.model;
 
 import java.time.LocalDateTime;
+import java.util.Set;
 
 public record Photo(
     String id,
@@ -18,5 +19,6 @@ public record Photo(
     String fileHash,
     Integer width,
     Integer height,
-    LocalDateTime fileSystemCreationDate
+    LocalDateTime fileSystemCreationDate,
+    Set<Photo> duplicates
 ) {}

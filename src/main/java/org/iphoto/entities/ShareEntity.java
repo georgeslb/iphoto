@@ -13,7 +13,7 @@ import java.time.LocalDateTime;
 import java.util.UUID;
 
 @Entity
-@Table(name = "shares")
+@Table(name = "shares", uniqueConstraints = {@UniqueConstraint(name = "name_space_unique_shares", columnNames = { "name", "space_id"})})
 @EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true) // Changed callSuper to true
 @Getter
 @Setter
@@ -28,7 +28,7 @@ public class ShareEntity extends BaseEntity { // Extends BaseEntity
     private UUID id;
 
 
-    @Column(nullable = false, unique = true)
+    @Column(nullable = false)
     @ToString.Include
     private String name;
 

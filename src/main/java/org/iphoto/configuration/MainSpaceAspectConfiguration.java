@@ -33,7 +33,7 @@ public class MainSpaceAspectConfiguration {
         public void enableSpaceFilter(JoinPoint jp) {
             if (!Thread.currentThread().getName().startsWith("backend-task")) {
                 String methodName = jp.getSignature().getName();
-                log.info("Executing method: {}", methodName);
+                log.debug("Executing method: {}", methodName);
                 Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
                 String username = authentication.getName();
                 UserEntity userEntity = userRepository.findByUsername(username)

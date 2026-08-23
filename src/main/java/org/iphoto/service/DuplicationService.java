@@ -4,9 +4,16 @@ import lombok.AccessLevel;
 import lombok.RequiredArgsConstructor;
 import lombok.experimental.FieldDefaults;
 import lombok.extern.slf4j.Slf4j;
+import org.bytedeco.javacpp.indexer.FloatIndexer;
 import org.bytedeco.javacv.FFmpegFrameGrabber;
+import org.bytedeco.opencv.opencv_core.DMatch;
+import org.bytedeco.opencv.opencv_core.DMatchVector;
+import org.bytedeco.opencv.opencv_core.KeyPointVector;
 import org.bytedeco.opencv.opencv_core.Mat;
+import org.bytedeco.opencv.opencv_core.Point2f;
 import org.bytedeco.opencv.opencv_core.Size;
+import org.bytedeco.opencv.opencv_features2d.BFMatcher;
+import org.bytedeco.opencv.opencv_features2d.ORB;
 import org.bytedeco.opencv.opencv_img_hash.AverageHash;
 import org.bytedeco.opencv.opencv_img_hash.PHash;
 import org.iphoto.entities.*;
@@ -31,8 +38,12 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
+import static org.bytedeco.opencv.global.opencv_calib3d.RANSAC;
+import static org.bytedeco.opencv.global.opencv_calib3d.findHomography;
 import static org.bytedeco.opencv.global.opencv_core.*;
 import static org.bytedeco.opencv.global.opencv_imgcodecs.imread;
+import static org.bytedeco.opencv.global.opencv_imgproc.COLOR_BGR2GRAY;
+import static org.bytedeco.opencv.global.opencv_imgproc.cvtColor;
 import static org.bytedeco.opencv.global.opencv_imgproc.resize;
 import static org.iphoto.model.DuplicateStatus.CLOSED;
 import static org.iphoto.model.DuplicateStatus.OPEN;
@@ -53,6 +64,24 @@ public class DuplicationService {
     private CopyOnWriteArrayList<UUID> duplicationInProgress = new CopyOnWriteArrayList<>();
 
     private static final int MAX_SIZE = 1000;
+
+    // Global hash distances (out of 64 bits) tight enough to confirm a duplicate on their own.
+    private static final int STRONG_PHASH_MAX = 12;
+    private static final int STRONG_MHASH_MAX = 10;
+    // Looser band: hashes alone are inconclusive (could be a crop/edit/recompression),
+    // so fall back to local feature matching instead of a whole-image hash comparison.
+    private static final int CANDIDATE_PHASH_MAX = 24;
+    private static final int CANDIDATE_MHASH_MAX = 20;
+
+    private static final int ORB_MAX_FEATURES = 500;
+    // ORB descriptors are 256-bit; Hamming distance below this is considered a "good" match.
+    private static final int ORB_MAX_MATCH_DISTANCE = 64;
+    private static final int ORB_MIN_GOOD_MATCHES = 15;
+    // Minimum number of good matches that must also agree on a single geometric transform
+    // (via RANSAC homography), which filters out coincidental matches on repetitive textures.
+    private static final int ORB_MIN_INLIERS = 10;
+    // Bytes per ORB descriptor row, fixed by ORB.create(..., WTA_K=2, ...) below (256-bit descriptor).
+    private static final int ORB_DESCRIPTOR_COLS = 32;
 
 
     public void deleteDuplicatesForPhoto(PhotoEntity photo) {
@@ -184,9 +213,52 @@ public class DuplicationService {
 
             hash.release();
         }
+
+        computeAndStoreOrbFeatures(photo, image);
+
         rotatedImage.release();
         resizedImage.release();
         image.release();
+    }
+
+    // ---------------------------------------------------
+    // ORB FEATURE EXTRACTION (computed once at upload time, persisted alongside phash/mhash)
+    // ---------------------------------------------------
+
+    private void computeAndStoreOrbFeatures(PhotoEntity photo, Mat image) {
+        Mat gray = new Mat();
+        cvtColor(image, gray, COLOR_BGR2GRAY);
+        try (ORB orb = ORB.create(ORB_MAX_FEATURES, 1.2f, 8, 31, 0, 2, ORB.HARRIS_SCORE, 31, 20)) {
+            KeyPointVector keypoints = new KeyPointVector();
+            Mat descriptors = new Mat();
+            orb.detectAndCompute(gray, new Mat(), keypoints, descriptors);
+
+            if (!descriptors.empty()) {
+                photo.setOrbDescriptors(matToBytes(descriptors));
+                photo.setOrbKeypoints(keypointsToBytes(keypoints));
+            }
+            descriptors.release();
+        } finally {
+            gray.release();
+        }
+    }
+
+    private byte[] matToBytes(Mat mat) {
+        byte[] bytes = new byte[(int) (mat.total() * mat.elemSize())];
+        mat.data().get(bytes);
+        return bytes;
+    }
+
+    private byte[] keypointsToBytes(KeyPointVector keypoints) {
+        int n = (int) keypoints.size();
+        ByteBuffer buffer = ByteBuffer.allocate(n * 8);
+        for (int i = 0; i < n; i++) {
+            Point2f pt = keypoints.get(i).pt();
+            buffer.putFloat(pt.x());
+            buffer.putFloat(pt.y());
+            pt.close();
+        }
+        return buffer.array();
     }
 
     // ---------------------------------------------------
@@ -303,10 +375,14 @@ public class DuplicationService {
                         Pageable pageable = PageRequest.of(0, 100);
                         Slice<PhotoEntity> photosSlice;
                         Set<PhotoEntity> duplicatesPhotos = new HashSet<>();
+                        log.info("checkDuplication photo={} spaceId={} dateTaken={}: scanning candidates in [{}, {}]",
+                                photo.getId(), photo.getSpace().getId(), photo.getDateTaken(),
+                                photo.getDateTaken().minusDays(1), photo.getDateTaken().plusDays(1));
                         do {
                             photosSlice =
                                     photoRepository.findBySpaceIdAndDateTakenBetweenAndPhashNotNullAndMhashNotNullAndIsGarbageFalse(photo.getSpace().getId(), photo.getDateTaken().minusDays(1),
                                             photo.getDateTaken().plusDays(1), pageable);
+                            log.info("checkDuplication photo={}: candidate page with {} photo(s)", photo.getId(), photosSlice.getContent().size());
                             duplicationInProgress.addAll(photosSlice.getContent().stream().map(PhotoEntity::getId).toList());
                             List<PhotoEntity> duplicatePhotosForIteration = compare(photo, photosSlice.getContent());
                             if (!duplicatePhotosForIteration.isEmpty()) {
@@ -315,6 +391,10 @@ public class DuplicationService {
                             pageable = photosSlice.nextPageable();
 
                         } while (photosSlice.hasNext());
+
+                        log.info("checkDuplication photo={}: found {} duplicate(s): {}",
+                                photo.getId(), duplicatesPhotos.size(),
+                                duplicatesPhotos.stream().map(PhotoEntity::getId).toList());
 
                         if (!duplicatesPhotos.isEmpty()) {
                             try {
@@ -342,18 +422,150 @@ public class DuplicationService {
         return photos.stream()
                 .filter(targetPhoto -> targetPhoto.getContentType().contains("image"))
                 .filter(targetPhoto -> !targetPhoto.getId().equals(photo.getId()))
-                .map(targetPhoto -> {
-                    log.info("testing similarity between photo with id: {} and photo with id: {}", photo.getId(), targetPhoto.getId());
-                    int pHashDistance = calculateHammingDistance(photo.getPhash(), targetPhoto.getPhash());
-                    int averageHashDistance = calculateHammingDistance(photo.getMhash(), targetPhoto.getMhash());
-                    if (pHashDistance <= 12 && averageHashDistance <=10) {
-                        log.info("find similarity between photo with id: {} and photo with id: {} and score {}/{} ", photo.getId(), targetPhoto.getId(), pHashDistance,  averageHashDistance);
-                        return targetPhoto;
-                    }
-                    return null;
-                })
+                .map(targetPhoto -> evaluatePair(photo, targetPhoto))
                 .filter(Objects::nonNull)
                 .toList();
+    }
+
+    private PhotoEntity evaluatePair(PhotoEntity photo, PhotoEntity targetPhoto) {
+        int pHashDistance = calculateHammingDistance(photo.getPhash(), targetPhoto.getPhash());
+        int averageHashDistance = calculateHammingDistance(photo.getMhash(), targetPhoto.getMhash());
+        log.info("evaluatePair photo={} target={}: pHashDistance={} (strong<={}, candidate<={}), mHashDistance={} (strong<={}, candidate<={})",
+                photo.getId(), targetPhoto.getId(), pHashDistance, STRONG_PHASH_MAX, CANDIDATE_PHASH_MAX,
+                averageHashDistance, STRONG_MHASH_MAX, CANDIDATE_MHASH_MAX);
+
+        if (pHashDistance <= STRONG_PHASH_MAX && averageHashDistance <= STRONG_MHASH_MAX) {
+            log.info("DUPLICATE via strong hash match: photo={} target={} pHashDistance={} mHashDistance={}",
+                    photo.getId(), targetPhoto.getId(), pHashDistance, averageHashDistance);
+            return targetPhoto;
+        }
+
+        boolean plausibleByHash = pHashDistance <= CANDIDATE_PHASH_MAX || averageHashDistance <= CANDIDATE_MHASH_MAX;
+        if (!plausibleByHash) {
+            log.info("NOT duplicate: photo={} target={} outside candidate hash band, skipping feature matching",
+                    photo.getId(), targetPhoto.getId());
+            return null;
+        }
+
+        log.info("candidate hash band: photo={} target={} falling back to ORB feature matching", photo.getId(), targetPhoto.getId());
+        if (confirmWithFeatureMatching(photo, targetPhoto)) {
+            log.info("DUPLICATE via feature matching: photo={} target={}", photo.getId(), targetPhoto.getId());
+            return targetPhoto;
+        }
+        log.info("NOT duplicate: photo={} target={} feature matching did not confirm", photo.getId(), targetPhoto.getId());
+        return null;
+    }
+
+    // ---------------------------------------------------
+    // FEATURE-BASED CONFIRMATION (ORB + RANSAC homography)
+    // ---------------------------------------------------
+    // Global hashes (pHash/averageHash) summarize the whole image as one signature, so they
+    // miss crops, rotations beyond what EXIF corrects, and localized edits entirely. ORB
+    // matches local keypoints instead, and the homography check confirms the matches agree on
+    // a single consistent geometric transform (protects against coincidental matches on
+    // repetitive textures like foliage or brick walls).
+
+    private boolean confirmWithFeatureMatching(PhotoEntity photo, PhotoEntity targetPhoto) {
+        byte[] descriptorBytes1 = photo.getOrbDescriptors();
+        byte[] descriptorBytes2 = targetPhoto.getOrbDescriptors();
+        if (descriptorBytes1 == null || descriptorBytes1.length == 0
+                || descriptorBytes2 == null || descriptorBytes2.length == 0) {
+            log.info("feature matching photo={} target={}: no stored ORB descriptors (not yet hashed?)",
+                    photo.getId(), targetPhoto.getId());
+            return false;
+        }
+
+        Mat descriptors1 = null;
+        Mat descriptors2 = null;
+        try (BFMatcher matcher = BFMatcher.create(NORM_HAMMING, true)) {
+            descriptors1 = bytesToDescriptorMat(descriptorBytes1);
+            descriptors2 = bytesToDescriptorMat(descriptorBytes2);
+
+            DMatchVector matches = new DMatchVector();
+            matcher.match(descriptors1, descriptors2, matches);
+
+            List<DMatch> goodMatches = new ArrayList<>();
+            for (long i = 0; i < matches.size(); i++) {
+                DMatch match = matches.get(i);
+                if (match.distance() <= ORB_MAX_MATCH_DISTANCE) {
+                    goodMatches.add(match);
+                }
+            }
+
+            log.info("feature matching photo={} target={}: keypoints1={} keypoints2={} totalMatches={} goodMatches={} (min required {})",
+                    photo.getId(), targetPhoto.getId(), descriptors1.rows(), descriptors2.rows(), matches.size(), goodMatches.size(), ORB_MIN_GOOD_MATCHES);
+
+            if (goodMatches.size() < ORB_MIN_GOOD_MATCHES) {
+                return false;
+            }
+
+            float[] points1 = bytesToPoints(photo.getOrbKeypoints());
+            float[] points2 = bytesToPoints(targetPhoto.getOrbKeypoints());
+            int inliers = countHomographyInliers(goodMatches, points1, points2);
+            log.info("feature matching photo={} target={}: homography inliers={} (min required {})",
+                    photo.getId(), targetPhoto.getId(), inliers, ORB_MIN_INLIERS);
+            return inliers >= ORB_MIN_INLIERS;
+        } catch (Exception e) {
+            log.warn("feature matching failed between photo {} and {}: {}", photo.getId(), targetPhoto.getId(), e.getMessage());
+            return false;
+        } finally {
+            if (descriptors1 != null) {
+                descriptors1.release();
+            }
+            if (descriptors2 != null) {
+                descriptors2.release();
+            }
+        }
+    }
+
+    private Mat bytesToDescriptorMat(byte[] descriptorBytes) {
+        int rows = descriptorBytes.length / ORB_DESCRIPTOR_COLS;
+        Mat mat = new Mat(rows, ORB_DESCRIPTOR_COLS, CV_8UC1);
+        mat.data().put(descriptorBytes);
+        return mat;
+    }
+
+    private float[] bytesToPoints(byte[] keypointBytes) {
+        if (keypointBytes == null) {
+            return new float[0];
+        }
+        ByteBuffer buffer = ByteBuffer.wrap(keypointBytes);
+        float[] points = new float[keypointBytes.length / 4];
+        for (int i = 0; i < points.length; i++) {
+            points[i] = buffer.getFloat();
+        }
+        return points;
+    }
+
+    private int countHomographyInliers(List<DMatch> goodMatches, float[] points1, float[] points2) {
+        int n = goodMatches.size();
+        Mat srcPoints = new Mat(n, 1, CV_32FC2);
+        Mat dstPoints = new Mat(n, 1, CV_32FC2);
+        Mat mask = new Mat();
+        Mat homography = null;
+        try (FloatIndexer srcIdx = srcPoints.createIndexer(); FloatIndexer dstIdx = dstPoints.createIndexer()) {
+            for (int i = 0; i < n; i++) {
+                DMatch match = goodMatches.get(i);
+                int queryIdx = match.queryIdx();
+                int trainIdx = match.trainIdx();
+                srcIdx.put(i, 0, 0, points1[queryIdx * 2]);
+                srcIdx.put(i, 0, 1, points1[queryIdx * 2 + 1]);
+                dstIdx.put(i, 0, 0, points2[trainIdx * 2]);
+                dstIdx.put(i, 0, 1, points2[trainIdx * 2 + 1]);
+            }
+            homography = findHomography(srcPoints, dstPoints, mask, RANSAC, 5.0);
+            if (homography.empty()) {
+                return 0;
+            }
+            return countNonZero(mask);
+        } finally {
+            srcPoints.release();
+            dstPoints.release();
+            mask.release();
+            if (homography != null) {
+                homography.release();
+            }
+        }
     }
 
     public Slice<DuplicateGroupDTO> getDuplicates(Pageable pageable) { // Added UserEntity parameter
@@ -398,4 +610,14 @@ public class DuplicationService {
         return Long.bitCount(xorResult);
     }
 
+    public Set<PhotoEntity> getDuplicates(PhotoEntity photo) {
+        return duplicateRepository.findByPhotosIdIn(List.of(photo.getId()))
+                .stream()
+                .map(DuplicateEntity::getPhotos)
+                .flatMap(Collection::stream)
+                .filter(photoEntity -> !photoEntity.getId().equals(photo.getId()))
+                .filter(p -> !p.getIsGarbage())
+                .collect(Collectors.toSet());
+
+    }
 }

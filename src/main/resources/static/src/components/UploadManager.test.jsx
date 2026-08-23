@@ -56,6 +56,30 @@ describe('UploadManager retry button', () => {
 
     await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(2));
   });
+
+  // Regression: the backend can mark a task FAILED with a null errorMessage (e.g. an
+  // exception thrown with no message). The Retry button used to live inside the
+  // `item.error && (...)` block, so a null error silently hid it even though the item
+  // was FAILED — same failure mode as the unsupported-type case above, but reached via
+  // task polling instead of client-side rejection.
+  it('still shows a Retry button when the task fails via polling with no error message', async () => {
+    global.fetch = vi.fn((url) => {
+      if (url === '/api/upload/chunk') {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ status: 'completed', task: { id: 'task-1', status: 'PENDING', photoId: null } }) });
+      }
+      if (url === '/api/tasks/task-1') {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ id: 'task-1', status: 'FAILED', errorMessage: null }) });
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    });
+    renderHarness();
+    const goodFile = new File(['image bytes'], 'photo.jpg', { type: 'image/jpeg' });
+
+    selectFiles([goodFile]);
+
+    expect(await screen.findByText('FAILED', {}, { timeout: 6000 })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument();
+  }, 12000);
 });
 
 describe('UploadManager filename link opens a preview popup', () => {

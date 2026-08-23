@@ -124,14 +124,14 @@ public class PhotoController {
     }
 
     @PostMapping("/garbage")
-    public ResponseEntity<Void> moveAssetsToGarbage(@RequestBody List<UUID> ids) {
+    public ResponseEntity<Void> moveAssetsToGarbage(@RequestBody List<UUID> ids) throws Exception {
         UserEntity currentUser = getCurrentUser();
         photoService.moveAssetsToGarbage(currentUser, ids);
         return ResponseEntity.ok().build();
     }
 
     @PostMapping("/main")
-    public ResponseEntity<Void> moveAssetsToMain(@RequestBody List<UUID> ids) {
+    public ResponseEntity<Void> moveAssetsToMain(@RequestBody List<UUID> ids) throws Exception {
         UserEntity user = getCurrentUser();
         photoService.moveAssetsToMain(user, ids);
         return ResponseEntity.ok().build();
@@ -158,7 +158,7 @@ public class PhotoController {
     }
 
     @PostMapping("/garbage/restore")
-    public ResponseEntity<Void> restoreAssets(@RequestBody List<UUID> ids) {
+    public ResponseEntity<Void> restoreAssets(@RequestBody List<UUID> ids) throws Exception {
         UserEntity currentUser = getCurrentUser();
         photoService.restoreAssetsFromGarbage(currentUser,ids);
         return ResponseEntity.ok().build();

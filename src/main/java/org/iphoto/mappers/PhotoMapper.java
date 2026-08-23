@@ -5,11 +5,15 @@ import org.iphoto.model.Photo;
 import org.mapstruct.Mapper;
 
 import java.time.format.DateTimeFormatter;
+import java.util.Set;
 
 @Mapper(componentModel = "spring")
 public interface PhotoMapper {
-
     default Photo photoEntityToPhoto(PhotoEntity entity) {
+        return photoEntityToPhoto(entity, null);
+    }
+
+    default Photo photoEntityToPhoto(PhotoEntity entity, Set<Photo> duplicates) {
         DateTimeFormatter mainDateFmt = DateTimeFormatter.ofPattern("MMM dd, yyyy");
         DateTimeFormatter fullDateTimeFmt = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
         DateTimeFormatter groupDateFmt = DateTimeFormatter.ofPattern("EEEE, MMM dd, yyyy");
@@ -44,7 +48,6 @@ public interface PhotoMapper {
                 entity.getFileHash(),
                 entity.getWidth(),
                 entity.getHeight(),
-                entity.getFileSystemCreationDate()
-        );
+                entity.getFileSystemCreationDate(),duplicates) ;
     }
 }

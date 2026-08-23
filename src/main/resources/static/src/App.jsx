@@ -51,7 +51,7 @@ function App() {
   const mainContentRef = useRef(null);
   const fileInputRef = useRef(null); // Declare fileInputRef here
 
-  const { isAuthenticated, userRole, loadingAuth, handleLogout } = useAuth(navigate, location);
+  const { isAuthenticated, userRole, loadingAuth, handleLogout, checkAuthStatus } = useAuth(navigate, location);
 
   const {
     backgroundLocation,
@@ -260,7 +260,7 @@ function App() {
   }
 
   const libraryPhotoGrid = (
-    <PhotoGrid photos={photos} type={selectedMenu} hasMore={hasMore} setPage={setPage} selectedIds={selectedIds} setSelectedIds={setSelectedIds} setSelectedPhoto={handlePhotoClick} isLightboxOpen={isLightboxOpen} />
+    <PhotoGrid photos={photos} type={selectedMenu} hasMore={hasMore} setPage={setPage} selectedIds={selectedIds} setSelectedIds={setSelectedIds} setSelectedPhoto={handlePhotoClick} isLightboxOpen={isLightboxOpen} handleMoveToGarbage={handleMoveToGarbage} />
   );
 
   const albumDetailElement = (
@@ -273,6 +273,7 @@ function App() {
         setSelectedIds={setSelectedIds}
         handlePhotoClick={handlePhotoClick}
         isLightboxOpen={isLightboxOpen}
+        handleMoveToGarbage={handleMoveToGarbage}
     />
   );
 
@@ -330,7 +331,7 @@ function App() {
           )}
 
           <Routes location={backgroundLocation || location}>
-            <Route path="/login" element={<Login />} />
+            <Route path="/login" element={<Login checkAuthStatus={checkAuthStatus} />} />
             {isAuthenticated ? (
                 <>
                   <Route path="/" element={libraryPhotoGrid} />
@@ -397,6 +398,7 @@ function App() {
                         setSelectedIds={setSelectedIds}
                         handlePhotoClick={handlePhotoClick}
                         isLightboxOpen={isLightboxOpen}
+                        handleMoveToGarbage={handleMoveToGarbage}
                     />
                   } />
                   <Route path="/share-links" element={
@@ -411,11 +413,11 @@ function App() {
                 </>
             ) : (
                 // Redirect all non-share, non-login paths to login if not authenticated
-                <Route path="*" element={<Login />} />
+                <Route path="*" element={<Login checkAuthStatus={checkAuthStatus} />} />
             )}
             {/* Share routes are always accessible */}
             <Route path="/share/:name" element={<ShareLinkPage />} />
-            <Route path="/share/:name/login" element={<ShareLoginPage />} />
+            <Route path="/share/:name/login" element={<ShareLoginPage checkAuthStatus={checkAuthStatus} />} />
           </Routes>
         </main>
 

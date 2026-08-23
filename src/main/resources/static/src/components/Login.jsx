@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import './Login.css'; // Assuming you'll create a Login.css for styling
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
-function Login() {
+function Login({ checkAuthStatus }) {
     const { messages } = useLocale(); // Use the useLocale hook
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
@@ -24,7 +24,13 @@ function Login() {
             });
 
             if (response.ok) {
-                // Login successful, redirect to home or dashboard
+                // Login successful: re-verify the session so useAuth's isAuthenticated flips to
+                // true (it no longer re-checks on every navigation, only on demand like this),
+                // then navigate home. Without this, isAuthenticated stays false and the
+                // redirect effect in useAuth.js immediately bounces back to /login.
+                if (checkAuthStatus) {
+                    await checkAuthStatus();
+                }
                 navigate('/');
             } else {
                 // Login failed

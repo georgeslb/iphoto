@@ -76,4 +76,53 @@ describe('usePhotoData', () => {
     await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(2));
     expect(global.fetch.mock.calls[1][0]).toContain('page=1');
   });
+
+  // Regression: closing the Lightbox used to re-trigger a page-0 reset fetch (isLightboxOpen
+  // was a dependency of the load-on-path-change effect), silently discarding any pages loaded
+  // past page 0 — visible as "only the first two pages show up, I have to scroll to reload"
+  // after viewing a photo from page 2+ and closing the Lightbox.
+  it('does not reset the loaded photos when the Lightbox merely closes on the same view', async () => {
+    global.fetch = vi.fn(() =>
+      Promise.resolve({ json: () => Promise.resolve({ content: [{ id: '1' }], last: false }) })
+    );
+
+    const { result, rerender } = renderHook(
+      ({ path, lightboxOpen }) => usePhotoData(path, lightboxOpen),
+      { wrapper: localeWrapper, initialProps: { path: '/', lightboxOpen: false } }
+    );
+
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
+
+    act(() => { result.current.setPage(p => p + 1); });
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.photos).toHaveLength(2));
+
+    // Open then close the Lightbox without the underlying view changing.
+    rerender({ path: '/', lightboxOpen: true });
+    rerender({ path: '/', lightboxOpen: false });
+
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(result.current.photos).toHaveLength(2);
+  });
+
+  // The deferred-load case the isLightboxOpen guard exists for: landing directly on an
+  // /asset/:id URL before the grid has ever loaded. Closing the Lightbox should still trigger
+  // the first load in that case.
+  it('loads photos once the Lightbox closes, when landing directly on an asset URL', async () => {
+    global.fetch = vi.fn(() =>
+      Promise.resolve({ json: () => Promise.resolve({ content: [{ id: '1' }], last: true }) })
+    );
+
+    const { result, rerender } = renderHook(
+      ({ path, lightboxOpen }) => usePhotoData(path, lightboxOpen),
+      { wrapper: localeWrapper, initialProps: { path: '/', lightboxOpen: true } }
+    );
+
+    expect(global.fetch).not.toHaveBeenCalled();
+
+    rerender({ path: '/', lightboxOpen: false });
+
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
+    expect(result.current.photos).toHaveLength(1);
+  });
 });

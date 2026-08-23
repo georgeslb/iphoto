@@ -6,6 +6,7 @@ import jakarta.annotation.PreDestroy;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.TaskEntity;
+import org.iphoto.exception.PhotoUploadException;
 import org.iphoto.exception.ServiceNotAvailableException;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.UploadStatus;
@@ -101,7 +102,7 @@ public class TaskWorkerManager {
             catch (Throwable e) {
                 log.error("Task failed", e);
                 task.setStatus(TaskStatus.FAILED);
-                task.setErrorMessage(e.getMessage());
+                task.setErrorMessage(e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
                 StringWriter sw = new StringWriter();
                 e.printStackTrace(new PrintWriter(sw));
                 task.setStackTrace(sw.toString());
@@ -120,6 +121,10 @@ public class TaskWorkerManager {
             case TRASHED -> {
                 task.setStatus(TaskStatus.TRASHED);
                 task.setErrorMessage("Duplicate asset detected and trashed");
+            }
+            case PENDING -> {
+                task.setStatus(TaskStatus.PENDING);
+                task.setErrorMessage("Pending");
             }
             default -> task.setStatus(TaskStatus.COMPLETED);
         }
@@ -153,8 +158,8 @@ public class TaskWorkerManager {
         }).orElseGet(() -> {
             try {
                 return photoUploadService.processNewAsset(task, payload, tempFile, hash);
-            } catch (IOException e) {
-                throw new RuntimeException(e);
+            } catch (Exception e) {
+                throw new PhotoUploadException(e);
             }
         });
     }

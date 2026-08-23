@@ -9,6 +9,7 @@ import com.drew.metadata.exif.GpsDirectory;
 import com.drew.metadata.jpeg.JpegDirectory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.common.util.StringUtils;
+import jakarta.persistence.EntityManager;
 import lombok.AccessLevel;
 import lombok.AllArgsConstructor;
 import lombok.experimental.FieldDefaults;
@@ -19,18 +20,20 @@ import org.bytedeco.javacv.FFmpegFrameGrabber;
 import org.iphoto.entities.*;
 import org.iphoto.exception.NoMatchUserSpaceException;
 import org.iphoto.exception.NoUserFoundException;
-import org.iphoto.exception.PhotoRetryableErrorException;
+import org.iphoto.exception.SpaceLockingException;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.UploadStatus;
 import org.iphoto.properties.IPhotoProperties;
 import org.iphoto.repository.PhotoMetadataRepository;
 import org.iphoto.repository.PhotoRepository;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Recover;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.io.File;
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -61,15 +64,12 @@ public class PhotoUploadService {
     private SpaceService spaceService;
     private UserService userService;
     private TaskMapper taskMapper;
+    private final EntityManager entityManager;
 
-    public UploadStatus processNewAsset(TaskEntity task, Map<String, String> payload, File tempFile, String hash) throws IOException {
-        String contentType = payload.get("contentType");
-        Path storageDir = Paths.get(iPhotoProperties.getStorage().getPhotos());
-        if (!Files.exists(storageDir)) Files.createDirectories(storageDir);
-        Path finalPath = storageDir.resolve(task.getPhotoId().toString() + "." + FilenameUtils.getExtension(payload.get("originalFileName")));
-        Files.move(tempFile.toPath(), finalPath);
-        String thumbPath = thumbnailService.generateThumbnail(finalPath.toString(), task.getPhotoId().toString(), contentType);
 
+
+    @Retryable(maxAttempts = 5, retryFor = {SpaceLockingException.class}, backoff = @Backoff(delay = 1000))
+    public UploadStatus processNewAsset(TaskEntity task, Map<String, String> payload, File tempFile, String hash) throws Exception {
         UserEntity user = userService.findById(UUID.fromString(payload.get("userId"))).orElseThrow(NoUserFoundException::new);
 
         SpaceEntity space;
@@ -80,56 +80,72 @@ public class PhotoUploadService {
             space = user.getSpaces().stream().filter(userSpace -> userSpace.getId().equals(UUID.fromString(spaceId))).findAny().orElseThrow(NoMatchUserSpaceException::new);
         }
 
-        PhotoEntity photo = PhotoEntity.builder().id(task.getPhotoId())
-                .fileName(payload.get("originalFileName"))
-                .originalPath(finalPath.toString())
-                .thumbnailPath(thumbPath)
-                .fileHash(hash)
-                .fileSize(Files.size(finalPath))
-                .contentType(contentType)
-                .space(space)
-                .build();
-        log.info ("upload photo {} in space {} ", task.getId(), space.getName());
-        try {
-            spaceService.increaseSpacePhotoCount(space);
-        } catch (PhotoRetryableErrorException e) {
-            task.setErrorMessage(e.getMessage());
-            task.setStatus(TaskStatus.PENDING);
-            task.setExecuteAt(LocalDateTime.now().plusMinutes(1));
-            return UploadStatus.PENDING;
-        }
-
-
-
-        photo.setNew(true);
-
-        PhotoMetadataEntity metadataEntity = new PhotoMetadataEntity(photo);
-        Map<String, String> rawMetadata = new HashMap<>();
-
-        if (contentType != null) {
-            if (contentType.startsWith("image"))
-                extractImageMetadata(finalPath.toFile(), photo, metadataEntity, rawMetadata);
-            else if (contentType.startsWith("video"))
-                extractVideoMetadata(finalPath.toFile(), photo, metadataEntity);
-            else
-                throw new FileUploadException("contentType " + contentType + " is not allowed");
-        } else {
-            throw new FileUploadException("contentType is empty");
-        }
-
-
-        metadataEntity.setRawMetadataJson(objectMapper.writeValueAsString(rawMetadata));
-
-        photoRepository.save(photo);
-        metadataRepository.save(metadataEntity);
-        String albumId = payload.get("albumId");
-        if (albumId != null) {
-            albumService.addPhotosToAlbum(UUID.fromString(albumId), List.of(photo.getId())); // Pass user to albumService
-        }
-        taskMapper.updateTasksToAction(TaskMapper.Action.ON_CREATE_PHOTO_ACTION, photo.getId());
-        return SUCCESS;
+        return processTheAsset(task, payload, tempFile, hash, space);
     }
 
+    @Recover
+    public UploadStatus saveNewPendingTaskOnUploadingProcess (SpaceLockingException e, TaskEntity task, Map<String, String> payload, File tempFile, String hash, SpaceEntity space) {
+        log.warn("recovering photo with hash {}", hash);
+        task.setErrorMessage(e.getMessage());
+        task.setStatus(TaskStatus.PENDING);
+        task.setExecuteAt(LocalDateTime.now().plusSeconds(5));
+        return UploadStatus.PENDING;
+    }
+
+
+    private UploadStatus processTheAsset(TaskEntity task, Map<String, String> payload, File tempFile, String hash, SpaceEntity space) throws Exception {
+        try (SpaceService.AutoClosableLock ignored = spaceService.lockSpace(space)){
+            String contentType = payload.get("contentType");
+            Path storageDir = Paths.get(iPhotoProperties.getStorage().getPhotos());
+            if (!Files.exists(storageDir)) Files.createDirectories(storageDir);
+            Path finalPath = storageDir.resolve(task.getPhotoId().toString() + "." + FilenameUtils.getExtension(payload.get("originalFileName")));
+            Files.move(tempFile.toPath(), finalPath);
+            String thumbPath = thumbnailService.generateThumbnail(finalPath.toString(), task.getPhotoId().toString(), contentType);
+
+
+            PhotoEntity photo = PhotoEntity.builder().id(task.getPhotoId())
+                    .fileName(payload.get("originalFileName"))
+                    .originalPath(finalPath.toString())
+                    .thumbnailPath(thumbPath)
+                    .fileHash(hash)
+                    .fileSize(Files.size(finalPath))
+                    .contentType(contentType)
+                    .user(space.getUser())
+                    .space(space)
+                    .build();
+            log.info ("upload photo {} in space {} ", task.getId(), space.getName());
+            entityManager.refresh(space);
+            spaceService.increaseSpacePhotoCount(space);
+
+            photo.setNew(true);
+
+            PhotoMetadataEntity metadataEntity = new PhotoMetadataEntity(photo);
+            Map<String, String> rawMetadata = new HashMap<>();
+
+            if (contentType != null) {
+                if (contentType.startsWith("image"))
+                    extractImageMetadata(finalPath.toFile(), photo, metadataEntity, rawMetadata);
+                else if (contentType.startsWith("video"))
+                    extractVideoMetadata(finalPath.toFile(), photo, metadataEntity);
+                else
+                    throw new FileUploadException("contentType " + contentType + " is not allowed");
+            } else {
+                throw new FileUploadException("contentType is empty");
+            }
+
+
+            metadataEntity.setRawMetadataJson(objectMapper.writeValueAsString(rawMetadata));
+
+            photoRepository.save(photo);
+            metadataRepository.save(metadataEntity);
+            String albumId = payload.get("albumId");
+            if (albumId != null) {
+                albumService.addPhotosToAlbum(UUID.fromString(albumId), List.of(photo.getId())); // Pass user to albumService
+            }
+            taskMapper.updateTasksToAction(TaskMapper.Action.ON_CREATE_PHOTO_ACTION, photo.getId());
+            return SUCCESS;
+        }
+    }
 
     private void extractImageMetadata(File file, PhotoEntity photo, PhotoMetadataEntity meta, Map<String, String> raw) {
         try {

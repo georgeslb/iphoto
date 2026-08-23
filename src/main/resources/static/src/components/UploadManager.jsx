@@ -224,9 +224,9 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children, file
                       )}
                       <span className={`status-text ${item.status}`}>{statusLabels[item.status] || item.status}</span>
                     </div>
-                    {item.error && (
+                    {(item.error || item.status === 'FAILED') && (
                       <div className="upload-item-error">
-                        {item.error}
+                        {item.error || messages["unknownUploadError"]}
                         {item.status === 'FAILED' && item.file && (
                           <button onClick={() => handleRetry(item.uploadId)} className="retry-button">{messages["retry"]}</button>
                         )}

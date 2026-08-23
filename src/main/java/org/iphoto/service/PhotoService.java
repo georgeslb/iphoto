@@ -6,6 +6,8 @@ import org.apache.commons.collections4.CollectionUtils;
 import org.iphoto.entities.*;
 import org.iphoto.exception.NoMatchUserSpaceException;
 import org.iphoto.exception.PhotoDeletionException;
+import org.iphoto.exception.PhotoMoveToMainException;
+import org.iphoto.exception.SpaceLockingException;
 import org.iphoto.mappers.PhotoMapper;
 import org.iphoto.model.AlbumDTO;
 import org.iphoto.model.Photo;
@@ -15,10 +17,9 @@ import org.iphoto.model.request.PhotoEditRequest;
 import org.iphoto.model.request.PhotoSelectionRequest;
 import org.iphoto.repository.AlbumRepository;
 import org.iphoto.repository.PhotoRepository;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Slice;
+import org.springframework.data.domain.*;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -28,6 +29,7 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.stream.Collectors;
 
 @Service
@@ -48,7 +50,16 @@ public class PhotoService {
     final MenuService menuService;
 
     public Page<Photo> getPhotos(UUID spaceId, Pageable pageable) {
-        return photoRepository.findBySpaceIdAndIsGarbageFalse(spaceId, pageable).map(photoMapper::photoEntityToPhoto);
+        Set<Photo> duplicatedPhotos = new CopyOnWriteArraySet<>();
+        Page<Photo> firstSelection = photoRepository.findBySpaceIdAndIsGarbageFalse(spaceId, pageable).map(entity -> {
+            Set<PhotoEntity> duplicatesEntities = duplicationService.getDuplicates(entity);
+            Set<Photo> duplicates = duplicatesEntities != null ? duplicatesEntities.stream().map(photoMapper::photoEntityToPhoto).collect(Collectors.toSet()) : Collections.emptySet();
+            duplicatedPhotos.addAll(duplicates);
+            return photoMapper.photoEntityToPhoto(entity, duplicates);
+        });
+        List<Photo> contentPhotos = new ArrayList<>(firstSelection.getContent());
+        contentPhotos.removeAll(duplicatedPhotos);
+        return new PageImpl<>(contentPhotos, firstSelection.getPageable(), firstSelection.getTotalElements());
     }
 
     public Page<Photo> getGarbagePhotos(UserEntity user, Pageable pageable) {
@@ -62,25 +73,29 @@ public class PhotoService {
     }
 
     @Transactional
-    public void restoreAssetsFromGarbage(UserEntity currentUser, List<UUID> ids) {
-        List<PhotoEntity> photos =  photoRepository.findByIdIn(ids).stream().toList();
+    @Retryable(maxAttempts = 5, retryFor = {SpaceLockingException.class}, backoff = @Backoff(delay = 1000))
+    public void restoreAssetsFromGarbage(UserEntity currentUser, List<UUID> ids) throws Exception {
+        List<PhotoEntity> photos = photoRepository.findByIdIn(ids).stream().toList();
 
         for (PhotoEntity photo : photos) {
             if (photo == null || !photo.getIsGarbage()) continue;
             SpaceEntity space = photo.getSpace();
             if (!space.getUser().getId().equals(currentUser.getId())) continue;
-            space.setPhotoCount(space.getPhotoCount() + 1);
-            photo.setIsGarbage(false);
-            photo.setGarbageAt(null);
-            photoRepository.save(photo);
-            taskMapper.updateTasksToAction(TaskMapper.Action.PHOTO_REMOVED_FROM_GARBAGE, photo.getId());
 
+            try (SpaceService.AutoClosableLock ignore = spaceService.lockSpace(space)) {
+                spaceService.increaseSpacePhotoCount(space);
+                photo.setIsGarbage(false);
+                photo.setGarbageAt(null);
+                photoRepository.save(photo);
+                taskMapper.updateTasksToAction(TaskMapper.Action.PHOTO_REMOVED_FROM_GARBAGE, photo.getId());
+            }
         }
         duplicationService.restoreFromGarbage(photos);
     }
 
     @Transactional
-    public void moveAssetsToGarbage(UserEntity currentUser, List<UUID> ids) {
+    @Retryable(maxAttempts = 5, retryFor = {SpaceLockingException.class}, backoff = @Backoff(delay = 1000))
+    public void moveAssetsToGarbage(UserEntity currentUser, List<UUID> ids) throws Exception {
 
         Set<PhotoEntity> photos = photoRepository.findByIdIn(ids);
 
@@ -88,11 +103,13 @@ public class PhotoService {
             if (photo == null || photo.getIsGarbage()) continue;
             SpaceEntity space = photo.getSpace();
             if (!space.getUser().getId().equals(currentUser.getId())) continue;
-            spaceService.decreaseSpacePhotoCount(space);
-            photo.setIsGarbage(true);
-            photo.setGarbageAt(LocalDateTime.now());
-            photoRepository.save(photo);
-            taskMapper.updateTasksToAction(TaskMapper.Action.PHOTO_MOVED_TO_GARBAGE, photo.getId());
+            try (SpaceService.AutoClosableLock ignore = spaceService.lockSpace(space)) {
+                spaceService.decreaseSpacePhotoCount(space);
+                photo.setIsGarbage(true);
+                photo.setGarbageAt(LocalDateTime.now());
+                photoRepository.save(photo);
+                taskMapper.updateTasksToAction(TaskMapper.Action.PHOTO_MOVED_TO_GARBAGE, photo.getId());
+            }
         }
 
         duplicationService.processMovingToGarbage(photos);
@@ -128,8 +145,9 @@ public class PhotoService {
             try {
                 String originalPath = photo.getOriginalPath();
                 String thumbnailPath = photo.getThumbnailPath();
+                log.info("permanently deleting photo with id {}", photo.getId());
                 if (userSpaces == null || userSpaces.stream().anyMatch(userSpace -> userSpace.id().equals(photo.getSpace().getId()))) {
-                    photoDeletionService.permanentDeleteAssets(photo);
+                    photoDeletionService.permanentDeleteAssets(photo.getId());
                     try {
                         Files.deleteIfExists(Paths.get(originalPath));
                         if (thumbnailPath != null) {
@@ -144,7 +162,7 @@ public class PhotoService {
 
             } catch (Exception e) {
                 log.error("can't delete photo with id {}", photo.getId(), e);
-                throw new PhotoDeletionException("can't delete photo with id {}", e);
+                throw new PhotoDeletionException("can't delete photo with id "+  photo.getId(), e);
             }
         });
     }
@@ -167,7 +185,7 @@ public class PhotoService {
             UUID id,
             MultipartFile file, PhotoEditRequest request) {
         try {
-            return photoMapper.photoEntityToPhoto(editPhotoService.editImage(user, id, file, request)); // Pass user to editPhotoService
+            return photoMapper.photoEntityToPhoto(editPhotoService.editImage(user, id, file, request));
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
@@ -186,15 +204,22 @@ public class PhotoService {
     }
 
     @Transactional
-    public void moveAssetsToMain(UserEntity user, List<UUID> ids) {
+    @Retryable(maxAttempts = 5, retryFor = {SpaceLockingException.class}, backoff = @Backoff(delay = 1000))
+    public void moveAssetsToMain(UserEntity user, List<UUID> ids) throws Exception {
         SpaceEntity mainUserSpace = spaceService.getDefaultSpaceForUser(user);
-        photoRepository.findByIdIn(ids).forEach(photo -> {
-            spaceService.decreaseSpacePhotoCount(photo.getSpace());
-            photo.setSpace(mainUserSpace);
-            spaceService.increaseSpacePhotoCount(photo.getSpace());
-            photoRepository.save(photo);
-            taskMapper.updateTasksToAction(TaskMapper.Action.PHOTO_MOVED_TO_MAIN, photo.getId());
-        });
+        try (SpaceService.AutoClosableLock ignore = spaceService.lockSpace(mainUserSpace)){
+            photoRepository.findByIdIn(ids).forEach(photo -> {
+                try (SpaceService.AutoClosableLock ignore2 = spaceService.lockSpace(photo.getSpace())){
+                    spaceService.decreaseSpacePhotoCount(photo.getSpace());
+                    photo.setSpace(mainUserSpace);
+                    spaceService.increaseSpacePhotoCount(mainUserSpace);
+                    photoRepository.save(photo);
+                    taskMapper.updateTasksToAction(TaskMapper.Action.PHOTO_MOVED_TO_MAIN, photo.getId());
+                } catch (Exception e) {
+                    throw new PhotoMoveToMainException("can't move photo " + photo.getId(), e);
+                }
+            });
+        }
     }
 
     public void deletePhotoInSpace(UserEntity userEntity, UUID spaceId) {
