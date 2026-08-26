@@ -30,7 +30,7 @@ public class SecurityConfig {
                         ).permitAll()
 
                         // Admin operations
-                        .requestMatchers("/admin/**").hasRole("ADMIN")
+                        .requestMatchers("/api/admin/**").hasRole("ADMIN")
 
                         // React SPA
                         .requestMatchers(

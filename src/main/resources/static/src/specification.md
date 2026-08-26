@@ -156,6 +156,19 @@ This section describes the application's features. For the corresponding backend
         at the crop box's actual full-resolution pixel size (not the on-screen preview size) and is
         then exported as a max-quality JPEG (`canvas.toBlob(..., 'image/jpeg', 1)`) and uploaded as
         a new file (`POST` through `onEditPhoto`).
+    *   **Face-box overlay positioning gotcha:** the `<img>` inside `zoom-container` is centered via
+        `object-fit: contain` + flex `alignItems`/`justifyContent: center`, so whenever the photo's
+        aspect ratio doesn't exactly match the container's (nearly always), the rendered image sits
+        inset from the container's edges by a letterbox gap on one axis. Any pixel math mapping
+        `FaceEntity.x/y/w/h` (original-image pixel coordinates) onto screen coordinates — the
+        `.face-box` overlays, and `clampPan`'s pan-clamping — MUST account for that gap (rendered
+        size + centering offset), not just `naturalWidth/Height` vs. the container's/`<img>`'s raw
+        `clientWidth/Height`. `.face-box` also needs its immediate parent (`zoom-container`) to
+        carry `position: relative` itself — without it, `position: absolute` falls through to
+        `.lightbox-content` (which has its own `padding: 40px`) as the positioning context, which
+        was the other half of a real bug here (see `TODO.md`): boxes drawn at a position offset
+        from the actual faces, differently per photo, even though backend detection/crops were
+        correct throughout.
 
 ### 4.2. Organizational Features
 
@@ -214,6 +227,16 @@ This section describes the application's features. For the corresponding backend
             runs, so a very heavy crop/zoom that pushes both hashes outside that band is still missed.
             Not fixed — would require running ORB on every pair in the space, which is a much bigger
             perf tradeoff than the current design.
+        *   The homography-inlier check requires **both** an absolute count (`ORB_MIN_INLIERS`) **and**
+            a minimum ratio of good matches that are inliers (`ORB_MIN_INLIER_RATIO`, currently 0.5).
+            The ratio check exists because RANSAC finds the *largest* geometrically-consistent subset
+            even among unrelated correspondences — on two unrelated photos that both contain repetitive
+            texture (grass, wood grain, fabric folds), it's common to get 10+ "good" ORB matches that
+            coincidentally agree on some transform, which cleared the count-only check and produced a
+            confirmed false positive between two completely unrelated photos (a low double-digit inlier
+            count out of a much larger good-match pool, e.g. 11/90). A genuine duplicate/crop/rotation
+            has most of its good matches agree on one transform; a coincidental match on repeated
+            texture has only a small fraction agree, hence the ratio floor.
         *   Diagnostic logging: `evaluatePair` logs hash distances and the tier-by-tier verdict for every
             compared pair; `confirmWithFeatureMatching` logs keypoint/good-match/inlier counts against
             their thresholds; `checkDuplication` logs the per-photo scan window and final duplicate set.
@@ -233,6 +256,109 @@ This section describes the application's features. For the corresponding backend
     *   A world map (`/map`) displays photos based on their embedded geolocation data.
 *   **Persons View:**
     *   A dedicated view (`/persons`) suggests functionality related to facial recognition and grouping photos by people.
+    *   Backend pipeline (`FaceDetectionService` + `FaceAligner` + `FaceRecognitionService`): RetinaFace
+        (DJL/PyTorch, `FaceDetectionConfiguration`) detects face boxes + 5-point landmarks on the
+        **original, full-resolution** photo (not the resized-for-hashing copy `DuplicationService` uses —
+        detection needs the extra pixels). Each detected box is padded 20% and, if it clears the size/
+        confidence gates below, run through `FaceAligner.align` (rotates level using the eye-line
+        landmarks, crops with its own 20% padding, resizes to 112×112 via bicubic interpolation) before
+        going through the embedding model. Embeddings + a PNG thumbnail are saved per `FaceEntity`;
+        `FaceRecognitionService.groupFaces` clusters them into `PersonEntity`s.
+    *   **Small-face gating** (`FaceDetectionService`): RetinaFace's smallest anchor tier (scale=16,
+        `FaceDetectionConfiguration`) is built to detect faces well under 60px, but faces under 60px
+        (post-padding) used to be discarded outright regardless of detector confidence — a flat
+        `w < 60 || h < 60` cutoff — because including them was producing poor-quality embeddings.
+        Root cause turned out to be a real bug in `FaceAligner`, not an inherent limit of small faces:
+        `leftEye`/`rightEye` were both read from a **freshly-created** `points.iterator()`, so both got
+        the same first landmark point, making `rightX-leftX`/`rightY-leftY` always `0` and the eye-line
+        rotation a permanent no-op — every face (not just small ones) was aligned unrotated, which hurts
+        small faces disproportionately since uncorrected tilt eats a bigger fraction of their little
+        available signal. Fixed by reading both points off the same iterator instance. With alignment
+        now actually working, the flat cutoff was replaced with `MIN_FACE_SIZE=32` (hard floor — below
+        this there's genuinely not enough resolution) plus a confidence-aware band: faces between 32px
+        and the old 60px threshold are kept only when the detector's confidence is ≥`0.92` (stricter
+        than the model's own `confThresh=0.85`), to control the extra false-positive risk small crops
+        carry now that they're no longer blocked outright. Not verified against real photos (no `mvn`/
+        live app access from this shell) — worth watching face-detection quality on small/background
+        faces after this deploys, and tuning `SMALL_FACE_MIN_CONFIDENCE`/`MIN_FACE_SIZE` from there.
+    *   **Age-invariant clustering** (`FaceRecognitionService`): a person's face embedding drifts
+        meaningfully over years (e.g. age 5 vs. age 25), so a single flat cosine-similarity threshold
+        between two far-apart-in-age photos of the same person will usually never clear the bar
+        directly — and shouldn't be loosened to compensate, since that raises the false-merge risk for
+        genuinely different people. Instead, both matching paths only ever compare a face against its
+        `TEMPORAL_NEIGHBOR_WINDOW` (=10) closest-in-time faces (before AND after), and rely on
+        transitive chaining to bridge large age gaps: `findBestMatchForFace` compares a new face
+        against each existing `PersonEntity`'s nearest-in-time faces (not that person's whole history
+        averaged together, which dilutes the score across eras); `clusterByTemporalProximity` forms
+        brand-new people from leftover ungrouped faces by sorting them by photo date and union-find
+        (connected-components) merging matches between temporally-adjacent faces — so a childhood and
+        an adult photo of the same person can end up in one cluster by chaining through the many
+        in-between-age photos of them, without any single pairwise comparison ever needing to bridge
+        the full gap itself. This only works as well as the account's photo timeline is populated —
+        a person with just two photos taken decades apart, and nothing in between, won't cluster
+        together; that's an inherent limitation of this approach, not a bug.
+    *   **Known limitation, left alone deliberately**: `MainSpaceAspectConfiguration.enableSpaceFilter`
+        skips enabling the per-user `spaceFilter` Hibernate filter for any thread named
+        `backend-task*`, and `FACE_RECOGNITION` (like all `TaskWorkerManager` background tasks) always
+        runs on such a thread — so `@MainSpaceLimited` queries in `FaceRepository`/`PersonRepository`
+        are effectively unfiltered during face grouping, meaning it likely pools faces/persons across
+        all users rather than scoping per user. Found while redesigning the clustering logic above;
+        the user was asked and explicitly said not to change `MainSpaceAspectConfiguration` for this
+        work, so it remains as-is. Worth revisiting if this is ever a multi-tenant concern.
+    *   **Cover photo (`Persons.jsx`)**: each person's icon on `/persons` is their `coverFace` —
+        `PersonRecognitionService.recalculateCoverFace` picks the face whose photo has the most
+        recent valid `dateTaken` (i.e. "latest known photo of them"), recalculated whenever a face
+        is added to the person (`updatePerson`/`addPerson`) or when their previous cover face's
+        photo is deleted (`FaceDetectionService.deleteFaces`) — never overridden automatically once
+        a user manually sets one (`CoverFaceOrigin.MANUAL` guard). `coverFace` can still legitimately
+        be `null` (a person with zero remaining faces, or before any face-add/delete event has ever
+        triggered a recalculation for them) — `FaceService`/`Persons.jsx` both handle this as a
+        normal "no photo yet" case (`coverPhoto: null` in `PersonDTO`, a placeholder icon on the
+        frontend), not an error state.
+    *   **Person detail page** (`/persons/:personId`, `PersonDetail.jsx`): clicking a person's
+        photo/icon on `/persons` navigates here. Deliberately mirrors `AlbumDetail.jsx`/
+        `SpaceDetail.jsx` — same `PhotoGrid` (selection, duplicate grouping, garbage icon, etc.),
+        same header shape (name + `photosCount`), same `useEntityById` pattern for fetching the
+        entity. Backend: `GET /api/faces/person/{id}` (new — previously `FaceController` only
+        exposed list/update/faces-for-person/photos-for-person, no single-person GET, so
+        `useEntityById` had nothing to call); `PersonDTO.photoCount` is now a real count
+        (`photoService.findByPerson(person, Pageable.ofSize(1)).getTotalElements()`) instead of
+        always `null`. Photos come from the pre-existing `GET /api/faces/person/{id}/photos`,
+        wired into `usePhotoData`'s path-based routing (`/persons/:id` → `type: 'person'`) the same
+        way `/albums/:id` and `/spaces/:id` already were. Opening a photo from here uses the plain
+        `/asset/:photoId` URL (like Space, not Album's `/albums/:id/asset/:photoId`) — no
+        per-person asset sub-route was added, since nothing needs a person-scoped deep link today.
+        Also fixed in passing: `FaceService.getPersonPhotos` threw a plain `RuntimeException` for a
+        missing person, which `FaceController`'s `catch (NoSuchElementException e)` could never
+        actually catch (500 instead of 404) — changed to `NoSuchElementException` to match every
+        other "get by id" endpoint's convention.
+        **Person strip** (`PersonStrip.jsx`, shared `hooks/usePersons.js`): rendered above the
+        header/grid on `PersonDetail.jsx` (including its loading/error/not-found states) — a
+        horizontal, arrow-scrollable row of every person, the current one highlighted, so switching
+        between people doesn't require returning to the `/persons` grid. `/persons` itself is
+        unchanged — still the grid view, now just sourcing its data from the same shared
+        `usePersons()` hook instead of its own local fetch.
+        **Unlinking a person from one photo**: every card on a person's page has a top-right
+        `Unlink2` icon (`.unlink-person-btn`) — `DELETE /api/faces/person/{personId}/photo/
+        {photoId}` sets `person = null` on the face(s) linking that person to that specific photo
+        (recalculating their `coverFace` first if affected), then the grid refreshes and the photo
+        drops out of this person's list. This is deliberately different from the Lightbox's
+        "remove face" action: unlinking only breaks the person↔photo match (e.g. correcting a
+        wrong recognition match) — the `FaceEntity` (bounding box, embedding, thumbnail) and the
+        photo itself are untouched, so a re-run of face recognition, or a future manual re-link
+        feature, could still act on it. `PhotoGrid.jsx`'s `handleUnlinkPerson` prop is optional and
+        only ever passed from `PersonDetail.jsx` — Library/Album/Space grids don't get this icon.
+    *   **Manually removing a face** (Lightbox "Faces Detected" section): each face thumbnail has a
+        small trash-icon button (`.face-remove-btn`) that deletes just that one `FaceEntity` via
+        `DELETE /api/faces/{id}` — the photo itself is untouched, this only removes that one
+        detection (e.g. a false positive). If the removed face was a person's `coverFace`,
+        `PersonRecognitionService.recalculateCoverFace` picks a replacement immediately (same
+        pattern as the whole-photo-deletion path in `FaceDetectionService.deleteFaces`). `FaceDTO`
+        carries an `id` field for this to be possible at all — it previously had none.
+    *   **Named face labels** (Lightbox "Faces Detected" section): a face thumbnail shows the
+        linked person's name (`FaceDTO.personName`) instead of the generic "Face 1"/"Face 2"/...
+        label whenever that face is attached to a named `PersonEntity`; falls back to the generic
+        label otherwise (no person linked yet, or linked but unnamed).
 
 ### 4.4. Sharing
 

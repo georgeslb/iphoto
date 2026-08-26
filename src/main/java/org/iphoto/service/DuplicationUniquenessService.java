@@ -17,6 +17,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import static org.iphoto.model.DuplicateStatus.CLOSED;
 import static org.iphoto.model.DuplicateStatus.OPEN;
 
 @Service
@@ -32,7 +33,7 @@ public class DuplicationUniquenessService {
             List<UUID> ids = duplicatesPhotos.stream().map(PhotoEntity::getId).toList();
             List<DuplicateEntity> existingDuplicates =  duplicateRepository.findByPhotosIdIn(ids); // Filter by user
             boolean addNewDuplicatePhoto = true;
-            for (DuplicateEntity duplicate : existingDuplicates) {
+            for (DuplicateEntity duplicate : existingDuplicates.stream().filter(duplicateEntity -> duplicateEntity.getStatus() == OPEN).collect(Collectors.toSet())) {
                 if (duplicate.getPhotos().stream().map(PhotoEntity::getId)
                         .filter(id -> !id.equals(photo.getId()))
                         .allMatch(ids::contains) && duplicate.getPhotos().size() - 1 >= ids.size()) {
@@ -57,6 +58,10 @@ public class DuplicationUniquenessService {
                         .hash(generateUniqueHash(duplicatesPhotosToAdd))
                         .build();
                 duplicateRepository.saveAndFlush(duplicateEntity);
+                existingDuplicates.forEach(existingDuplicate -> {
+                    existingDuplicate.setStatus(CLOSED);
+                    duplicateRepository.saveAndFlush(duplicateEntity);
+                });
             }
            return TaskStatus.COMPLETED;
         } catch (Exception e) {

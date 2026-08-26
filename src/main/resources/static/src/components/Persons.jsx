@@ -1,20 +1,15 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { User } from 'lucide-react';
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
+import { usePersons } from '../hooks/usePersons';
 
 export default function Persons() {
   const { messages } = useLocale(); // Use the useLocale hook
-  const [persons, setPersons] = useState([]);
+  const navigate = useNavigate();
+  const { persons, setPersons } = usePersons();
   const [editingId, setEditingId] = useState(null);
   const [newName, setNewName] = useState('');
-
-  useEffect(() => {
-    fetch('/api/faces/persons')
-      .then(response => response.json())
-      .then(data => {
-        setPersons(Array.isArray(data) ? data : (data.content || []));
-      })
-      .catch(error => console.error(messages["errorFetchingPersons"], error));
-  }, [messages]);
 
   const handleNameClick = (person) => {
     setEditingId(person.id);
@@ -55,7 +50,22 @@ export default function Persons() {
       <div className="photo-grid">
         {persons.map(person => (
           <div key={person.id} className="person-item">
-            <img src={person.coverPhoto?.image || ''} alt={person.name || messages["unknownPerson"]} />
+            {person.coverPhoto?.image ? (
+              <img
+                src={person.coverPhoto.image}
+                alt={person.name || messages["unknownPerson"]}
+                onClick={() => navigate(`/persons/${person.id}`)}
+              />
+            ) : (
+              <div
+                className="person-item-placeholder"
+                role="img"
+                aria-label={person.name || messages["unknownPerson"]}
+                onClick={() => navigate(`/persons/${person.id}`)}
+              >
+                <User size={40} />
+              </div>
+            )}
             {editingId === person.id ? (
               <input
                 type="text"

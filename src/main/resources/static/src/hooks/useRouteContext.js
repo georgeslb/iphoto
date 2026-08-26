@@ -7,10 +7,11 @@ export function useRouteContext(location) {
 
   const currentAlbumId = effectivePath.startsWith('/albums/') ? effectivePath.split('/')[2] : null;
   const currentSpaceId = effectivePath.startsWith('/spaces/') ? effectivePath.split('/')[2] : null;
+  const currentPersonId = effectivePath.startsWith('/persons/') ? effectivePath.split('/')[2] : null;
   const fromGarbage = location.state?.fromGarbage || backgroundLocation?.state?.fromGarbage || false;
   const selectedMenu = effectivePath === '/garbage'
     ? 'garbage'
-    : (effectivePath.startsWith('/albums/') ? 'album' : (effectivePath.startsWith('/spaces/') ? 'space' : 'library'));
+    : (effectivePath.startsWith('/albums/') ? 'album' : (effectivePath.startsWith('/spaces/') ? 'space' : (effectivePath.startsWith('/persons/') ? 'person' : 'library')));
 
   return {
     backgroundLocation,
@@ -18,6 +19,7 @@ export function useRouteContext(location) {
     isLightboxOpen,
     currentAlbumId,
     currentSpaceId,
+    currentPersonId,
     fromGarbage,
     selectedMenu,
   };

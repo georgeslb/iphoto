@@ -9,6 +9,7 @@ import java.awt.*;
 import java.awt.geom.AffineTransform;
 import java.awt.image.AffineTransformOp;
 import java.awt.image.BufferedImage;
+import java.util.Iterator;
 
 public final class FaceAligner {
 
@@ -17,8 +18,13 @@ public final class FaceAligner {
     public static Image align(Image image, Landmark landmark) {
         Iterable<Point> points = landmark.getPath();
 
-        Point leftEye = points.iterator().next();
-        Point rightEye = points.iterator().next();
+        // Both eyes must come off the SAME iterator (RetinaFace's 5-point order is left eye,
+        // right eye, nose, left mouth, right mouth). Calling points.iterator() twice was handing
+        // back the first point both times, so rightX-leftX/rightY-leftY were always 0 and the
+        // eye-line rotation below was always a no-op (angle == 0) regardless of actual head tilt.
+        Iterator<Point> pointIterator = points.iterator();
+        Point leftEye = pointIterator.next();
+        Point rightEye = pointIterator.next();
 
         double leftX = leftEye.getX();
         double leftY = leftEye.getY();
@@ -41,7 +47,7 @@ public final class FaceAligner {
         AffineTransformOp op =
                 new AffineTransformOp(
                         tx,
-                        AffineTransformOp.TYPE_BILINEAR);
+                        AffineTransformOp.TYPE_BICUBIC);
 
         BufferedImage rotated =
                 op.filter(source, null);
@@ -79,7 +85,7 @@ public final class FaceAligner {
 
         g.setRenderingHint(
                 RenderingHints.KEY_INTERPOLATION,
-                RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+                RenderingHints.VALUE_INTERPOLATION_BICUBIC);
 
         g.drawImage(crop, 0, 0, 112, 112, null);
         g.dispose();

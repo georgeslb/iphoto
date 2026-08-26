@@ -108,7 +108,7 @@ function UserManagement() {
         setError('');
         setMessage('');
         try {
-            const response = await fetch('/admin/activateFaceRecognition');
+            const response = await fetch('/api/admin/activateFaceRecognition');
             if (response.ok) {
                 setMessage(messages["faceRecognitionActivatedSuccessfully"]);
             } else {
@@ -124,7 +124,7 @@ function UserManagement() {
         setError('');
         setMessage('');
         try {
-            const response = await fetch('/admin/updateImageTaskToDo');
+            const response = await fetch('/api/admin/updateImageTaskToDo');
             if (response.ok) {
                 setMessage(messages["imageTaskUpdatedSuccessfully"]);
             } else {

@@ -191,6 +191,24 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 }
 .duplicate-remove-btn:hover { background: #ff3b30; }
 
+.unlink-person-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 5;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.55);
+  color: white;
+  cursor: pointer;
+}
+.unlink-person-btn:hover { background: #ff3b30; }
+
 /* UI Components */
 .btn { display: inline-flex; align-items: center; gap: 8px; padding: 8px 16px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; border: 1px solid var(--border-color); background: white; transition: all 0.2s ease; }
 .btn:hover { background: #f5f5f7; }
@@ -796,6 +814,24 @@ button.upload-item-name.upload-item-name-link:hover {
   box-shadow: 0 8px 25px rgba(0,0,0,0.15);
 }
 
+.person-item-placeholder {
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #e0e0e5;
+  color: var(--text-secondary);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+}
+
+.person-item:hover .person-item-placeholder {
+  transform: scale(1.05);
+  box-shadow: 0 8px 25px rgba(0,0,0,0.15);
+}
+
 .person-name {
   margin-top: 8px;
   font-weight: 600;
@@ -836,6 +872,92 @@ button.upload-item-name.upload-item-name-link:hover {
 .person-name-input:focus {
   border-color: var(--primary-color);
   box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.2);
+}
+
+/* Person Strip (horizontal, arrow-scrollable list shown above a selected person's photos) */
+.person-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.person-strip-arrow {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: #f0f0f5;
+  color: var(--text-main);
+  cursor: pointer;
+}
+
+.person-strip-arrow:hover {
+  background: #e0e0e5;
+}
+
+.person-strip-track {
+  display: flex;
+  gap: 16px;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  scrollbar-width: none;
+}
+
+.person-strip-track::-webkit-scrollbar {
+  display: none;
+}
+
+.person-strip-item {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 64px;
+  cursor: pointer;
+}
+
+.person-strip-item img,
+.person-strip-placeholder {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid transparent;
+  transition: border-color 0.2s ease;
+}
+
+.person-strip-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #e0e0e5;
+  color: var(--text-secondary);
+}
+
+.person-strip-item.active img,
+.person-strip-item.active .person-strip-placeholder {
+  border-color: var(--primary-color);
+}
+
+.person-strip-item span {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.person-strip-item.active span {
+  color: var(--text-main);
+  font-weight: 600;
 }
 
 /* ==================== Responsive (tablet/phone) ==================== */

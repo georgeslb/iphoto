@@ -20,7 +20,6 @@ public class PersonRecognitionService {
     private final FaceRepository faceRepository;
     private final PersonRepository personRepository;
     private final SpaceService spaceService;
-    private static final double THRESHOLD = 0.8;
 
     public void updatePerson(PersonEntity person, FaceEntity face) { // Added UserEntity parameter
         face.setPerson(person);
@@ -31,12 +30,15 @@ public class PersonRecognitionService {
     }
 
     public void addPerson(UserEntity user, List<FaceEntity> faces) { // Added UserEntity parameter
-        PersonEntity person = PersonEntity.builder().space(spaceService.getDefaultSpaceForUser(user)).faces(faces).build();
-        recalculateCoverFace(person);
-        faces.forEach(faceEntity -> {
-            faceEntity.setPerson(person);
-        });
-        personRepository.save(person);
+        PersonEntity newPerson = PersonEntity.builder().space(spaceService.getDefaultSpaceForUser(user)).faces(faces).build();
+        recalculateCoverFace(newPerson);
+        // Flush the brand-new person immediately, before any face is made to reference it: faces
+        // in `faces` are detached (loaded earlier, outside this transaction), so saving them
+        // triggers a merge, and merge needs the referenced person to already be a genuinely
+        // persisted row — not just a pending, not-yet-flushed insert — or Hibernate throws
+        // TransientObjectException at commit time ("references an unsaved transient instance").
+        PersonEntity person = personRepository.saveAndFlush(newPerson);
+        faces.forEach(faceEntity -> faceEntity.setPerson(person));
         faceRepository.saveAll(faces);
     }
 
@@ -45,7 +47,7 @@ public class PersonRecognitionService {
      * A photo date is considered valid if dateTaken is not null and is different from createdAt.
      * This method only updates the cover face if its current origin is not MANUAL.
      */
-    private void recalculateCoverFace(PersonEntity person) {
+    void recalculateCoverFace(PersonEntity person) {
         if (person.getCoverFaceOrigin() == CoverFaceOrigin.MANUAL) {
             return; // Never override a manual choice automatically
         }

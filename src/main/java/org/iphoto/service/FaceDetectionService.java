@@ -43,19 +43,38 @@ public class FaceDetectionService {
     private final ZooModel<Image, float[]> embeddingModel;
     private final ReentrantLock lock = new ReentrantLock();
     private final PersonRepository personRepository;
+    private final PersonRecognitionService personRecognitionService;
+
+    // Hard floor (post-padding, see padX/padY below): below this, there just isn't enough source
+    // resolution left for the embedding model to produce anything usable. RetinaFace's smallest
+    // anchor tier (scale=16, see FaceDetectionConfiguration) is built to detect faces well below
+    // the old 60px floor, so a flat 60px cutoff was discarding faces the detector correctly found.
+    private static final int MIN_FACE_SIZE = 32;
+    // Faces between MIN_FACE_SIZE and this used to be rejected outright. They're let through now,
+    // but only when the detector is unusually confident about them (see SMALL_FACE_MIN_CONFIDENCE)
+    // to compensate for the higher false-positive/noisy-embedding risk small crops carry.
+    private static final int SMALL_FACE_SIZE_THRESHOLD = 60;
+    // Stricter than the model's own confThresh (0.85, FaceDetectionConfiguration) — only applied to
+    // the small-face band above, not to every detection.
+    private static final double SMALL_FACE_MIN_CONFIDENCE = 0.92;
 
 
 
     public void deleteFaces(PhotoEntity photo) {
-        photo.getFaces().forEach(faceEntity -> {
-            personRepository.findByCoverFace(faceEntity).forEach(personEntity -> {
-                        personEntity.setCoverFace(null);
-                        personRepository.save(personEntity);
-                    });
-            faceRepository.deleteByPhotoId(photo);
-        });
-
-
+        photo.getFaces().forEach(faceEntity ->
+                personRepository.findByCoverFace(faceEntity).forEach(personEntity -> {
+                    personEntity.setCoverFace(null);
+                    // Remove it from the in-memory collection too, not just the cover-face
+                    // pointer — recalculateCoverFace picks the most-recent face from this same
+                    // collection, and the face row hasn't actually been deleted from the DB yet
+                    // at this point (that happens below), so without this it would just pick the
+                    // same about-to-be-deleted face right back.
+                    personEntity.getFaces().remove(faceEntity);
+                    personRecognitionService.recalculateCoverFace(personEntity);
+                    personRepository.save(personEntity);
+                })
+        );
+        faceRepository.deleteByPhotoId(photo);
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -111,9 +130,21 @@ public class FaceDetectionService {
                     w = Math.min(image.getWidth() - x, w + 2 * padX);
                     h = Math.min(image.getHeight() - y, h + 2 * padY);
 
-                    if (w < 60 || h < 60) {
-                        log.warn("Skipping tiny detected face ({}x{}) in photo {}", w, h, photo.getId());
+                    double probability = face.getProbability();
+
+                    if (w < MIN_FACE_SIZE || h < MIN_FACE_SIZE) {
+                        log.info("Skipping tiny detected face ({}x{}, confidence={}) in photo {}: below hard floor of {}px",
+                                w, h, probability, photo.getId(), MIN_FACE_SIZE);
                         continue;
+                    }
+                    boolean isSmallFace = w < SMALL_FACE_SIZE_THRESHOLD || h < SMALL_FACE_SIZE_THRESHOLD;
+                    if (isSmallFace && probability < SMALL_FACE_MIN_CONFIDENCE) {
+                        log.info("Skipping low-confidence small face ({}x{}, confidence={}) in photo {}: below {} required for faces under {}px",
+                                w, h, probability, photo.getId(), SMALL_FACE_MIN_CONFIDENCE, SMALL_FACE_SIZE_THRESHOLD);
+                        continue;
+                    }
+                    if (isSmallFace) {
+                        log.info("Keeping small face ({}x{}, confidence={}) in photo {}", w, h, probability, photo.getId());
                     }
                     try {
                         Image subImage =

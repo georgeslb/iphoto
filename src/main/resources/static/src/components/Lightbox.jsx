@@ -4,6 +4,7 @@ import 'cropperjs/dist/cropper.css';
 import {
     Calendar,
     Camera,
+    CheckCircle,
     ChevronLeft,
     ChevronRight,
     Clock,
@@ -64,7 +65,7 @@ export default function Lightbox({
     // State for face detection
     const [faces, setFaces] = useState([]);
     const [showFaces, setShowFaces] = useState(false);
-    const [imageSize, setImageSize] = useState({ naturalWidth: 0, naturalHeight: 0, displayWidth: 0, displayHeight: 0 });
+    const [imageSize, setImageSize] = useState({ naturalWidth: 0, naturalHeight: 0, displayWidth: 0, displayHeight: 0, offsetX: 0, offsetY: 0 });
 
     // State for albumAllowed from SpaceDTO
     const [albumAllowed, setAlbumAllowed] = useState(false);
@@ -101,7 +102,7 @@ export default function Lightbox({
         if (selectedPhoto && selectedPhoto.id) {
             setFaces([]);
             setShowFaces(false);
-            setImageSize({ naturalWidth: 0, naturalHeight: 0, displayWidth: 0, displayHeight: 0 });
+            setImageSize({ naturalWidth: 0, naturalHeight: 0, displayWidth: 0, displayHeight: 0, offsetX: 0, offsetY: 0 });
 
             fetch(`/api/faces/photo/${selectedPhoto.id}`)
                 .then(response => response.ok ? response.json() : [])
@@ -118,6 +119,20 @@ export default function Lightbox({
                 });
         }
     }, [selectedPhoto, messages]);
+
+    const handleRemoveFace = useCallback(async (faceId) => {
+        try {
+            const response = await fetch(`/api/faces/${faceId}`, { method: 'DELETE' });
+            if (!response.ok) {
+                throw new Error(messages["errorRemovingFace"]);
+            }
+            // Drives both the thumbnail list and the on-image .face-box overlays, so removing
+            // here updates both in one place.
+            setFaces(prev => prev.filter(f => f.id !== faceId));
+        } catch (error) {
+            console.error(messages["errorRemovingFace"], error);
+        }
+    }, [messages]);
 
 
     useEffect(() => {
@@ -195,10 +210,39 @@ export default function Lightbox({
     };
 
     const handleImageLoad = () => {
-        if (imageRef.current) {
-            const { naturalWidth, naturalHeight, clientWidth, clientHeight } = imageRef.current;
-            setImageSize({ naturalWidth, naturalHeight, displayWidth: clientWidth, displayHeight: clientHeight });
+        const img = imageRef.current;
+        const container = zoomContainerRef.current;
+        if (!img || !container) return;
+
+        const { naturalWidth, naturalHeight } = img;
+        const containerWidth = container.clientWidth;
+        const containerHeight = container.clientHeight;
+
+        // The <img> is centered inside zoom-container via object-fit: contain, so whenever its
+        // aspect ratio doesn't exactly match the container's, there's a letterbox gap on two
+        // sides — face-box overlays need the actual rendered rect (size + centering offset), not
+        // just the container's own box, or they end up positioned off the real image. Same
+        // rendered-size math clampPan uses below for pan-clamping.
+        let displayWidth = naturalWidth;
+        let displayHeight = naturalHeight;
+        const containerRatio = containerWidth / containerHeight;
+        const imageRatio = naturalWidth / naturalHeight;
+        if (imageRatio > containerRatio) {
+            displayWidth = containerWidth;
+            displayHeight = containerWidth / imageRatio;
+        } else {
+            displayHeight = containerHeight;
+            displayWidth = containerHeight * imageRatio;
         }
+
+        setImageSize({
+            naturalWidth,
+            naturalHeight,
+            displayWidth,
+            displayHeight,
+            offsetX: (containerWidth - displayWidth) / 2,
+            offsetY: (containerHeight - displayHeight) / 2,
+        });
     };
 
     const clampPan = useCallback((newPanX, newPanY, currentScale) => {
@@ -371,9 +415,11 @@ export default function Lightbox({
             <style>{`
                 .face-box { position: absolute; border: 2px solid rgba(255, 255, 0, 0.8); box-shadow: 0 0 10px rgba(0,0,0,0.5); border-radius: 4px; pointer-events: none; }
                 .face-thumbnail-container { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 8px; }
-                .face-item { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+                .face-item { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; }
                 .face-thumbnail { width: 60px; height: 60px; border-radius: 4px; object-fit: cover; }
                 .face-item label { font-size: 12px; color: #ccc; }
+                .face-remove-btn { position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; border: none; border-radius: 50%; background: rgba(0,0,0,0.7); color: white; cursor: pointer; }
+                .face-remove-btn:hover { background: #ff3b30; }
             `}</style>
             <div className="lightbox-container" onClick={e => e.stopPropagation()}>
                 <div className="lightbox-content" style={{position: 'relative'}}>
@@ -429,14 +475,15 @@ export default function Lightbox({
                                 alignItems: 'center',
                                 width: '100%', // Ensure container fills lightbox-content
                                 height: '100%',
-                                overflow: 'hidden' // Hide overflow during pan/zoom
+                                overflow: 'hidden', // Hide overflow during pan/zoom
+                                position: 'relative' // Positioning context for .face-box overlays below
                             }}
                         >
                             <img ref={imageRef} src={`/api/photos/${selectedPhoto.id}/original${mediaCacheParam}`} onLoad={handleImageLoad} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
                             {showFaces && faces.map((face, index) => (
                                 <div key={index} className="face-box" style={{
-                                    left: `${face.x * scaleX}px`,
-                                    top: `${face.y * scaleY}px`,
+                                    left: `${imageSize.offsetX + face.x * scaleX}px`,
+                                    top: `${imageSize.offsetY + face.y * scaleY}px`,
                                     width: `${face.width * scaleX}px`,
                                     height: `${face.height * scaleY}px`,
                                 }}></div>
@@ -482,8 +529,8 @@ export default function Lightbox({
                             {isEditingDate ? (
                                 <div style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
                                     <input type="datetime-local" value={newDate} onChange={(e) => setNewDate(e.target.value)} className="modal-input" style={{padding: '6px', fontSize: '13px'}}/>
-                                    <button className="btn" onClick={handleSaveDate} style={{padding: '6px'}}><XCircle size={16}/></button>
-                                    <button className="btn" onClick={() => setIsEditingDate(false)} style={{padding: '6px'}}><XCircle size={16}/></button>
+                                    <button className="btn" title={messages["save"]} onClick={handleSaveDate} style={{padding: '6px'}}><CheckCircle size={16}/></button>
+                                    <button className="btn" title={messages["cancel"]} onClick={() => setIsEditingDate(false)} style={{padding: '6px'}}><XCircle size={16}/></button>
                                 </div>
                             ) : (
                                 <p style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
@@ -512,9 +559,19 @@ export default function Lightbox({
                                 <div className="meta-divider">{messages["facesDetected"]}</div>
                                 <div className="face-thumbnail-container">
                                     {faces.map((face, index) => (
-                                        <div key={index} className="face-item">
-                                            {face.image && <img src={face.image} alt={messages["faceLabel"](index)} className="face-thumbnail" />}
-                                            <label>{messages["faceLabel"](index)}</label>
+                                        <div key={face.id || index} className="face-item">
+                                            {face.image && <img src={face.image} alt={face.personName || messages["faceLabel"](index)} className="face-thumbnail" />}
+                                            <label>{face.personName || messages["faceLabel"](index)}</label>
+                                            {face.id && (
+                                                <button
+                                                    type="button"
+                                                    className="face-remove-btn"
+                                                    title={messages["removeFace"]}
+                                                    onClick={() => handleRemoveFace(face.id)}
+                                                >
+                                                    <Trash2 size={12}/>
+                                                </button>
+                                            )}
                                         </div>
                                     ))}
                                 </div>

@@ -80,6 +80,14 @@ public class DuplicationService {
     // Minimum number of good matches that must also agree on a single geometric transform
     // (via RANSAC homography), which filters out coincidental matches on repetitive textures.
     private static final int ORB_MIN_INLIERS = 10;
+    // RANSAC's job is to find the LARGEST coincidental consensus set, so on two unrelated photos
+    // with enough "good" matches (e.g. both containing grass, wood grain, or other repetitive
+    // texture), it will often still find 10+ points that happen to agree on some transform even
+    // though the images are unrelated. An absolute inlier count alone can't tell that apart from a
+    // genuine match, so also require a minimum fraction of the good matches to be inliers — a real
+    // duplicate/crop/rotation typically has most of its good matches agree on one transform, while
+    // a coincidental match on repeated texture produces a small, low-ratio consensus.
+    private static final double ORB_MIN_INLIER_RATIO = 0.5;
     // Bytes per ORB descriptor row, fixed by ORB.create(..., WTA_K=2, ...) below (256-bit descriptor).
     private static final int ORB_DESCRIPTOR_COLS = 32;
 
@@ -502,9 +510,10 @@ public class DuplicationService {
             float[] points1 = bytesToPoints(photo.getOrbKeypoints());
             float[] points2 = bytesToPoints(targetPhoto.getOrbKeypoints());
             int inliers = countHomographyInliers(goodMatches, points1, points2);
-            log.info("feature matching photo={} target={}: homography inliers={} (min required {})",
-                    photo.getId(), targetPhoto.getId(), inliers, ORB_MIN_INLIERS);
-            return inliers >= ORB_MIN_INLIERS;
+            double inlierRatio = (double) inliers / goodMatches.size();
+            log.info("feature matching photo={} target={}: homography inliers={}/{} ratio={} (min count {}, min ratio {})",
+                    photo.getId(), targetPhoto.getId(), inliers, goodMatches.size(), inlierRatio, ORB_MIN_INLIERS, ORB_MIN_INLIER_RATIO);
+            return inliers >= ORB_MIN_INLIERS && inlierRatio >= ORB_MIN_INLIER_RATIO;
         } catch (Exception e) {
             log.warn("feature matching failed between photo {} and {}: {}", photo.getId(), targetPhoto.getId(), e.getMessage());
             return false;

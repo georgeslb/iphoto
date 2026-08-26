@@ -21,9 +21,14 @@ public interface FaceRepository extends JpaRepository<FaceEntity, UUID> {
     @MainSpaceLimited
     Page<FaceEntity> findByPersonAndPhotoDateTakenBeforeOrderByPhotoDateTakenDesc(PersonEntity person, LocalDateTime dateTakenLowerRange, Pageable pageable);
 
+    @MainSpaceLimited
+    Page<FaceEntity> findByPersonAndPhotoDateTakenAfterOrderByPhotoDateTakenAsc(PersonEntity person, LocalDateTime dateTakenUpperRange, Pageable pageable);
+
     List<FaceEntity> findByPhotoId(UUID photoId);
 
     Page<FaceEntity> findByPersonId(UUID personId, Pageable pageable);
+
+    List<FaceEntity> findByPersonIdAndPhotoId(UUID personId, UUID photoId);
 
     void deleteByPhotoId(PhotoEntity photo);
 }

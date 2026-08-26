@@ -8,7 +8,7 @@ export function usePhotoData(effectivePath, isLightboxOpen) {
   const [hasMore, setHasMore] = useState(true);
   const loadedPathRef = useRef(null);
 
-  const fetchPhotos = useCallback(async (pageNum, reset = false, type = 'library', albumId = null, spaceId = null) => {
+  const fetchPhotos = useCallback(async (pageNum, reset = false, type = 'library', albumId = null, spaceId = null, personId = null) => {
     try {
       let endpoint = '/api/photos';
       let sort = 'dateTaken,desc';
@@ -20,6 +20,8 @@ export function usePhotoData(effectivePath, isLightboxOpen) {
         endpoint = `/api/albums/${albumId}/photos`;
       } else if (type === 'space' && spaceId) {
         endpoint = `/api/spaces/${spaceId}/photos`;
+      } else if (type === 'person' && personId) {
+        endpoint = `/api/faces/person/${personId}/photos`;
       }
 
       const res = await fetch(`${endpoint}?page=${pageNum}&size=20&sort=${sort}`);
@@ -41,8 +43,9 @@ export function usePhotoData(effectivePath, isLightboxOpen) {
   const loadPhotos = useCallback((page, reset) => {
     const albumMatch = effectivePath.match(/^\/albums\/(.+)$/);
     const spaceMatch = effectivePath.match(/^\/spaces\/(.+)$/);
+    const personMatch = effectivePath.match(/^\/persons\/(.+)$/);
 
-    let type = 'library', albumId = null, spaceId = null;
+    let type = 'library', albumId = null, spaceId = null, personId = null;
 
     if (effectivePath === '/') {
         type = 'library';
@@ -54,9 +57,12 @@ export function usePhotoData(effectivePath, isLightboxOpen) {
     } else if (spaceMatch) {
         type = 'space';
         spaceId = spaceMatch[1];
+    } else if (personMatch) {
+        type = 'person';
+        personId = personMatch[1];
     }
 
-    fetchPhotos(page, reset, type, albumId, spaceId);
+    fetchPhotos(page, reset, type, albumId, spaceId, personId);
   }, [effectivePath, fetchPhotos]);
 
   useEffect(() => {

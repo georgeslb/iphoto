@@ -1,6 +1,5 @@
 package org.iphoto.service;
 
-import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.BaseEntity;
@@ -84,7 +83,7 @@ public class SpaceService {
     public AutoClosableLock lockSpace (SpaceEntity space) {
         locks.putIfAbsent(space.getId(), new AutoClosableLock());
         if (!locks.get(space.getId()).tryLock()) {
-            log.warn("space is locked");
+            log.debug("space is locked");
             throw new SpaceLockingException("lock space " + space.getId() +  " not possible");
         }
         return locks.get(space.getId());
@@ -107,9 +106,9 @@ public class SpaceService {
     }
 
     public void increaseSpacePhotoCount(SpaceEntity space, int delta) {
-            log.info ("space {} photo count {} before", space.getName(), space.getPhotoCount());
+            log.debug ("space {} photo count {} before", space.getName(), space.getPhotoCount());
             space.setPhotoCount(space.getPhotoCount() + delta);
-            log.info ("space {} photo count {} after", space.getName(), space.getPhotoCount());
+            log.debug ("space {} photo count {} after", space.getName(), space.getPhotoCount());
             spaceRepository.save(space);
     }
 

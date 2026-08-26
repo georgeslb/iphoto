@@ -826,8 +826,316 @@ new work is identified or completed, so nothing gets lost between sessions.
       backfilled, no migration/re-hash job was requested. Verified via direct `javac` compilation
       against the `~/.m2` classpath (no `mvn` available in this shell) — not run against real
       photos.
+- [x] **Bug fix**: real false-positive duplicate confirmed via the new diagnostic logging — two
+      completely unrelated photos (kids playing ping-pong outdoors vs. two people at an indoor
+      birthday party) were flagged as duplicates by the ORB tier. Logs showed exactly why: 90
+      "good" Hamming-distance matches, but only 11 of them (12%) agreed on a single RANSAC
+      homography — that cleared the old `ORB_MIN_INLIERS=10` absolute-count check, but a coherent
+      match should have most of its good matches agree on the same transform, not 12% of them.
+      RANSAC's job is to find the *largest* consensus set even from unrelated correspondences, so
+      an absolute inlier count alone can't distinguish a genuine geometric match from a
+      coincidental one found on repetitive texture (grass, wood grain, clothing folds — exactly
+      what both photos had plenty of). Added `ORB_MIN_INLIER_RATIO = 0.5` in
+      `DuplicationService.java`: `confirmWithFeatureMatching` now also requires
+      `inliers / goodMatches.size() >= 0.5`, on top of the existing absolute-count check. Against
+      this exact case (11/90 = 0.122), the pair now correctly fails and is not flagged. Verified
+      via `javac` compilation; not re-run against the reported photos live (no way to trigger a
+      re-check from this shell) — worth confirming this specific pair no longer groups after the
+      next duplicate scan.
+- [x] **Bug fix + improvement**: tiny-face handling in `FaceDetectionService`/`FaceAligner`, per
+      report that detection works well except for small faces, and that including them anyway had
+      previously been tried and reverted for producing bad results.
+      1. **Real bug found in `FaceAligner.align`**: `leftEye`/`rightEye` were each read via a
+         freshly-created `points.iterator()`, so both got the same first landmark point —
+         `rightX-leftX`/`rightY-leftY` were always `0`, making the eye-line rotation a permanent
+         no-op regardless of actual head tilt. Every face has been aligned unrotated this whole
+         time, not just small ones — but uncorrected tilt costs a much bigger fraction of the
+         available signal on a small crop than a large one, which lines up with why small faces
+         specifically looked worse. Fixed by reading both points off one shared iterator instance.
+      2. Bumped both `AffineTransformOp`/`Graphics2D` interpolation from `BILINEAR` to `BICUBIC` —
+         sharper when upscaling a small crop to the embedding model's fixed 112×112 input.
+      3. Replaced the flat `w < 60 || h < 60` exclusion in `FaceDetectionService` with
+         `MIN_FACE_SIZE = 32` (hard floor) plus a confidence-aware band for faces between 32px and
+         the old 60px threshold: kept only when detector confidence ≥ `SMALL_FACE_MIN_CONFIDENCE =
+         0.92` (stricter than the model's own `confThresh = 0.85` in `FaceDetectionConfiguration`).
+         RetinaFace's smallest anchor tier (scale=16) is built to find faces well under the old
+         60px floor, so the flat cutoff was discarding faces the detector correctly found; the
+         confidence gate exists to control the added false-positive risk now that they're no
+         longer blocked outright — was likely a real contributor to "including tiny faces didn't
+         work well" before, on top of the alignment bug.
+      4. Added logging for kept/skipped small-face decisions (size, confidence, which gate fired)
+         to make future tuning of `MIN_FACE_SIZE`/`SMALL_FACE_MIN_CONFIDENCE` observable.
+      Verified via `javac` compilation against the `~/.m2` classpath; not run against real photos
+      (no `mvn`/live app access from this shell) — worth a real check on whether small/background
+      faces are now detected and recognized well, and whether `SMALL_FACE_MIN_CONFIDENCE` needs
+      tuning from there.
+- [x] **Bug fix**: face bounding-box overlays in the Lightbox (`Lightbox.jsx`) drawn in the wrong
+      position relative to the actual faces — confirmed via screenshots showing boxes offset from
+      the real face locations by a different amount/direction per photo, while the backend-cropped
+      face thumbnails in the sidebar were correctly framed (so the bug was frontend-only, in how
+      the boxes are drawn over the full image, not in detection itself). Two compounding causes:
+      1. `.face-box` (`position: absolute`) never had a correctly-positioned ancestor: its
+         immediate parent `zoom-container` had no `position` set at all, so it fell through to
+         `.lightbox-content` (`App.css`) — which has `padding: 40px` — as the actual positioning
+         context. Fixed by adding `position: relative` to `zoom-container`'s inline style.
+      2. Even with that fixed, `handleImageLoad` computed `scaleX`/`scaleY` from the `<img>`
+         element's own `clientWidth`/`clientHeight`, with no offset for the fact that
+         `object-fit: contain` centers the image inside `zoom-container` — whenever the photo's
+         aspect ratio doesn't exactly match the container's (i.e. almost always), the image is
+         inset from the container's edges by a letterbox gap that was never accounted for. Notably,
+         `clampPan` a few lines above already computes this exact "rendered size within container"
+         math for pan-clamping, with a comment saying "This accounts for object-fit: contain" — but
+         that fix was never applied to the face-box code path. Fixed by reusing the same rendered-
+         size computation in `handleImageLoad` and adding the resulting `offsetX`/`offsetY` (half
+         the letterbox gap on each axis) into the face-box `left`/`top`.
+      Verified with the existing frontend suite (78/78 pass, unrelated to this file) and lint
+      (0 new warnings/errors on `Lightbox.jsx`) — not visually confirmed in a live browser against
+      the reported photos from this shell; worth a quick look in the app to confirm the boxes now
+      land on the actual faces for both reported cases.
+- [x] **Redesign**: `FaceRecognitionService`'s face-to-person clustering, per request to reliably
+      group the same person's face across large age gaps (e.g. age 5 vs. age 25) without loosening
+      match confidence. Discussed and confirmed with the user first: found and flagged a real
+      cross-user scoping bug (`MainSpaceAspectConfiguration.enableSpaceFilter` skips enabling the
+      `spaceFilter` for any thread named `backend-task*`, and `FACE_RECOGNITION` always runs on
+      such a thread via `TaskWorkerManager` — so `@MainSpaceLimited` queries in this path are
+      currently unfiltered) — user explicitly said not to touch `MainSpaceAspectConfiguration` for
+      this change, so it's left as-is/out of scope, not fixed.
+      1. **Matching against existing persons** (`findBestMatchForFace`/`scoreAgainstPerson`): now
+         compares a new face against each candidate person's `TEMPORAL_NEIGHBOR_WINDOW` (=10)
+         faces closest in time — both before AND after (new `findByPersonAndPhotoDateTakenAfter
+         OrderByPhotoDateTakenAsc` in `FaceRepository`, since only "before" existed previously) —
+         instead of averaging across the person's whole history (which dilutes the score across
+         eras) or a two-tier retry with arbitrary page sizes (20, then 100). Confirmed with the
+         user: windowing is per-person-candidate, not a single global pass.
+      2. **Clustering leftover ungrouped faces into new people** (`clusterByTemporalProximity`,
+         replacing `clusterFaces`): the old version anchored each new cluster on the first
+         unclustered face and compared everyone else directly to that one anchor (single-link from
+         one fixed point, no chaining) — direct 5-vs-25 comparisons were never going to pass a
+         strict threshold. New version sorts the batch by photo date, compares each face only to
+         its next `TEMPORAL_NEIGHBOR_WINDOW` faces chronologically (O(n*window), not O(n^2) — since
+         sorted, this single forward pass already covers both directions for every pair), and
+         merges matches via union-find (connected components) rather than single-anchor grouping —
+         so two faces decades apart can land in the same cluster by chaining through the many
+         in-between-age faces of the same person, without ever weakening the per-pair
+         `THRESHOLD` (kept at 0.60, unchanged). This was an explicit design point raised and
+         confirmed with the user: performance was flagged as a concern before implementing, hence
+         the windowed/bounded approach instead of full pairwise comparison.
+      3. Removed the old 100-face-cap batch for new-cluster formation, which could split one real
+         person's faces into multiple `PersonEntity` rows if they landed in different pagination
+         batches — now processes the full ungrouped set per run (capped at
+         `MAX_UNGROUPED_FACES_PER_RUN`=2000 to bound memory; any backlog beyond that is picked up
+         by the next run, since `FACE_RECOGNITION` reruns every ~30s per `TaskWorkerManager`).
+      4. Removed `PersonRecognitionService.THRESHOLD` — a dead/unused constant (0.8, never
+         referenced anywhere in that class).
+      Verified via `javac` compilation against the `~/.m2` classpath; not run against real face
+      data (no `mvn`/live app access from this shell, and no backend test suite exists yet — see
+      the still-pending duplication/face-detection test conversation). Worth validating on a real
+      account with an age-spanning photo history once deployed, and revisiting
+      `TEMPORAL_NEIGHBOR_WINDOW`/`MIN_NEW_PERSON_CLUSTER_SIZE` from there if grouping is still too
+      conservative or too loose.
+- [x] **Bug fixes**: Persons page (`Persons.jsx`) cover-photo icon, per request to finish this
+      feature ("an icon for each person with its latest known photo"). The intended behavior
+      already existed (`PersonRecognitionService.recalculateCoverFace` picks the face whose photo
+      has the most recent `dateTaken`) but was broken in two places:
+      1. **`FaceService.mapToPerson` could crash the entire `/api/faces/persons` response**:
+         `mapToDTO(personEntity.getCoverFace())` NPEs whenever any person's `coverFace` is `null`
+         — and since this runs inside `Page.map()` over every person, one person with no cover
+         face failed the whole list, not just that person's card. Fixed with a null check;
+         `coverPhoto` is now `null` in the DTO rather than crashing.
+      2. **`coverFace` could go `null` and never recover**: `FaceDetectionService.deleteFaces`
+         nulls out a person's `coverFace` when its underlying photo is deleted (correct — the face
+         no longer exists), but never picked a replacement, so the icon stayed blank indefinitely
+         unless that person happened to get a brand-new matched face later. Fixed by having
+         `deleteFaces` call `PersonRecognitionService.recalculateCoverFace` (made package-private
+         for this) right after nulling the pointer — also removes the deleted face from the
+         in-memory `person.getFaces()` collection first, since the face row hasn't actually been
+         deleted from the DB at that point yet and `recalculateCoverFace` would otherwise just
+         re-pick the same about-to-be-deleted face. Also moved the misplaced
+         `faceRepository.deleteByPhotoId(photo)` call out of the per-face loop it was redundantly
+         running inside (harmless but wasteful — deleted the same rows once per face).
+      3. **Frontend**: `Persons.jsx` rendered `<img src={person.coverPhoto?.image || ''}>` for a
+         person with no cover photo, which is a broken-image icon in the browser rather than a
+         clean placeholder. Now renders a circular gray placeholder with a `User` icon
+         (lucide-react) instead, styled to match the existing `.person-item img` circle
+         (`.person-item-placeholder` in `App.css`), so a person always has *something* sensible
+         shown even before/without a cover face.
+      Verified backend via `javac` compilation; frontend via the existing test suite (78/78 pass)
+      and lint (clean on `Persons.jsx`). Not visually confirmed in a live browser.
+- [x] **Bug fix**: the date-edit controls in the Lightbox metadata sidebar (`Lightbox.jsx`) used
+      the same `XCircle` icon for both the save/apply button and the cancel button — visually
+      identical, no way to tell them apart at a glance. Save now uses `CheckCircle`; cancel keeps
+      `XCircle`. Also added `title` tooltips to both (`messages["save"]`/`messages["cancel"]`,
+      already existing keys reused from elsewhere in the same file). Verified with the existing
+      test suite (78/78 pass) and lint (clean, same 2 pre-existing unrelated warnings on this file).
+- [x] **Bug fix**: `activateFaceRecognition`/`updateImageTaskToDo` (Admin page,
+      `UserManagement.jsx`) never reached the backend in dev — reported as the request landing on
+      `localhost:5173/admin/...` (the Vite dev server itself) instead of the backend. Root cause:
+      `AdminController` was the only controller in the app mapped at plain `/admin` instead of the
+      `/api/...` prefix every other endpoint uses, and Vite's dev proxy (`vite.config.js`) only
+      forwards `/api/*` to `localhost:8080` — so `/admin/**` requests were never proxied, just
+      served (or 404'd) by Vite directly. Only breaks in `npm run dev`; production works by
+      accident since Spring Boot serves the built frontend from the same origin. Fixed by aligning
+      with the rest of the app's convention instead of special-casing the proxy: `AdminController`
+      now maps at `/api/admin`, and both `fetch` calls in `UserManagement.jsx` updated to match.
+      **Also required a security-config fix to avoid a privilege-escalation regression**:
+      `SecurityConfig.java` had `.requestMatchers("/admin/**").hasRole("ADMIN")` — moving the
+      controller without updating this matcher would have left `/api/admin/**` covered only by the
+      generic `.anyRequest().authenticated()` fallback, letting any authenticated (non-admin) user
+      call these endpoints. Updated the matcher to `/api/admin/**` in the same change. `/admin/users`
+      (the React Router client-side route in `App.jsx`/`Sidebar.jsx`) is unrelated and untouched —
+      it's a frontend-only path, not a backend call.
+      Verified backend via `javac` compilation; frontend via the existing test suite (78/78 pass)
+      and lint (clean, 1 pre-existing unrelated warning). Not verified live against a running
+      `npm run dev` + backend pair from this shell.
+- [x] **Bug fix**: `org.hibernate.TransientObjectException: ... references an unsaved transient
+      instance of PersonEntity` at commit time when creating a brand-new person from a cluster of
+      previously-ungrouped faces (`PersonRecognitionService.addPerson`, reached from
+      `FaceRecognitionService.groupFacesForUser`). This is pre-existing logic I didn't touch during
+      the clustering redesign — most likely never actually exercised before, since it needs a
+      cluster of 3+ genuinely-new faces to reach `addPerson` at all, and very plausibly the
+      `activateFaceRecognition` admin-endpoint fix from the same session is what made this path
+      reachable for the first time. Root cause: `faces` passed into `addPerson` are detached
+      entities (loaded outside this transaction), so `faceRepository.saveAll(faces)` triggers a
+      Hibernate `merge()` for each — which needs the new `person` they're being pointed at to
+      already be a genuinely-persisted row, not just a pending/not-yet-flushed insert. The old code
+      called `personRepository.save(person)` (`persist`, deferred insert) and only wired up
+      `faceEntity.setPerson(person)` before that, so by the time `saveAll(faces)` ran, `person`'s
+      insert hadn't necessarily hit the DB yet. Fixed by calling `personRepository.saveAndFlush
+      (person)` — forcing the insert immediately — before any face is associated to it. Verified
+      via `javac` compilation; not verified against a live DB (no `mvn`/live app access, and no
+      backend test suite exists yet).
+- [x] **Feature**: new Person detail page (`/persons/:personId`, `PersonDetail.jsx`) — clicking a
+      person's photo/icon on `/persons` now navigates here, showing all their photos with the
+      same `PhotoGrid` UI as Library/Album/Space (selection, duplicate grouping, garbage icon).
+      Deliberately mirrors `AlbumDetail.jsx`/`SpaceDetail.jsx` structure exactly (same header shape,
+      same `useEntityById` fetch pattern).
+      Backend additions: `GET /api/faces/person/{id}` (`FaceController`/`FaceService.getPerson`) —
+      previously missing entirely; `useEntityById` had nothing to call for a single person before
+      this. `PersonDTO.photoCount` was always `null` — now a real count via
+      `photoService.findByPerson(person, Pageable.ofSize(1)).getTotalElements()`. Also fixed in
+      passing: `FaceService.getPersonPhotos` threw a plain `RuntimeException` for a missing person,
+      which the controller's `catch (NoSuchElementException e)` could never actually catch (500
+      instead of 404) — changed to throw `NoSuchElementException`, matching every other "get by id"
+      endpoint in the app.
+      Frontend wiring: `usePhotoData`'s path-based routing extended with a `/persons/:id` → `type:
+      'person'` case (mirroring `/albums/:id`/`/spaces/:id`); `useRouteContext` gained
+      `currentPersonId`/`selectedMenu: 'person'`; `Persons.jsx`'s photo/icon click now navigates to
+      `/persons/${id}` (the name label is still reserved for the existing rename-in-place flow).
+      Opening a photo from the person page uses the plain `/asset/:photoId` URL, same as Space —
+      no per-person asset sub-route was added (Album's `/albums/:id/asset/:photoId` is the outlier
+      here, not the norm, and nothing needs a person-scoped deep link today).
+      Verified backend via `javac` compilation; frontend via the existing test suite (78/78 pass),
+      lint (no new warnings beyond the pre-existing `actualRefreshAndMaintainScroll` exhaustive-deps
+      one, now also listing `currentPersonId` alongside the already-missing `currentAlbumId`/
+      `currentSpaceId`/`selectedMenu`), and a production build (`npm run build` succeeds). Not
+      visually confirmed in a live browser.
+- [x] **Feature**: manually remove a face from a photo, in the Lightbox's "Faces Detected"
+      section. Each face thumbnail now has a small trash-icon overlay button
+      (`.face-remove-btn`) that deletes just that one `FaceEntity` — the photo itself is
+      untouched, only that one face annotation goes away (e.g. for a false-positive detection).
+      Backend: new `DELETE /api/faces/{id}` (`FaceController.deleteFace` /
+      `FaceService.deleteFace`) — if the removed face was someone's `coverFace`,
+      `recalculateCoverFace` picks a replacement immediately, same pattern as
+      `FaceDetectionService.deleteFaces` (remove from the person's in-memory `faces` collection
+      first, since the row isn't deleted from the DB yet at that point, or it would just get
+      re-picked). `FaceService` gained a `PersonRecognitionService` dependency for this — no
+      circular-dependency risk, `PersonRecognitionService` doesn't depend on `FaceService`.
+      `FaceDTO` gained an `id` field (previously had none at all — `x/y/width/height/image` only —
+      so the frontend had no way to address a specific face for deletion); the single place that
+      constructs it (`FaceService.mapToDTO`) updated to pass `faceEntity.getId()`.
+      Frontend: `Lightbox.jsx`'s `handleRemoveFace` calls the new endpoint then filters the face out
+      of local `faces` state — this drives both the thumbnail list AND the on-image `.face-box`
+      overlays from one source, so both update together with no extra state to manage.
+      Verified backend via `javac` compilation; frontend via the existing test suite (78/78 pass),
+      lint (same 2 pre-existing unrelated warnings on this file, no new ones), and a production
+      build. Not visually confirmed in a live browser.
+- [x] **Feature**: show the person's name under a face thumbnail in the Lightbox's "Faces
+      Detected" section, instead of the generic "Face 1"/"Face 2"/... label, whenever that face
+      is linked to a named `PersonEntity`. `FaceDTO` gained a `personName` field
+      (`FaceService.mapToDTO`: `faceEntity.getPerson() != null ? faceEntity.getPerson().getName()
+      : null` — lazy-loaded `@ManyToOne`, safe here the same way the pre-existing
+      `faceEntity.getPerson()`/`getCoverFace()` lazy accesses already were, since these endpoints
+      are plain HTTP-request-scoped calls under Spring Boot's default `open-in-view=true`, not the
+      `backend-task` background-thread path). Frontend: `face.personName || messages["faceLabel"]
+      (index)]` for both the thumbnail's `alt` text and its `<label>` — falls back to the existing
+      "Face N" label for an unnamed or unrecognized face, so nothing changes for those. Verified
+      via `javac` compilation, the existing test suite (78/78 pass), lint (no new warnings), and a
+      production build. Not visually confirmed in a live browser.
+- [x] **Feature**: person navigation, per explicit request — keep the persons list visible above a
+      selected person's photos, shown as a grid when no person is selected (unchanged `/persons`
+      behavior) but as a horizontal, arrow-scrollable strip when one is selected, so switching
+      between people doesn't require going back to the grid.
+      - New `hooks/usePersons.js`: extracted the `/api/faces/persons` fetch (+ loading/error state)
+        out of `Persons.jsx` into a shared hook, since it's now used in two places.
+      - New `PersonStrip.jsx`: horizontal row of every person's avatar + name, left/right
+        `ChevronLeft`/`ChevronRight` arrow buttons scrolling the track via `scrollBy({left, behavior:
+        'smooth'})`, the currently-viewed person highlighted (`.active`, primary-color ring +
+        bold name) via a `selectedPersonId` prop compared against each person's id. Clicking any
+        person in the strip navigates to `/persons/${id}`.
+      - `PersonDetail.jsx` now renders `<PersonStrip selectedPersonId={personId} />` above
+        everything else, including the loading/error/not-found states — so the strip (and the
+        ability to jump to a different, valid person) stays usable even if the currently-linked
+        person id is bad or 404s.
+      - `Persons.jsx` refactored to consume `usePersons()` instead of its own local fetch effect —
+        behavior unchanged (still a grid, still supports the existing rename-in-place flow via the
+        hook's `setPersons` for the optimistic update).
+      - New i18n keys: `scrollPersonsLeft`/`scrollPersonsRight` (arrow button `aria-label`s).
+      Verified with the existing test suite (78/78 pass — no regressions from the `Persons.jsx`
+      refactor), lint (0 warnings/errors on every touched/new file), and a production build. Not
+      visually confirmed in a live browser — worth checking the strip's scroll behavior and the
+      active-person highlight render correctly, and that clicking through several people in a row
+      feels smooth.
+- [x] **Feature**: unlink a person from one specific photo, per explicit request — an icon on the
+      top-right of every photo card on a person's page (`/persons/:personId`), only there (not on
+      Library/Album/Space grids). Unlinks just that one person↔photo association — does NOT delete
+      the underlying `FaceEntity` (that's the separate, pre-existing "remove face" action in the
+      Lightbox) and does NOT delete the photo. The photo simply stops showing up for this person on
+      their next refresh, since it's no longer matched to them.
+      - Backend: new `DELETE /api/faces/person/{personId}/photo/{photoId}`
+        (`FaceController.unlinkPersonFromPhoto` → `FaceService.unlinkPersonFromPhoto`) — finds the
+        face(s) linking that person to that photo (new `FaceRepository.findByPersonIdAndPhotoId`),
+        sets `person = null` on each. If one of them was the person's `coverFace`, picks a
+        replacement immediately (`recalculateCoverFace`) — same established pattern as
+        `FaceService.deleteFace`/`FaceDetectionService.deleteFaces`, including removing the
+        unlinked face(s) from the person's in-memory `faces` collection first so the recalculation
+        doesn't just re-pick one of them. Compares faces by `.getId()`, not `.equals()` — noted
+        while writing this that `FaceEntity`'s `@EqualsAndHashCode(onlyExplicitlyIncluded = true)`
+        has no field actually marked `@EqualsAndHashCode.Include`, making `.equals()` unreliable
+        for identity comparison; worth a look separately, not fixed here since it's out of scope.
+      - Frontend: `PhotoGrid.jsx` gained an optional `handleUnlinkPerson` prop (only ever passed
+        from `PersonDetail.jsx`, same "only renders when the prop is provided" convention as the
+        existing duplicate-cluster remove button) — renders an `Unlink2` icon button
+        (`.unlink-person-btn`, top-right, mirrors `.duplicate-remove-btn`'s circular style) on every
+        card when present. `PersonDetail.jsx`'s new `handleUnlinkPerson` calls the endpoint then
+        `refreshAndMaintainScroll()` (now threaded into `PersonDetail` as a prop from `App.jsx`) —
+        same call-then-refresh pattern as every handler in `usePhotoActions.js`.
+      Verified via `javac` compilation (repository/service/controller together), the existing
+      frontend test suite (78/78 pass), lint (no new warnings), and a production build. Not
+      verified against the live app from this shell (backend running via IntelliJ, frontend build
+      currently blocked by the separate pom.xml phase-ordering issue reported earlier this
+      session) — worth a real click-through once that's resolved.
 
 ## Open / Not Yet Done
+
+- [ ] **Feature**: rename a person directly from the Lightbox's "Faces Detected" section, not just
+      from the `/persons` grid. The face thumbnail already shows the linked person's name there
+      (see the "Named face labels" entry above); this would let editing happen in place instead of
+      requiring a trip back to `/persons`. Needs: a click/edit affordance on the face label (mirror
+      `Persons.jsx`'s `editingId`/inline-`<input>` pattern), and `PUT /api/faces/person/{id}`
+      already exists and is reusable as-is — this is purely a frontend UI addition, no new backend
+      needed. Watch for: a face with no linked person yet (nothing to rename), and updating the
+      local `faces` state after a successful rename so the label reflects the new name immediately
+      without a full re-fetch.
+- [ ] **Feature**: merge two persons into one — for when face recognition/clustering splits the
+      same real person into multiple `PersonEntity` rows (a known possibility per the
+      age-invariant clustering redesign's own limitations, and plain human/matching error).
+      Needs: a way to pick a "source" and "target" person (from `/persons` grid selection, or from
+      the person-strip/detail page), a backend endpoint that reassigns every `FaceEntity` from
+      source → target (`person_id` FK update) and deletes the now-empty source `PersonEntity`,
+      recalculating the target's `coverFace` afterward (`PersonRecognitionService
+      .recalculateCoverFace`, already `void`/package-private and reusable). Consider: what happens
+      to the source person's `name` if only the target has one (or both do and they conflict) —
+      probably keep the target's name, but worth confirming with the user rather than assuming.
 
 - [ ] More regression tests worth adding, deliberately left out of the initial batch to keep
       it focused on what was quick to do well rather than rushed:

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Check, Layers, Trash2 } from 'lucide-react';
+import { Check, Layers, Trash2, Unlink2 } from 'lucide-react';
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 const EXPANDED_CLUSTER_CARD_SIZE = 360;
@@ -13,7 +13,8 @@ export default function PhotoGrid({
   setSelectedIds,
   setSelectedPhoto,
   isLightboxOpen, // Accept the new prop
-  handleMoveToGarbage
+  handleMoveToGarbage,
+  handleUnlinkPerson // Only passed from PersonDetail.jsx — unlinks this person from a photo
 }) {
   const { messages } = useLocale(); // Use the useLocale hook
   const [hoveredVideoId, setHoveredVideoId] = useState(null);
@@ -163,6 +164,16 @@ export default function PhotoGrid({
             <img src={p.url} loading="lazy" />
         )}
         {!isLightboxOpen && p.contentType?.startsWith('video') && hoveredVideoId !== p.id && <div className="video-badge">▶</div>}
+        {handleUnlinkPerson && (
+          <button
+            type="button"
+            className="unlink-person-btn"
+            title={messages["unlinkPersonFromPhoto"]}
+            onClick={(e) => { e.stopPropagation(); handleUnlinkPerson(p.id); }}
+          >
+            <Unlink2 size={14}/>
+          </button>
+        )}
         {badge}
       </div>
     );

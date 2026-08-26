@@ -38,10 +38,29 @@ public class FaceController extends AbstractBaseController {
         return ResponseEntity.ok(faceService.getFacesForPhoto(UUID.fromString(id)));
     }
 
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> deleteFace(@PathVariable UUID id) {
+        try {
+            faceService.deleteFace(id);
+            return ResponseEntity.noContent().build();
+        } catch (NoSuchElementException e) {
+            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+        }
+    }
+
     @GetMapping("/persons")
     public ResponseEntity<Page<PersonDTO>> getPersons(@PageableDefault(size = 50, sort = "name", direction = Sort.Direction.DESC)  Pageable pageable) {
         UserEntity currentUser = getCurrentUser();
         return ResponseEntity.ok(faceService.getPersons(pageable));
+    }
+
+    @GetMapping("/person/{id}")
+    public ResponseEntity<PersonDTO> getPerson(@PathVariable UUID id) {
+        try {
+            return ResponseEntity.ok(faceService.getPerson(id));
+        } catch (NoSuchElementException e) {
+            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+        }
     }
 
     @PutMapping("/person/{id}")
@@ -61,6 +80,16 @@ public class FaceController extends AbstractBaseController {
         try {
             Page<Photo> photos = faceService.getPersonPhotos(id, pageable);
             return ResponseEntity.ok(photos);
+        } catch (NoSuchElementException e) {
+            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+        }
+    }
+
+    @DeleteMapping("/person/{personId}/photo/{photoId}")
+    public ResponseEntity<Void> unlinkPersonFromPhoto(@PathVariable UUID personId, @PathVariable UUID photoId) {
+        try {
+            faceService.unlinkPersonFromPhoto(personId, photoId);
+            return ResponseEntity.noContent().build();
         } catch (NoSuchElementException e) {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
         }

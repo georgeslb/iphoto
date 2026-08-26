@@ -22,6 +22,7 @@ import MapView from './components/MapView';
 import LightboxWrapper from './components/LightboxWrapper';
 import RemoveFromAlbumModal from './components/RemoveFromAlbumModal'; /* Import new modal */
 import Persons from './components/Persons';
+import PersonDetail from './components/PersonDetail';
 import Login from './components/Login'; // Import Login component
 import UserManagement from './components/UserManagement'; // Import UserManagement component
 import SpaceGridDisplay from './components/SpaceGridDisplay'; // Import SpaceGridDisplay
@@ -59,6 +60,7 @@ function App() {
     isLightboxOpen,
     currentAlbumId,
     currentSpaceId,
+    currentPersonId,
     fromGarbage,
     selectedMenu,
   } = useRouteContext(location);
@@ -177,7 +179,7 @@ function App() {
 
     // Use the fetchPhotos from usePhotoData to refresh the current view
     // This will reset the photos and fetch the first page (page 0)
-    await fetchPhotos(0, true, selectedMenu, currentAlbumId, currentSpaceId);
+    await fetchPhotos(0, true, selectedMenu, currentAlbumId, currentSpaceId, currentPersonId);
 
     await fetchAlbums(); /* fetchAlbums is now available from useAlbumManagement */
     await fetchSpaces(); // Fetch spaces as well
@@ -277,6 +279,20 @@ function App() {
     />
   );
 
+  const personDetailElement = (
+    <PersonDetail
+        photos={photos}
+        hasMore={hasMore}
+        setPage={setPage}
+        selectedIds={selectedIds}
+        setSelectedIds={setSelectedIds}
+        handlePhotoClick={handlePhotoClick}
+        isLightboxOpen={isLightboxOpen}
+        handleMoveToGarbage={handleMoveToGarbage}
+        refreshAndMaintainScroll={refreshAndMaintainScroll}
+    />
+  );
+
   return (
       <div className="app-container">
         {isAuthenticated && (
@@ -357,6 +373,7 @@ function App() {
                     )
                   } />
                   <Route path="/persons" element={<Persons />} />
+                  <Route path="/persons/:personId" element={personDetailElement} />
                   <Route path="/duplicates/*" element={
                     isLightboxOpen ? null : (
                         <DuplicatePhotoGrid

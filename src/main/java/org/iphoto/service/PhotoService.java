@@ -260,8 +260,8 @@ public class PhotoService {
 
             boolean isAlbumMenu = photoSelectionRequest.menuSelectionRequest().menu().contains("album");
             if (!isGarbageMenu &&
-                    spaces.size() == 1
-                    && spaces.stream().findAny().get().getType() == SpaceType.MAIN) {
+                    (spaces.size() == 1
+                    && spaces.stream().findAny().get().getType() == SpaceType.MAIN) || photoSelectionRequest.menuSelectionRequest().menu().equals("library")) {
                 canBeMovedToAlbum = true;
                 if (isAlbumMenu & isAlbumSelected(photoSelectionRequest)) {
                     canBeRemovedFromAlbum = true;
