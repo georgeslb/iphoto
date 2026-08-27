@@ -26,5 +26,9 @@ export function useEntityById(id, endpoint) {
       });
   }, [id, endpoint]);
 
-  return { entity, loading, error };
+  // setEntity is exposed for callers that mutate the entity server-side themselves (e.g.
+  // PersonDetail.jsx renaming/merging via usePersonRename) and want to reflect the result
+  // immediately without waiting on a full refetch — the effect above only (re)fetches when
+  // `id`/`endpoint` change, not on every render, so it won't clobber a manual set like this.
+  return { entity, setEntity, loading, error };
 }

@@ -61,6 +61,12 @@ public class FaceRecognitionService {
     // Minimum faces required for a brand-new (not-yet-matched-to-an-existing-person) cluster to
     // become a PersonEntity, to avoid spurious 1-2 face "people" from noise/coincidental matches.
     private static final int MIN_NEW_PERSON_CLUSTER_SIZE = 3;
+
+    // Ceiling on how far apart (in real elapsed time) two faces can be and still be compared
+    // during new-person clustering (see clusterByTemporalProximity). This is the primary bound
+    // there now — TEMPORAL_NEIGHBOR_WINDOW is kept only as a cost safety cap, see that method's
+    // comment for why a pure position-based window was wrong.
+    private static final Duration MAX_NEW_PERSON_CLUSTER_GAP = Duration.ofHours(24);
     private final EntityManager entityManager;
 
     public void groupFaces() { // Added UserEntity parameter
@@ -208,11 +214,21 @@ public class FaceRecognitionService {
     }
 
     // Clusters faces with no existing-person match into brand-new people. Faces are sorted by
-    // photo date, then each face is only compared against its next TEMPORAL_NEIGHBOR_WINDOW
-    // faces in that chronological order — since the list is sorted, this single forward-looking
-    // pass already covers every pair within the window in both directions (checking i->j also
-    // covers j's "before" side), so it costs O(n * window) rather than the O(n^2) of comparing
-    // every face to every other face.
+    // photo date, then each face is compared against the faces that follow it, bounded primarily
+    // by MAX_NEW_PERSON_CLUSTER_GAP (real elapsed time) rather than by position in the sorted
+    // list. Since the list is sorted, this single forward-looking pass already covers every pair
+    // within the gap in both directions (checking i->j also covers j's "before" side).
+    //
+    // BUG THIS FIXES: the window used to be purely positional (next TEMPORAL_NEIGHBOR_WINDOW
+    // faces, full stop) over the list of ALL of the user's ungrouped faces across every photo —
+    // not scoped to one event/session. Two people recurring ~40 minutes apart across 3 photos of
+    // the same gathering went completely ungrouped because ~13 unrelated faces from OTHER
+    // people's photos, taken in between, pushed the second occurrence outside the position
+    // window even though it was nowhere near TEMPORAL_NEIGHBOR_WINDOW faces away in *time*. Each
+    // real person then fragmented into disconnected 2-face (or 1-face) components, all of which
+    // MIN_NEW_PERSON_CLUSTER_SIZE silently discarded. A generous position-based cap
+    // (maxCandidatesPerFace, well above TEMPORAL_NEIGHBOR_WINDOW) is kept below purely as a cost
+    // safety net, so a burst of many photos within the same short time span doesn't blow up cost.
     //
     // Matches are merged via union-find (connected components), not single-anchor grouping: a
     // direct link is only required between temporally-adjacent faces, and two faces far apart in
@@ -242,10 +258,24 @@ public class FaceRecognitionService {
             embeddings[i] = byteArrayToFloatArray(sorted.get(i).getEmbedding());
         }
 
+        // Hard cap on candidates compared per face, on top of the time gap below — a dense event
+        // (hundreds/thousands of same-day photos) could otherwise turn the time-bounded scan into
+        // real O(n^2) cost. TEMPORAL_NEIGHBOR_WINDOW faces would have been too tight (that's the
+        // bug being fixed here), so this is deliberately a much larger multiple of it, not the
+        // same value.
+        int maxCandidatesPerFace = TEMPORAL_NEIGHBOR_WINDOW * 20;
+
         UnionFind unionFind = new UnionFind(n);
         for (int i = 0; i < n; i++) {
-            int windowEnd = Math.min(n, i + 1 + TEMPORAL_NEIGHBOR_WINDOW);
-            for (int j = i + 1; j < windowEnd; j++) {
+            LocalDateTime baseTime = sorted.get(i).getPhoto().getDateTaken();
+            int candidateCap = Math.min(n, i + 1 + maxCandidatesPerFace);
+            for (int j = i + 1; j < candidateCap; j++) {
+                // List is sorted by dateTaken, so once one candidate exceeds the gap every later
+                // one does too — safe to stop scanning this i entirely, not just skip this j.
+                if (Duration.between(baseTime, sorted.get(j).getPhoto().getDateTaken())
+                        .compareTo(MAX_NEW_PERSON_CLUSTER_GAP) > 0) {
+                    break;
+                }
                 if (cosineSimilarity(embeddings[i], embeddings[j]) >= THRESHOLD) {
                     unionFind.union(i, j);
                 }

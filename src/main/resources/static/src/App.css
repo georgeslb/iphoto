@@ -51,6 +51,56 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 .header { position: sticky; top: 0; background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(20px); padding: 16px 40px; display: flex; justify-content: space-between; align-items: center; z-index: 50; border-bottom: 1px solid rgba(0,0,0,0.05); }
 .content-body { padding: 0 40px 40px 40px; }
 
+/* Top-of-Library-page timeline (LibraryTimeline.jsx) — Memories strip + browse-by-month list.
+   Rendered as a sibling directly ahead of PhotoGrid's own .content-body (not nested inside one),
+   so it carries the matching side padding itself rather than relying on a shared wrapper. */
+.library-timeline { padding: 24px 40px 0 40px; }
+
+.memories-strip { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 4px; }
+
+.memory-card {
+  position: relative;
+  flex: 0 0 auto;
+  width: 180px;
+  height: 130px;
+  padding: 0;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  background: #f2f2f7;
+  cursor: pointer;
+  overflow: hidden;
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+.memory-card:hover { box-shadow: 0 6px 16px rgba(0,0,0,0.15); transform: translateY(-2px); }
+.memory-card-thumb { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.memory-card-caption {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  background: linear-gradient(to top, rgba(0,0,0,0.75), rgba(0,0,0,0));
+  text-align: left;
+}
+.memory-card-label { display: flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; color: white; }
+.memory-card-icon { color: white; flex-shrink: 0; }
+.memory-card-date { font-size: 11px; color: rgba(255,255,255,0.85); }
+
+.timeline-browse { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-top: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--border-color); }
+.timeline-browse-label { font-size: 13px; font-weight: 600; color: var(--text-secondary); padding-top: 8px; white-space: nowrap; }
+.timeline-year-list { display: flex; flex-wrap: wrap; gap: 8px; flex: 1; }
+.timeline-year { display: flex; flex-direction: column; }
+
+.timeline-year-btn { padding: 7px 14px; border-radius: 20px; border: 1px solid var(--border-color); background: white; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.2s ease; }
+.timeline-year-btn:hover { background: #f5f5f7; }
+.timeline-year-btn.active { background: var(--primary-color); color: white; border-color: var(--primary-color); }
+
+.timeline-month-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; padding: 8px; border-radius: 10px; background: #f5f5f7; }
+.timeline-month-btn { display: flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 14px; border: 1px solid var(--border-color); background: white; font-size: 12px; cursor: pointer; }
+.timeline-month-btn:hover { border-color: var(--primary-color); color: var(--primary-color); }
+.timeline-month-count { color: var(--text-secondary); font-size: 11px; }
+
 .map-view-container { height: 100%; }
 .map-view-container .leaflet-container { height: 100%; width: 100%; }
 
@@ -109,7 +159,7 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 
 .video-badge { position: absolute; bottom: 10px; right: 10px; background: rgba(0,0,0,0.5); color: white; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; }
 
-/* Duplicate photo grouping (collapsed badge / expanded cluster) */
+/* Duplicate photo grouping (collapsed badge / DuplicateClusterModal.jsx popup) */
 .duplicate-badge {
   position: absolute;
   bottom: 10px;
@@ -129,49 +179,81 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 }
 .duplicate-badge:hover { background: rgba(0,0,0,0.75); }
 
-.duplicate-cluster {
+/* DuplicateClusterModal.jsx — deliberately its own class rather than reusing .modal-content,
+   which is fixed at 400px/max-width 90%; this one needs to be wide (90% of the viewport) to fit
+   a 2-column image grid. */
+.duplicate-modal-content {
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+  width: 90vw;
+  max-height: 85vh;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px;
-  border: 1px dashed var(--primary-color);
-  border-radius: 10px;
-  background: rgba(0,122,255,0.05);
+  overflow: hidden;
 }
 
-/* A real, always-visible header row (not an absolutely-positioned overlay) so the collapse
-   control is never clipped/hidden under the sticky day-header regardless of scroll position. */
-.duplicate-cluster-header {
+.duplicate-modal-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
 }
-.duplicate-cluster-label {
+
+.duplicate-modal-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.duplicate-modal-close {
   display: flex;
   align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--primary-color);
-}
-.duplicate-cluster-row { display: flex; gap: 6px; }
-.duplicate-cluster-row .photo-card { flex-grow: 0; }
-
-.duplicate-collapse-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
   border: none;
-  border-radius: 12px;
-  background: var(--primary-color);
-  color: white;
-  font-size: 11px;
-  font-weight: 600;
+  border-radius: 50%;
+  background: #f0f0f5;
+  color: var(--text-main);
   cursor: pointer;
 }
-.duplicate-collapse-btn:hover { background: #006ee6; }
+.duplicate-modal-close:hover { background: #e0e0e5; }
+
+/* Two columns, each image ~45% of the viewport width (90vw modal / 2 columns, minus the gap) —
+   height isn't fixed, it follows the image's own aspect ratio at that width, so this grid works
+   for photos of any orientation without cropping/distorting them. No pagination: every member of
+   the cluster renders at once, this container is just what scrolls if that's a lot of photos. */
+.duplicate-modal-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.duplicate-modal-item {
+  position: relative;
+}
+
+.duplicate-modal-item img {
+  width: 100%;
+  height: auto;
+  /* 80% of the popup's own max-height (.duplicate-modal-content: 85vh) — a tall/portrait photo
+     used to be able to fill the whole scrollable area on its own, making side-by-side comparison
+     mean constant scrolling (user feedback: "hard to compare large photos"). Landscape photos are
+     unaffected — max-height only clamps once the natural width:100% height would exceed it, it
+     doesn't force anything to grow. object-fit: contain (not cover) so a clamped tall photo
+     shrinks proportionally (letterboxed sides) instead of getting cropped or stretched. */
+  max-height: 68vh;
+  object-fit: contain;
+  display: block;
+  border-radius: 8px;
+  background: #f2f2f7;
+}
 
 .duplicate-remove-btn {
   position: absolute;
@@ -800,6 +882,42 @@ button.upload-item-name.upload-item-name-link:hover {
   font-size: 15px;
   color: var(--text-secondary);
 }
+
+/* PersonDetail.jsx's editable page title — click-to-edit, same interaction pattern as the
+   metadata-group .edit-icon fields in Lightbox.jsx, just full page-title sized. */
+.person-title-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.person-title-name .edit-icon {
+  color: var(--text-secondary);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  flex-shrink: 0;
+}
+
+.person-title-name:hover .edit-icon {
+  opacity: 1;
+}
+
+.person-title-name-input {
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-bottom: 2px solid var(--primary-color);
+  font-size: 28px;
+  font-weight: 700;
+  font-family: inherit;
+  color: var(--text-main);
+  background: transparent;
+  outline: none;
+  min-width: 0;
+  width: 300px;
+  max-width: 60vw;
+}
 /* Persons Page Styles */
 .person-item {
   position: relative;
@@ -869,6 +987,67 @@ button.upload-item-name.upload-item-name-link:hover {
 .person-item:hover .person-item-placeholder {
   transform: scale(1.05);
   box-shadow: 0 8px 25px rgba(0,0,0,0.15);
+}
+
+/* PersonMergePrompt.jsx — the rename-collision picker (usePersonRename.js). Each candidate
+   shares the SAME name (that's why they collided), so the card shows a face + photo count
+   instead of the name, to actually help tell them apart. */
+.merge-candidate-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 16px 0;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.merge-candidate-item {
+  position: relative;
+  width: 88px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px;
+  border-radius: 10px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  text-align: center;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.merge-candidate-item:hover { background: #f5f5f7; }
+
+.merge-candidate-item.selected {
+  border-color: var(--primary-color);
+  background: #f0f6ff;
+}
+
+.merge-candidate-item .check-circle {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+}
+
+.merge-candidate-item img,
+.merge-candidate-placeholder {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.merge-candidate-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #e0e0e5;
+  color: var(--text-secondary);
+}
+
+.merge-candidate-item span {
+  font-size: 11px;
+  color: var(--text-secondary);
 }
 
 .person-name {
@@ -984,7 +1163,7 @@ button.upload-item-name.upload-item-name-link:hover {
   border-radius: 50%;
   object-fit: cover;
   border: 2px solid transparent;
-  transition: border-color 0.2s ease;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .person-strip-placeholder {
@@ -997,7 +1176,12 @@ button.upload-item-name.upload-item-name-link:hover {
 
 .person-strip-item.active img,
 .person-strip-item.active .person-strip-placeholder {
-  border-color: var(--primary-color);
+  /* Was the same yellow as the Lightbox's .face-box overlays — too low-contrast against the
+     strip's light background to actually notice (user feedback). Solid red + thicker ring reads
+     clearly instead. box-shadow (not border-color) so the ring traces the circular avatar
+     exactly, with a hairline gap instead of just recoloring the existing 2px border in place. */
+  border-color: transparent;
+  box-shadow: 0 0 0 4px #ff3b30;
 }
 
 .person-strip-item span {
@@ -1061,6 +1245,10 @@ button.upload-item-name.upload-item-name-link:hover {
 
   .content-body {
     padding: 0 16px 24px 16px;
+  }
+
+  .library-timeline {
+    padding: 16px 16px 0 16px;
   }
 
   .header-actions {

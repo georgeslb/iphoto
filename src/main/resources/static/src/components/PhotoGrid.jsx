@@ -1,8 +1,7 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Check, Layers, Trash2, Unlink2 } from 'lucide-react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
+import { Check, Layers, Unlink2 } from 'lucide-react';
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
-
-const EXPANDED_CLUSTER_CARD_SIZE = 360;
+import DuplicateClusterModal from './DuplicateClusterModal';
 
 export default function PhotoGrid({
   photos,
@@ -14,21 +13,35 @@ export default function PhotoGrid({
   setSelectedPhoto,
   isLightboxOpen, // Accept the new prop
   handleMoveToGarbage,
-  handleUnlinkPerson // Only passed from PersonDetail.jsx — unlinks this person from a photo
+  handleUnlinkPerson, // Only passed from PersonDetail.jsx — unlinks this person from a photo
+  // The three below are only ever passed by the Library route (App.jsx), after a
+  // LibraryTimeline.jsx jump — they enable back-scrolling above the jumped-to point. Left
+  // undefined everywhere else (Album/Space/Person/Garbage/duplicates), which silently disables
+  // the top sentinel/loader below entirely — no behavior change for those views.
+  hasNewer,
+  onLoadNewer,
+  mainContentRef
 }) {
   const { messages } = useLocale(); // Use the useLocale hook
   const [hoveredVideoId, setHoveredVideoId] = useState(null);
-  const [expandedGroups, setExpandedGroups] = useState(() => new Set());
+  // Which duplicate cluster's "×N similar" popup is open (DuplicateClusterModal.jsx, replacing
+  // the old expand-in-place row) — the PRIMARY PHOTO'S ID, not the item object itself, so the
+  // modal always re-derives its member list from the current `groups` below (computed below,
+  // after this) rather than a stale snapshot. That matters because moving a member to garbage
+  // from inside the modal changes `photos`/`groups` on the next render, and the modal should
+  // reflect that (member disappears) rather than keep showing an already-garbage-collected photo
+  // until manually closed.
+  const [openDuplicatePrimaryId, setOpenDuplicatePrimaryId] = useState(null);
   const observerTarget = useRef(null);
+  const topObserverTarget = useRef(null);
   const lastClickedIndexRef = useRef(null);
-
-  const toggleGroupExpanded = (primaryId) => {
-    setExpandedGroups(prev => {
-      const next = new Set(prev);
-      if (next.has(primaryId)) next.delete(primaryId); else next.add(primaryId);
-      return next;
-    });
-  };
+  const loadingNewerRef = useRef(false);
+  // Set right before a loadNewer fetch starts, holding the scroll container's height at that
+  // moment; the useLayoutEffect below reads it once the newly-prepended photos have actually
+  // rendered, to shift scrollTop by exactly how much taller the content just got — otherwise
+  // prepending content above the current viewport would visually yank whatever the user was
+  // looking at downward by that same amount.
+  const pendingPrependRef = useRef(null);
 
   const photoIndexById = useMemo(() => {
     const map = new Map();
@@ -94,6 +107,13 @@ export default function PhotoGrid({
     });
   });
 
+  // Re-derived every render from the live `groups` above (see openDuplicatePrimaryId's own
+  // comment for why) — null once the id no longer matches anything, which also naturally closes
+  // the modal if its entire cluster is ever fully cleared out from under it.
+  const openDuplicateItem = openDuplicatePrimaryId
+    ? Object.values(groups).flat().find(it => it.primary.id === openDuplicatePrimaryId) || null
+    : null;
+
   const handleSelectGroup = (dayItems, e) => {
     e.stopPropagation();
     const groupIds = dayItems.flatMap(item => item.members.map(m => m.id));
@@ -132,6 +152,60 @@ export default function PhotoGrid({
       }
     };
   }, [hasMore, setPage, isLightboxOpen]); // Add isLightboxOpen to dependencies
+
+  // Back-scrolling: loads NEWER photos when the top sentinel comes into view. Only wired up at
+  // all when the caller passed onLoadNewer (Library route, post-jump) — everywhere else hasNewer/
+  // onLoadNewer are undefined and this effect's observer target never renders, so it's a no-op.
+  const handleLoadNewer = () => {
+    if (!onLoadNewer || !hasNewer || loadingNewerRef.current) return;
+    loadingNewerRef.current = true;
+    if (mainContentRef?.current) {
+      pendingPrependRef.current = { scrollHeightBefore: mainContentRef.current.scrollHeight };
+    }
+    Promise.resolve(onLoadNewer()).finally(() => {
+      loadingNewerRef.current = false;
+    });
+  };
+
+  useEffect(() => {
+    if (!onLoadNewer) return undefined;
+
+    const observer = new IntersectionObserver(
+      entries => {
+        if (entries[0].isIntersecting && !isLightboxOpen) {
+          handleLoadNewer();
+        }
+      },
+      { threshold: 0.1, rootMargin: '400px 0px 0px 0px' } // Pre-load 400px before reaching the top
+    );
+
+    const currentTarget = topObserverTarget.current;
+    if (currentTarget) {
+      observer.observe(currentTarget);
+    }
+    return () => {
+      if (currentTarget) {
+        observer.unobserve(currentTarget);
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleLoadNewer intentionally
+    // omitted: it's a plain function (not memoized) recreated every render, and including it
+    // would tear down/recreate the observer on every render for no behavioral difference — the
+    // observer's callback always closes over the latest handleLoadNewer via re-render anyway.
+  }, [hasNewer, onLoadNewer, isLightboxOpen]);
+
+  // Compensates scrollTop after loadNewer prepends photos above the current viewport, so the
+  // content the user was already looking at doesn't visually jump downward. Runs synchronously
+  // after the DOM updates (useLayoutEffect, not useEffect) so there's no visible flash before the
+  // correction is applied.
+  useLayoutEffect(() => {
+    if (pendingPrependRef.current && mainContentRef?.current) {
+      const { scrollHeightBefore } = pendingPrependRef.current;
+      const delta = mainContentRef.current.scrollHeight - scrollHeightBefore;
+      mainContentRef.current.scrollTop += delta;
+      pendingPrependRef.current = null;
+    }
+  }, [photos, mainContentRef]);
 
   const renderPhotoCard = (p, badge, size = 220) => {
     const aspectRatio = (p.width && p.height) ? (p.width / p.height) : 1;
@@ -184,54 +258,32 @@ export default function PhotoGrid({
       return renderPhotoCard(item.primary);
     }
 
-    const isExpanded = expandedGroups.has(item.primary.id);
-    if (!isExpanded) {
-      const badge = (
-        <button
-          type="button"
-          className="duplicate-badge"
-          title={messages["expandDuplicateGroup"]}
-          onClick={(e) => { e.stopPropagation(); toggleGroupExpanded(item.primary.id); }}
-        >
-          <Layers size={12} /> {messages["similarPhotosBadge"](item.members.length)}
-        </button>
-      );
-      return renderPhotoCard(item.primary, badge);
-    }
-
-    return (
-      <div key={item.primary.id} className="duplicate-cluster">
-        <div className="duplicate-cluster-header">
-          <span className="duplicate-cluster-label">
-            <Layers size={12} /> {messages["similarPhotosBadge"](item.members.length)}
-          </span>
-          <button
-            type="button"
-            className="duplicate-collapse-btn"
-            title={messages["collapseDuplicateGroup"]}
-            onClick={(e) => { e.stopPropagation(); toggleGroupExpanded(item.primary.id); }}
-          >
-            {messages["collapseDuplicateGroup"]}
-          </button>
-        </div>
-        <div className="duplicate-cluster-row">
-          {item.members.map(m => renderPhotoCard(m, handleMoveToGarbage && (
-            <button
-              type="button"
-              className="duplicate-remove-btn"
-              title={messages["moveToGarbage"]}
-              onClick={(e) => { e.stopPropagation(); handleMoveToGarbage([m.id]); }}
-            >
-              <Trash2 size={14} />
-            </button>
-          ), EXPANDED_CLUSTER_CARD_SIZE))}
-        </div>
-      </div>
+    const badge = (
+      <button
+        type="button"
+        className="duplicate-badge"
+        title={messages["expandDuplicateGroup"]}
+        onClick={(e) => { e.stopPropagation(); setOpenDuplicatePrimaryId(item.primary.id); }}
+      >
+        <Layers size={12} /> {messages["similarPhotosBadge"](item.members.length)}
+      </button>
     );
+    return renderPhotoCard(item.primary, badge);
   };
 
   return (
     <div className="content-body">
+      {/* Only rendered once there's actually something newer to load (post-jump) — before that,
+          rendering an empty sentinel here would just add a permanent gap above the normal,
+          never-jumped Library grid for no reason. */}
+      {onLoadNewer && hasNewer && (
+        <div
+          ref={topObserverTarget}
+          style={{ height: '20px', margin: '0 0 20px 0', display: 'flex', justifyContent: 'center', alignItems: 'center' }}
+        >
+          <span style={{ color: '#888' }}>{messages["loadingMorePhotos"]}</span>
+        </div>
+      )}
       {Object.keys(groups).map(day => {
         const dayItems = groups[day];
         const groupIds = dayItems.flatMap(item => item.members.map(m => m.id));
@@ -263,6 +315,12 @@ export default function PhotoGrid({
       >
         {hasMore && <span style={{ color: '#888' }}>{messages["loadingMorePhotos"]}</span>}
       </div>
+
+      <DuplicateClusterModal
+        item={openDuplicateItem}
+        onClose={() => setOpenDuplicatePrimaryId(null)}
+        handleMoveToGarbage={handleMoveToGarbage}
+      />
     </div>
   );
 }

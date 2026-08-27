@@ -139,4 +139,75 @@ describe('usePhotoData', () => {
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(global.fetch).not.toHaveBeenCalled();
   });
+
+  // jumpToMonth (LibraryTimeline.jsx's Memories cards / browse-by-month list) resets the grid
+  // to page 0 and passes the target month through as the jumpToMonth query param, the same way
+  // the reset-on-path-change load already resets it.
+  it('jumpToMonth resets to page 0 and requests the given month', async () => {
+    global.fetch = vi.fn(() =>
+      Promise.resolve({ json: () => Promise.resolve({ content: [{ id: '1' }], last: true }) })
+    );
+
+    const { result } = renderHook(() => usePhotoData('/', false), { wrapper: localeWrapper });
+
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
+
+    act(() => { result.current.setPage(p => p + 1); });
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(2));
+
+    act(() => { result.current.jumpToMonth(2025, 3); });
+
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(3));
+    expect(global.fetch.mock.calls[2][0]).toContain('page=0');
+    expect(global.fetch.mock.calls[2][0]).toContain('jumpToMonth=2025-03');
+    expect(result.current.page).toBe(0);
+  });
+
+  // Back-scrolling, older direction: once jumpToMonth has been used, page numbers stop
+  // corresponding to a consistent slice (loadNewer below can prepend an unknown number of items
+  // above them), so continued "load more" (setPage) must switch to an exact per-photo cursor
+  // (`beforeDate`, the oldest loaded photo's own fullDateTime) instead of an incrementing page
+  // number — this locks that switch in.
+  it('uses a beforeDate cursor (not a page number) to load older photos after a jump', async () => {
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce({ json: () => Promise.resolve({ content: [{ id: '1' }], last: true }) }) // initial load
+      .mockResolvedValueOnce({ json: () => Promise.resolve({ content: [{ id: 'm', fullDateTime: '2025-03-15T10:00:00' }], last: true }) }) // jump
+      .mockResolvedValueOnce({ json: () => Promise.resolve({ content: [{ id: 'older', fullDateTime: '2025-03-01T09:00:00' }], last: true }) }); // load older
+
+    const { result } = renderHook(() => usePhotoData('/', false), { wrapper: localeWrapper });
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
+
+    act(() => { result.current.jumpToMonth(2025, 3); });
+    await waitFor(() => expect(result.current.photos).toEqual([{ id: 'm', fullDateTime: '2025-03-15T10:00:00' }]));
+
+    act(() => { result.current.setPage(p => p + 1); });
+
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(3));
+    expect(global.fetch.mock.calls[2][0]).toContain('page=0');
+    expect(global.fetch.mock.calls[2][0]).toContain(`beforeDate=${encodeURIComponent('2025-03-15T10:00:00')}`);
+    await waitFor(() => expect(result.current.photos).toHaveLength(2));
+    expect(result.current.photos[1].id).toBe('older');
+  });
+
+  // Back-scrolling, newer direction: loadNewer cursors off the currently-FIRST photo's
+  // fullDateTime, and prepends (not appends) the result.
+  it('loadNewer cursors off the first photo and prepends the result', async () => {
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce({ json: () => Promise.resolve({ content: [{ id: '1' }], last: true }) }) // initial load
+      .mockResolvedValueOnce({ json: () => Promise.resolve({ content: [{ id: 'm', fullDateTime: '2025-03-15T10:00:00' }], last: true }) }) // jump
+      .mockResolvedValueOnce({ json: () => Promise.resolve({ content: [{ id: 'newer', fullDateTime: '2025-04-01T09:00:00' }], last: false }) }); // loadNewer
+
+    const { result } = renderHook(() => usePhotoData('/', false), { wrapper: localeWrapper });
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
+
+    act(() => { result.current.jumpToMonth(2025, 3); });
+    await waitFor(() => expect(result.current.photos).toEqual([{ id: 'm', fullDateTime: '2025-03-15T10:00:00' }]));
+    expect(result.current.hasNewer).toBe(true);
+
+    await act(async () => { await result.current.loadNewer(); });
+
+    expect(global.fetch.mock.calls[2][0]).toContain(`afterDate=${encodeURIComponent('2025-03-15T10:00:00')}`);
+    expect(result.current.photos.map(p => p.id)).toEqual(['newer', 'm']);
+    expect(result.current.hasNewer).toBe(true); // last: false -> still more above
+  });
 });

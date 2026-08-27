@@ -87,6 +87,8 @@ describe('PhotoGrid shift+click range selection', () => {
   });
 });
 
+// Clicking a "×N similar" badge opens DuplicateClusterModal.jsx (a popup showing every member
+// of that cluster, no pagination) instead of the older expand-in-place row — see TODO.md.
 describe('PhotoGrid duplicate grouping', () => {
   function makePhotosWithDuplicate() {
     const dup = { id: 'p1-dup', url: '/photo1-dup.jpg' };
@@ -96,55 +98,44 @@ describe('PhotoGrid duplicate grouping', () => {
     ];
   }
 
-  it('renders a single collapsed card with a badge instead of two separate cards', () => {
+  it('renders a single collapsed card with a badge instead of two separate cards, popup closed', () => {
     const { cards, container } = renderHarness(makePhotosWithDuplicate());
 
     // p0 (no duplicates) + one collapsed cluster card for p1/p1-dup = 2 cards, not 3.
     expect(cards().length).toBe(2);
     expect(container.querySelector('.duplicate-badge')).toBeTruthy();
-    expect(container.querySelector('.duplicate-cluster')).toBeFalsy();
+    expect(container.querySelector('.duplicate-modal-content')).toBeFalsy();
   });
 
-  it('expands to show every member as its own selectable card, and collapses back', () => {
-    const { cards, container } = renderHarness(makePhotosWithDuplicate());
+  it('opens a popup showing every member of the cluster, and the X closes it', () => {
+    const { container } = renderHarness(makePhotosWithDuplicate());
 
     fireEvent.click(container.querySelector('.duplicate-badge'));
 
-    expect(container.querySelector('.duplicate-cluster')).toBeTruthy();
-    // p0 + the two expanded cluster members = 3 cards.
-    expect(cards().length).toBe(3);
+    expect(container.querySelector('.duplicate-modal-content')).toBeTruthy();
+    expect(container.querySelectorAll('.duplicate-modal-item').length).toBe(2); // p1 + p1-dup
+    expect(container.querySelector('.duplicate-modal-item img[src="/api/photos/p1-dup/original"]')).toBeTruthy();
 
-    fireEvent.click(container.querySelector('.duplicate-collapse-btn'));
+    fireEvent.click(container.querySelector('.duplicate-modal-close'));
 
-    expect(container.querySelector('.duplicate-cluster')).toBeFalsy();
-    expect(cards().length).toBe(2);
+    expect(container.querySelector('.duplicate-modal-content')).toBeFalsy();
   });
 
-  it('lets an individual duplicate be selected once expanded, for the existing move-to-garbage bulk action', () => {
-    const { cards, container } = renderHarness(makePhotosWithDuplicate());
-
-    fireEvent.click(container.querySelector('.duplicate-badge'));
-    const dupCard = Array.from(cards()).find(c => c.querySelector('img[src="/photo1-dup.jpg"]'));
-
-    fireEvent.click(dupCard.querySelector('.select-overlay'));
-
-    expect(dupCard).toHaveClass('selected');
-  });
-
-  it('shows a move-to-garbage icon on each duplicate only once expanded, and it removes just that one photo', () => {
+  it('shows a move-to-garbage icon on each member in the popup, and it removes just that one photo', () => {
     const handleMoveToGarbage = vi.fn();
-    const { cards, container } = renderHarness(makePhotosWithDuplicate(), handleMoveToGarbage);
+    const { container } = renderHarness(makePhotosWithDuplicate(), handleMoveToGarbage);
 
-    // Collapsed: no per-card remove icon anywhere yet.
+    // Closed: no per-member remove icon anywhere yet.
     expect(container.querySelector('.duplicate-remove-btn')).toBeFalsy();
 
     fireEvent.click(container.querySelector('.duplicate-badge'));
 
     const removeButtons = container.querySelectorAll('.duplicate-remove-btn');
-    expect(removeButtons.length).toBe(2); // one per expanded member, none on the plain p0 card
+    expect(removeButtons.length).toBe(2); // one per member in the popup
 
-    const dupCard = Array.from(cards()).find(c => c.querySelector('img[src="/photo1-dup.jpg"]'));
-    fireEvent.click(dupCard.querySelector('.duplicate-remove-btn'));
+    const dupItem = Array.from(container.querySelectorAll('.duplicate-modal-item'))
+      .find(el => el.querySelector('img[src="/api/photos/p1-dup/original"]'));
+    fireEvent.click(dupItem.querySelector('.duplicate-remove-btn'));
 
     expect(handleMoveToGarbage).toHaveBeenCalledWith(['p1-dup']);
     expect(handleMoveToGarbage).toHaveBeenCalledTimes(1);

@@ -50,9 +50,6 @@ public class PersonRecognitionService {
     // deleted. Direction is decided by face count, not chosen by the caller — this is the
     // dedicated /persons/merge flow (distinct from FaceService.setFacePerson's single-face
     // reassignment): the whole identity collapses into whichever side already had more evidence.
-    // No FaceLinkExclusionEntity bookkeeping here — unlike an unlink, this is an explicit
-    // "these are the same person" declaration, so future auto-matching against the target should
-    // freely include these faces, exactly as if they'd always belonged to it.
     @Transactional
     public PersonEntity mergePersons(UUID personId1, UUID personId2) {
         PersonEntity person1 = personRepository.findById(personId1)
@@ -63,6 +60,30 @@ public class PersonRecognitionService {
         PersonEntity source = person1.getFaces().size() <= person2.getFaces().size() ? person1 : person2;
         PersonEntity target = source == person1 ? person2 : person1;
 
+        return mergeFacesIntoTarget(source, target);
+    }
+
+    // The fixed-direction counterpart to mergePersons above — used by FaceService.renamePerson's
+    // rename-collision flow (Person page / Persons grid rename, see PersonDetail.jsx/Persons.jsx):
+    // when a rename collides with one or more existing same-named people and the user picks which
+    // to fold in, the KEEPER is always the person being renamed, never chosen by face count like
+    // the /persons/merge flow above — the user explicitly picked it by renaming it.
+    @Transactional
+    public PersonEntity mergeInto(UUID targetPersonId, UUID sourcePersonId) {
+        PersonEntity target = personRepository.findById(targetPersonId)
+                .orElseThrow(() -> new NoSuchElementException("no person found with id " + targetPersonId));
+        PersonEntity source = personRepository.findById(sourcePersonId)
+                .orElseThrow(() -> new NoSuchElementException("no person found with id " + sourcePersonId));
+
+        return mergeFacesIntoTarget(source, target);
+    }
+
+    // Shared by mergePersons and mergeInto: moves every face from source to target, recalculates
+    // target's cover face, and deletes the now-empty source. No FaceLinkExclusionEntity bookkeeping
+    // here — unlike an unlink, a merge is an explicit "these are the same person" declaration, so
+    // future auto-matching against the target should freely include these faces, exactly as if
+    // they'd always belonged to it.
+    private PersonEntity mergeFacesIntoTarget(PersonEntity source, PersonEntity target) {
         List<FaceEntity> facesToMove = new ArrayList<>(source.getFaces());
         facesToMove.forEach(face -> {
             face.setPerson(target);

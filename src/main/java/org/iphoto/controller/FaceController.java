@@ -3,11 +3,13 @@ package org.iphoto.controller;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.UserEntity;
 import org.iphoto.exception.PersonNameCollisionException;
+import org.iphoto.exception.PersonNameCollisionsException;
 import org.iphoto.model.FaceDTO;
 import org.iphoto.model.PersonDTO;
 import org.iphoto.model.Photo;
 import org.iphoto.model.request.FaceRenameRequest;
 import org.iphoto.model.request.PersonMergeRequest;
+import org.iphoto.model.request.PersonRenameRequest;
 import org.iphoto.repository.UserRepository;
 import org.iphoto.service.FaceService;
 import org.springframework.data.domain.Page;
@@ -70,10 +72,21 @@ public class FaceController extends AbstractBaseController {
         }
     }
 
+    // Renames a whole person (Person page title / Persons grid inline rename — PersonDetail.jsx /
+    // Persons.jsx). On a name collision with one or more OTHER people, returns 409 with their DTOs
+    // (cover face included) instead of applying anything — the frontend prompts to pick which (if
+    // any) to merge in, then retries with confirmed: true.
     @PutMapping("/person/{id}")
-    public void updatePerson(@PathVariable UUID id, @RequestBody PersonDTO personDTO) {
-        UserEntity currentUser = getCurrentUser();
-        faceService.updatePerson(id, personDTO);
+    public ResponseEntity<?> renamePerson(@PathVariable UUID id, @RequestBody PersonRenameRequest request) {
+        try {
+            return ResponseEntity.ok(faceService.renamePerson(id, request.name(), request.confirmed(), request.mergeWithPersonIds()));
+        } catch (PersonNameCollisionsException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(faceService.getPersons(e.getExistingPersonIds()));
+        } catch (NoSuchElementException e) {
+            return ResponseEntity.notFound().build();
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().build();
+        }
     }
 
     @GetMapping("/person/{id}/faces")

@@ -3,15 +3,37 @@ import { useNavigate } from 'react-router-dom';
 import { Check, User } from 'lucide-react';
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 import { usePersons } from '../hooks/usePersons';
+import { usePersonRename } from '../hooks/usePersonRename';
+import PersonMergePrompt from './PersonMergePrompt';
 
 export default function Persons() {
   const { messages } = useLocale(); // Use the useLocale hook
   const navigate = useNavigate();
-  const { persons, setPersons, fetchPersons } = usePersons();
+  const { persons, fetchPersons } = usePersons();
   const [editingId, setEditingId] = useState(null);
   const [newName, setNewName] = useState('');
   const [selectedIds, setSelectedIds] = useState([]);
   const [isMerging, setIsMerging] = useState(false);
+
+  // A rename here can collide with another existing person (merge candidates picker) exactly
+  // the same way it can from the Person page title — see PersonDetail.jsx, which shares this
+  // same hook. A full fetchPersons() refresh (rather than patching state locally) is simplest
+  // and correct either way: a plain rename only touches one row, but a confirmed merge also
+  // deletes the folded-in person(s) and can change the target's cover photo, none of which a
+  // local patch could reconstruct from the single updated-person response alone.
+  const {
+    rename,
+    collisionCandidates,
+    pendingName,
+    selectedMergeIds,
+    toggleMergeCandidate,
+    confirmRename,
+    cancelRename,
+    submitting,
+  } = usePersonRename(() => {
+    fetchPersons();
+    setEditingId(null);
+  });
 
   const handleNameClick = (person) => {
     setEditingId(person.id);
@@ -23,28 +45,12 @@ export default function Persons() {
   };
 
   const handleNameSubmit = (person) => {
-    const updatedPerson = { ...person, name: newName };
-
-    fetch(`/api/faces/person/${person.id}`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(updatedPerson),
-    })
-    .then(response => {
-      if (!response.ok) {
-        throw new Error(messages["networkResponseNotOk"]);
-      }
-      // If response is OK, optimistically update the UI
-      setPersons(persons.map(p => (p.id === person.id ? updatedPerson : p)));
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed === person.name) {
       setEditingId(null);
-    })
-    .catch(error => {
-      console.error(messages["errorUpdatingPerson"], error);
-      // Optionally, revert the change in the UI if the update fails
-      setEditingId(null);
-    });
+      return;
+    }
+    rename(person.id, trimmed);
   };
 
   const toggleSelected = (personId) => {
@@ -146,6 +152,17 @@ export default function Persons() {
           );
         })}
       </div>
+      {collisionCandidates && (
+        <PersonMergePrompt
+          name={pendingName}
+          candidates={collisionCandidates}
+          selectedIds={selectedMergeIds}
+          onToggle={toggleMergeCandidate}
+          onCancel={cancelRename}
+          onConfirm={confirmRename}
+          submitting={submitting}
+        />
+      )}
     </div>
   );
 }

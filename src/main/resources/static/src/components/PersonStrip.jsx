@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, User } from 'lucide-react';
 import { useLocale } from '../LocaleContext.jsx';
@@ -6,11 +6,29 @@ import { usePersons } from '../hooks/usePersons';
 
 // Horizontal, arrow-scrollable strip of every person, shown above a selected person's photos
 // (PersonDetail.jsx) so switching between people doesn't require going back to the /persons grid.
-export default function PersonStrip({ selectedPersonId }) {
+export default function PersonStrip({ selectedPersonId, refreshToken }) {
   const { messages } = useLocale();
   const navigate = useNavigate();
-  const { persons } = usePersons();
+  const { persons, fetchPersons } = usePersons();
   const trackRef = useRef(null);
+  const isFirstRenderRef = useRef(true);
+
+  // usePersons() only fetches once on its own mount — PersonDetail.jsx bumps refreshToken after
+  // a rename/merge (usePersonRename.js) that could have deleted a merged-away person from this
+  // list or changed someone's cover photo, which this component's own internal fetch has no way
+  // to know about otherwise. Skips the very first render so a caller passing an initial
+  // refreshToken value (e.g. 0) doesn't trigger a redundant duplicate of usePersons' own
+  // mount-time fetch.
+  useEffect(() => {
+    if (isFirstRenderRef.current) {
+      isFirstRenderRef.current = false;
+      return;
+    }
+    fetchPersons();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchPersons intentionally omitted:
+    // it's stable (see usePersons), and this effect should only re-run when refreshToken changes,
+    // not merely because usePersons() re-rendered with a fresh function identity.
+  }, [refreshToken]);
 
   const scrollByAmount = (amount) => {
     trackRef.current?.scrollBy({ left: amount, behavior: 'smooth' });

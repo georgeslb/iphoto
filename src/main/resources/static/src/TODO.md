@@ -1331,22 +1331,333 @@ new work is identified or completed, so nothing gets lost between sessions.
       Verified via `javac` compilation (whole backend, clean) and the full frontend test suite
       (79/79 pass, unaffected — both backend-only changes); not verified against the live app from
       this shell.
+- [x] **Bug fix**: recurring people went completely ungrouped when other people's photos were
+      interleaved in between their occurrences, even close together in time. Root-caused against 3
+      real assets the user pointed to (`/asset/0e955908-...`, `/asset/14f173ff-...`,
+      `/asset/cc68b7ab-...`, all one gathering, 3 photos ~41 minutes apart, 2 people in each — 6
+      faces total, all `personName: null`). Confirmed via a direct DB pull of the embeddings
+      (`docker exec georges-db-1 psql ...`) that the correct cross-photo pairs scored 0.91–0.98
+      cosine similarity (well above `THRESHOLD = 0.60`), so the 2 real people were never being
+      compared at all, not scored-and-rejected.
+      Cause: `clusterByTemporalProximity` sorted **all** of a user's ungrouped faces (every photo,
+      every unrelated person) by `dateTaken` and compared each face only against the next
+      `TEMPORAL_NEIGHBOR_WINDOW` (10) faces **by position** in that global list — not by actual
+      elapsed time. Between the two occurrences here sat 13 faces from *other* people's photos
+      taken in the 2 minutes in between, pushing the second occurrence outside the position window
+      despite being only 41 minutes away. Each real person then fragmented into disconnected
+      2-face components, and `MIN_NEW_PERSON_CLUSTER_SIZE` (3) silently dropped every one of them
+      — this is very likely the general-case explanation for "these are obviously the same person
+      but never got grouped" whenever a session/event has several different people in it.
+      Fix: `clusterByTemporalProximity` now bounds its comparison window primarily by a new
+      `MAX_NEW_PERSON_CLUSTER_GAP` (24h elapsed time) instead of position; `TEMPORAL_NEIGHBOR_WINDOW`
+      is still used, just multiplied up (`* 20`) into a `maxCandidatesPerFace` position cap kept
+      only as an O(n^2) cost safety net for a dense same-day event. Left `nearestTemporalNeighbors`
+      (the *existing*-person matching path) untouched — that one already windows over one specific
+      person's own faces, not the global cross-person list, so it was never affected by this bug.
+      Verified two ways: (1) `javac` compilation (whole backend, clean); (2) simulated the exact
+      before/after algorithm in Python against the real embeddings pulled from the DB for all 50 of
+      this user's ungrouped faces — before the fix, 0 of the 3 photos' 6 faces formed any surviving
+      cluster; after, all 6 land in two clusters (sizes 4 and 3) that both clear
+      `MIN_NEW_PERSON_CLUSTER_SIZE`. Not yet verified end-to-end against the live app — the running
+      backend is IntelliJ/debugger-managed (not started from this shell), so needs a manual
+      restart before `TaskWorkerManager`'s ~30s face-recognition task picks up the new code and
+      re-processes these faces into real `PersonEntity` rows.
 
 ## Open / Not Yet Done
 
-- [ ] **Feature**: when a photo has duplicates (the "×N similar" badge in `PhotoGrid.jsx`,
-      `renderDisplayItem`), clicking it currently expands the cluster inline
-      (`toggleGroupExpanded`/`expandedGroups`), pushing the rest of the day's grid down. Better UX:
-      open the duplicate set in its own popup/modal instead of extending the library grid in place.
-      Needs: a new modal component (mirrors the existing `modal-overlay`/`modal-content` pattern
-      used elsewhere) showing just that cluster's members (`item.members`), reusing
-      `renderPhotoCard`-style rendering and the existing per-member "move to garbage" button
-      (`handleMoveToGarbage`); `expandedGroups` state and the inline expand/collapse row
-      (`duplicate-cluster`/`duplicate-cluster-header`) would go away in favor of the modal's
-      open/close state. Watch for: this is a different surface from the dedicated `/duplicates`
-      comparison flow (`DuplicatePhotoGrid.jsx`) — this badge/cluster appears wherever `PhotoGrid`
-      is used (library/album/space/person/shared views) and shows already-known duplicate photos
-      side by side, not the deduplication *decision* workflow; keep the two conceptually separate.
+- [ ] **Feature**: detect blurry faces. Confirmed feasible, not yet implemented — no design
+      decision made yet on what to DO with the signal (see below), just logging the "can this be
+      done" question the user asked.
+      - **Technique**: variance of the Laplacian (Pech-Pacheco et al.) — grayscale the face crop,
+        run a Laplacian edge filter, take the variance of the result. Sharp faces have lots of
+        fine-edge high-frequency content -> high variance; blurry ones lack it -> low variance,
+        below some threshold (commonly ~100, needs empirical tuning against this app's actual
+        photos — not something to hardcode from a blog post without checking real data). No ML
+        model needed, no new dependency: the app already depends on `org.bytedeco:opencv`/
+        `javacv` (`pom.xml`), whose `Imgproc.Laplacian` + `Core.meanStdDev` does this directly; a
+        pure-Java version over the `BufferedImage` pixel array would also work if avoiding another
+        native call per face is preferred.
+      - **Where it hooks in**: `FaceDetectionService.detectAndSaveFaces` already extracts
+        `subImage` (the raw face crop, straight from the detector's bounding box) *before*
+        `FaceAligner.align`/resizing it down for the embedding model — cheapest point to compute a
+        blur score, since the exact crop pixels are already in memory and no extra I/O is needed.
+        Would need a new column on `FaceEntity` (e.g. `blurScore` or `isBlurry`) to persist it.
+      - **Open design question — what to actually do with a blurry flag** (this is what's blocking
+        implementation, not the detection itself): user's explicit leaning is (e) — reject the
+        face outright at detection time, same place `MIN_FACE_SIZE`/`SMALL_FACE_MIN_CONFIDENCE`
+        already reject too-small/low-confidence detections (`FaceDetectionService.
+        detectAndSaveFaces`'s `continue` checks) — a blurry crop would just never become a
+        `FaceEntity` at all, no new column, no UI changes anywhere. User explicitly said they need
+        more time to decide before committing to this though, so **not yet implemented** — do not
+        build this on the next session without re-confirming, in case the decision changes.
+        Other options that were on the table before that leaning, kept here in case (e) gets
+        reconsidered: (a) never pick a blurry face as a person's `coverFace`
+        (`PersonRecognitionService.recalculateCoverFace`) — cheapest, safest, no real downside,
+        and notably NOT mutually exclusive with (e) (a face just above whatever blur-reject
+        threshold could still be too blurry to want as a cover); (b) a visual "blurry" badge on
+        face thumbnails (Lightbox's "Faces Detected" section, Persons/PersonDetail views) — moot
+        if (e) is chosen, since a rejected face is never saved to have a badge on; (c) a
+        filter/bulk-clean toggle on the Persons page for deleting already-saved bad detections —
+        also largely moot under (e), since new blurry ones would never accumulate in the first
+        place (existing pre-(e) blurry faces already in the DB could still want cleanup though);
+        (d) deprioritizing blurry faces in `FaceRecognitionService`'s similarity matching — highest
+        risk/complexity of the four, and irrelevant if (e) means blurry faces never reach matching
+        at all.
+- [x] **Feature**: whole-person rename now merges on a name collision, and the Person page title
+      became editable. User's spec: renaming a person to a name that doesn't exist yet just
+      renames it; renaming to a name that already belongs to one or more OTHER people prompts a
+      picker (one face per candidate) to choose which (if any) to merge in. Distinct from the
+      existing Lightbox single-FACE rename flow (`FaceService.setFacePerson`), which reassigns one
+      face only — this is a whole-PERSON rename, folding in every face of whichever candidates get
+      picked.
+      - **Backend**: `FaceService.updatePerson` (previously a blind rename, no collision check at
+        all) replaced with `renamePerson(personId, name, confirmed, mergeWithPersonIds)`. Unconfirmed
+        + a collision -> throws new `PersonNameCollisionsException` (plural — sibling of the
+        existing singular `PersonNameCollisionException` used by the single-face flow; a whole-person
+        rename can collide with *several* existing people, since this app doesn't enforce name
+        uniqueness at the DB level, unlike the single-face flow's single-Optional lookup). Confirmed
+        -> renames, then folds in every id in `mergeWithPersonIds` (possibly none — a deliberate
+        "rename anyway" choice) via new `PersonRecognitionService.mergeInto(targetId, sourceId)`.
+        `mergeInto` is a fixed-direction sibling of the existing `mergePersons` (the Persons-grid
+        multi-select merge, which picks direction by face count) — here the renamed person is
+        ALWAYS the keeper, never chosen by count, since the user explicitly picked it by renaming
+        it. Both now share a `mergeFacesIntoTarget` private helper (extracted from `mergePersons`'s
+        previous body) instead of duplicating the move-faces/delete-source logic.
+        New `PersonRepository.findByNameIgnoreCaseAndIdNot` (plural-returning, unlike the existing
+        singular `findByNameIgnoreCase` used by the single-face flow) finds the collision
+        candidates. `FaceController`'s `PUT /api/faces/person/{id}` changed from `void` +
+        `PersonDTO` body to `ResponseEntity<?>` + new `PersonRenameRequest` body (`{name, confirmed,
+        mergeWithPersonIds}`, mirroring `FaceRenameRequest`'s `confirmMerge` shape) — 409 on
+        collision returns the candidates' full `PersonDTO`s (cover face + photo count included) via
+        new `FaceService.getPersons(ids)`.
+      - **Frontend**: new shared `hooks/usePersonRename.js` (the fetch/collision-state machine) and
+        `components/PersonMergePrompt.jsx` (the picker modal — one card per candidate showing its
+        own cover face + photo count, since they all share the exact name that collided, so a name
+        label wouldn't help tell them apart) — both used by `Persons.jsx`'s existing inline rename
+        (which had ZERO collision handling before this — a blind PUT that could silently create
+        duplicate-named people) and the newly-added `PersonDetail.jsx` page-title rename (click the
+        `<h2>`, same interaction pattern as Lightbox's metadata-field edits). `useEntityById.js`
+        gained an exposed `setEntity` so `PersonDetail.jsx` can reflect a rename/merge immediately
+        without a full refetch. `PersonStrip.jsx` gained an optional `refreshToken` prop
+        (`PersonDetail.jsx` bumps it after a successful rename/merge) since a merge can delete a
+        person from that strip's list or change someone's cover photo — its own internal
+        `usePersons()` call has no way to know about that otherwise. A confirmed merge can also
+        pull new photos into the person being viewed, so `PersonDetail.jsx` calls the existing
+        `refreshAndMaintainScroll` afterward too, same as every other face/person mutation on that
+        page already does.
+      Verified: clean `javac` compile; `npm run build`; full frontend suite 87/87 pass (added 5 new
+      `usePersonRename.test.js` tests — plain rename, collision surfaces candidates without
+      applying, confirmed merge sends the right body, confirmed-with-zero-selected still renames,
+      cancel applies nothing — none of the touched components are on CLAUDE.md's
+      always-test-after-touching list, but the new hook carries meaningful enough logic to warrant
+      its own coverage regardless). Not yet verified against the live app — backend restart still
+      pending from earlier entries in this file.
+      Flagged, not fixed (pre-existing, not introduced by this change): `GET`/`PUT
+      /api/faces/person/{id}` (and several sibling `/api/faces/person/**` endpoints — `getPerson`,
+      `getPersonFaces`, `getPersonPhotos`) declare a `getCurrentUser()`/`UserEntity currentUser` that
+      is never actually used to scope the lookup — `PersonRepository.findById` isn't
+      `@MainSpaceLimited`. Same category of gap as the `/api/faces/photo/{id}` issue fixed earlier
+      in this file, not fixed here to avoid changing behavior of several unrelated endpoints beyond
+      what was asked — worth a dedicated security pass.
+- [x] **Feature**: yellow circle around the selected person. User confirmed the target was
+      `PersonStrip.jsx`'s currently-viewed person (option 1 of the two flagged), not
+      `Persons.jsx`'s merge-selection overlay. No JSX change needed — the `.active` class was
+      already applied to the right item; only `App.css` changed. `.person-strip-item.active img`/
+      `.person-strip-placeholder` used to just recolor the existing 2px border to `var(
+      --primary-color)` (blue); replaced with `box-shadow: 0 0 0 3px rgba(255, 255, 0, 0.85)` (the
+      same yellow as the Lightbox's `.face-box` overlays, reused for one consistent "highlighted"
+      color across the app) — box-shadow rather than border-color so the ring traces the circular
+      avatar exactly, with a hairline gap, instead of just recoloring the border in place.
+      **Amended**: the yellow was too low-contrast to actually notice against the strip's light
+      background (user feedback: "we can't see yellow circle") — changed to solid `#ff3b30` red
+      and thickened the ring from 3px to 4px.
+      Verified: `npm run build` and full frontend suite 82/82 pass (CSS-only change; PersonStrip.jsx
+      itself wasn't touched, so it's not on CLAUDE.md's always-test-after-touching list, but ran the
+      suite anyway). Not verified against the live app (backend restart still pending from earlier
+      entries; this one's frontend-only so a plain page refresh would show it once the built
+      frontend is served, but wasn't spot-checked from this shell).
+- [x] **Feature**: "Memories" (6mo/1yr/3yr/10yr-ago) and a month/year browse list at the top of
+      the Library page, built around one shared month/year index — see the design discussion with
+      the user first, then what actually got built:
+      - **Backend, month/year index**: `GET /api/photos/timeline` (`PhotoController` →
+        `PhotoService.getTimeline` → `PhotoRepository.findMonthlyPhotoCountsBySpaceId`), Main
+        Space only. Returns every `TimelineMonthDTO{year, month, count}` bucket that has at least
+        one non-garbage photo, newest first — a JPQL `GROUP BY` with `EXTRACT(YEAR/MONTH FROM
+        dateTaken)` (Jakarta Persistence 3.1, portable — not a Postgres-specific function), `CAST`
+        to integer so the returned type matches the DTO constructor regardless of a given
+        dialect's native `EXTRACT` numeric type. Months with zero photos are simply absent, not
+        returned with count 0. Verified the aggregate SQL directly against Postgres
+        (`docker exec georges-db-1 psql ...`) before trusting the JPQL translation.
+      - **Backend, jump-to-month**: `GET /api/photos` gained an optional `jumpToMonth=yyyy-MM`
+        param (`PhotoController.parseJumpToMonth`) — malformed/absent input is treated as "no
+        jump" (logged, not a 400), since it's an optional UX param on an otherwise normal listing
+        endpoint. When present, it's converted to "first instant of the following month" and
+        passed to a new `PhotoService.getPhotos(spaceId, pageable, beforeExclusive)` overload
+        backed by `PhotoRepository.findBySpaceIdAndIsGarbageFalseAndDateTakenLessThan` — same
+        dedup-against-duplicates logic as the normal feed (extracted into a shared
+        `buildDedupedPage` helper), just with an extra upper time bound so the returned page starts
+        exactly at the requested month.
+      - **Frontend, jump navigation**: `usePhotoData.jumpToMonth(year, month)` — resets the grid
+        to page 0 and refetches with `jumpToMonth` set, the same reset-and-reload the initial page
+        load already does. Bidirectional scrolling past the jumped-to point was a known limitation
+        here — **now fixed, see the follow-up "Done" entry below**.
+      - **Frontend, UI**: new `LibraryTimeline.jsx` (fed by new `useMonthlyTimeline.js`, which does
+        the single `/api/photos/timeline` fetch both halves below share), rendered above `PhotoGrid`
+        only when `selectedMenu === 'library'` (Main Space, matches the Album-vs-Space distinction
+        in specification.md) — not on Album/Space/Person/garbage views.
+        - Memories strip: for each of the 4 offsets (6/12/36/120 months back), computes the target
+          `{year, month}` and looks it up in the index directly — an offset with no match for that
+          month simply isn't rendered, no separate query.
+        - Browse-by-month list: years as clickable pills: clicking a year expands/collapses its
+          months inline (no popover), clicking a month calls `jumpToMonth`.
+      Verified: clean `javac` compile; `npm run build` (Vite) succeeds; full frontend suite
+      80/80 pass (added one `usePhotoData.test.js` regression locking in `jumpToMonth`'s page-0
+      reset + `jumpToMonth=yyyy-MM` query param, since that hook is on CLAUDE.md's
+      always-test-after-touching list). Not yet verified against the live app — the running
+      backend is IntelliJ/debugger-managed (not started from this shell) and hasn't been restarted
+      to pick up these changes.
+      Deliberately not built yet (kept as follow-up, not silently dropped):
+      - Album/Space browse-by-month scope (the index/jump endpoints are Main Space/Library only
+        for now, per the user's explicit ask — "Memories should show at the top of the library
+        page"). Extending to Album/Space would need a per-scope index query and a jump endpoint on
+        those routes too.
+      - The browse list is a simple expand/collapse year→month list, not the Google Photos-style
+        drag/hover scrubber minimap originally sketched — the user's "we need a list of all our
+        months/year with assets first" framed this as the actual near-term ask; a fancier scrubber
+        UI can build on the same index later if wanted.
+- [x] **Follow-up to the entry above**: bidirectional scrolling past a jumpToMonth landing point,
+      and a cover thumbnail on each Memory card — both explicitly requested next.
+      - **Cover thumbnail**: `TimelineMonthDTO` gained a `coverPhotoUrl` field. The month/year
+        index query (`PhotoRepository.findMonthlyPhotoCountsWithCoverBySpaceId`, renamed from
+        `findMonthlyPhotoCountsBySpaceId`, which it replaces outright) switched from portable JPQL
+        to native Postgres SQL with window functions (`count(*) over (partition by ...)` for the
+        count, `row_number() over (partition by ... order by random())` picking each month's
+        cover) — one query still gets both count and cover, no N+1. Cover selection was initially
+        "most recent photo that month" (deterministic); the user clarified Memories should show "a
+        random photo from the past", not always the same one — changed to `order by random()`, a
+        fresh pick every call. Deliberately native/Postgres-specific: this app is Postgres-only in
+        practice (`application.yml` hardcodes the driver), and picking "one random row per group"
+        alongside its aggregate isn't expressible in portable JPQL. `PhotoService.getTimeline`
+        builds the cover URL the same cache-busted way `PhotoMapper` already does for every other
+        thumbnail (`/api/photos/{id}/thumbnail?v={fileHash}`). `LibraryTimeline.jsx`'s memory cards
+        render this as a background image with a gradient-overlay caption (label/date/count),
+        replacing the old text-only card.
+      - **Bidirectional scrolling**: `usePhotoData.js` gained a cursor-based pagination path used
+        only after `jumpToMonth`, alongside the existing plain page-number path (unchanged, still
+        default for normal top-of-Library/Album/Space/Person/Garbage browsing):
+        - Cursor value: reused `Photo.fullDateTime` verbatim (discovered it's already
+          `ISO_LOCAL_DATE_TIME` — see `PhotoMapper` — despite an outdated model comment claiming a
+          display format; no new backend field needed, it round-trips through
+          `LocalDateTime.parse` exactly). Sent back as `beforeDate` (older direction) / `afterDate`
+          (newer direction, the actually-new capability here).
+        - Backend: `GET /api/photos` gained `beforeDate`/`afterDate` params
+          (`PhotoController.parseCursor`) alongside the existing `jumpToMonth` — `beforeDate` reuses
+          the `getPhotos(spaceId, pageable, beforeExclusive)` overload already built for
+          `jumpToMonth` (just fed an exact photo timestamp instead of a month boundary) for continued
+          older-direction paging; `afterDate` is genuinely new — `PhotoRepository.
+          findBySpaceIdAndIsGarbageFalseAndDateTakenGreaterThan` + new
+          `PhotoService.getPhotosAfter` (fetches ascending — closest-to-cursor first, not oldest —
+          then reverses the page's `content` back to newest-first before returning, so every
+          response the frontend sees is ordered the same way regardless of direction).
+        - Frontend: found and fixed a real bug from the first pass while building this — continuing
+          to scroll down (older) after a jump was silently broken, because the page>0 effect still
+          incremented a raw page number, which stopped corresponding to any consistent slice once
+          the feed had been reset mid-stream by a jump. Fixed by switching that effect to
+          cursor-based `loadOlder()` once `jumpToMonth` has been called (tracked via a `jumpedRef`),
+          while leaving normal (never-jumped) browsing on the original numeric path untouched.
+          `loadNewer()` is the new newer-direction counterpart, prepending results and exposed
+          alongside a `hasNewer` flag (optimistically true right after a jump, self-correcting to
+          false on the first `loadNewer` call that comes back empty).
+        - `PhotoGrid.jsx` gained a top sentinel (mirroring the existing bottom one) wired only when
+          the caller passes `onLoadNewer`/`hasNewer`/`mainContentRef` — Library route only, via new
+          props on the existing component, so Album/Space/Person/Garbage/duplicates usages are
+          unaffected. Also handles scroll-position compensation: prepending photos above the
+          current viewport would otherwise visually yank whatever the user was looking at downward
+          by the prepended content's height, so a `useLayoutEffect` measures `scrollHeight` before
+          and after and adjusts `mainContentRef.current.scrollTop` by the delta, synchronously
+          before paint.
+        - The user separately confirmed the intent behind this design: the standard downward
+          infinite scroll must not be *replaced* by a distinct "jumped" mode, only *extended* to
+          also work upward. That's what the above actually does — never-jumped browsing runs
+          through the exact same `hasMore`/`setPage`/bottom-sentinel path as before, byte-for-byte
+          unchanged; a jump doesn't swap in a different component or scroll mechanism, it just
+          starts the same `PhotoGrid`/`usePhotoData` pair from a different point and (only from
+          then on) also allows the *same* grid's top sentinel to load newer content.
+      Verified: clean `javac` compile (including a direct Postgres check of both the aggregate
+      cover-thumbnail SQL and the plain `GROUP BY` it replaced, run via `docker exec georges-db-1
+      psql` before trusting the JPQL/native translation either time); `npm run build`; full frontend
+      suite 82/82 pass (added 2 new `usePhotoData.test.js` regressions: the older-direction cursor
+      switch after a jump, and `loadNewer`'s cursor + prepend behavior — both on CLAUDE.md's
+      always-test-after-touching list, along with `PhotoGrid.jsx` which was also touched). Not yet
+      verified against the live app for the same reason as the entry above — backend restart still
+      pending.
+- [ ] **Feature**: on a person's photo grid (`PersonDetail.jsx` → `PhotoGrid`), overlay a yellow
+      box (reuse the `.face-box` style from `Lightbox.jsx`) on each thumbnail marking exactly where
+      *that person's* face is in the photo — like the existing Lightbox face-box overlay, but on
+      the grid, and scoped to the one person being viewed (not every detected face). Needs backend
+      support: neither `Photo` nor the `getPersonPhotos` response currently carries the face's
+      x/y/width/height for that person/photo pair — `FaceDTO` has the box but no `photoId` to join
+      on, and `getPersonFaces`/`getPersonPhotos` are two separate paginated endpoints, not
+      guaranteed to be in step. Cleanest fix is probably to extend `PersonController`'s
+      `getPersonPhotos` path so each returned `Photo` (or a small new DTO wrapping it) carries that
+      person's face box for it directly, computed server-side, rather than the frontend trying to
+      stitch two separate paginated lists together. Then in `PhotoGrid`, the box needs to scale from
+      the face's coordinates (recorded against the photo's *full* resolution) down to whatever size
+      the grid thumbnail actually renders at — same scaling math the Lightbox already does in
+      `recalculateImageSize`, reusable if extracted.
+- [ ] **Feature**: Lightbox face-box hover refinement. Hovering the "Faces Detected" zone already
+      shows every detected face's box on the image (`onMouseEnter`/`onMouseLeave` on that section
+      toggles `showFaces`, rendered at `Lightbox.jsx:573`) — that part already works. What's
+      missing: hovering one specific `.face-item` in that list should narrow the display down to
+      *only* that face's box (others hidden), not all of them. Needs: a `hoveredFaceId` state set
+      on each `.face-item`'s own `onMouseEnter`/`onMouseLeave` (in addition to, not instead of, the
+      existing zone-level `showFaces`); the box-rendering condition becomes roughly `showFaces &&
+      (!hoveredFaceId || face.id === hoveredFaceId)`, so leaving a specific face (but still inside
+      the zone) falls back to showing all boxes again.
+- [x] **Feature**: the "×N similar" badge (`PhotoGrid.jsx`) now opens a popup instead of expanding
+      the cluster inline. User's spec, gathered over two messages: modal width 90% of the browser
+      viewport; an X top-right closes it; 2 columns, no pagination (every member renders at once,
+      the grid area itself scrolls if that's a lot of photos); each image's width follows the
+      2-column layout (~45% of the viewport width each, out of the 90vw modal), height NOT fixed —
+      follows that width via the image's own natural aspect ratio, so photos of any orientation
+      don't get cropped/distorted; the existing per-member move-to-garbage icon carries over.
+      - New `components/DuplicateClusterModal.jsx` (`item`, `onClose`, `handleMoveToGarbage`
+        props) — deliberately its own `.duplicate-modal-content` CSS class rather than reusing the
+        shared `.modal-content` (fixed 400px/max-width 90%, wrong shape for a wide 2-column grid).
+      - **Amended**: initially rendered each member via its thumbnail (`m.url`) — the whole point
+        of this popup is comparing near-duplicates closely enough to decide which to keep, and a
+        thumbnail isn't sharp enough for that (user: "is it better to use original photos"). Now
+        `/api/photos/{id}/original`, same cache-busting-by-`fileHash` pattern `Lightbox.jsx`
+        already uses for its own full-size view.
+      - **Amended again**: with full originals, a tall/portrait photo could fill the whole
+        scrollable grid on its own, making comparison mean constant scrolling (user: "hard to
+        compare large photos"). Each image now gets `max-height: 68vh` (80% of the popup's own
+        `85vh` cap) + `object-fit: contain` — landscape photos are unaffected (max-height only
+        clamps once natural height would exceed it), a clamped tall photo shrinks proportionally
+        (letterboxed sides) rather than cropping/stretching.
+      - `PhotoGrid.jsx`: removed `expandedGroups`/`toggleGroupExpanded` and the inline
+        expand/collapse row (`duplicate-cluster`/`duplicate-cluster-header`/`-row`/
+        `duplicate-collapse-btn`, all now dead) entirely. New `openDuplicatePrimaryId` state holds
+        just the cluster's *primary photo's id*, not the item object itself — the actual item
+        shown in the modal is re-derived from the live `groups` computation every render
+        (`Object.values(groups).flat().find(...)`), so moving a member to garbage from inside the
+        modal is reflected immediately (member disappears) instead of the modal holding a stale
+        snapshot from when it was opened.
+      - `PhotoGrid.test.jsx`'s "duplicate grouping" describe block rewritten for the new popup
+        (open/close, member list, per-member garbage icon) — the old "select an individual
+        duplicate for bulk action" test was dropped rather than adapted, since the modal doesn't
+        support selection at all, by design (not something this spec asked for).
+      - Removed the now-orphaned `collapseDuplicateGroup` i18n key (en/fr) — nothing references it
+        anymore; the X button reuses the existing generic `close` key instead.
+      Watch for: this is a different surface from the dedicated `/duplicates` comparison flow
+      (`DuplicatePhotoGrid.jsx`) — this badge/cluster appears wherever `PhotoGrid` is used
+      (library/album/space/person/shared views) and shows already-known duplicate photos side by
+      side, not the deduplication *decision* workflow; the two stay conceptually separate.
+      Verified: `npm run build`; full frontend suite 86/86 pass (was 87 — net -1 from dropping the
+      now-inapplicable selection test above; `PhotoGrid.jsx` is on CLAUDE.md's
+      always-test-after-touching list, ran it accordingly). Not yet verified against the live app —
+      backend restart still pending from earlier entries (though this particular feature is
+      frontend-only, so it doesn't actually need one to work).
 - [x] ~~**Feature**: rename a person directly from the Lightbox's "Faces Detected" section~~ and
       ~~**Feature**: merge two persons into one~~ — both done, see the detailed "Done" entry below
       ("Rename/map a face's person from the Lightbox, merge persons, unlink a face from its

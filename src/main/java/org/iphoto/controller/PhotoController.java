@@ -19,6 +19,7 @@ import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.ResourceRegion;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
@@ -28,12 +29,16 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import org.springframework.util.StringUtils;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.LocalDateTime;
+import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.UUID;
@@ -60,11 +65,75 @@ public class PhotoController {
                 .orElseThrow(() -> new NoSuchElementException("User not found: " + username));
     }
 
+    // `jumpToMonth`/`beforeDate`/`afterDate` are all optional cursor params for the Library's
+    // bidirectional scroll (LibraryTimeline.jsx / usePhotoData.js) layered on top of the plain
+    // `page`-based feed everything else here still uses by default:
+    //   - `jumpToMonth=yyyy-MM`: the initial jump (Memories card / browse-by-month click) — landing
+    //     the feed at the start of that month.
+    //   - `beforeDate`=<a photo's own `fullDateTime`, verbatim>: continued OLDER-direction paging
+    //     once already jumped — an exact cursor instead of `jumpToMonth`'s month granularity, so
+    //     repeated "load more" calls don't refetch/skip anything at the month boundary.
+    //   - `afterDate`=<a photo's own `fullDateTime`, verbatim>: NEWER-direction paging — scrolling
+    //     back up above a jumped-to point. Takes priority over the other two if somehow both are
+    //     present; a request only ever needs one direction.
+    // `beforeDate` wins over `jumpToMonth` if both are somehow present (the frontend only ever
+    // sends one or the other: `jumpToMonth` for the first jump, `beforeDate` for continuing it).
     @GetMapping
-    public PageResponse<Photo> getPhotos(@PageableDefault(size = 50, sort = "dateTaken", direction = Sort.Direction.DESC) Pageable pageable) {
+    public PageResponse<Photo> getPhotos(@PageableDefault(size = 50, sort = "dateTaken", direction = Sort.Direction.DESC) Pageable pageable,
+                                          @RequestParam(required = false) String jumpToMonth,
+                                          @RequestParam(required = false) String beforeDate,
+                                          @RequestParam(required = false) String afterDate) {
         UserEntity currentUser = getCurrentUser();
         SpaceEntity space = spaceService.getDefaultSpaceForUser(currentUser);
-        return PageResponse.from(photoService.getPhotos(space.getId(), pageable));
+
+        if (StringUtils.hasText(afterDate)) {
+            LocalDateTime cutoff = parseCursor(afterDate);
+            if (cutoff == null) {
+                return PageResponse.from(photoService.getPhotos(space.getId(), pageable));
+            }
+            Pageable ascending = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize(), Sort.by("dateTaken").ascending());
+            return PageResponse.from(photoService.getPhotosAfter(space.getId(), ascending, cutoff));
+        }
+
+        LocalDateTime cutoff = StringUtils.hasText(beforeDate) ? parseCursor(beforeDate) : parseJumpToMonth(jumpToMonth);
+        return PageResponse.from(photoService.getPhotos(space.getId(), pageable, cutoff));
+    }
+
+    // "yyyy-MM" (e.g. "2026-03", what a Memories card / browse-by-month click sends for the
+    // INITIAL jump) -> the first instant of the FOLLOWING month, so filtering dateTaken < that
+    // cutoff lands the feed exactly at the start of the requested month.
+    private LocalDateTime parseJumpToMonth(String jumpToMonth) {
+        if (!StringUtils.hasText(jumpToMonth)) {
+            return null;
+        }
+        try {
+            return YearMonth.parse(jumpToMonth).plusMonths(1).atDay(1).atStartOfDay();
+        } catch (DateTimeParseException e) {
+            log.warn("ignoring malformed jumpToMonth param: {}", jumpToMonth);
+            return null;
+        }
+    }
+
+    // A photo's own `fullDateTime` (ISO_LOCAL_DATE_TIME, see PhotoMapper) sent straight back as an
+    // exact pagination cursor for `beforeDate`/`afterDate`. Malformed or absent input is treated as
+    // "no cursor" rather than a 400 — same reasoning as parseJumpToMonth: this is an optional UX
+    // param on an otherwise normal listing endpoint.
+    private LocalDateTime parseCursor(String isoDateTime) {
+        try {
+            return LocalDateTime.parse(isoDateTime);
+        } catch (DateTimeParseException e) {
+            log.warn("ignoring malformed date cursor param: {}", isoDateTime);
+            return null;
+        }
+    }
+
+    // The Library "month/year index" backing Memories and the browse-by-month list (see
+    // TimelineMonthDTO / PhotoService.getTimeline) — Main Space only, same scope as GET /api/photos.
+    @GetMapping("/timeline")
+    public List<TimelineMonthDTO> getTimeline() {
+        UserEntity currentUser = getCurrentUser();
+        SpaceEntity space = spaceService.getDefaultSpaceForUser(currentUser);
+        return photoService.getTimeline(space.getId());
     }
 
     @GetMapping("/space/{spaceId}")

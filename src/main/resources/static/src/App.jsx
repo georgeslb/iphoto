@@ -7,6 +7,7 @@ import { useLocale } from './LocaleContext.jsx'; // Import useLocale
 /* Removed L, markerIcon, markerShadow imports as they are not directly used in App.jsx */
 import Sidebar from './components/Sidebar'
 import PhotoGrid from './components/PhotoGrid'
+import LibraryTimeline from './components/LibraryTimeline'
 import SharedAlbumView from './components/SharedAlbumView';
 import ShareLinksManagement from './components/ShareLinksManagement';
 import UploadManager from './components/UploadManager';
@@ -40,6 +41,7 @@ import { useMapAssets } from './hooks/useMapAssets';
 import { useAppNavigationAndSelection } from './hooks/useAppNavigationAndSelection';
 import { useInitialDataFetch } from './hooks/useInitialDataFetch';
 import { useMenuSelection } from './hooks/useMenuSelection.js';
+import { useMonthlyTimeline } from './hooks/useMonthlyTimeline';
 import { useAuth } from './hooks/useAuth';
 import { useRouteContext } from './hooks/useRouteContext';
 
@@ -70,7 +72,8 @@ function App() {
   const [selectedIds, setSelectedIds] = useState([]);
   const [selectedAlbumIds, setSelectedAlbumIds] = useState([]);
   const [selectedSpaceIds, setSelectedSpaceIds] = useState([]); // For deleting multiple spaces
-  const { photos, setPage, hasMore, fetchPhotos } = usePhotoData(effectivePath, isLightboxOpen);
+  const { photos, setPage, hasMore, hasNewer, fetchPhotos, jumpToMonth, loadNewer } = usePhotoData(effectivePath, isLightboxOpen);
+  const { months: timelineMonths } = useMonthlyTimeline(selectedMenu === 'library');
 
   const { saveScrollPosition } = useScrollRestoration(mainContentRef, isLightboxOpen, photos);
 
@@ -262,7 +265,23 @@ function App() {
   }
 
   const libraryPhotoGrid = (
-    <PhotoGrid photos={photos} type={selectedMenu} hasMore={hasMore} setPage={setPage} selectedIds={selectedIds} setSelectedIds={setSelectedIds} setSelectedPhoto={handlePhotoClick} isLightboxOpen={isLightboxOpen} handleMoveToGarbage={handleMoveToGarbage} />
+    <>
+      {selectedMenu === 'library' && <LibraryTimeline months={timelineMonths} onJump={jumpToMonth} />}
+      <PhotoGrid
+          photos={photos}
+          type={selectedMenu}
+          hasMore={hasMore}
+          setPage={setPage}
+          selectedIds={selectedIds}
+          setSelectedIds={setSelectedIds}
+          setSelectedPhoto={handlePhotoClick}
+          isLightboxOpen={isLightboxOpen}
+          handleMoveToGarbage={handleMoveToGarbage}
+          hasNewer={selectedMenu === 'library' ? hasNewer : undefined}
+          onLoadNewer={selectedMenu === 'library' ? loadNewer : undefined}
+          mainContentRef={mainContentRef}
+      />
+    </>
   );
 
   const albumDetailElement = (

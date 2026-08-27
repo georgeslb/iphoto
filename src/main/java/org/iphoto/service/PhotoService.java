@@ -13,6 +13,7 @@ import org.iphoto.model.AlbumDTO;
 import org.iphoto.model.Photo;
 import org.iphoto.model.PhotoSelectionDTO;
 import org.iphoto.model.SpaceDTO;
+import org.iphoto.model.TimelineMonthDTO;
 import org.iphoto.model.request.PhotoEditRequest;
 import org.iphoto.model.request.PhotoSelectionRequest;
 import org.iphoto.repository.AlbumRepository;
@@ -50,8 +51,41 @@ public class PhotoService {
     final MenuService menuService;
 
     public Page<Photo> getPhotos(UUID spaceId, Pageable pageable) {
+        return buildDedupedPage(photoRepository.findBySpaceIdAndIsGarbageFalse(spaceId, pageable));
+    }
+
+    // Same as getPhotos(spaceId, pageable), but only photos taken strictly before `beforeExclusive`
+    // — backs "jump to month" (Memories / the browse-by-month list): the caller passes the first
+    // instant of the month AFTER the target one, so the returned feed starts exactly at the
+    // requested month, sorted the same dateTaken-desc way the normal feed already is. A null
+    // cutoff (the common case — no jump requested) is just the normal, unfiltered feed.
+    public Page<Photo> getPhotos(UUID spaceId, Pageable pageable, LocalDateTime beforeExclusive) {
+        if (beforeExclusive == null) {
+            return getPhotos(spaceId, pageable);
+        }
+        return buildDedupedPage(photoRepository.findBySpaceIdAndIsGarbageFalseAndDateTakenLessThan(spaceId, beforeExclusive, pageable));
+    }
+
+    // The mirror-image "newer" direction — back-scrolling above a jumped-to point
+    // (LibraryTimeline.jsx's usePhotoData.loadNewer). `ascendingPageable` must already be sorted
+    // dateTaken ascending (the controller builds it that way) so the query takes the photos
+    // *closest* to the cursor, not the oldest ones in the whole space. The underlying fetch and
+    // page metadata (isLast etc.) all stay in ascending terms; only the returned `content` list is
+    // reversed back to the newest-first order every other feed uses, so callers don't need to know
+    // this method works "backwards" internally.
+    public Page<Photo> getPhotosAfter(UUID spaceId, Pageable ascendingPageable, LocalDateTime afterExclusive) {
+        Page<Photo> ascendingPage = buildDedupedPage(photoRepository.findBySpaceIdAndIsGarbageFalseAndDateTakenGreaterThan(spaceId, afterExclusive, ascendingPageable));
+        List<Photo> newestFirst = new ArrayList<>(ascendingPage.getContent());
+        Collections.reverse(newestFirst);
+        return new PageImpl<>(newestFirst, ascendingPage.getPageable(), ascendingPage.getTotalElements());
+    }
+
+    // Shared by both getPhotos overloads above: attaches each photo's known duplicates and drops
+    // any photo from the top-level page that is itself someone else's duplicate (it's already
+    // shown attached to its primary), so the same photo never appears twice in one page.
+    private Page<Photo> buildDedupedPage(Page<PhotoEntity> rawPage) {
         Set<Photo> duplicatedPhotos = new CopyOnWriteArraySet<>();
-        Page<Photo> firstSelection = photoRepository.findBySpaceIdAndIsGarbageFalse(spaceId, pageable).map(entity -> {
+        Page<Photo> firstSelection = rawPage.map(entity -> {
             Set<PhotoEntity> duplicatesEntities = duplicationService.getDuplicates(entity);
             Set<Photo> duplicates = duplicatesEntities != null ? duplicatesEntities.stream().map(photoMapper::photoEntityToPhoto).collect(Collectors.toSet()) : Collections.emptySet();
             duplicatedPhotos.addAll(duplicates);
@@ -60,6 +94,22 @@ public class PhotoService {
         List<Photo> contentPhotos = new ArrayList<>(firstSelection.getContent());
         contentPhotos.removeAll(duplicatedPhotos);
         return new PageImpl<>(contentPhotos, firstSelection.getPageable(), firstSelection.getTotalElements());
+    }
+
+    // The Library "month/year index" backing Memories and the browse-by-month list — see
+    // TimelineMonthDTO and PhotoRepository.findMonthlyPhotoCountsWithCoverBySpaceId. Builds the
+    // same cache-busted thumbnail URL shape PhotoMapper uses for every other photo, so the cover
+    // image behaves identically (browser cache invalidates correctly if that photo is later
+    // edited in place).
+    public List<TimelineMonthDTO> getTimeline(UUID spaceId) {
+        return photoRepository.findMonthlyPhotoCountsWithCoverBySpaceId(spaceId).stream()
+                .map(row -> new TimelineMonthDTO(
+                        row.getYear(),
+                        row.getMonth(),
+                        row.getCount(),
+                        "/api/photos/" + row.getPhotoId() + "/thumbnail"
+                                + (row.getFileHash() != null ? "?v=" + row.getFileHash() : "")))
+                .toList();
     }
 
     public Page<Photo> getGarbagePhotos(UserEntity user, Pageable pageable) {

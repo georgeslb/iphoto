@@ -389,6 +389,24 @@ This section describes the application's features. For the corresponding backend
         (ties broken arbitrarily), keeping the target's name and cover face unconditionally; the
         now-empty source person is deleted. Distinct from the single-face reassignment above: this
         moves *every* face the source person had.
+    *   **Renaming a whole person** (`Persons.jsx`'s inline name edit; `PersonDetail.jsx`'s page
+        title, click-to-edit like Lightbox's metadata fields; `FaceService.renamePerson`, `PUT
+        /api/faces/person/{id}` with `{name, confirmed, mergeWithPersonIds}`) — a third, distinct
+        rename/merge mechanism alongside the two above, for renaming the *entity itself* rather than
+        one face's link to it:
+        1.  **No collision** — plain rename, nothing else happens.
+        2.  **Collision** (one or more *other* people already have that name — this app doesn't
+            enforce name uniqueness at the DB level, so more than one can) — `409` with all of
+            their `PersonDTO`s (cover face + photo count each); the caller (both `Persons.jsx` and
+            `PersonDetail.jsx` share `hooks/usePersonRename.js` + `PersonMergePrompt.jsx` for this)
+            shows a picker, one card per candidate — a name label wouldn't help tell them apart
+            since they all share the exact name that collided, so each card shows its own face
+            instead. The user selects zero or more to fold in; resubmitting with `confirmed: true`
+            renames AND merges every selected id into the renamed person via
+            `PersonRecognitionService.mergeInto` — a *fixed-direction* sibling of `mergePersons`
+            above: the renamed person is always the keeper here, never chosen by face count, since
+            the user explicitly picked it by renaming it. Selecting none is a valid, deliberate
+            "rename anyway, don't merge with any of these" choice, not blocked.
     *   **`FaceLinkExclusionEntity`** (`face_link_exclusions` table) — the piece that makes manual
         unlinking actually stick. Every path that detaches a face from a person (the two unlink
         actions above, and the "move only this face" branch of a name-collision merge) records a

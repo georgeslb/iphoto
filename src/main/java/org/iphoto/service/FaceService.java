@@ -8,6 +8,7 @@ import org.iphoto.entities.PersonEntity;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.UserEntity; // Import UserEntity
 import org.iphoto.exception.PersonNameCollisionException;
+import org.iphoto.exception.PersonNameCollisionsException;
 import org.iphoto.model.FaceDTO;
 import org.iphoto.model.PersonDTO;
 import org.iphoto.model.Photo;
@@ -101,11 +102,56 @@ public class FaceService {
                 .orElseThrow(() -> new NoSuchElementException("no person found with id " + id));
     }
 
-    public void updatePerson(UUID id, PersonDTO personDTO) {
-        personRepository.findById(id).ifPresent(personEntity -> { // Filter by user
-            personEntity.setName(personDTO.name());
-            personRepository.save(personEntity);
-        });
+    // Renames a whole person — the Person page title or the Persons grid's inline rename (as
+    // opposed to setFacePerson below, which reassigns a single face). Semantics (confirmed with
+    // the user):
+    //   - No other person already has this name: plain rename, nothing else happens.
+    //   - One or more OTHER people already have this name: without `confirmed`, rejects with
+    //     PersonNameCollisionsException carrying all of them, so the caller can prompt "merge
+    //     with one (or more) of these?" showing each candidate's own face. With `confirmed`, the
+    //     person being renamed is ALWAYS the keeper — every id in `mergeWithPersonIds` (the ones
+    //     the user actually picked, possibly none) is folded into it and deleted, fixed direction,
+    //     unlike the face-count-decided /persons/merge flow.
+    @Transactional
+    public PersonDTO renamePerson(UUID personId, String name, boolean confirmed, List<UUID> mergeWithPersonIds) {
+        PersonEntity person = personRepository.findById(personId)
+                .orElseThrow(() -> new NoSuchElementException("no person found with id " + personId));
+
+        if (!StringUtils.hasText(name)) {
+            throw new IllegalArgumentException("name must not be blank");
+        }
+        String trimmed = name.trim();
+
+        if (!confirmed) {
+            List<PersonEntity> collisions = personRepository.findByNameIgnoreCaseAndIdNot(trimmed, personId);
+            if (!collisions.isEmpty()) {
+                throw new PersonNameCollisionsException(collisions.stream().map(PersonEntity::getId).toList());
+            }
+            person.setName(trimmed);
+            personRepository.save(person);
+            return mapToPerson(person);
+        }
+
+        person.setName(trimmed);
+        personRepository.save(person);
+        if (mergeWithPersonIds != null) {
+            for (UUID sourceId : mergeWithPersonIds) {
+                if (sourceId.equals(personId)) {
+                    continue; // Defensive: never merge the target into itself.
+                }
+                personRecognitionService.mergeInto(personId, sourceId);
+            }
+        }
+
+        return mapToPerson(personRepository.findById(personId)
+                .orElseThrow(() -> new NoSuchElementException("no person found with id " + personId)));
+    }
+
+    // Backs the 409 response of renamePerson above — re-fetches the full DTOs (cover face, photo
+    // count) for a PersonNameCollisionsException's candidate ids, so mapping logic stays in
+    // mapToPerson instead of duplicated in the controller.
+    public List<PersonDTO> getPersons(List<UUID> ids) {
+        return personRepository.findAllById(ids).stream().map(this::mapToPerson).toList();
     }
 
     public Optional<FaceEntity> findById(UserEntity user, UUID id) {

@@ -20,4 +20,13 @@ public interface PersonRepository extends JpaRepository<PersonEntity, UUID> {
     // match should only ever consider the current user's own people.
     @MainSpaceLimited
     Optional<PersonEntity> findByNameIgnoreCase(String name);
+
+    // Backs the Person page/Persons grid rename-collision flow (FaceService.renamePerson) — every
+    // OTHER person already sharing the name being renamed to (excludes the person being renamed
+    // itself, which trivially "collides" with its own current name on a no-op rename). Plural
+    // (unlike findByNameIgnoreCase above, used by the single-face rename flow) because this app
+    // doesn't actually enforce name uniqueness at the DB level, so more than one existing person
+    // can legitimately already share a name by the time a rename runs into it.
+    @MainSpaceLimited
+    List<PersonEntity> findByNameIgnoreCaseAndIdNot(String name, UUID excludeId);
 }
