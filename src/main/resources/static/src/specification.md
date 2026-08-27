@@ -345,8 +345,7 @@ This section describes the application's features. For the corresponding backend
         drops out of this person's list. This is deliberately different from the Lightbox's
         "remove face" action: unlinking only breaks the person↔photo match (e.g. correcting a
         wrong recognition match) — the `FaceEntity` (bounding box, embedding, thumbnail) and the
-        photo itself are untouched, so a re-run of face recognition, or a future manual re-link
-        feature, could still act on it. `PhotoGrid.jsx`'s `handleUnlinkPerson` prop is optional and
+        photo itself are untouched. `PhotoGrid.jsx`'s `handleUnlinkPerson` prop is optional and
         only ever passed from `PersonDetail.jsx` — Library/Album/Space grids don't get this icon.
     *   **Manually removing a face** (Lightbox "Faces Detected" section): each face thumbnail has a
         small trash-icon button (`.face-remove-btn`) that deletes just that one `FaceEntity` via
@@ -359,30 +358,148 @@ This section describes the application's features. For the corresponding backend
         linked person's name (`FaceDTO.personName`) instead of the generic "Face 1"/"Face 2"/...
         label whenever that face is attached to a named `PersonEntity`; falls back to the generic
         label otherwise (no person linked yet, or linked but unnamed).
+    *   **Renaming/mapping a face's person from the Lightbox** (`Lightbox.jsx`, face label is now
+        clickable/editable; `FaceService.setFacePerson`, `PUT /api/faces/{id}/person`): typing a
+        name for a face resolves one of three ways, depending on whether that name already belongs
+        to a *different* person than the face's current one:
+        1.  **No collision, face already had a person** — plain rename: that `PersonEntity`'s name
+            changes, so every one of their faces relabels (it's the same identity; a typo fix).
+        2.  **No collision, face had no person yet** — creates a brand-new `PersonEntity` with that
+            name for just this one face.
+        3.  **Collision** (a different person already has that name) — this is not a rename; the
+            backend returns `409` with that person's `PersonDTO` (cover face included) instead of
+            applying anything, and `Lightbox.jsx` shows a confirmation popup (`mergePrompt` state)
+            with the existing person's cover face next to this face's own thumbnail, asking to
+            merge. Confirming resubmits with `confirmMerge: true`, which moves **only this one
+            face** to the existing person — every other face the original person had is untouched.
+            (A full person-to-person merge, moving *all* of a person's faces, is the separate
+            `/persons/merge` feature below — deliberately not the same action.)
+    *   **Unlinking a single face from its person, keeping the face** (Lightbox `Unlink2` button
+        next to a named face, shown only when the face has a person; `FaceService.
+        unlinkFaceFromPerson`, `DELETE /api/faces/{id}/person`): clears just that one face's
+        `person` (recalculating the old person's `coverFace` if it was affected) without deleting
+        the `FaceEntity` — narrower than `unlinkPersonFromPhoto` above (which unlinks *every* face
+        tying one person to one photo; this unlinks one specific face regardless of how many other
+        faces on the same photo share that person).
+    *   **Merging two people** (`/persons` grid — a `.check-circle` selection overlay per person,
+        shown on hover or once 2 are selected, plus a merge action bar; `PersonRecognitionService.
+        mergePersons`, `POST /api/faces/persons/merge` with `{ personIds: [id1, id2] }`): for when
+        clustering split one real person into two `PersonEntity` rows. Direction isn't
+        caller-chosen — the person with **fewer** faces always merges into the one with **more**
+        (ties broken arbitrarily), keeping the target's name and cover face unconditionally; the
+        now-empty source person is deleted. Distinct from the single-face reassignment above: this
+        moves *every* face the source person had.
+    *   **`FaceLinkExclusionEntity`** (`face_link_exclusions` table) — the piece that makes manual
+        unlinking actually stick. Every path that detaches a face from a person (the two unlink
+        actions above, and the "move only this face" branch of a name-collision merge) records a
+        `(face, excludedPerson)` row via `FaceService`'s shared `detachFaceFromPerson`/
+        `attachFaceToPerson` helpers. `FaceRecognitionService.groupFacesForUser` loads every
+        exclusion for the current batch of ungrouped faces once per run and filters that face's
+        candidate person list before matching — so the ~30s automatic re-grouping pass can never
+        silently reattach a face to a person the user explicitly removed it from, while the face
+        remains completely free to match a *different* existing person, or seed a brand-new one,
+        going forward (exactly "regroup it under another person"). Explicitly *not* recorded for
+        `PersonRecognitionService.mergePersons`: that's a deliberate "these are the same person"
+        declaration, not a correction, so future auto-matching against the merge target should
+        freely include the moved faces as if they'd always belonged to it.
+    *   **Bug fix, `PersonEntity`**: extends `BaseEntity`, whose `Persistable<UUID>.isNew()` reads
+        a transient flag that every *other* `BaseEntity` subclass (`ShareEntity`, `AlbumEntity`,
+        `SpaceEntity`) flips to `false` via `@PrePersist`/`@PostLoad` — `PersonEntity` never did,
+        so `isNew()` returned `true` forever, even for a person freshly loaded from the DB. That
+        made `personRepository.save()` always call `persist()` instead of `merge()`: harmless for
+        a genuinely new person, but `InvalidDataAccessApiUsageException: detached entity passed to
+        persist` the moment an *existing* person got saved from a different transaction than the
+        one that loaded it (e.g. `PersonRecognitionService.updatePerson`, `@Transactional
+        (REQUIRES_NEW)`). Fixed by adding the same two callbacks every sibling entity already has.
 
 ### 4.4. Sharing
 
-*   **Create Share Link:** Users can generate a unique, shareable link for an album.
-*   **Link Configuration:** When creating a link, users can set a name, an optional password, and an expiration period.
-*   **Public Share Page:** The generated link leads to a public-facing page for viewing shared photos.
-*   **Anonymous access flow:** `ShareLinkPage.jsx` (`/share/{name}`) fetches `/api/share/{name}`.
-    If the link is not password-protected, it `navigate()`s straight to `/albums/{albumId}`
-    (and to `/albums/{albumId}/asset/{photoId}` when opening a specific photo). If protected, it
-    redirects to `/share/{name}/login` (`ShareLoginPage.jsx`), which POSTs the password to
-    `/api/share/{shareId}/login` with `credentials: 'include'` before navigating to the same
-    `/albums/{albumId}` route. The intent of `/albums/:albumId/asset/:photoId` existing as its
-    own route (rather than folded into `/albums/:albumId`) is to let it be reachable **without a
-    full authenticated session**, for anonymous share viewers.
-    *   **Open question / needs backend verification:** in `App.jsx`, both `/albums/:albumId` and
-        `/albums/:albumId/asset/:photoId` are currently only rendered inside the
-        `{isAuthenticated ? (...) : <Login/>}` branch, and `checkAuthStatus()` redirects to
-        `/login` whenever `/api/user/me` fails **and** the path doesn't start with `/share`. The
-        password-protected flow explicitly establishes a session (`credentials: 'include'` on the
-        share login call), so `/api/user/me` presumably succeeds afterwards. But the
-        **non-protected** flow in `ShareLinkPage.jsx` navigates straight to `/albums/{id}` without
-        ever calling a login/session endpoint — this only works if the backend already grants some
-        session/cookie for unprotected share access too. Not verified from the frontend alone;
-        flagged here rather than assumed either way.
+A share link is owned by a user and points at exactly one album (`ShareEntity.album`). Anyone
+with the link can view that album's photos read-only, with or without a password; the owner can
+delete the link or remove its password at any time. This was substantially rewritten/fixed in a
+later pass — the notes below describe the current, working design; see the "History" callout at
+the end of this section for what was actually broken beforehand.
+
+*   **Address scheme:** `/share/{userMd5}/{name}`, e.g. `/share/3a1f.../vacation-2024`. `userMd5`
+    is `md5(user.id)` (`ShareService.computeUserMd5`, `org.springframework.util.DigestUtils`),
+    computed once at share-creation time and stored on `ShareEntity.userMd5` — it identifies the
+    owning user in the URL without exposing their real UUID. `name` only needs to be unique
+    *within* one user's shares (enforced both by the `name`+`space_id` DB unique constraint and by
+    `ShareRepository.findByName` being `@MainSpaceLimited`), so two different users can each have
+    a share named `vacation-2024`; `userMd5` is what disambiguates them. Opening a specific photo
+    is `/share/{userMd5}/{name}/p/{photoId}`.
+*   **Creating a link:** `CreateShareLinkModal.jsx` / `useShareLinkManagement.js`, `POST
+    /api/share` with `{ name, password, daysAvailable, albumId }`. The response (`ShareResponse`)
+    now includes `userMd5`, so the success alert shows the actual shareable URL, not just the
+    link name.
+*   **Managing links:** `/share-links` (`ShareLinksManagement.jsx` + `hooks/useMyShares.js`) lists
+    every share the current user owns (`GET /api/share/my-shares`) with its full URL, whether it's
+    password-protected or expired, a "Remove Password" action (`PUT /api/share/{id}` with `{
+    "password": null }` — clears the password without deleting the link) and a delete action
+    (`DELETE /api/share/{id}`). Both are ownership-checked by `ShareRepository.findById` being
+    `@MainSpaceLimited` — a user can only manage shares in their own space.
+*   **Guest access flow — deliberately self-contained** (`SharedAlbumView.jsx`): the `/share/**`
+    routes never depend on `isAuthenticated`/`useAuth.js` (that hook is for real accounts) and
+    never touch `/albums/:albumId` (which only renders inside the authenticated app shell). A
+    guest is instead authenticated into a backend-managed **`ROLE_SHARE`** session scoped to
+    exactly one share/album (see below), and talks exclusively to endpoints built for that guest
+    session:
+    1.  `GET /api/share/{userMd5}/{name}` — returns 404 (not found), 410 (expired), or a status
+        map. If **not** password-protected, this call *itself* establishes the guest's `ROLE_SHARE`
+        session (there's no separate login step to skip) and returns `{ protected: false, albumId
+        }`. If password-protected and not yet unlocked in this browser session, returns `{
+        protected: true, shareId }` and `SharedAlbumView.jsx` renders an inline password form
+        (no separate route/page for this — folded into the same component for simplicity).
+    2.  `POST /api/share/{shareId}/login` with `{ password }` — verifies the (BCrypt-hashed)
+        password, then establishes the same `ROLE_SHARE` session and returns the album id.
+    3.  Once "ready", `SharedAlbumView.jsx` fetches photos from `GET
+        /api/albums/share/{albumId}/photos?page={n}` (paginated, same `Page<Photo>` shape as
+        every other photo list) and renders them via the same `PhotoGrid.jsx` used everywhere
+        else (read-only here: no selection actions are wired up, just browsing/opening a photo).
+        Clicking a photo navigates to `/share/{userMd5}/{name}/p/{photoId}`, which additionally
+        renders `SharedLightbox.jsx` — a deliberately minimal full-screen viewer (prev/next/close
+        only; none of the main `Lightbox.jsx`'s zoom/pan/date-editing/face-detection/delete
+        controls make sense for a guest with no account). It fetches the single photo via `GET
+        /api/albums/share/{albumId}/photos/{photoId}`.
+    *   **Guarding against clobbering a real login:** if the browser already has a normal
+        authenticated session (e.g. the owner previewing their own link in the same tab),
+        `ShareController` skips establishing a `ROLE_SHARE` session rather than silently replacing
+        the real login — see `isGuestOrAnonymous` in `ShareController.java`.
+*   **Authorization boundary for guests — `ShareAccessFilter`** (`configuration/`, replaces the
+    older, broken `ShareAlbumFilter`): a `ROLE_SHARE` authentication satisfies Spring Security's
+    blanket `anyRequest().authenticated()`, same as any real user — so without an extra check, a
+    guest could reach *any* album/photo by UUID, not just the one their link grants (the photo/
+    album repositories used by the guest flow are intentionally **not** `@MainSpaceLimited`, since
+    a guest session has no matching `UserEntity` for that aspect to resolve — see below). This
+    filter is the actual authorization boundary: for any `/api/albums/share/**` or
+    `/api/photos/{id}/**` request made under a `ROLE_SHARE` session, it loads the `ShareEntity`
+    the guest authenticated against (via the session's `SHARE_ID` attribute) and confirms the
+    requested album — or the album the requested photo belongs to — matches. Anything else gets a
+    403. Non-guest requests pass through unchanged.
+*   **Why guest lookups bypass the space filter:** `MainSpaceAspectConfiguration`'s aspect (see
+    §4.3/known limitation notes elsewhere in this doc) resolves the *current user* from
+    `Authentication.getName()` to enable Hibernate's `spaceFilter`. A guest's synthetic principal
+    (`"share-" + shareId`) isn't a real `UserEntity`, so any `@MainSpaceLimited` repository method
+    called during a guest request throws `NoSuchElementException` (user not found) — this is
+    exactly what made the password-protected share flow 500 before this pass. The fix was **not**
+    to touch `MainSpaceAspectConfiguration` (left alone deliberately, as elsewhere in this
+    codebase), but to add unfiltered, guest-safe lookups used only by the share flow:
+    `ShareRepository.findByIdIgnoringSpace`/`findByUserMd5AndName`,
+    `AlbumRepository.findByIdIgnoringSpace`, and `AlbumService.getAlbumPhotosForShare`/
+    `getAlbumPhotoForShare` (kept separate from the existing, still-filtered
+    `getAlbumPhotos`/`getAlbum`, which the *authenticated* album-detail view still uses — reusing
+    the filtered version for guests would 500 them; reusing the unfiltered version for real users
+    would remove their space isolation entirely).
+*   **History — what was actually broken before this pass** (kept for context, not current
+    behavior): the old `/{albumId}/{name}` share-lookup route, the old `ShareAlbumFilter`
+    (extracted the wrong URI segment as an id — an off-by-one — and called an
+    `@MainSpaceLimited` `shareRepository.findById` that 500'd for guests), `getShareDetailsById`/
+    `getSharePassword` (same `@MainSpaceLimited` problem, meaning the password-login endpoint
+    itself 500'd for anonymous callers), the unprotected flow never establishing any session at
+    all (so every subsequent photo/album fetch was unauthenticated), and a frontend/backend key
+    mismatch (`ShareLinkPage.jsx` read `data.selectedAlbumIds`, the backend only ever sent
+    `albumIds`/`albumId`). None of this is present anymore, but it's why the guest flow was
+    rewritten rather than incrementally patched.
 
 ## 5. Backend API Endpoints
 
@@ -430,9 +547,19 @@ This section lists the primary API endpoints the frontend application calls to i
 *   `GET /api/duplicates?page={n}`: Fetches a paginated list of duplicate photo groups.
 
 ### 5.6. Sharing
-*   `POST /api/share-links`: Creates a new share link for an album with optional password and expiration.
-*   `GET /share/{name}`: (Not an API route, but a public page) Renders the shared album page.
-*   `POST /share/{name}/login`: (Not an API route) Authenticates a user for a password-protected share.
+Owner-facing (real authenticated user, ownership enforced via `@MainSpaceLimited`):
+*   `POST /api/share`: Creates a new share link for an album (`{ name, password, daysAvailable, albumId }`); response includes `userMd5` for building the full URL.
+*   `GET /api/share/my-shares`: Lists every share link the current user owns.
+*   `GET /api/share/{id}`: Fetches one owned share by its id.
+*   `PUT /api/share/{id}`: Updates a share's password (`{ "password": null|"..." }` — null/blank removes password protection).
+*   `DELETE /api/share/{id}`: Deletes a share link.
+
+Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
+*   `GET /api/share/{userMd5}/{name}`: Resolves a share link; 404/410/`{protected, albumId|shareId}`.
+*   `POST /api/share/{shareId}/login`: Verifies a share's password and establishes the guest session.
+*   `GET /api/albums/share/{albumId}/photos?page={n}`: Paginated photos for the album a guest's share grants access to (`ShareAccessFilter`-gated).
+*   `GET /api/albums/share/{albumId}/photos/{photoId}`: A single photo, only if it belongs to that album (backs the shared Lightbox).
+*   `GET /api/photos/{id}/thumbnail` / `/original` / `/stream`: Same asset endpoints real users use — guests can only reach the photo their `ShareAccessFilter`-checked album contains.
 
 ## 6. Technical Architecture (Inferred from Code)
 

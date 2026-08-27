@@ -17,7 +17,7 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain securityFilterChain(
             HttpSecurity http,
-            ShareAlbumFilter shareAlbumFilter
+            ShareAccessFilter shareAccessFilter
     ) throws Exception {
 
         http
@@ -60,7 +60,7 @@ public class SecurityConfig {
                         )
                 )
                 .addFilterBefore(
-                        shareAlbumFilter,
+                        shareAccessFilter,
                         UsernamePasswordAuthenticationFilter.class
                 );
 

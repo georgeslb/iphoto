@@ -41,6 +41,13 @@ export function usePhotoData(effectivePath, isLightboxOpen) {
   }, [messages]);
 
   const loadPhotos = useCallback((page, reset) => {
+    // Share/guest views (/share/**) fetch their own photos via useSharedAlbumPhotos against a
+    // separate, guest-scoped endpoint — none of this hook's authenticated /api/photos* endpoints
+    // apply there (they'd 401/500 for a guest session), so there's nothing for it to do.
+    if (effectivePath.startsWith('/share')) {
+      return;
+    }
+
     const albumMatch = effectivePath.match(/^\/albums\/(.+)$/);
     const spaceMatch = effectivePath.match(/^\/spaces\/(.+)$/);
     const personMatch = effectivePath.match(/^\/persons\/(.+)$/);

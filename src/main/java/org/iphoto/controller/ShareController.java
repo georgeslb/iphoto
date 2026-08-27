@@ -6,10 +6,12 @@ import lombok.AllArgsConstructor;
 import org.iphoto.entities.UserEntity;
 import org.iphoto.model.*;
 import org.iphoto.model.request.ShareRequest;
+import org.iphoto.model.request.ShareUpdateRequest;
 import org.iphoto.repository.UserRepository;
 import org.iphoto.service.ShareService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -70,6 +72,19 @@ public class ShareController {
         }
     }
 
+    // Lets the owner remove ("password": null/blank) or replace the password on a share they
+    // created. Ownership is enforced by ShareService/ShareRepository's @MainSpaceLimited lookup.
+    @PutMapping("/{id}")
+    public ResponseEntity<ShareResponse> updateShare(@PathVariable UUID id, @RequestBody ShareUpdateRequest request) {
+        UserEntity currentUser = getCurrentUser();
+        try {
+            ShareResponse share = shareService.updateSharePassword(currentUser, id, request.password());
+            return ResponseEntity.ok(share);
+        } catch (NoSuchElementException e) {
+            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+        }
+    }
+
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> deleteMyShare(@PathVariable UUID id) {
         UserEntity currentUser = getCurrentUser();
@@ -81,29 +96,50 @@ public class ShareController {
         }
     }
 
-    // This endpoint is for public access to a share link, so it does not filter by user.
-    @GetMapping("{albumId}/{name}")
-    public ResponseEntity<Map<String, Serializable>> getShareDetailsByName(@PathVariable("albumId") UUID albumId, @PathVariable("name")  String name, HttpSession session) {
-        ShareResponse share = shareService.getShareDetails(albumId, name);
+    // This endpoint is for public/guest access to a share link, so it does not filter by user.
+    // Share links are addressed as /share/{userMd5}/{name} — userMd5 identifies the owning user
+    // without exposing their real UUID, name is unique per user (see ShareEntity.userMd5).
+    @GetMapping("/{userMd5}/{name}")
+    public ResponseEntity<Map<String, Serializable>> getShareDetailsByName(
+            @PathVariable String userMd5, @PathVariable String name, HttpServletRequest request) {
+        ShareResponse share;
+        try {
+            share = shareService.getShareDetails(userMd5, name);
+        } catch (NoSuchElementException e) {
+            return ResponseEntity.notFound().build();
+        }
 
-        // non protégé
+        if (share.expired()) {
+            return ResponseEntity.status(HttpStatus.GONE).build();
+        }
+
+        // non protégé : grant guest access immediately, no password step needed. A session is
+        // established here too (not just after a password login) — otherwise every subsequent
+        // /api/albums/share/** and /api/photos/**/(thumbnail|original|stream) call would be
+        // unauthenticated and rejected. Skipped when the caller already has a real logged-in
+        // session (e.g. the owner previewing their own link in the same browser) — otherwise
+        // this would silently replace their account session with a guest ROLE_SHARE one.
         if (!share.isPasswordProtected()) {
+            if (isGuestOrAnonymous(SecurityContextHolder.getContext().getAuthentication())) {
+                establishShareSession(request, share.id());
+            }
             return ResponseEntity.ok(
                     Map.of(
                             "protected", false,
-                            "albumIds", share.albumId()
+                            "albumId", share.albumId().toString()
                     )
             );
         }
 
-        // déjà authentifié
-        Object authenticatedShare = session.getAttribute("SHARE_ID");
+        // déjà authentifié pour CE partage précis
+        HttpSession existingSession = request.getSession(false);
+        Object authenticatedShare = existingSession != null ? existingSession.getAttribute("SHARE_ID") : null;
 
         if (authenticatedShare != null && authenticatedShare.toString().equals(share.id())) {
             return ResponseEntity.ok(
                     Map.of(
                             "protected", false,
-                            "albumIds", share.albumId()
+                            "albumId", share.albumId().toString()
                     )
             );
         }
@@ -120,7 +156,16 @@ public class ShareController {
     // This endpoint is for public access to a share link, so it does not filter by user.
     @PostMapping("/{shareId}/login")
     public ResponseEntity<?> loginShare(@PathVariable String shareId, @RequestBody Map<String, String> body, HttpServletRequest request) {
-        ShareResponse share = shareService.getShareDetailsById(shareId);
+        ShareResponse share;
+        try {
+            share = shareService.getShareDetailsById(shareId);
+        } catch (NoSuchElementException e) {
+            return ResponseEntity.notFound().build();
+        }
+
+        if (share.expired()) {
+            return ResponseEntity.status(HttpStatus.GONE).build();
+        }
 
         boolean ok = encoder.matches(
                 body.get("password"),
@@ -131,6 +176,28 @@ public class ShareController {
             return ResponseEntity.status(401).build();
         }
 
+        if (isGuestOrAnonymous(SecurityContextHolder.getContext().getAuthentication())) {
+            establishShareSession(request, shareId);
+        }
+
+        return ResponseEntity.ok(share);
+    }
+
+    // A real logged-in user (not a guest, not anonymous) keeps their own session — establishing
+    // a share session would silently log them out of their account. Re-establishing/switching
+    // between two share sessions (ROLE_SHARE -> a different ROLE_SHARE) is fine.
+    private boolean isGuestOrAnonymous(Authentication authentication) {
+        if (authentication == null || !authentication.isAuthenticated()) {
+            return true;
+        }
+        if (authentication instanceof AnonymousAuthenticationToken) {
+            return true;
+        }
+        return authentication.getAuthorities().stream()
+                .anyMatch(authority -> "ROLE_SHARE".equals(authority.getAuthority()));
+    }
+
+    private void establishShareSession(HttpServletRequest request, String shareId) {
         Authentication authentication =
                 new UsernamePasswordAuthenticationToken(
                         "share-" + shareId,
@@ -157,7 +224,5 @@ public class ShareController {
                 "SHARE_ID",
                 shareId
         );
-
-        return ResponseEntity.ok(share);
     }
 }

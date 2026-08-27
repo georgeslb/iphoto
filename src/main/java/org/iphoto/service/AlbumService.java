@@ -135,6 +135,31 @@ public class AlbumService {
                 .map(photoMapper::photoEntityToPhoto);
     }
 
+    // Guest/share-flow variants: deliberately use the unfiltered album lookup since a guest
+    // share session has no matching UserEntity (the space-filter aspect would throw trying to
+    // resolve one). Album/photo-level authorization for guests is enforced separately, by
+    // ShareAccessFilter checking the requested album against the share the guest authenticated
+    // for — do not reuse these from any authenticated-user-facing endpoint.
+    @Transactional(readOnly = true)
+    public Page<Photo> getAlbumPhotosForShare(UUID albumId, Pageable pageable) {
+        AlbumEntity album = getAlbumIgnoringSpace(albumId);
+        return photoRepository.findByIsGarbageFalseAndAlbums(album, pageable)
+                .map(photoMapper::photoEntityToPhoto);
+    }
+
+    @Transactional(readOnly = true)
+    public Photo getAlbumPhotoForShare(UUID albumId, UUID photoId) {
+        getAlbumIgnoringSpace(albumId); // confirms the album itself exists
+        return photoRepository.findByIdAndAlbums_IdAndIsGarbageFalse(photoId, albumId)
+                .map(photoMapper::photoEntityToPhoto)
+                .orElseThrow(() -> new NoSuchElementException("Photo not found in album: " + photoId));
+    }
+
+    private AlbumEntity getAlbumIgnoringSpace(UUID albumId) {
+        return albumRepository.findByIdIgnoringSpace(albumId)
+                .orElseThrow(() -> new NoSuchElementException("Album not found with ID: " + albumId));
+    }
+
     public AlbumDTO convertToDto(AlbumEntity album) { // Added UserEntity parameter
         Photo coverPhotoDTO = null;
         if (album.getCoverPhoto() != null) {

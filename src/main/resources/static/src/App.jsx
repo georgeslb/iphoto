@@ -7,8 +7,8 @@ import { useLocale } from './LocaleContext.jsx'; // Import useLocale
 /* Removed L, markerIcon, markerShadow imports as they are not directly used in App.jsx */
 import Sidebar from './components/Sidebar'
 import PhotoGrid from './components/PhotoGrid'
-import ShareLinkPage from './components/ShareLinkPage';
-import ShareLoginPage from './components/ShareLoginPage';
+import SharedAlbumView from './components/SharedAlbumView';
+import ShareLinksManagement from './components/ShareLinksManagement';
 import UploadManager from './components/UploadManager';
 import HeaderWrapper from './components/HeaderWrapper';
 import AddToAlbumModal from './components/AddToAlbumModal';
@@ -418,12 +418,7 @@ function App() {
                         handleMoveToGarbage={handleMoveToGarbage}
                     />
                   } />
-                  <Route path="/share-links" element={
-                    <div className="content-body" style={{ textAlign: 'center', paddingTop: '40px' }}>
-                      <h2>{messages["manageShareLinks"]}</h2>
-                      <p>{messages["manageShareLinksDescription"]}</p>
-                    </div>
-                  } />
+                  <Route path="/share-links" element={<ShareLinksManagement />} />
                   {userRole === 'ADMIN' && (
                       <Route path="/admin/users" element={<UserManagement />} />
                   )}
@@ -432,9 +427,10 @@ function App() {
                 // Redirect all non-share, non-login paths to login if not authenticated
                 <Route path="*" element={<Login checkAuthStatus={checkAuthStatus} />} />
             )}
-            {/* Share routes are always accessible */}
-            <Route path="/share/:name" element={<ShareLinkPage />} />
-            <Route path="/share/:name/login" element={<ShareLoginPage checkAuthStatus={checkAuthStatus} />} />
+            {/* Share routes are always accessible, and deliberately self-contained (see
+                SharedAlbumView.jsx) — they never depend on isAuthenticated. */}
+            <Route path="/share/:userMd5/:name" element={<SharedAlbumView />} />
+            <Route path="/share/:userMd5/:name/p/:photoId" element={<SharedAlbumView />} />
           </Routes>
         </main>
 
@@ -456,6 +452,7 @@ function App() {
             onShowAddToAlbumModal={handleShowAddToAlbumModalForLightbox}
             onShowRemoveFromAlbumModal={handleShowRemoveFromAlbumModalForLightbox}
             photoSelection={photoSelection}
+            refreshAndMaintainScroll={refreshAndMaintainScroll}
         />
 
         <CreateAlbumModal

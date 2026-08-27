@@ -7,5 +7,6 @@ public record ShareResponse(
     String name,
     UUID albumId,
     boolean isPasswordProtected,
-    boolean expired
+    boolean expired,
+    String userMd5
 ) {}

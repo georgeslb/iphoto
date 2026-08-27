@@ -15,6 +15,7 @@ import {
     RotateCcw,
     RotateCw,
     Trash2,
+    Unlink2,
     X,
     XCircle,
     Zap,
@@ -41,7 +42,8 @@ export default function Lightbox({
                                      onEditPhoto,
                                      onShowAddToAlbumModal,
                                      onShowRemoveFromAlbumModal,
-                                     photoSelection
+                                     photoSelection,
+                                     refreshAndMaintainScroll
                                  }) {
     const { messages } = useLocale(); // Use the useLocale hook
     const [isEditingDate, setIsEditingDate] = useState(false);
@@ -66,6 +68,13 @@ export default function Lightbox({
     const [faces, setFaces] = useState([]);
     const [showFaces, setShowFaces] = useState(false);
     const [imageSize, setImageSize] = useState({ naturalWidth: 0, naturalHeight: 0, displayWidth: 0, displayHeight: 0, offsetX: 0, offsetY: 0 });
+
+    // State for editing which person a face maps to (see submitFacePerson below)
+    const [editingFaceId, setEditingFaceId] = useState(null);
+    const [editingFaceName, setEditingFaceName] = useState('');
+    // Set when the backend reports the typed name already belongs to a different person —
+    // { faceId, name, existingPerson } — drives the merge-confirmation popup.
+    const [mergePrompt, setMergePrompt] = useState(null);
 
     // State for albumAllowed from SpaceDTO
     const [albumAllowed, setAlbumAllowed] = useState(false);
@@ -129,10 +138,71 @@ export default function Lightbox({
             // Drives both the thumbnail list and the on-image .face-box overlays, so removing
             // here updates both in one place.
             setFaces(prev => prev.filter(f => f.id !== faceId));
+            // A deleted face can change which photos a person-scoped view (e.g. PersonDetail's
+            // photo grid) should show — refresh whatever list is currently backing this Lightbox.
+            if (refreshAndMaintainScroll) await refreshAndMaintainScroll();
         } catch (error) {
             console.error(messages["errorRemovingFace"], error);
         }
-    }, [messages]);
+    }, [messages, refreshAndMaintainScroll]);
+
+    // Sets/renames which person a face maps to. On a name collision with a DIFFERENT person the
+    // backend returns 409 with that person's info — surfaced here as mergePrompt so the caller
+    // (submitted again with confirmMerge: true) can decide whether to actually merge this one
+    // face into them, rather than assuming.
+    const submitFacePerson = useCallback(async (faceId, name, confirmMerge) => {
+        try {
+            const response = await fetch(`/api/faces/${faceId}/person`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, confirmMerge }),
+            });
+
+            if (response.status === 409) {
+                const existingPerson = await response.json();
+                setMergePrompt({ faceId, name, existingPerson });
+                return;
+            }
+            if (!response.ok) {
+                throw new Error(messages["errorSettingFacePerson"]);
+            }
+
+            const updatedFace = await response.json();
+            setFaces(prev => prev.map(f => (f.id === faceId ? { ...f, personName: updatedFace.personName } : f)));
+            setEditingFaceId(null);
+            setMergePrompt(null);
+            // Renaming/reassigning a face can change which photos a person-scoped view (e.g.
+            // PersonDetail) should show for the OLD and/or NEW person — refresh in place so
+            // navigating back there reflects it, instead of showing a stale list.
+            if (refreshAndMaintainScroll) await refreshAndMaintainScroll();
+        } catch (error) {
+            console.error(messages["errorSettingFacePerson"], error);
+        }
+    }, [messages, refreshAndMaintainScroll]);
+
+    const handleFaceNameSubmit = useCallback((face) => {
+        const trimmed = editingFaceName.trim();
+        if (!trimmed || trimmed === (face.personName || '')) {
+            setEditingFaceId(null);
+            return;
+        }
+        submitFacePerson(face.id, trimmed, false);
+    }, [editingFaceName, submitFacePerson]);
+
+    const handleUnlinkFacePerson = useCallback(async (faceId) => {
+        try {
+            const response = await fetch(`/api/faces/${faceId}/person`, { method: 'DELETE' });
+            if (!response.ok) {
+                throw new Error(messages["errorUnlinkingFace"]);
+            }
+            setFaces(prev => prev.map(f => (f.id === faceId ? { ...f, personName: null } : f)));
+            // Same reasoning as submitFacePerson above: this photo may need to drop out of the
+            // person's photo list.
+            if (refreshAndMaintainScroll) await refreshAndMaintainScroll();
+        } catch (error) {
+            console.error(messages["errorUnlinkingFace"], error);
+        }
+    }, [messages, refreshAndMaintainScroll]);
 
 
     useEffect(() => {
@@ -209,10 +279,10 @@ export default function Lightbox({
         }
     };
 
-    const handleImageLoad = () => {
+    const recalculateImageSize = useCallback(() => {
         const img = imageRef.current;
         const container = zoomContainerRef.current;
-        if (!img || !container) return;
+        if (!img || !container || !img.naturalWidth) return;
 
         const { naturalWidth, naturalHeight } = img;
         const containerWidth = container.clientWidth;
@@ -243,7 +313,18 @@ export default function Lightbox({
             offsetX: (containerWidth - displayWidth) / 2,
             offsetY: (containerHeight - displayHeight) / 2,
         });
-    };
+    }, []);
+
+    const handleImageLoad = recalculateImageSize;
+
+    // The face-box overlays are positioned from imageSize, computed once when the image loads —
+    // but zoom-container's own size (and so the image's rendered/letterboxed rect within it) can
+    // change afterward, e.g. the browser window being resized while a photo is open. Without
+    // this, imageSize goes stale and every face-box drifts from the actual image.
+    useEffect(() => {
+        window.addEventListener('resize', recalculateImageSize);
+        return () => window.removeEventListener('resize', recalculateImageSize);
+    }, [recalculateImageSize]);
 
     const clampPan = useCallback((newPanX, newPanY, currentScale) => {
         const img = imageRef.current;
@@ -394,13 +475,14 @@ export default function Lightbox({
     useEffect(() => {
         const handleKeyDown = (e) => {
             if (isEditingImage) return;
+            if (e.key === 'Escape' && mergePrompt) { setMergePrompt(null); return; }
             if (e.key === 'ArrowLeft') handlePrevious();
             else if (e.key === 'ArrowRight') handleNext();
             else if (e.key === 'Escape') onClose();
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [hasPrevious, hasNext, currentIndex, isEditingImage, onClose]);
+    }, [hasPrevious, hasNext, currentIndex, isEditingImage, onClose, mergePrompt]);
 
     const startImageEditing = useCallback(() => setIsEditingImage(true), []);
 
@@ -411,15 +493,23 @@ export default function Lightbox({
     const mediaCacheParam = selectedPhoto.fileHash ? `?v=${selectedPhoto.fileHash}` : '';
 
     return (
+        <>
         <div className="lightbox-overlay" onClick={isEditingImage ? undefined : onClose}>
             <style>{`
                 .face-box { position: absolute; border: 2px solid rgba(255, 255, 0, 0.8); box-shadow: 0 0 10px rgba(0,0,0,0.5); border-radius: 4px; pointer-events: none; }
                 .face-thumbnail-container { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 8px; }
                 .face-item { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; }
                 .face-thumbnail { width: 60px; height: 60px; border-radius: 4px; object-fit: cover; }
-                .face-item label { font-size: 12px; color: #ccc; }
+                .face-item label { font-size: 12px; color: #ccc; cursor: pointer; }
+                .face-item label:hover { color: white; text-decoration: underline; }
+                .face-name-input { width: 70px; font-size: 12px; padding: 2px 4px; border-radius: 4px; border: 1px solid #555; background: #222; color: white; text-align: center; }
                 .face-remove-btn { position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; border: none; border-radius: 50%; background: rgba(0,0,0,0.7); color: white; cursor: pointer; }
                 .face-remove-btn:hover { background: #ff3b30; }
+                .face-unlink-btn { position: absolute; top: -6px; left: -6px; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; border: none; border-radius: 50%; background: rgba(0,0,0,0.7); color: white; cursor: pointer; }
+                .face-unlink-btn:hover { background: #ff9500; }
+                .merge-prompt-faces { display: flex; align-items: center; justify-content: center; gap: 16px; margin: 16px 0; }
+                .merge-prompt-faces img { width: 80px; height: 80px; border-radius: 8px; object-fit: cover; }
+                .merge-prompt-faces span { font-size: 24px; color: var(--text-secondary); }
             `}</style>
             <div className="lightbox-container" onClick={e => e.stopPropagation()}>
                 <div className="lightbox-content" style={{position: 'relative'}}>
@@ -561,7 +651,37 @@ export default function Lightbox({
                                     {faces.map((face, index) => (
                                         <div key={face.id || index} className="face-item">
                                             {face.image && <img src={face.image} alt={face.personName || messages["faceLabel"](index)} className="face-thumbnail" />}
-                                            <label>{face.personName || messages["faceLabel"](index)}</label>
+                                            {editingFaceId === face.id ? (
+                                                <input
+                                                    type="text"
+                                                    className="face-name-input"
+                                                    value={editingFaceName}
+                                                    onChange={(e) => setEditingFaceName(e.target.value)}
+                                                    onBlur={() => handleFaceNameSubmit(face)}
+                                                    onKeyDown={(e) => {
+                                                        if (e.key === 'Enter') handleFaceNameSubmit(face);
+                                                        else if (e.key === 'Escape') setEditingFaceId(null);
+                                                    }}
+                                                    autoFocus
+                                                />
+                                            ) : (
+                                                <label
+                                                    title={messages["editFaceName"]}
+                                                    onClick={() => { setEditingFaceId(face.id); setEditingFaceName(face.personName || ''); }}
+                                                >
+                                                    {face.personName || messages["faceLabel"](index)}
+                                                </label>
+                                            )}
+                                            {face.id && face.personName && (
+                                                <button
+                                                    type="button"
+                                                    className="face-unlink-btn"
+                                                    title={messages["unlinkFaceFromPerson"]}
+                                                    onClick={() => handleUnlinkFacePerson(face.id)}
+                                                >
+                                                    <Unlink2 size={12}/>
+                                                </button>
+                                            )}
                                             {face.id && (
                                                 <button
                                                     type="button"
@@ -582,5 +702,28 @@ export default function Lightbox({
                 </div>
             </div>
         </div>
+        {mergePrompt && (
+            <div className="modal-overlay" onClick={() => setMergePrompt(null)}>
+                <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+                    <h2>{messages["mergeFaceIntoPersonTitle"]}</h2>
+                    <p>{messages["mergeFaceIntoPersonPrompt"](mergePrompt.existingPerson.name)}</p>
+                    <div className="merge-prompt-faces">
+                        <img src={mergePrompt.existingPerson.coverPhoto?.image} alt={mergePrompt.existingPerson.name} />
+                        <span>+</span>
+                        <img src={faces.find(f => f.id === mergePrompt.faceId)?.image} alt={mergePrompt.name} />
+                    </div>
+                    <div className="modal-actions">
+                        <button className="btn" onClick={() => setMergePrompt(null)}>{messages["cancel"]}</button>
+                        <button
+                            className="btn btn-primary"
+                            onClick={() => submitFacePerson(mergePrompt.faceId, mergePrompt.name, true)}
+                        >
+                            {messages["confirmMergeButton"]}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
+        </>
     );
 }

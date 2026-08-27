@@ -1114,28 +1114,247 @@ new work is identified or completed, so nothing gets lost between sessions.
       verified against the live app from this shell (backend running via IntelliJ, frontend build
       currently blocked by the separate pom.xml phase-ordering issue reported earlier this
       session) — worth a real click-through once that's resolved.
+- [x] **Feature + bug fixes**: completed and fixed the share-link feature (it was already
+      partially implemented, but several core paths were actually broken end-to-end, not just
+      unverified — see specification.md §4.4 for the full current design).
+      - **Address scheme changed**: `/share/{name}` → `/share/{userMd5}/{name}`, where `userMd5`
+        is `md5(user.id)` (`ShareService.computeUserMd5`), computed once and stored on the new
+        `ShareEntity.userMd5` column. Disambiguates two different users each naming a share
+        `vacation-2024` without exposing either user's real UUID in the URL. Opening a specific
+        photo: `/share/{userMd5}/{name}/p/{photoId}`.
+      - **Real bugs found and fixed** (these 500'd or silently failed before, not just "unverified"
+        as previously flagged here):
+        - `ShareAlbumFilter` (now `ShareAccessFilter`) extracted the wrong URI segment as the
+          album id (an off-by-one in `uri.split("/")`) and called an `@MainSpaceLimited`
+          `shareRepository.findById` — which throws for a guest session (no matching `UserEntity`
+          to filter by), so any request through it 500'd for real anonymous guests.
+        - `ShareService.getShareDetailsById`/`getSharePassword` (used by the password-login
+          endpoint) had the same `@MainSpaceLimited` problem — the password-protected login flow
+          itself 500'd for anonymous callers.
+        - The non-password-protected flow never established any session at all, so every
+          subsequent photo/album fetch was unauthenticated and would have been rejected — this was
+          previously flagged here as "needs backend verification"; it was actually broken, not
+          just unverified.
+        - Frontend/backend key mismatch: `ShareLinkPage.jsx` read `data.selectedAlbumIds`, but the
+          backend only ever sent `albumIds`/`albumId` — the non-protected redirect could never
+          have worked.
+        - Share expiry (`availableUntil`) was computed but never actually checked by the
+          controller — an expired link behaved identically to a valid one.
+      - **New authorization boundary**: `ShareAccessFilter` now correctly confirms, for every
+        `/api/albums/share/**` and `/api/photos/{id}/**` request made under a guest's `ROLE_SHARE`
+        session, that the requested album (or the album a requested photo belongs to) matches the
+        share the guest actually authenticated against — otherwise 403. Before this, `ROLE_SHARE`
+        satisfied Spring Security's blanket `anyRequest().authenticated()` with no further check,
+        so (bugs above aside) a guest could in principle reach any album/photo by UUID.
+      - **Guest lookups deliberately bypass the space filter** without touching
+        `MainSpaceAspectConfiguration` (left alone, as elsewhere in this codebase): added
+        `ShareRepository.findByIdIgnoringSpace`/`findByUserMd5AndName`,
+        `AlbumRepository.findByIdIgnoringSpace`, and `AlbumService.getAlbumPhotosForShare`/
+        `getAlbumPhotoForShare`, kept deliberately separate from the still-`@MainSpaceLimited`
+        `getAlbumPhotos`/`getAlbum` the authenticated album-detail view uses — reusing the
+        filtered versions for guests would 500 them; reusing the unfiltered versions for real
+        users would remove their space isolation.
+      - **Session-clobbering guard**: if the browser already has a real logged-in session (e.g.
+        the owner previewing their own link in the same tab), `ShareController` now skips
+        establishing a `ROLE_SHARE` session instead of silently replacing the real login
+        (`isGuestOrAnonymous` check) — an issue that would otherwise have logged owners out of
+        their own account just by visiting their own share link.
+      - **New backend capability**: password removal — `PUT /api/share/{id}` with `{ "password":
+        null }` (`ShareService.updateSharePassword`), ownership-checked the same way
+        `deleteShare`/`getShareById` already are.
+      - **New frontend**: `SharedAlbumView.jsx` replaces `ShareLinkPage.jsx`/`ShareLoginPage.jsx`
+        (deleted) — one component handling both the album-grid and single-photo routes,
+        deliberately self-contained (never touches `isAuthenticated`/`useAuth.js` or
+        `/albums/:albumId`, unlike the old design). Reuses `PhotoGrid.jsx` read-only for the grid;
+        `SharedLightbox.jsx` (new, minimal — prev/next/close only, no edit controls) for the
+        single-photo view. `/share-links` (previously a placeholder) is now
+        `ShareLinksManagement.jsx` + `hooks/useMyShares.js` — lists owned shares with their full
+        URL, a "Remove Password" action, and delete.
+      Verified via `javac` compilation (whole backend, clean) and the full frontend test suite
+      (78/78 pass, unaffected by this change). Not verified against the live app from this shell
+      (no `mvn`/running backend available here) — worth a real click-through: create a link, open
+      it in a private window, try the password flow, try removing the password, try deleting it.
+- [x] **Follow-up fixes to the share-link feature above**, reported after the fact from a live
+      click-through:
+      - **Bug fix**: `hooks/useMenuSelection.js` was still POSTing to `/api/photos/selected` on
+        every `/share/**` navigation — pointless (guests have no header/menu at all, see
+        `SharedAlbumView.jsx`) and actively broken (that endpoint requires a real authenticated
+        user; a guest's `ROLE_SHARE` session makes it 500). Now returns early for any path
+        starting with `/share`.
+      - **Bug fix (the actually-reported one)**: `hooks/usePhotoData.js`'s `loadPhotos` didn't
+        recognize `/share/**` paths either, so it fell through to the default `'library'` branch
+        and fetched `/api/photos?page=0&size=20&sort=dateTaken,desc` — same problem as above,
+        another authenticated-only endpoint hit uselessly (and failing) for guests, on every
+        share-view navigation. Now returns early for `/share/**` the same way; share views fetch
+        their own photos via `hooks/useSharedAlbumPhotos.js` against a separate, guest-scoped
+        endpoint, so this hook has nothing to do there. Added a regression test
+        (`usePhotoData.test.js`: "does not fetch anything for a /share/** path").
+      - **UX fix, `CreateShareLinkModal.jsx`**: the "Available for (days)" field only had a
+        placeholder, which disappears the moment you type a number — leaving the field's unit
+        completely unlabeled. Added a persistent label. While in the file (previously the only
+        modal with zero `useLocale` usage), localized it and pre-fill the link name field with a
+        slugified version of the album name (only when empty, so it never overwrites a manual
+        edit) so users usually don't have to type one at all.
+      Verified via the full frontend test suite (79/79 pass) and a production build.
+- [x] **Bug fix (reported live, with the stack trace)**: `org.springframework.dao.
+      InvalidDataAccessApiUsageException: detached entity passed to persist:
+      org.iphoto.entities.PersonEntity`, thrown from `PersonRecognitionService.updatePerson`
+      (`personRepository.save(person)`). Root cause: `PersonEntity` extends `BaseEntity`, which
+      implements `Persistable<UUID>` via a transient `isNew` flag (defaults `true`) — every other
+      `BaseEntity` subclass (`ShareEntity`, `AlbumEntity`, `SpaceEntity`) flips it to `false` via
+      matching `@PrePersist`/`@PostLoad` callbacks, but `PersonEntity` never did. So `isNew()`
+      returned `true` forever, even for a person freshly loaded from the DB — meaning
+      `personRepository.save()` always called `persist()` instead of `merge()`. That's harmless
+      for a genuinely new person (`PersonRecognitionService.addPerson`, the only construction
+      site), but breaks the moment an *existing* person gets saved from a different transaction
+      than the one that loaded it — exactly `updatePerson`'s situation, since
+      `PersonRecognitionService` is class-level `@Transactional(REQUIRES_NEW)`. Fixed by adding the
+      same two callbacks (`@PrePersist`/`@PostLoad` setting `isNew = false`) already present on
+      every sibling entity. Verified via `javac` compilation (whole backend, clean); not verified
+      against the live app from this shell (no `mvn`/running backend available here) — worth
+      confirming the actual flow that hit this (a face getting matched to an existing person via
+      `FaceRecognitionService`) no longer throws.
+- [x] **Feature**: rename/map a face's person from the Lightbox, merge persons, unlink a face from
+      its person, and the exclusion mechanism that makes unlinking stick. See specification.md
+      §4.3 (Persons View) for full design detail; summary of the moving parts:
+      - **`FaceService.setFacePerson`** (`PUT /api/faces/{id}/person`, `{ name, confirmMerge }`) —
+        the Lightbox's face label is now clickable/editable. No collision with a *different*
+        person: renames the face's current person outright (all their faces relabel — a typo
+        fix), or creates a brand-new person if the face had none yet. Collision with a different
+        person: returns `409` with that person's `PersonDTO` instead of applying anything;
+        `Lightbox.jsx` shows a `mergePrompt` popup (existing person's cover face next to this
+        face's own thumbnail) and resubmits with `confirmMerge: true` if confirmed, which moves
+        *only this one face* — this was explicitly corrected mid-conversation: the user's first
+        answer said a full-person merge, then corrected it to "only this face links to the new
+        person; only a persons-merge moves all faces."
+      - **`FaceService.unlinkFaceFromPerson`** (`DELETE /api/faces/{id}/person`) — new `Unlink2`
+        button next to a face's name in the Lightbox (shown only when it has one), clears just
+        that face's person while keeping the `FaceEntity` itself. Narrower than the pre-existing
+        `unlinkPersonFromPhoto` (unlinks every face tying one person to one photo).
+      - **`PersonRecognitionService.mergePersons`** (`POST /api/faces/persons/merge`, `{
+        personIds: [id1, id2] }`) — `/persons` grid gained a `.check-circle` selection overlay per
+        person and a merge action bar. Direction is not caller-chosen: the person with fewer faces
+        always merges into the one with more (ties arbitrary), keeping the target's name/cover
+        face; the emptied source is deleted.
+      - **`FaceLinkExclusionEntity`** (new `face_link_exclusions` table) — the piece that makes
+        unlinking actually stick. Every detach path (both unlink actions above, and the
+        "move only this face" branch of a collision-merge) records a `(face, excludedPerson)` row.
+        `FaceRecognitionService.groupFacesForUser` now loads exclusions for the current batch of
+        ungrouped faces once per run and filters each face's candidate person list before
+        matching — so the ~30s automatic re-grouping pass can never silently reattach a face to a
+        person the user explicitly removed it from, while the face stays free to match a
+        *different* person or seed a brand-new one. Deliberately *not* recorded for
+        `mergePersons` — merging is "these are the same person," not a correction, so future
+        auto-matching against the target should freely include the moved faces.
+      - Shared plumbing: `FaceService`'s private `detachFaceFromPerson`/`attachFaceToPerson`
+        helpers centralize exclusion bookkeeping + cover-face recalculation so all four call sites
+        (rename-collision, unlink-face, unlink-person-from-photo, and the new-person-creation
+        branch of setFacePerson) stay consistent; `PersonRepository.findByNameIgnoreCase` (new,
+        `@MainSpaceLimited`) backs the collision check.
+      Verified via `javac` compilation (whole backend, clean) and the full frontend test suite
+      (79/79 pass, unaffected) plus a production build. Not verified against the live app from
+      this shell (no `mvn`/running backend available here) — worth a real click-through: rename a
+      face to a new name, rename one to a name that collides and confirm the merge popup actually
+      moves just that face, unlink a face and confirm the next face-recognition pass doesn't
+      immediately reattach it to the same person, and merge two people from `/persons`.
+- [x] **Bug fix (reported live)**: renaming/unlinking a face's person from the Lightbox while
+      viewing a person's photo grid (`PersonDetail.jsx`) didn't refresh that grid — navigating back
+      to the person page still showed the stale photo list (e.g. a photo that no longer matched
+      the person, since its only face was just reassigned elsewhere, kept showing). Root cause:
+      `Lightbox.jsx` had no way to trigger the app-level `refreshAndMaintainScroll` (the same
+      function `handleUpdateDate`/`handleEditPhoto` already call, and that `PersonDetail.jsx`'s
+      pre-existing per-photo unlink button already used) — it simply wasn't threaded through
+      `LightboxWrapper.jsx` as a prop. Fixed by adding `refreshAndMaintainScroll` to `App.jsx`'s
+      `<LightboxWrapper>` call, forwarding it through `LightboxWrapper.jsx` to `<Lightbox>`, and
+      calling it after `submitFacePerson`, `handleUnlinkFacePerson`, and (for the same reason)
+      `handleRemoveFace` all succeed. Verified via the full frontend test suite (79/79 pass,
+      unaffected) and a production build; not verified against the live app from this shell.
+- [x] **UI polish, `PersonStrip.jsx`**: two requested changes to the person strip shown above
+      `PersonDetail.jsx`'s photo grid:
+      - ~~Only named people are listed now~~ — first attempt filtered unnamed people out of the
+        strip entirely; corrected right after (reported live: "faces don't show anymore... only
+        named face is showing"). The actual rule is narrower: show every person, same as before,
+        just render no `<span>` label under an unnamed one instead of the old "Who is this?"
+        placeholder text — `person.name && <span>{person.name}</span>}`. `alt`/`aria-label` still
+        fall back to `unknownPerson` for accessibility even though nothing renders visually.
+      - Made the strip `position: sticky` (same `top`/z-index convention `.day-header` already
+        uses relative to `.header`) so it stays visible while the grid underneath scrolls, instead
+        of scrolling away with it. This meant `.day-header` (shared by every `PhotoGrid.jsx`
+        consumer) would otherwise stick at the exact same offset the strip now occupies and render
+        hidden behind it for as long as that day group is on screen — fixed with a `:has()`-scoped
+        override (`.content-body:has(> .person-strip) .day-header`) that only pushes the day
+        header down by the strip's own height when a person-strip actually precedes it, verified
+        pixel-accurate (no gap/overlap) against a reproduction using the real compiled CSS.
+      Verified via the full frontend test suite (79/79 pass) and a production build; the sticky
+      positioning/offset math specifically was verified with a Playwright reproduction against the
+      real built CSS (screenshotted + measured `getBoundingClientRect()`), not the live app itself.
+- [x] **Bug fix (reported live, with the stack trace)**: `org.hibernate.PropertyValueException`-
+      style `... persistent instance references an unsaved transient instance of
+      'org.iphoto.entities.PersonEntity' (save the transient instance before flushing)`, thrown
+      from `FaceService.attachFaceToPerson` (called by `setFacePerson`'s "no collision, face had
+      no person yet" branch — naming a previously-unassigned face creates a brand-new person).
+      Same family of issue as the earlier `TransientObjectException` in
+      `PersonRecognitionService.addPerson`, but a different trigger: `attachFaceToPerson` sets
+      `face.person = newPerson` (still transient at that point) and then calls
+      `faceLinkExclusionRepository.deleteByFaceIdAndExcludedPersonId` — a `@Modifying` bulk-delete
+      query, which forces Hibernate to auto-flush the session *before* running it. The explicit
+      `personRepository.saveAndFlush(newPerson)` `setFacePerson` already had ran too late — *after*
+      `attachFaceToPerson` returned, by which point the auto-flush from the delete query had
+      already fired with `face.person` pointing at a transient entity. Fixed by moving the
+      `saveAndFlush` to *before* `attachFaceToPerson` is called, so `face.person` only ever gets
+      pointed at an already-persisted `PersonEntity`. Verified via `javac` compilation (whole
+      backend, clean) and the full frontend test suite (79/79 pass, unaffected — backend-only
+      change); not verified against the live app from this shell — worth confirming the exact flow
+      that hit this (naming a previously-unnamed face in the Lightbox) no longer throws.
+- [x] **Security fix**: `GET /api/faces/photo/{id}` (`FaceController.getFacesForPhoto` →
+      `FaceService.getFacesForPhoto` → `FaceRepository.findByPhotoId`) was not scoped to the
+      current user's space at all — any authenticated user could fetch face thumbnails (including
+      the base64-encoded crop images) for *any* photo id in the system, not just their own.
+      Confirmed live: an `admin` session got a 404 on `/api/photos/{id}` for a photo it didn't own
+      but a 200 with real face data on `/api/faces/photo/{id}` for the same id. Root cause:
+      `FaceEntity` has no `space_id` column (it belongs to a `PhotoEntity`, which has one), so it
+      can't be `@MainSpaceLimited` the way `AlbumRepository`/`PhotoRepository`'s space-scoped
+      methods are — ownership has to be checked explicitly. The controller already fetched
+      `currentUser` (apparently intending to use it) but never actually passed it anywhere, so
+      nothing enforced it. Fixed by threading the user through to the service and checking
+      `photo.getSpace().getUser().getId().equals(user.getId())` before returning anything — same
+      pattern `PhotoController.getPhoto` already uses for the identical problem.
+- [x] **Bug fix**: deleting a share link deleted its album too. `ShareEntity.album` was mapped
+      `@ManyToOne(cascade = CascadeType.REMOVE)` — backwards: that cascades entity removal *from*
+      the share *onto* the album whenever the share is deleted, so `ShareService.deleteShare`
+      (just a plain `shareRepository.delete(share)`, nothing album-specific in it) took the album
+      down with it, including if other shares still pointed at it or the user just wanted to stop
+      sharing without losing the album. The already-present `@OnDelete(action =
+      OnDeleteAction.CASCADE)` (DB-level `ON DELETE CASCADE` on the FK) is the *correct* direction
+      — if the album is deleted, this now-dangling share row should go — and was left as-is; only
+      the JPA `cascade = CascadeType.REMOVE` attribute was removed.
+      Verified via `javac` compilation (whole backend, clean) and the full frontend test suite
+      (79/79 pass, unaffected — both backend-only changes); not verified against the live app from
+      this shell.
 
 ## Open / Not Yet Done
 
-- [ ] **Feature**: rename a person directly from the Lightbox's "Faces Detected" section, not just
-      from the `/persons` grid. The face thumbnail already shows the linked person's name there
-      (see the "Named face labels" entry above); this would let editing happen in place instead of
-      requiring a trip back to `/persons`. Needs: a click/edit affordance on the face label (mirror
-      `Persons.jsx`'s `editingId`/inline-`<input>` pattern), and `PUT /api/faces/person/{id}`
-      already exists and is reusable as-is — this is purely a frontend UI addition, no new backend
-      needed. Watch for: a face with no linked person yet (nothing to rename), and updating the
-      local `faces` state after a successful rename so the label reflects the new name immediately
-      without a full re-fetch.
-- [ ] **Feature**: merge two persons into one — for when face recognition/clustering splits the
-      same real person into multiple `PersonEntity` rows (a known possibility per the
-      age-invariant clustering redesign's own limitations, and plain human/matching error).
-      Needs: a way to pick a "source" and "target" person (from `/persons` grid selection, or from
-      the person-strip/detail page), a backend endpoint that reassigns every `FaceEntity` from
-      source → target (`person_id` FK update) and deletes the now-empty source `PersonEntity`,
-      recalculating the target's `coverFace` afterward (`PersonRecognitionService
-      .recalculateCoverFace`, already `void`/package-private and reusable). Consider: what happens
-      to the source person's `name` if only the target has one (or both do and they conflict) —
-      probably keep the target's name, but worth confirming with the user rather than assuming.
+- [ ] **Feature**: when a photo has duplicates (the "×N similar" badge in `PhotoGrid.jsx`,
+      `renderDisplayItem`), clicking it currently expands the cluster inline
+      (`toggleGroupExpanded`/`expandedGroups`), pushing the rest of the day's grid down. Better UX:
+      open the duplicate set in its own popup/modal instead of extending the library grid in place.
+      Needs: a new modal component (mirrors the existing `modal-overlay`/`modal-content` pattern
+      used elsewhere) showing just that cluster's members (`item.members`), reusing
+      `renderPhotoCard`-style rendering and the existing per-member "move to garbage" button
+      (`handleMoveToGarbage`); `expandedGroups` state and the inline expand/collapse row
+      (`duplicate-cluster`/`duplicate-cluster-header`) would go away in favor of the modal's
+      open/close state. Watch for: this is a different surface from the dedicated `/duplicates`
+      comparison flow (`DuplicatePhotoGrid.jsx`) — this badge/cluster appears wherever `PhotoGrid`
+      is used (library/album/space/person/shared views) and shows already-known duplicate photos
+      side by side, not the deduplication *decision* workflow; keep the two conceptually separate.
+- [x] ~~**Feature**: rename a person directly from the Lightbox's "Faces Detected" section~~ and
+      ~~**Feature**: merge two persons into one~~ — both done, see the detailed "Done" entry below
+      ("Rename/map a face's person from the Lightbox, merge persons, unlink a face from its
+      person, and the exclusion mechanism that makes unlinking stick"). Turned out richer than
+      either original note anticipated: renaming a face now distinguishes a plain rename from a
+      name-collision merge (with a confirmation popup), and the merge direction question ("what
+      happens to the source's name") was resolved by the user as "whichever person has fewer faces
+      merges into the one with more, unconditionally" rather than a manual source/target pick.
 
 - [ ] More regression tests worth adding, deliberately left out of the initial batch to keep
       it focused on what was quick to do well rather than rushed:
@@ -1168,8 +1387,9 @@ new work is identified or completed, so nothing gets lost between sessions.
       the value is never read — dead state, possibly leftover from a removed feature; worth
       checking git history before just deleting it). The unused `Users` import noted alongside
       this earlier has since been removed as part of the crop-editor migration above.
-- [ ] **Cosmetic, `CreateShareLinkModal.jsx`**: 2 `react/no-unescaped-entities` errors — literal
-      `"` characters in JSX text around line 24, should use `&quot;`/`&rdquo;` or similar.
+- [x] **Cosmetic, `CreateShareLinkModal.jsx`**: 2 `react/no-unescaped-entities` errors — literal
+      `"` characters in JSX text around line 24. Fixed (`&quot;`) while doing the share-link
+      rewrite below, since it was a one-line change in a file already being touched.
 - [ ] **Possible stale-closure bugs** (`react-hooks/exhaustive-deps` warnings, not yet
       investigated/fixed):
       - `hooks/useMenuSelection.js:55` — `useCallback` missing `setPhotoSelection` dependency.
@@ -1182,18 +1402,14 @@ new work is identified or completed, so nothing gets lost between sessions.
       Each needs individual judgment (some "missing deps" warnings are false positives if the
       omission is intentional) rather than blindly auto-fixing.
 - [ ] Minor unused vars/imports flagged by lint, not yet cleaned up: `isDuplicatesPage` in
-      `Header.jsx`, `Lock` import in `ShareLinkPage.jsx`.
+      `Header.jsx`. (`Lock` import in `ShareLinkPage.jsx` is moot — that file no longer exists,
+      see the share-link rewrite below.)
 - [ ] `LocaleContext.jsx` gets a `react-refresh/only-export-components` warning (exports both a
       component and non-component values from the same file) — cosmetic, affects Fast Refresh
       only, not correctness.
-- [ ] **Needs backend verification** (not a frontend fix): `ShareLinkPage.jsx`'s non-password-protected
-      path calls `navigate('/albums/{id}')` without ever hitting a login/session endpoint, but
-      `/albums/:albumId` only renders inside `App.jsx`'s `isAuthenticated` branch, and
-      `checkAuthStatus()` redirects any non-`/share`-prefixed path to `/login` when
-      `/api/user/me` fails. This only works if the backend grants a session/cookie for
-      unprotected share links too (the way the password-protected flow explicitly does via
-      `credentials: 'include'`). See specification.md §4.4 for full detail. Confirm with backend
-      before assuming this is fine or broken.
+- [x] ~~**Needs backend verification**: `ShareLinkPage.jsx`'s non-password-protected path...~~ —
+      confirmed genuinely broken (not just under-verified) and fixed as part of the full
+      share-link rewrite below. See specification.md §4.4 for the current design.
 
 - [ ] `App.jsx` is down to 499 lines but still wires a large number of individual props through
       to `HeaderWrapper` and route components (`selectedIds`/`selectedAlbumIds`/`selectedSpaceIds`

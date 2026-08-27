@@ -3,6 +3,8 @@ package org.iphoto.repository;
 import org.iphoto.configuration.MainSpaceLimited;
 import org.iphoto.entities.AlbumEntity;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 
@@ -27,4 +29,11 @@ public interface AlbumRepository extends JpaRepository<AlbumEntity, UUID> {
 
     @MainSpaceLimited
     Optional<AlbumEntity> findById(UUID id);
+
+    // Public/guest-facing lookup for the share flow — must NOT be @MainSpaceLimited: a guest
+    // share session has no matching UserEntity, so the space-filter aspect would throw trying
+    // to resolve one. Album-level authorization for guests is enforced separately (share ->
+    // album ownership check in ShareAccessFilter/AlbumService), not by the space filter.
+    @Query("select a from AlbumEntity a where a.id = :id")
+    Optional<AlbumEntity> findByIdIgnoringSpace(@Param("id") UUID id);
 }

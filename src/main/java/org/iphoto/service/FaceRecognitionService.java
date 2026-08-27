@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.*;
+import org.iphoto.repository.FaceLinkExclusionRepository;
 import org.iphoto.repository.FaceRepository;
 import org.iphoto.repository.PersonRepository;
 import org.iphoto.repository.UserRepository;
@@ -21,6 +22,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 @Service
@@ -34,6 +36,7 @@ public class FaceRecognitionService {
     private final PersonRecognitionService personRecognitionService;
     private final UserRepository userRepository;
     private final SpaceService spaceService;
+    private final FaceLinkExclusionRepository faceLinkExclusionRepository;
     private final ReentrantLock lock = new ReentrantLock();
 
     // Threshold for Cosine Similarity: A higher value means a stricter match. Kept strict and
@@ -61,7 +64,6 @@ public class FaceRecognitionService {
     private final EntityManager entityManager;
 
     public void groupFaces() { // Added UserEntity parameter
-
         lock.lock();
 
         try {
@@ -77,14 +79,33 @@ public class FaceRecognitionService {
 
     private void groupFacesForUser(UserEntity user) {
         try {
+            log.info("starting person grouping for user {}", user.getUsername());
             List<PersonEntity> persons = personRepository.findAll();
             List<FaceEntity> ungroupedFaces = faceRepository
                     .findByPersonIsNull(Pageable.ofSize(MAX_UNGROUPED_FACES_PER_RUN))
                     .stream().toList();
 
+            // A face manually unlinked from a person (FaceService.unlinkFaceFromPerson /
+            // setFacePerson) must never be silently reattached to that SAME person by this
+            // automatic pass — that would undo the user's correction. It can still match a
+            // different person, or seed a brand-new one below. Loaded once per run, keyed by
+            // face id, instead of a query per (face, candidate person) pair.
+            Map<UUID, Set<UUID>> excludedPersonIdsByFace = faceLinkExclusionRepository
+                    .findByFaceIdIn(ungroupedFaces.stream().map(FaceEntity::getId).toList())
+                    .stream()
+                    .collect(Collectors.groupingBy(
+                            exclusion -> exclusion.getFace().getId(),
+                            Collectors.mapping(exclusion -> exclusion.getExcludedPerson().getId(), Collectors.toSet())
+                    ));
+
             List<FaceEntity> stillUnmatched = new ArrayList<>();
             for (FaceEntity face : ungroupedFaces) {
-                Optional<PersonWithScore> bestMatch = findBestMatchForFace(face, persons);
+                Set<UUID> excludedPersonIds = excludedPersonIdsByFace.getOrDefault(face.getId(), Set.of());
+                List<PersonEntity> eligiblePersons = excludedPersonIds.isEmpty()
+                        ? persons
+                        : persons.stream().filter(person -> !excludedPersonIds.contains(person.getId())).toList();
+
+                Optional<PersonWithScore> bestMatch = findBestMatchForFace(face, eligiblePersons);
                 if (bestMatch.isPresent()) {
                     personRecognitionService.updatePerson(bestMatch.get().getPerson(), face);
                 } else {
@@ -98,6 +119,7 @@ public class FaceRecognitionService {
             // rows purely because they landed in different pagination batches.
             clusterByTemporalProximity(stillUnmatched)
                     .forEach(cluster -> personRecognitionService.addPerson(user, cluster));
+            log.info("finishing person grouping for user {}", user.getUsername());
         } catch (Exception e) {
             log.error("cant process face recognition for user {}", user.getId(), e);
         }

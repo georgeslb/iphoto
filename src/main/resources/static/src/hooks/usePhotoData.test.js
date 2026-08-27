@@ -125,4 +125,18 @@ describe('usePhotoData', () => {
     await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
     expect(result.current.photos).toHaveLength(1);
   });
+
+  // Regression: navigating to a /share/** guest route used to still fall through to the
+  // default 'library' branch and fetch /api/photos?page=0&size=20&sort=dateTaken,desc — an
+  // authenticated-only endpoint that's meaningless (and fails) for a guest session. Share views
+  // fetch their own photos via useSharedAlbumPhotos against a separate endpoint, so this hook
+  // should do nothing at all on a /share/** path.
+  it('does not fetch anything for a /share/** path', async () => {
+    global.fetch = vi.fn();
+
+    renderHook(() => usePhotoData('/share/abc123/vacation', false), { wrapper: localeWrapper });
+
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
 });

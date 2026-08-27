@@ -45,7 +45,9 @@ export function useShareLinkManagement() {
         const errorData = await res.json();
         throw new Error(errorData.message || messages["failedToCreateShareLink"](res.status));
       }
-      alert(messages["shareLinkCreatedSuccess"](newShareLinkName));
+      const data = await res.json();
+      const shareUrl = `${window.location.origin}/share/${data.userMd5}/${newShareLinkName}`;
+      alert(messages["shareLinkCreatedSuccess"](newShareLinkName, shareUrl));
       setNewShareLinkName('');
       setNewShareLinkPassword('');
       setNewShareLinkExpiresInDays(7);

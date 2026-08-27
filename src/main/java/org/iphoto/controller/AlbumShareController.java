@@ -42,8 +42,22 @@ public class AlbumShareController extends AbstractBaseController {
         }
 
         try {
-            Page<Photo> photos = albumService.getAlbumPhotos(id, pageable);
+            Page<Photo> photos = albumService.getAlbumPhotosForShare(id, pageable);
             return ResponseEntity.ok(photos);
+        } catch (NoSuchElementException e) {
+            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+        }
+    }
+
+    // Backs the shared Lightbox route (/share/{md5}/{name}/p/{photoId}) — fetches a single
+    // photo, but only if it actually belongs to this album. ShareAccessFilter already checks the
+    // requested album against the guest's authenticated share; this containment check is the
+    // second half of "don't serve a photo that isn't part of the shared album."
+    @GetMapping("/{id}/photos/{photoId}")
+    public ResponseEntity<Photo> getAlbumPhoto(@PathVariable UUID id, @PathVariable UUID photoId) {
+        try {
+            Photo photo = albumService.getAlbumPhotoForShare(id, photoId);
+            return ResponseEntity.ok(photo);
         } catch (NoSuchElementException e) {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
         }

@@ -10,7 +10,10 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.NoSuchElementException;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -40,6 +43,40 @@ public class PersonRecognitionService {
         PersonEntity person = personRepository.saveAndFlush(newPerson);
         faces.forEach(faceEntity -> faceEntity.setPerson(person));
         faceRepository.saveAll(faces);
+    }
+
+    // Merges two people into one: the person with FEWER faces (the "source") has every one of its
+    // faces reassigned to the person with more faces (the "target"), then the now-empty source is
+    // deleted. Direction is decided by face count, not chosen by the caller — this is the
+    // dedicated /persons/merge flow (distinct from FaceService.setFacePerson's single-face
+    // reassignment): the whole identity collapses into whichever side already had more evidence.
+    // No FaceLinkExclusionEntity bookkeeping here — unlike an unlink, this is an explicit
+    // "these are the same person" declaration, so future auto-matching against the target should
+    // freely include these faces, exactly as if they'd always belonged to it.
+    @Transactional
+    public PersonEntity mergePersons(UUID personId1, UUID personId2) {
+        PersonEntity person1 = personRepository.findById(personId1)
+                .orElseThrow(() -> new NoSuchElementException("no person found with id " + personId1));
+        PersonEntity person2 = personRepository.findById(personId2)
+                .orElseThrow(() -> new NoSuchElementException("no person found with id " + personId2));
+
+        PersonEntity source = person1.getFaces().size() <= person2.getFaces().size() ? person1 : person2;
+        PersonEntity target = source == person1 ? person2 : person1;
+
+        List<FaceEntity> facesToMove = new ArrayList<>(source.getFaces());
+        facesToMove.forEach(face -> {
+            face.setPerson(target);
+            target.getFaces().add(face);
+        });
+        source.getFaces().clear();
+        faceRepository.saveAll(facesToMove);
+
+        recalculateCoverFace(target);
+        personRepository.save(target);
+
+        personRepository.delete(source);
+
+        return target;
     }
 
     /**

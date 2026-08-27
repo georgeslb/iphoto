@@ -41,4 +41,9 @@ public interface PhotoRepository extends JpaRepository<PhotoEntity, UUID> {
     Optional<PhotoEntity> findByFileHash(String hash);
 
     Set<PhotoEntity> findByIdIn(List<UUID> photoId);
+
+    // Used by the share/guest flow to confirm a photo actually belongs to the album a share
+    // link grants access to, before serving it (guest sessions never have space-filtering
+    // applied, so this containment check is the real authorization boundary for them).
+    Optional<PhotoEntity> findByIdAndAlbums_IdAndIsGarbageFalse(UUID id, UUID albumId);
 }

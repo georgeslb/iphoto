@@ -1,10 +1,11 @@
 package org.iphoto.entities;
 
 import jakarta.persistence.*;
-import lombok.*;
+import lombok.EqualsAndHashCode;
+import lombok.Getter;
+import lombok.Setter;
 import lombok.experimental.SuperBuilder;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -55,6 +56,26 @@ public class PersonEntity extends BaseEntity { // Extends BaseEntity
             face.setPerson(null);
         }
     }
+
+    // BaseEntity's Persistable<UUID>.isNew() reads this transient flag (default true). Every
+    // other BaseEntity subclass (ShareEntity, AlbumEntity, SpaceEntity) flips it to false via
+    // these same two callbacks — PersonEntity never did, so isNew() stayed true forever, even
+    // for a person freshly loaded from the DB. That made personRepository.save() always call
+    // persist() instead of merge(): fine for a genuinely new person, but
+    // InvalidDataAccessApiUsageException ("detached entity passed to persist") the moment an
+    // *existing* person — loaded in one transaction, re-saved in another, e.g.
+    // PersonRecognitionService.updatePerson, which is @Transactional(REQUIRES_NEW) — got saved
+    // again.
+    @PrePersist
+    private void onCreate() {
+        isNew = false;
+    }
+
+    @PostLoad
+    private void markNotNew() {
+        this.isNew = false;
+    }
+
     public PersonEntity() {
         super();
     }

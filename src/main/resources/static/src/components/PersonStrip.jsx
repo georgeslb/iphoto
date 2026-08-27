@@ -42,7 +42,9 @@ export default function PersonStrip({ selectedPersonId }) {
                 <User size={20}/>
               </div>
             )}
-            <span>{person.name || messages["whoIsThis"]}</span>
+            {/* No "Who is this?" placeholder here — an unnamed person still shows up (this strip
+                lists everyone, like before), just without a label underneath. */}
+            {person.name && <span>{person.name}</span>}
           </div>
         ))}
       </div>

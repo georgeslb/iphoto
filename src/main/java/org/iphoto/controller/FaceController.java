@@ -2,9 +2,12 @@ package org.iphoto.controller;
 
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.UserEntity;
+import org.iphoto.exception.PersonNameCollisionException;
 import org.iphoto.model.FaceDTO;
 import org.iphoto.model.PersonDTO;
 import org.iphoto.model.Photo;
+import org.iphoto.model.request.FaceRenameRequest;
+import org.iphoto.model.request.PersonMergeRequest;
 import org.iphoto.repository.UserRepository;
 import org.iphoto.service.FaceService;
 import org.springframework.data.domain.Page;
@@ -35,7 +38,11 @@ public class FaceController extends AbstractBaseController {
     @GetMapping("/photo/{id}")
     public ResponseEntity<List<FaceDTO>> getFacesForPhoto(@PathVariable String id) {
         UserEntity currentUser = getCurrentUser();
-        return ResponseEntity.ok(faceService.getFacesForPhoto(UUID.fromString(id)));
+        try {
+            return ResponseEntity.ok(faceService.getFacesForPhoto(currentUser, UUID.fromString(id)));
+        } catch (NoSuchElementException e) {
+            return ResponseEntity.notFound().build();
+        }
     }
 
     @DeleteMapping("/{id}")
@@ -92,6 +99,53 @@ public class FaceController extends AbstractBaseController {
             return ResponseEntity.noContent().build();
         } catch (NoSuchElementException e) {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+        }
+    }
+
+    // Sets/renames which person a single face maps to (Lightbox "Faces Detected" rename). On a
+    // name collision with a DIFFERENT person, returns 409 with that person's info (cover face
+    // included) instead of applying anything — the frontend prompts to merge, then retries with
+    // confirmMerge: true.
+    @PutMapping("/{id}/person")
+    public ResponseEntity<?> setFacePerson(@PathVariable UUID id, @RequestBody FaceRenameRequest request) {
+        try {
+            return ResponseEntity.ok(faceService.setFacePerson(id, request.name(), request.confirmMerge()));
+        } catch (PersonNameCollisionException e) {
+            try {
+                return ResponseEntity.status(HttpStatus.CONFLICT).body(faceService.getPerson(e.getExistingPersonId()));
+            } catch (NoSuchElementException notFound) {
+                return ResponseEntity.status(HttpStatus.CONFLICT).build();
+            }
+        } catch (NoSuchElementException e) {
+            return ResponseEntity.notFound().build();
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().build();
+        }
+    }
+
+    // Unlinks a single face from its person, keeping the face/detection itself — for correcting
+    // one misattributed photo without deleting the face entirely (see FaceService.deleteFace for
+    // that separate, full-deletion action).
+    @DeleteMapping("/{id}/person")
+    public ResponseEntity<Void> unlinkFaceFromPerson(@PathVariable UUID id) {
+        try {
+            faceService.unlinkFaceFromPerson(id);
+            return ResponseEntity.noContent().build();
+        } catch (NoSuchElementException e) {
+            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+        }
+    }
+
+    // Merges two people from the Persons page — the person with fewer faces is folded into the
+    // one with more (see PersonRecognitionService.mergePersons); direction isn't caller-chosen.
+    @PostMapping("/persons/merge")
+    public ResponseEntity<PersonDTO> mergePersons(@RequestBody PersonMergeRequest request) {
+        try {
+            return ResponseEntity.ok(faceService.mergePersons(request.personIds()));
+        } catch (NoSuchElementException e) {
+            return ResponseEntity.notFound().build();
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().build();
         }
     }
 }

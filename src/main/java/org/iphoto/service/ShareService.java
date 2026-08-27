@@ -11,8 +11,10 @@ import org.iphoto.repository.ShareRepository;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.DigestUtils;
 import org.springframework.util.StringUtils;
 
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -39,6 +41,7 @@ public class ShareService {
                 .map(album -> {
                     ShareEntity share =
                             ShareEntity.builder().space(spaceService.getDefaultSpaceForUser(user)).name(request.name())
+                            .userMd5(computeUserMd5(user.getId()))
                             .availableUntil(request.daysAvailable() > 0 ? LocalDateTime.now().plusDays(request.daysAvailable()) : null)
                             .album(album)
                             .paswword(encryptPassword(request.password())).build();
@@ -48,6 +51,10 @@ public class ShareService {
                 .orElseThrow(() -> new IllegalArgumentException("Album does not exist or does not belong to the user."));
     }
 
+    public static String computeUserMd5(UUID userId) {
+        return DigestUtils.md5DigestAsHex(userId.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
     private String encryptPassword (String password) {
         if (!StringUtils.hasText(password)) {
             return null; // No password provided, so no encryption needed
@@ -55,10 +62,10 @@ public class ShareService {
         return passwordEncoder.encode(password); // Encrypt the provided password
     }
 
-    public ShareResponse getShareDetails(UUID albumId, String name) {
-        // This method is intended for public access to a share link, so it does not filter by user.
-        // The share link itself must be unique globally by name.
-        ShareEntity shareEntity = shareRepository.findByAlbumIdAndName(albumId, name) // Assuming findByName still exists for public shares
+    // This method is intended for public/guest access to a share link, so it does not filter by
+    // user — the guest resolves which user's share this is via userMd5, not via a login session.
+    public ShareResponse getShareDetails(String userMd5, String name) {
+        ShareEntity shareEntity = shareRepository.findByUserMd5AndName(userMd5, name)
                 .orElseThrow(() -> new NoSuchElementException("Share link not found."));
 
         return buildShareResponse(shareEntity);
@@ -68,20 +75,21 @@ public class ShareService {
         // Check for password protection
         boolean isPasswordProtected = StringUtils.hasText(shareEntity.getPaswword());
         boolean isExpired = shareEntity.getAvailableUntil() != null && shareEntity.getAvailableUntil().isBefore(LocalDateTime.now());
-        return new ShareResponse(shareEntity.getId().toString(), shareEntity.getName(), shareEntity.getAlbum().getId(), isPasswordProtected, isExpired);
+        return new ShareResponse(shareEntity.getId().toString(), shareEntity.getName(), shareEntity.getAlbum().getId(), isPasswordProtected, isExpired, shareEntity.getUserMd5());
     }
 
+    // This method is intended for public/guest access to a share link (password verification),
+    // so it does not filter by user/space — a guest session has no matching UserEntity.
     public ShareResponse getShareDetailsById(String shareId) {
-        // This method is intended for public access to a share link, so it does not filter by user.
-        ShareEntity shareEntity = shareRepository.findById(UUID.fromString(shareId))
+        ShareEntity shareEntity = shareRepository.findByIdIgnoringSpace(UUID.fromString(shareId))
                 .orElseThrow(() -> new NoSuchElementException("Share link not found."));
 
         return buildShareResponse(shareEntity);
     }
 
+    // Same public/guest access note as above.
     public String getSharePassword(String shareId) {
-        // This method is intended for public access to a share link, so it does not filter by user.
-        ShareEntity shareEntity = shareRepository.findById(UUID.fromString(shareId))
+        ShareEntity shareEntity = shareRepository.findByIdIgnoringSpace(UUID.fromString(shareId))
                 .orElseThrow(() -> new NoSuchElementException("Share link not found."));
 
         return shareEntity.getPaswword();
@@ -105,5 +113,15 @@ public class ShareService {
         ShareEntity share = shareRepository.findById(id)
                 .orElseThrow(() -> new NoSuchElementException("Share link not found or does not belong to the user."));
         shareRepository.delete(share);
+    }
+
+    // findById here is @MainSpaceLimited, so this only ever finds/updates a share owned by the
+    // current user — the same ownership guarantee deleteShare/getShareById already rely on.
+    @Transactional
+    public ShareResponse updateSharePassword(UserEntity user, UUID id, String newPassword) {
+        ShareEntity share = shareRepository.findById(id)
+                .orElseThrow(() -> new NoSuchElementException("Share link not found or does not belong to the user."));
+        share.setPaswword(encryptPassword(newPassword));
+        return buildShareResponse(shareRepository.save(share));
     }
 }

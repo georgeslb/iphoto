@@ -35,7 +35,12 @@ public class ShareEntity extends BaseEntity { // Extends BaseEntity
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
-    @ManyToOne(cascade = CascadeType.REMOVE)
+    // @OnDelete (DB-level ON DELETE CASCADE on the FK) is the correct direction: if the album
+    // itself is deleted, this now-dangling share row goes with it. JPA cascade = REMOVE would be
+    // the opposite and wrong — it would delete the ALBUM whenever this SHARE is deleted (one
+    // album can have other shares pointing at it, or none at all; either way, deleting a share
+    // link must never delete the album it points to). Deliberately no `cascade` attribute here.
+    @ManyToOne
     @OnDelete(action = OnDeleteAction.CASCADE)
     AlbumEntity album;
 
@@ -45,6 +50,14 @@ public class ShareEntity extends BaseEntity { // Extends BaseEntity
     private String paswword;
 
     private LocalDateTime availableUntil;
+
+    // Deterministic md5 of the owning user's technical id, computed once at creation time.
+    // Lets a share URL (/share/{userMd5}/{name}) identify the owning user without exposing
+    // their real UUID, and lets the DB look the share up directly without recomputing md5
+    // for every user on every request.
+    // Not marked non-nullable: ddl-auto=update adds this column to the existing `shares` table
+    // without backfilling old rows, and a NOT NULL constraint would fail that migration.
+    private String userMd5;
 
     @PrePersist
     protected void onCreate() {

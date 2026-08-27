@@ -625,6 +625,14 @@ button.upload-item-name.upload-item-name-link:hover {
   font-size: 15px;
 }
 
+.modal-label {
+  display: block;
+  margin-bottom: -10px; /* offsets the flex gap so this sits close to the input it labels */
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
 .modal-input, .modal-textarea {
   width: 100%;
   padding: 12px;
@@ -794,10 +802,41 @@ button.upload-item-name.upload-item-name-link:hover {
 }
 /* Persons Page Styles */
 .person-item {
+  position: relative;
   width: 100px;
   margin: 10px;
   cursor: pointer;
   text-align: center;
+}
+
+.person-select-overlay {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 5;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.person-item:hover .person-select-overlay,
+.person-item.selected .person-select-overlay {
+  opacity: 1;
+}
+
+.person-merge-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 20px 16px;
+  padding: 12px 16px;
+  background: #f0f0f5;
+  border-radius: 10px;
+}
+
+.person-merge-bar > div {
+  display: flex;
+  gap: 8px;
 }
 
 .person-item img {
@@ -874,13 +913,28 @@ button.upload-item-name.upload-item-name-link:hover {
   box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.2);
 }
 
-/* Person Strip (horizontal, arrow-scrollable list shown above a selected person's photos) */
+/* Person Strip (horizontal, arrow-scrollable list shown above a selected person's photos).
+   Sticky right below .header (same top offset/z-index convention as .day-header) so it stays
+   visible while the photo grid underneath scrolls, instead of scrolling away with it. */
 .person-strip {
+  position: sticky;
+  top: 73px;
+  z-index: 45;
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 12px 20px;
+  background: white;
   border-bottom: 1px solid var(--border-color);
+}
+
+/* PhotoGrid.jsx's own .day-header sticks at the same top: 73px .person-strip does (they share
+   the .day-header/.header convention) — on PersonDetail.jsx, where a .person-strip sits directly
+   above PhotoGrid's content, that would stack both at the identical position and hide the day
+   header behind the (higher z-index) person strip for as long as that day group is on screen.
+   Push it down by the strip's own height (measured ~91px) only in that specific case. */
+.content-body:has(> .person-strip) .day-header {
+  top: 168px;
 }
 
 .person-strip-arrow {
@@ -997,6 +1051,14 @@ button.upload-item-name.upload-item-name-link:hover {
     top: 57px;
   }
 
+  .person-strip {
+    top: 57px;
+  }
+
+  .content-body:has(> .person-strip) .day-header {
+    top: 152px;
+  }
+
   .content-body {
     padding: 0 16px 24px 16px;
   }
@@ -1065,3 +1127,75 @@ button.upload-item-name.upload-item-name-link:hover {
     padding: 16px;
   }
 }
+
+/* Shared/guest album lightbox (SharedLightbox.jsx) — deliberately simpler than .lightbox-overlay:
+   no metadata sidebar, no edit controls, just the photo full-screen with prev/next/close. */
+.shared-lightbox-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: black;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.shared-lightbox-content {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+}
+
+.shared-lightbox-media {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.shared-lightbox-message {
+  color: #ccc;
+  font-size: 16px;
+}
+
+.shared-lightbox-close {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  color: white;
+  border-radius: 50%;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0.8;
+  transition: opacity 0.2s ease;
+}
+.shared-lightbox-close:hover { opacity: 1; }
+
+.shared-lightbox-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  color: white;
+  border-radius: 50%;
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0.8;
+  transition: opacity 0.2s ease;
+}
+.shared-lightbox-nav:hover { opacity: 1; }
+.shared-lightbox-prev { left: 20px; }
+.shared-lightbox-next { right: 20px; }
