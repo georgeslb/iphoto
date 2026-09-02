@@ -67,6 +67,10 @@ export default function Lightbox({
     // State for face detection
     const [faces, setFaces] = useState([]);
     const [showFaces, setShowFaces] = useState(false);
+    // Set while hovering one specific .face-item in the "Faces Detected" list, to narrow the
+    // on-image box display down to just that face. null means "no single face hovered" - falls
+    // back to showing every box (as long as showFaces, from the zone-level hover, is still true).
+    const [hoveredFaceId, setHoveredFaceId] = useState(null);
     const [imageSize, setImageSize] = useState({ naturalWidth: 0, naturalHeight: 0, displayWidth: 0, displayHeight: 0, offsetX: 0, offsetY: 0 });
 
     // State for editing which person a face maps to (see submitFacePerson below)
@@ -571,6 +575,7 @@ export default function Lightbox({
                         >
                             <img ref={imageRef} src={`/api/photos/${selectedPhoto.id}/original${mediaCacheParam}`} onLoad={handleImageLoad} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
                             {showFaces && faces.map((face, index) => (
+                                (hoveredFaceId === null || (face.id ?? index) === hoveredFaceId) &&
                                 <div key={index} className="face-box" style={{
                                     left: `${imageSize.offsetX + face.x * scaleX}px`,
                                     top: `${imageSize.offsetY + face.y * scaleY}px`,
@@ -644,12 +649,17 @@ export default function Lightbox({
                             <div
                                 className="extended-meta"
                                 onMouseEnter={() => setShowFaces(true)}
-                                onMouseLeave={() => setShowFaces(false)}
+                                onMouseLeave={() => { setShowFaces(false); setHoveredFaceId(null); }}
                             >
                                 <div className="meta-divider">{messages["facesDetected"]}</div>
                                 <div className="face-thumbnail-container">
                                     {faces.map((face, index) => (
-                                        <div key={face.id || index} className="face-item">
+                                        <div
+                                            key={face.id || index}
+                                            className="face-item"
+                                            onMouseEnter={() => setHoveredFaceId(face.id ?? index)}
+                                            onMouseLeave={() => setHoveredFaceId(null)}
+                                        >
                                             {face.image && <img src={face.image} alt={face.personName || messages["faceLabel"](index)} className="face-thumbnail" />}
                                             {editingFaceId === face.id ? (
                                                 <input

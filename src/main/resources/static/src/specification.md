@@ -579,6 +579,24 @@ Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
 *   `GET /api/albums/share/{albumId}/photos/{photoId}`: A single photo, only if it belongs to that album (backs the shared Lightbox).
 *   `GET /api/photos/{id}/thumbnail` / `/original` / `/stream`: Same asset endpoints real users use — guests can only reach the photo their `ShareAccessFilter`-checked album contains.
 
+### 5.7. Admin
+*   `POST /api/admin/storage/migrate-flat-files`: One-time, idempotent backfill moving any
+    pre-existing flat-stored photo/thumbnail into the `{year}/{month}` storage layout (see §6).
+    Not run automatically — an admin triggers it explicitly.
+
+### 5.8. Immich import (per-user, not admin-only — see §6)
+*   `GET /api/immich/settings`: Current user's Immich connection (`{baseUrl, connected}` — the
+    decrypted API key itself is never returned).
+*   `PUT /api/immich/settings`: Set/update the current user's Immich `baseUrl`/`apiKey`
+    (`apiKey` blank/omitted keeps the currently stored key, only updates `baseUrl`).
+*   `DELETE /api/immich/settings`: Disconnect — clears `baseUrl` and the stored API key.
+*   `POST /api/immich/sync-days` / `GET /api/immich/days`: Refresh/read the current user's Immich
+    day-index table (`{days: [...], coverage: {...}}`).
+*   `GET /api/immich/days/{day}`: Poll one day's import status (`day` = ISO `yyyy-MM-dd`).
+*   `POST /api/immich/days/{day}/import`: Trigger (or retry) that day's import.
+*   `POST /api/immich/albums/import`: Import Immich albums + album-level shared links
+    (run after day-imports — see §6).
+
 ## 6. Technical Architecture (Inferred from Code)
 
 *   **Frontend Framework:** React
@@ -618,6 +636,107 @@ Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
     individual props rather than a consolidated object — this is a known, deliberately deferred
     simplification (see `TODO.md`), since collapsing it touches the prop signature of most
     consumer components (`Header`, grids, modals).
+*   **Photo storage layout:** originals/thumbnails are stored on disk under
+    `{iphoto.storage.photos|thumbnails}/{year}/{month}/` (by `dateTaken`), not one flat directory
+    — see `service/PhotoStoragePathResolver.java`, the single owner of this convention. This is
+    safe against a later "edit photo date" because `PhotoEntity.originalPath`/`thumbnailPath` are
+    stored as full paths and always read back verbatim — nothing reconstructs a path from the
+    entity's current date, so an edited date never triggers a file move. Photos stored before this
+    layout existed are left flat indefinitely unless an admin runs the optional
+    `POST /api/admin/storage/migrate-flat-files` backfill (§5.7) — reads work identically either
+    way since paths are explicit per row, not derived from convention.
+*   **Immich migration** (per-user, one-time use per account — see `service/immich/`): each user
+    connects their own self-hosted Immich server (`/api/immich/settings`, §5.8) and can import its
+    assets/metadata/GPS/albums/album-level shared links day-by-day into their own space,
+    preserving Immich's own asset UUIDs as iphoto `Photo` ids (`PhotoEntity.id` has no
+    `@GeneratedValue`, so this is a direct assignment, same mechanism regular uploads already use
+    with a random UUID). People/faces and favorites are deliberately **not** migrated. Architecture:
+    *   **Credentials**: `UserEntity.immichBaseUrl` (plain) + `immichApiKeyEncrypted`/
+        `immichApiKeyIv` (AES-GCM ciphertext). The AES key is derived (SHA-256) from the user's own
+        `password` column — i.e. their **bcrypt hash**, not their raw password (see
+        `service/immich/ImmichCredentialCipher`) — a deliberate simplicity trade-off: it's
+        obfuscation-at-rest rather than a real password-derived secret, but it means any thread
+        that can load the `UserEntity` row (including a background `SYNC_FROM_IMMICH`/
+        `UPLOAD_FROM_IMMICH` task with no HTTP session) can decrypt without session-caching or
+        "re-enter your password"
+        plumbing. `UserService#resetPassword` re-encrypts these two columns whenever the password
+        changes (old hash → decrypt → new hash → re-encrypt), so a password change never silently
+        breaks the stored key. `ImmichClient` takes credentials as an explicit per-call parameter
+        (no shared base-url/api-key bean) since each user's server differs.
+    *   `ImmichImportDayEntity` (table `immich_import_days`, unique on `(day, user_id)`) is both
+        the per-user day-index the import page renders and the per-day progress tracker
+        (`queuedCount` = the day's total known asset count, stable across re-runs;
+        `imported/skipped/failedCount` are cumulative atomic counters, incremented from
+        concurrently-finishing tasks — see below). A day reaches a terminal `status`
+        (`COMPLETED`/`PARTIAL`/`FAILED`) once those three sum to `queuedCount`.
+    *   **Day-index sync is month-sourced, not day-sourced**: Immich's `/timeline/buckets` only
+        supports `size=MONTH` on current server versions — the `DAY` bucket size that used to
+        exist was removed server-side (confirmed against the user's own real server: requesting
+        `size=DAY` silently returns month buckets). There's no day-count-only endpoint left, so
+        `ImmichImportService.syncDayIndex` fetches every asset in each month bucket (via
+        `/search/metadata`, paginated) and groups them locally by each asset's own taken-date to
+        build real per-day rows. Heavier than a plain day-count call would be, but it's the only
+        way left to get an accurate day-by-day index — per-day *import* itself (`getAssetsForDay`)
+        was never affected, since it already used `/search/metadata` with day-boundary
+        `takenAfter`/`takenBefore` rather than a day bucket.
+    *   **Per-asset ingestion is two chained phases**, not one task, both riding the existing
+        `TaskEntity`/`TaskWorkerManager` scheduled-poller infrastructure (the only async-job
+        mechanism in the codebase): `TaskType.SYNC_FROM_IMMICH` (phase 1) fetches the asset +
+        metadata from Immich and downloads the original into `iphoto.storage.immich-temp` at a
+        deterministic `{photoId}.{ext}` path — its final `{year}/{month}` folder is deliberately
+        *not* touched yet — then queues one `TaskType.UPLOAD_FROM_IMMICH` task (phase 2) ~1 minute
+        later, carrying everything phase 2 needs (staged file path + all metadata) as one JSON
+        payload (`model/immich/ImmichPendingUploadPayload`). Phase 2 generates the thumbnail (same
+        method a normal upload uses), then commits the `PhotoEntity`/`PhotoMetadataEntity` rows in
+        their own **independently-committed transaction** (`ImmichImportService
+        .persistPhotoAndMetadata`, `PROPAGATION_REQUIRES_NEW` via an explicit `TransactionTemplate`
+        — not `@Transactional`, since that method is called from within the same class and Spring's
+        proxy-based `@Transactional` doesn't intercept such same-class calls) and only *after* that
+        commit succeeds does it move the staged file into its final folder. This ordering — DB row
+        committed before the file is ever placed at its permanent path — is deliberate: the old
+        single-phase design moved the file first, so a later DB failure left an orphaned file
+        sitting at the final path with no row, and since that `Files.move` used no
+        `REPLACE_EXISTING`, every future retry of that same asset failed identically forever
+        (`FileAlreadyExistsException`). The two-phase design can't hit that: nothing is ever moved
+        into a final path until its row is durably committed elsewhere.
+        *   **Resilience/retry**: `triggerDayImport`'s per-asset skip check no longer treats "the
+            row exists" as "fully done" — it also requires the row's `originalPath` file to
+            actually be on disk (`isFullyImported`), because phase 2 can leave a row committed
+            with its file still only staged if the move itself fails right after the commit (e.g.
+            a disk error). A retry in that state resumes via `finalizeUploadFromImmich`'s own
+            re-entry guard (row already exists → skip re-insert, just finish the move) rather than
+            re-inserting. If only phase 2 previously failed (phase 1's staged file still sits in
+            immich-temp), a retrigger re-queues phase 2 alone, reusing its failed task's own
+            payload verbatim — no need to re-hit Immich for a failure that was never Immich's
+            fault. If phase 1 itself failed, a retrigger re-queues a fresh phase 1.
+        *   **Space-lock contention as a same-process retry, not a failure**: multiple assets'
+            phase-2 tasks for the same space can finish concurrently on different virtual threads,
+            all contending on `SpaceService.lockSpace`'s per-space, non-blocking `tryLock` — one
+            losing that race throws `SpaceLockingException`. `TaskWorkerManager` now catches this
+            the same way it already catches `ServiceNotAvailableException`: reset the task to
+            `PENDING` with `executeAt=null` so the next 5-second poll retries it immediately in the
+            same process, instead of a spurious permanent `FAILED`.
+    *   Albums/shares don't have Immich's UUID as their iphoto id (both are `@GeneratedValue`), so
+        they instead get a new nullable `externalSource`/`externalId` pair (+ unique constraint,
+        still global not per-user — collision across two different users' Immich servers is
+        judged negligible, real Immich UUIDs) for idempotent find-or-create on re-import,
+        bypassing `AlbumService.createAlbum`'s/`ShareService.createShare`'s normal name-collision
+        throw. Album import must run *after* day-imports (`AlbumService.addPhotosToAlbum` requires
+        the photo to already exist in a MAIN space); the import page surfaces this ordering as a
+        hint rather than enforcing it structurally. An Immich shared link pointing at individual
+        assets (not a whole album) has no iphoto equivalent (iphoto shares are album-only) and is
+        skipped with a warning, not mis-mapped.
+    *   **Coverage check**: even with the month-sourced sync above, `/search/metadata` still keys
+        off a determinable date, so an asset with no usable date could still be missed — added
+        after the user noted Immich will be *deleted* once migration finishes. `GET
+        /api/immich/days` returns Immich's true total asset count (`/assets/statistics`) alongside
+        the sum of known day-bucket counts, and the import page shows a warning banner if they
+        don't match — meant to be resolved before deletion.
+    *   **Caveat carried over from `TODO.md`**: several Immich response shapes in
+        `model/immich/*DTO` (`exifInfo` field names, the per-day/per-month asset-listing endpoint)
+        were built from Immich's public API docs without full field-by-field live verification,
+        and are flagged in code comments accordingly — treat `ImmichClient` as the first thing to
+        check if an import behaves oddly.
 *   **Testing:** Vitest + React Testing Library (`npm test`). No CI workflow runs this
     automatically yet — it's a local-only `npm run` command for now. Test files live next to
     the code they cover (`*.test.js`/`*.test.jsx`), not in a separate `__tests__` directory.

@@ -13,7 +13,10 @@ import java.time.LocalDateTime;
 import java.util.UUID;
 
 @Entity
-@Table(name = "shares", uniqueConstraints = {@UniqueConstraint(name = "name_space_unique_shares", columnNames = { "name", "space_id"})})
+@Table(name = "shares", uniqueConstraints = {
+        @UniqueConstraint(name = "name_space_unique_shares", columnNames = { "name", "space_id"}),
+        @UniqueConstraint(name = "uk_shares_external", columnNames = { "external_source", "external_id" })
+})
 @EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true) // Changed callSuper to true
 @Getter
 @Setter
@@ -58,6 +61,15 @@ public class ShareEntity extends BaseEntity { // Extends BaseEntity
     // Not marked non-nullable: ddl-auto=update adds this column to the existing `shares` table
     // without backfilling old rows, and a NOT NULL constraint would fail that migration.
     private String userMd5;
+
+    // Same externalSource/externalId idempotency pattern as AlbumEntity - lets a re-run of the
+    // Immich album/share import find-or-create the same share instead of hitting the
+    // name-collision throw in ShareService.createShare, or creating a duplicate.
+    @Column(name = "external_source", length = 32)
+    private String externalSource;
+
+    @Column(name = "external_id", length = 128)
+    private String externalId;
 
     @PrePersist
     protected void onCreate() {

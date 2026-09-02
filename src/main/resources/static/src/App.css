@@ -527,6 +527,20 @@ button.upload-item-name.upload-item-name-link:hover {
 .status-text { font-weight: 700; text-transform: uppercase; font-size: 10px; padding-left: 4px; }
 .status-text.COMPLETED { color: #34c759; }
 .status-text.FAILED, .status-text.IGNORED, .status-text.TRASHED { color: #ff3b30; }
+/* Immich import day statuses (components/ImmichImportManagement.jsx) - reuses the same
+   .status-text convention as the upload queue above. */
+.status-text.IN_PROGRESS { color: #007aff; }
+.status-text.PARTIAL { color: #ff9500; }
+.status-text.NOT_IMPORTED { color: var(--text-secondary, #888); }
+
+.immich-coverage-banner {
+  margin: 12px 0;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+.immich-coverage-banner.ok { background: #eafaf0; color: #1a7a3d; }
+.immich-coverage-banner.warning { background: #fff4e5; color: #b4530a; }
 .upload-item-error {
   color: #ff3b30;
   font-size: 10px;

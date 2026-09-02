@@ -1,9 +1,11 @@
 package org.iphoto.controller;
 
 import org.iphoto.entities.UserEntity;
+import org.iphoto.model.StorageMigrationSummaryDTO;
 import org.iphoto.repository.UserRepository;
 import org.iphoto.service.AdminService;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -28,5 +30,12 @@ public class AdminController extends AbstractBaseController {
     public void updateImageTaskToDo() {
         UserEntity currentUser = getCurrentUser();
         adminService.updateImageTaskToDo();
+    }
+
+    // Optional one-time backfill moving pre-existing flat-stored photos/thumbnails into the
+    // year/month storage layout - see StorageMigrationService. Safe to call more than once.
+    @PostMapping("/storage/migrate-flat-files")
+    public StorageMigrationSummaryDTO migrateFlatFilesToOrganizedStorage() {
+        return adminService.migrateFlatFilesToOrganizedStorage();
     }
 }

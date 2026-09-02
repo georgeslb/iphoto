@@ -40,6 +40,7 @@ iphoto:
     thumbnails: ${iphoto.storage.base}/thumbnails
     temp: ${iphoto.storage.base}/temp
     chunks: ${iphoto.storage.base}/chunks
+    immich-temp: ${iphoto.storage.base}/immich-temp
   admin:
     username: admin
     password: admin

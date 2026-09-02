@@ -23,7 +23,6 @@ import org.iphoto.exception.NoUserFoundException;
 import org.iphoto.exception.SpaceLockingException;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.UploadStatus;
-import org.iphoto.properties.IPhotoProperties;
 import org.iphoto.repository.PhotoMetadataRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.springframework.retry.annotation.Backoff;
@@ -36,7 +35,6 @@ import org.springframework.transaction.annotation.Transactional;
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -58,7 +56,7 @@ public class PhotoUploadService {
     private PhotoRepository photoRepository;
     private PhotoMetadataRepository metadataRepository;
     private ThumbnailService thumbnailService;
-    private IPhotoProperties iPhotoProperties;
+    private PhotoStoragePathResolver photoStoragePathResolver;
     private ObjectMapper objectMapper;
     private AlbumService albumService;
     private SpaceService spaceService;
@@ -96,43 +94,44 @@ public class PhotoUploadService {
     private UploadStatus processTheAsset(TaskEntity task, Map<String, String> payload, File tempFile, String hash, SpaceEntity space) throws Exception {
         try (SpaceService.AutoClosableLock ignored = spaceService.lockSpace(space)){
             String contentType = payload.get("contentType");
-            Path storageDir = Paths.get(iPhotoProperties.getStorage().getPhotos());
-            if (!Files.exists(storageDir)) Files.createDirectories(storageDir);
-            Path finalPath = storageDir.resolve(task.getPhotoId().toString() + "." + FilenameUtils.getExtension(payload.get("originalFileName")));
-            Files.move(tempFile.toPath(), finalPath);
-            String thumbPath = thumbnailService.generateThumbnail(finalPath.toString(), task.getPhotoId().toString(), contentType);
-
 
             PhotoEntity photo = PhotoEntity.builder().id(task.getPhotoId())
                     .fileName(payload.get("originalFileName"))
-                    .originalPath(finalPath.toString())
-                    .thumbnailPath(thumbPath)
                     .fileHash(hash)
-                    .fileSize(Files.size(finalPath))
                     .contentType(contentType)
                     .user(space.getUser())
                     .space(space)
                     .build();
-            log.info ("upload photo {} in space {} ", task.getId(), space.getName());
-            entityManager.refresh(space);
-            spaceService.increaseSpacePhotoCount(space);
-
             photo.setNew(true);
 
             PhotoMetadataEntity metadataEntity = new PhotoMetadataEntity(photo);
             Map<String, String> rawMetadata = new HashMap<>();
 
+            // Metadata extraction (in particular dateTaken) runs against the temp file, BEFORE the
+            // asset is moved to its final home - the storage layout below is organized by
+            // year/month of dateTaken, so the date has to be known first.
             if (contentType != null) {
                 if (contentType.startsWith("image"))
-                    extractImageMetadata(finalPath.toFile(), photo, metadataEntity, rawMetadata);
+                    extractImageMetadata(tempFile, photo, metadataEntity, rawMetadata);
                 else if (contentType.startsWith("video"))
-                    extractVideoMetadata(finalPath.toFile(), photo, metadataEntity);
+                    extractVideoMetadata(tempFile, photo, metadataEntity);
                 else
                     throw new FileUploadException("contentType " + contentType + " is not allowed");
             } else {
                 throw new FileUploadException("contentType is empty");
             }
 
+            Path finalPath = photoStoragePathResolver.resolveOriginalPath(task.getPhotoId(), FilenameUtils.getExtension(payload.get("originalFileName")), photo.getDateTaken());
+            Files.move(tempFile.toPath(), finalPath);
+            String thumbPath = thumbnailService.generateThumbnail(finalPath.toString(), task.getPhotoId().toString(), contentType, photo.getDateTaken());
+
+            photo.setOriginalPath(finalPath.toString());
+            photo.setThumbnailPath(thumbPath);
+            photo.setFileSize(Files.size(finalPath));
+
+            log.info ("upload photo {} in space {} ", task.getId(), space.getName());
+            entityManager.refresh(space);
+            spaceService.increaseSpacePhotoCount(space);
 
             metadataEntity.setRawMetadataJson(objectMapper.writeValueAsString(rawMetadata));
 
@@ -200,6 +199,13 @@ public class PhotoUploadService {
 
 
     public LocalDateTime extractBestCreationDate(File file, PhotoEntity photo) {
+        return extractBestCreationDate(file, photo.getFileName());
+    }
+
+    // Same as extractBestCreationDate(File, PhotoEntity), for callers that don't have (or don't
+    // yet have) a PhotoEntity to hand - e.g. ImmichImportService resolving a date for an asset
+    // still mid-import. Only the filename is actually needed out of the entity.
+    public LocalDateTime extractBestCreationDate(File file, String fileName) {
 
         try {
 
@@ -217,7 +223,7 @@ public class PhotoUploadService {
 
             // 3. Filename date
             LocalDateTime filenameDate =
-                    extractDateFromFilename(photo.getFileName());
+                    extractDateFromFilename(fileName);
 
             if (filenameDate != null) {
                 return filenameDate;

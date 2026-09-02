@@ -1,11 +1,11 @@
 package org.iphoto.service;
 
+import lombok.RequiredArgsConstructor;
 import net.coobird.thumbnailator.Thumbnails;
 import org.bytedeco.javacv.FFmpegFrameGrabber;
 import org.bytedeco.javacv.Java2DFrameConverter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import javax.imageio.ImageIO;
@@ -17,20 +17,33 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.LocalDateTime;
 
 @Service
+@RequiredArgsConstructor
 public class ThumbnailService {
     private static final Logger log = LoggerFactory.getLogger(ThumbnailService.class);
 
-    @Value("${iphoto.storage.thumbnails}")
-    private String thumbnailStoragePath;
+    private final PhotoStoragePathResolver photoStoragePathResolver;
 
-    public String generateThumbnail(String originalPath, String fileId, String contentType) throws IOException {
-        Path storagePath = Paths.get(thumbnailStoragePath);
-        if (!Files.exists(storagePath)) {
-            Files.createDirectories(storagePath);
-        }
+    // Used when creating a thumbnail for a photo whose date (and therefore year/month folder) is
+    // known - the normal case for both regular uploads and Immich-imported assets.
+    public String generateThumbnail(String originalPath, String fileId, String contentType, LocalDateTime dateTaken) throws IOException {
+        return generateThumbnail(originalPath, fileId, contentType, photoStoragePathResolver.resolveThumbnailDir(dateTaken));
+    }
 
+    // Used when regenerating a thumbnail for an existing photo that was just edited in place
+    // (crop/rotate/"overwrite original") - it must land back in whichever folder the thumbnail
+    // already lives in, never move the photo just because it was edited.
+    public String regenerateThumbnailInPlace(String originalPath, String fileId, String contentType, String existingThumbnailPath) throws IOException {
+        Path dir = existingThumbnailPath != null
+                ? Paths.get(existingThumbnailPath).getParent()
+                : photoStoragePathResolver.resolveThumbnailDir(null);
+        Files.createDirectories(dir);
+        return generateThumbnail(originalPath, fileId, contentType, dir);
+    }
+
+    private String generateThumbnail(String originalPath, String fileId, String contentType, Path storagePath) throws IOException {
         String thumbnailFileName = fileId + "_thumb.jpg";
         File thumbnailFile = storagePath.resolve(thumbnailFileName).toFile();
 

@@ -23,6 +23,10 @@ public interface ShareRepository extends JpaRepository<ShareEntity, UUID> {
     @MainSpaceLimited
     Optional<ShareEntity> findById(UUID id);
 
+    // Idempotency lookup for the Immich shared-link import - see AlbumRepository's equivalent.
+    @MainSpaceLimited
+    Optional<ShareEntity> findByExternalSourceAndExternalId(String externalSource, String externalId);
+
     // Public/guest-facing lookups below must NOT be @MainSpaceLimited: a guest share session
     // has no matching UserEntity, so the space-filter aspect would throw trying to resolve one.
 

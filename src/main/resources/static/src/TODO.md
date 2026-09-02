@@ -1363,8 +1363,328 @@ new work is identified or completed, so nothing gets lost between sessions.
       restart before `TaskWorkerManager`'s ~30s face-recognition task picks up the new code and
       re-processes these faces into real `PersonEntity` rows.
 
+- [x] **Immich import moved from admin-only/env-var config to per-user, self-service** (user
+      request: "It should be actually at user level not admin level"). Also fixed a real bug the
+      user found by actually running the previous admin version against their real server: the
+      "days" table was silently showing months, not days.
+      - **Why it showed months**: confirmed against the user's real Immich server that
+        `/timeline/buckets?size=DAY` no longer works - current Immich versions only support
+        `size=MONTH` (the `DAY` bucket size was removed server-side at some point; the official
+        web client now buckets by month and derives day groupings client-side). Fixed by having
+        `ImmichImportService.syncDayIndex` fetch every asset in each month bucket (via the
+        already-used `/search/metadata`, paginated) and group them locally by each asset's own
+        taken-date to build real per-day rows. Renamed `ImmichDayBucketDTO` →
+        `ImmichTimeBucketDTO` and `ImmichClient.getDayBuckets` → `getMonthBuckets` accordingly.
+        Heavier than a plain day-count call (must pull full asset metadata for a whole month just
+        to count-by-day), but there's no day-count-only endpoint left to ask for. Per-day
+        *import* itself was unaffected - it already used `/search/metadata` with day-boundary
+        `takenAfter`/`takenBefore`, never the buckets endpoint.
+      - **Per-user credentials, encrypted with the user's own password hash** (explicit user
+        decision, not a real password-derived KDF): `UserEntity` gained `immichBaseUrl` (plain) +
+        `immichApiKeyEncrypted`/`immichApiKeyIv` (AES-GCM). New
+        `service/immich/ImmichCredentialCipher`: the AES key is `SHA-256(user.password)` - i.e.
+        the bcrypt hash already sitting in that row, not the raw password (we only ever see the
+        raw password for the instant it's submitted, and background per-asset import tasks run on
+        worker threads with no HTTP session to hold onto it). This means any thread that can load
+        the `UserEntity` row can decrypt, with no session-caching or re-auth-to-import plumbing -
+        at the honest cost of being obfuscation-at-rest rather than a real secret (DB read access
+        gets you the key and the ciphertext from the same row). `UserService#resetPassword` now
+        re-encrypts these two columns whenever a password changes (decrypt with the old hash,
+        re-encrypt with the new one) so a password reset never silently strands the stored key.
+        New endpoints `GET/PUT/DELETE /api/immich/settings` (never returns the decrypted key back
+        to the client, only `{baseUrl, connected}`).
+      - **`ImmichClient` rewritten to be stateless per-call** instead of building one
+        `RestClient` bound to a single global base-url/api-key at startup: every method now takes
+        `UserService.ImmichCredentials` (baseUrl + decrypted apiKey) as a parameter, and builds an
+        absolute per-request URI/header from it. Removed `IPhotoProperties.Immich` and
+        `iphoto.immich.*`/`IMMICH_URL`/`IMMICH_API_KEY` from `application.yml` entirely (user's
+        call: "i'll remove them. Don't need any more") - no more global fallback config.
+      - **`ImmichImportDayEntity`/`ImmichImportDayRepository`** are now scoped per user: added a
+        `user` FK (`@OnDelete(CASCADE)` so deleting a user cleans these up), unique constraint
+        moved from `(day)` to `(day, user_id)`, lookup/list methods became
+        `findByDayAndUser`/`findAllByUserOrderByDayDesc`. **Caveat**: since `ddl-auto: update`
+        can't backfill a new NOT NULL FK on existing rows, the user's previously-synced
+        (month-mislabeled) rows in a real `immich_import_days` table will likely need to be
+        cleared manually (e.g. `TRUNCATE immich_import_days;`) before restarting against this
+        version - flagged to the user, not yet confirmed done.
+      - **Routing**: `ImmichImportController` moved from `/api/admin/immich/**`
+        (`hasRole('ADMIN')`) to `/api/immich/**` (falls under `SecurityConfig`'s
+        `anyRequest().authenticated()` - any logged-in user, no role check). Every method now
+        resolves `getCurrentUser()` and threads it through instead of a hardcoded "admin" param.
+        `AlbumEntity`/`ShareEntity`'s `externalSource`/`externalId` unique constraint was left
+        global (not per-user) - two different users' Immich servers producing colliding real
+        UUIDs was judged negligible risk, not worth the extra scoping.
+      - **Frontend**: `/admin/immich` route/sidebar link (admin-only) → `/immich` (any
+        authenticated user, alongside `/share-links`). `ImmichImportManagement.jsx` gained a
+        connection-settings form (server URL + API key, "leave blank to keep current key" on the
+        key field, separate explicit Disconnect action) above the existing sync/import UI, which
+        now only renders once `settings.connected` is true. `useImmichImport.js` updated to the
+        new `/api/immich/**` paths plus `fetchSettings`/`saveSettings`/`disconnect`. New i18n keys
+        (`immichSettingsTitle`, `immichBaseUrlLabel`, `immichApiKeyLabel`, etc., en+fr).
+      - Verified: whole backend `javac` compile clean (incl. `src/test`), `npm run build` clean,
+        full Vitest suite 86/86 pass. **Not yet run against the live app or a live Immich
+        server** - same sandbox limitation as before (no `mvn`/Docker/live Immich access here);
+        the user should restart, re-sync days, and confirm real per-day counts now look right
+        before importing.
+- [x] **Bug fix**: `ImmichClient`'s `takenAfter`/`takenBefore` request params (sent to
+      `/search/metadata` by both `getAssetsForDay` and `getAssetsForMonth`) were built via
+      `LocalDateTime.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)`, which doesn't produce a
+      proper ISO 8601 datetime for two reasons: (1) it carries no timezone/offset at all - a
+      day/month boundary computed in local wall-clock time was being sent with no indication of
+      *which* timezone that time is in, even though a `timezoneOffset` parameter was already being
+      passed into both methods and silently going unused for this; (2) it drops the seconds field
+      entirely when it's zero, e.g. `"2024-01-15T00:00"` instead of `"2024-01-15T00:00:00"` (every
+      day/month boundary here starts at exactly midnight, so this fired on literally every call).
+      Fixed by adding `ImmichClient.isoInstant(LocalDateTime, timezoneOffset)`: applies the offset
+      via `ZoneOffset.of(timezoneOffset)` and formats via `Instant.toString()`, which always
+      produces a complete `yyyy-MM-ddTHH:mm:ss[.SSS]Z` string (seconds always present, unlike
+      `ISO_LOCAL_DATE_TIME`). Verified: `javac` compile clean.
+- [x] **Bug fix**: `ImmichClient`'s `/search/metadata` request body's `page` field was typed
+      `String` and started as `null` on the first page of every `searchMetadata` call - Immich
+      rejects `page` unless it's a number (not null, not a string). Changed
+      `SearchMetadataRequest.page` to `Integer`, starting the pagination loop at `1` instead of
+      `null`; the response's own `nextPage` still comes back as a string (or null when done), so
+      it's parsed back into an `Integer` (`parsePageNumber`, defensively logs+stops on anything
+      non-numeric) before being sent as the next request's `page`. Verified: `javac` compile
+      clean.
+- [x] **Immich per-asset import redesigned into two chained tasks for real crash-resilience**
+      (user request: single-task design wasn't resilient enough - specifically, moving the asset
+      file into its final folder *before* the DB row was safely committed). Replaced
+      `TaskType.PROCESS_IMMICH_ASSET` with `SYNC_FROM_IMMICH` (phase 1) → `UPLOAD_FROM_IMMICH`
+      (phase 2, queued ~1 minute after phase 1 completes).
+      - **Phase 1 (`ImmichImportService.processSyncFromImmichTask`)**: fetches the asset + its
+        metadata from Immich, downloads the original into a new `iphoto.storage.immich-temp`
+        directory (new `IPhotoProperties.Storage.immichTemp` / `application.yml` key) at a
+        deterministic `{photoId}.{ext}` path - deliberately *not* the final `{year}/{month}`
+        folder yet. Serializes everything phase 2 needs (staged path + all metadata, incl. raw
+        EXIF JSON) into one new DTO, `model/immich/ImmichPendingUploadPayload`, and queues phase 2
+        with it as the task payload. Never touches `photos`/`photo_metadata`.
+      - **Phase 2 (`ImmichImportService.finalizeUploadFromImmich`)**: generates the thumbnail (same
+        method a normal upload uses, run against the staged file), then commits the
+        `PhotoEntity`/`PhotoMetadataEntity` rows via a new `persistPhotoAndMetadata` method, and
+        only *after* that commit succeeds moves the staged file into its final folder. **Why this
+        ordering matters**: the old single-phase design moved the file to its final path *first*,
+        then saved the DB rows - so a DB failure after the move left an orphaned file sitting at
+        the final path with no row pointing at it, and since that `Files.move` call used no
+        `REPLACE_EXISTING`, every future retry of that exact asset hit `FileAlreadyExistsException`
+        and failed identically forever. Flipping the order (commit first, move only after) means a
+        DB failure never leaves a file at the final path at all - nothing to block a retry.
+      - **Getting a genuine, independent commit boundary was the tricky part**:
+        `TaskWorkerManager.processTask` wraps an *entire* task execution (whichever branch handles
+        it, plus the final task-status save) in one `TransactionTemplate.executeWithoutResult` call
+        - so a plain DB save inside `finalizeUploadFromImmich` would still only actually commit
+        once `processTask`'s whole lambda returns, well *after* the file-move line would run,
+        defeating the whole point. `persistPhotoAndMetadata` is instead its own transaction with
+        `PROPAGATION_REQUIRES_NEW`, built via an *explicit* `new TransactionTemplate(...)` +
+        `setPropagationBehavior(...)` rather than an `@Transactional` annotation - because it's
+        called from within `ImmichImportService` itself (same class as
+        `finalizeUploadFromImmich`), and Spring's proxy-based `@Transactional` does not intercept
+        same-class ("self-invocation") calls, which would have silently made `REQUIRES_NEW` a
+        no-op. Once `persistPhotoAndMetadata` returns normally, the rows are guaranteed durably
+        committed (independent of whatever `processTask`'s outer transaction does afterward), so
+        it's genuinely safe to move the file right after.
+      - **Retry logic reworked accordingly** (`triggerDayImport`): "already fully imported" is no
+        longer just `photoRepository.existsById` - it now also requires the row's `originalPath`
+        file to actually exist on disk (`isFullyImported`), since a row can now be committed with
+        its file still sitting in immich-temp if phase 2's move step itself fails right after the
+        commit. A day retrigger in that state resumes via `finalizeUploadFromImmich`'s own re-entry
+        guard (row already exists → skip re-insert, just finish the pending move). If only phase 2
+        previously failed (phase 1's staged file is still there), retriggering re-queues phase 2
+        alone by reusing the failed task's own payload verbatim - no need to re-hit Immich for a
+        failure that was never Immich's fault; only a phase-1 failure re-queues a fresh phase 1.
+      - **Caught the parallel-write angle too**: multiple assets' phase-2 tasks for the same space
+        finish concurrently on different virtual threads and all contend on
+        `SpaceService.lockSpace`'s per-space, non-blocking `tryLock` - one losing that race throws
+        `SpaceLockingException`, which `TaskWorkerManager` previously had no special handling for
+        (would've hit the generic `catch(Throwable)` and become a permanent, spurious `FAILED`).
+        Added a catch for it right next to the existing `ServiceNotAvailableException` one - same
+        treatment (reset to `PENDING`, `executeAt=null`, retried on the next 5-second poll in the
+        same process) rather than a real failure, since the lock is normally only held briefly.
+      - `parseDayRowId` (used by both `recordAssetTaskOutcome`/`recordAssetTaskFailure`) now reads
+        the task payload as a generic `JsonNode` tree instead of a fixed `Map<String,String>` type,
+        since phase 1's payload is a flat string map but phase 2's is now a typed
+        `ImmichPendingUploadPayload` record - both still serialize to a top-level JSON object with
+        a `"dayRowId"` key, so one read path covers both without branching on task type.
+      - `ImmichClient.downloadOriginalToTemp` (nanoTime-suffixed, non-deterministic name) replaced
+        with `downloadOriginalTo(creds, assetId, targetPath)` (caller-supplied deterministic path,
+        `REPLACE_EXISTING` since a retry safely re-downloads over its own previous attempt).
+      - Verified: whole backend `javac` compile clean (incl. `src/test`). **Not yet run against
+        the live app or a live Immich server** - same sandbox limitation as every other Immich
+        change this session; the user should restart and re-test a day import, including
+        deliberately interrupting/retrying it, to confirm the resilience behavior actually holds.
+      - **Follow-up (user request)**: extracted the ad-hoc `new TransactionTemplate(...) +
+        setPropagationBehavior(REQUIRES_NEW)` construction out of `persistPhotoAndMetadata` into a
+        new reusable `service/RequiresNewTransactionService` (`runInNewTransaction(Supplier<T>)` /
+        `runInNewTransaction(Runnable)`) - same-class-self-invocation-safe REQUIRES_NEW for any
+        future caller, not just this one. Also fixed a real bug caught during this cleanup: the
+        original inline version reused the `user`/`space` entity instances loaded by
+        `finalizeUploadFromImmich`'s *outer* (suspended) transaction inside the new one - since
+        those instances belong to a different, suspended persistence context,
+        `entityManager.refresh(space)` would have thrown (refresh requires a genuinely managed
+        entity, not just a matching id). Fixed by having `persistPhotoAndMetadata` take plain
+        `userId`/`spaceId` and re-fetch both fresh from inside its own new transaction. (The
+        existing `recordAssetTaskOutcome`/`recordAssetTaskFailure` methods keep their plain
+        `@Transactional(REQUIRES_NEW)` - those are always called cross-bean from
+        `TaskWorkerManager`, so the self-invocation trap doesn't apply to them.)
+
+- [x] **Feature**: Lightbox face-box hover refinement. Hovering the "Faces Detected" zone already
+      showed every detected face's box on the image (`showFaces`, toggled by that zone's own
+      `onMouseEnter`/`onMouseLeave`) — that part already worked. Now hovering one specific
+      `.face-item` in that list narrows the display down to *only* that face's box: added a
+      `hoveredFaceId` state, set/cleared by each `.face-item`'s own `onMouseEnter`/`onMouseLeave`
+      (identity is `face.id ?? index`, matching the existing `key` fallback for faces without a
+      linked person). The on-image box render condition became `showFaces && (hoveredFaceId ===
+      null || (face.id ?? index) === hoveredFaceId)`, so leaving one face (but staying inside the
+      zone) falls back to showing every box again. Also clear `hoveredFaceId` on the zone's own
+      `onMouseLeave` so no stale single-face state can survive past the zone boundary. Frontend
+      only — no backend/API change, all the data was already in `faces`.
+      - Verified: `npm run build` clean, full `npm test -- --run` 86/86 pass.
+
+- [x] **Fix** (user request): `ImmichImportService#resolveDateTaken` now tries a real fallback
+      before ever stamping `LocalDateTime.now()`. Previously, once none of
+      `exifInfo.dateTimeOriginal`/`localDateTime`/`fileCreatedAt` parsed (e.g. an asset with
+      stripped EXIF and no local-timezone timestamp from Immich), it went straight to "now" -
+      silently wrong for older imported assets. Split into `resolveDateTakenFromDetail` (the
+      existing DTO-only attempts, returns `null` instead of "now" on total failure) plus two
+      overloads: the day-index-sync one (`syncDayIndex`, only has search-metadata DTOs for
+      potentially thousands of assets, never downloads them) still falls back straight to "now" -
+      no file exists yet to inspect, and downloading every asset just to group by day would be
+      far too expensive. The per-asset one (`processSyncFromImmichTask`, called right after
+      `immichClient.downloadOriginalTo`) falls back to the newly-generalized
+      `PhotoUploadService#extractBestCreationDate(File, String fileName)` against the just-staged
+      file - same EXIF/video-metadata/filename/filesystem guesswork a normal upload already
+      relies on - before finally giving up and using "now". `extractBestCreationDate` used to
+      require a full `PhotoEntity` (only ever used for `photo.getFileName()`); added a
+      `String fileName` overload so `ImmichImportService` doesn't need a `PhotoEntity` built yet
+      to use it, with the original `PhotoEntity` overload now just delegating to it.
+      - Verified: whole backend `javac` compile clean (main + test sources). Not yet run against
+        the live app or a live Immich server, same sandbox limitation as the rest of the Immich
+        work.
+
+- [x] **Observability** (user request): added `log.info` start/end lines on the two Immich import
+      task types (`ImmichImportService#processSyncFromImmichTask` /
+      `#finalizeUploadFromImmich`, dispatched by `TaskWorkerManager` for
+      `SYNC_FROM_IMMICH`/`UPLOAD_FROM_IMMICH`), each line naming the task id and photo/asset id so
+      a run can be traced through the log. `processSyncFromImmichTask` logs its start, then one of
+      three ends: already-imported skip, content-duplicate skip, or staged-and-queued-phase-2.
+      `finalizeUploadFromImmich` logs its start, then one of two ends: resumed-an-existing-row, or
+      committed-and-moved-to-final-path. Deliberately scoped to just these two - they're the only
+      methods actually backing a `TaskType` (i.e. literally "tasks" in this codebase); the
+      synchronous, non-task trigger methods (`syncDayIndex`, `triggerDayImport`,
+      `ImmichAlbumImportService#triggerAlbumImport`) were left alone.
+      - Verified: whole backend `javac` compile clean (main sources).
+
+- [x] **Fix** (user request): Immich shared-link import now keeps the same share link where
+      possible. `ImmichAlbumImportService#processOneSharedLink` previously always generated a
+      fresh iphoto share name (`sanitizeShareName(albumName + "-" + linkId)`) - a different name
+      than whatever Immich itself exposed, so the actual URL changed on migration. Now
+      `resolveShareName` reuses Immich's own shared-link `key` (`ImmichSharedLinkDTO.key`, the
+      literal token from `immich-host/share/{key}`) verbatim as iphoto's share `name` - the
+      `/share/{userMd5}/{name}` path segment - case preserved (no lowercasing/slugifying, which
+      would change the token). The `/share/{userMd5}/...` prefix itself can't be dropped - every
+      iphoto share is addressed that way, Immich-imported or not - so this is the closest iphoto
+      can get to true URL parity: whatever downstream ordering/reverse-proxy history exists around
+      the old key stays meaningful. Falls back to the old generated-slug behavior only if Immich
+      sent no key, or the key happens to collide with a share name this user already has (checked
+      via `ShareRepository#findByUserMd5AndName` before save, not just trusted - a
+      unique-constraint violation would abort that share's whole per-item transaction).
+      - Verified: whole backend `javac` compile clean (main sources). Not yet checked against a
+        live Immich server's real `key` format/length.
+
 ## Open / Not Yet Done
 
+- [ ] **Refactor** (user request): fetch photos day-by-day instead of arbitrary fixed-size pages.
+      Not started - design sketch only, grounded in the current mechanism below.
+      - **Current mechanism** (`PhotoController.getPhotos` / `PhotoService` / `usePhotoData.js` /
+        `PhotoGrid.jsx`): fixed `size=20` pages, paged via a `dateTaken` cursor
+        (`beforeDate`/`afterDate`/`jumpToMonth`), with top/bottom `IntersectionObserver` sentinels
+        in `PhotoGrid.jsx` triggering the next page. The existing month-level index
+        (`TimelineMonthDTO`, `GET /api/photos/timeline`) backs Memories/browse-by-month — it's
+        computed live by a native window-function query
+        (`PhotoRepository.findMonthlyPhotoCountsWithCoverBySpaceId`), not a persisted table.
+      - **What the user wants instead**: a real `DayEntity` — `@ManyToOne SpaceEntity space` (same
+        relationship shape `PhotoEntity.space` already has) + `LocalDate day`, unique on
+        `(space_id, day)` — with `PhotoEntity` gaining its own `@ManyToOne DayEntity day`. A "day
+        index" (`GET /api/photos/days` for Library, space-scoped equivalent for Space detail) is
+        fetched *first* and cheaply — every day the space has photos on, most likely count + cover
+        photo per day, same shape `TimelineMonthDTO` already returns for months. The frontend
+        renders every day up front (as a section/placeholder), and only fetches a given day's
+        actual photos (`GET /api/photos/day/{day}` or similar, no pagination cursor needed inside
+        one day) once that day's section scrolls near the viewport — the existing top/bottom
+        `IntersectionObserver` sentinel pattern in `PhotoGrid.jsx`, generalized to one observer per
+        day-section instead of two observers around the whole feed.
+      - **Real design questions to settle before building this** (not implementation details -
+        answers change the shape of the work):
+        1. **Write-time maintenance burden**: unlike today's live-computed month index, a
+           persisted `DayEntity` needs to be kept in sync on every photo create (upload, Immich
+           import), delete/permanent-delete, garbage move, and date edit (including the
+           just-added-to-this-TODO bulk date-edit feature above) - mirroring how
+           `SpaceService.increaseSpacePhotoCount` already keeps `SpaceEntity.photoCount` in sync
+           as the precedent to follow, but now one extra layer (day, not just space) to update
+           everywhere a photo's space or date can change.
+        2. **A day with an outlier photo count** (e.g. 500 photos from one burst-shooting day/
+           event) - does fetching "all assets for this day" in one response stay unpaginated
+           regardless of count (simplest, matches "fetch all assets related to this day" as
+           stated), or does an unusually large day still need its own inner pagination? Affects
+           whether `GET /api/photos/day/{day}` can be a flat list response or needs the same
+           `PageResponse<Photo>` shape everything else uses.
+        3. **Does this replace or sit alongside the existing month-level timeline/jump-to-month
+           machinery** (`TimelineMonthDTO`, `jumpToMonth`/`beforeDate`/`afterDate` cursors,
+           `LibraryTimeline.jsx`)? A day-index likely makes the cursor-based paging machinery
+           obsolete (a month click could just scroll to that month's first day in the day-index
+           instead), which would be a nice simplification, but is a big enough behavior change
+           not to assume - confirm before ripping out working code.
+        4. **Album detail is not naturally day-indexable the same way**: the user's own framing
+           ties `DayEntity` to a Space, same as `PhotoEntity` - which covers Library (Main space)
+           and Space detail directly. But an Album *references* photos rather than owning them
+           (see specification.md's explicit Album-vs-Space distinction) and can reference photos
+           spanning arbitrary dates/spaces-of-origin with no per-album day-grouping concept - so
+           Album detail would need its own query path (e.g. group the album's referenced photo
+           ids by day) rather than reusing a straight space-scoped `DayEntity` lookup. Worth
+           confirming Album detail is even in scope for this change, or if it keeps its current
+           pagination.
+- [ ] **Feature** (user request): two new bulk photo-selection actions, available everywhere a
+      multi-select photo grid already exists — Library, Album detail, Space detail (all three
+      share `components/Header.jsx`'s bulk-action bar, gated per-button by the capability flags
+      `PhotoService.getSelection`/`PhotoSelectionDTO` returns from `POST /api/photos/selected` —
+      see specification.md's note on this contract, and how e.g. `canBeDeleted`/
+      `canBeMovedToAlbum` already drive `handleMoveToGarbage`/`setShowAddToAlbumModal` there).
+      Not started - no backend or frontend code written yet, this is a design sketch only.
+      1. **Bulk "Edit Date Taken"**: change `dateTaken` for every selected photo at once.
+         - New `PhotoSelectionDTO` flag, e.g. `canEditDate` — true whenever the selection is
+           non-empty (mirror `canBeDeleted`'s `!isGarbageMenu` gating, or allow it even in
+           garbage — no strong reason to forbid it there). New `Header.jsx` button opens a new
+           `EditDateModal.jsx` (date/time picker + "Apply to N photos"), following
+           `AddToAlbumModal.jsx`'s shape as the closest existing multi-select modal.
+         - New backend: `PUT /api/photos/date` (or similar) in `PhotoController`, body
+           `{photoIds: [...], dateTaken: "..."}`, delegating to a new
+           `PhotoService.updateDateTakenForPhotos(ids, dateTaken, user)`. **No file move needed**:
+           `PhotoStoragePathResolver`'s whole design point (see its class comment) is that
+           `originalPath`/`thumbnailPath` are stored per-row and read back verbatim, never
+           reconstructed from `dateTaken` — confirmed by the same reasoning that already lets
+           `EditPhotoService` change a photo's date without moving its file. Just update the
+           column; Library/Album/Space's date-sorted queries pick up the new value on their next
+           fetch, nothing to invalidate.
+         - Open question: bulk-apply one exact timestamp to every selected photo, or shift each
+           photo's existing `dateTaken` by a relative offset (e.g. "photos are 2 hours off,
+           correct them all")? The user only said "update date for a set of photos" - worth
+           confirming which before building the modal, since the UI differs (a single date/time
+           picker vs. a "+/- N hours/days" delta picker).
+      2. **Bulk "Download"**: a single photo downloads directly; multiple selected photos download
+         as one zip.
+         - New `PhotoSelectionDTO` flag, e.g. `canDownload` — true whenever selection is
+           non-empty, no real restriction (garbage photos still have real files on disk).
+         - Single selected photo: reuse the existing `GET /api/photos/{id}/original` endpoint
+           directly (confirm it sends `Content-Disposition: attachment` — if not, that's a small
+           fix needed so the browser downloads rather than tries to render it inline).
+         - Multiple selected: new endpoint, e.g. `POST /api/photos/download` with
+           `{photoIds: [...]}` in the body (POST, not GET+query-string, since a large selection
+           could exceed a comfortable URL length) — streams a zip built from each photo's
+           `originalPath` via `ZipOutputStream` wrapped around a Spring `StreamingResponseBody`
+           (don't buffer the whole zip in memory - a large selection could be many GB). Use each
+           `PhotoEntity.fileName` as the zip entry name, with a de-duplication fallback (e.g.
+           append a short id suffix) for the real edge case of two selected photos sharing a
+           filename (duplicates across spaces/albums, or two differently-cropped copies).
 - [ ] **Feature**: detect blurry faces. Confirmed feasible, not yet implemented — no design
       decision made yet on what to DO with the signal (see below), just logging the "can this be
       done" question the user asked.
@@ -1605,15 +1925,6 @@ new work is identified or completed, so nothing gets lost between sessions.
       the face's coordinates (recorded against the photo's *full* resolution) down to whatever size
       the grid thumbnail actually renders at — same scaling math the Lightbox already does in
       `recalculateImageSize`, reusable if extracted.
-- [ ] **Feature**: Lightbox face-box hover refinement. Hovering the "Faces Detected" zone already
-      shows every detected face's box on the image (`onMouseEnter`/`onMouseLeave` on that section
-      toggles `showFaces`, rendered at `Lightbox.jsx:573`) — that part already works. What's
-      missing: hovering one specific `.face-item` in that list should narrow the display down to
-      *only* that face's box (others hidden), not all of them. Needs: a `hoveredFaceId` state set
-      on each `.face-item`'s own `onMouseEnter`/`onMouseLeave` (in addition to, not instead of, the
-      existing zone-level `showFaces`); the box-rendering condition becomes roughly `showFaces &&
-      (!hoveredFaceId || face.id === hoveredFaceId)`, so leaving a specific face (but still inside
-      the zone) falls back to showing all boxes again.
 - [x] **Feature**: the "×N similar" badge (`PhotoGrid.jsx`) now opens a popup instead of expanding
       the cluster inline. User's spec, gathered over two messages: modal width 90% of the browser
       viewport; an X top-right closes it; 2 columns, no pagination (every member renders at once,
@@ -1667,6 +1978,189 @@ new work is identified or completed, so nothing gets lost between sessions.
       happens to the source's name") was resolved by the user as "whichever person has fewer faces
       merges into the one with more, unconditionally" rather than a manual source/target pick.
 
+- [x] **Feature (backend-heavy)**: reorganized on-disk photo storage into `{year}/{month}/`
+      subfolders (was one flat directory each for originals/thumbnails — "not good practice",
+      user's words, and about to get worse once Immich import could add thousands more files),
+      plus a full **Immich migration** admin feature: assets/metadata/GPS/albums/album-level
+      shared links imported day-by-day from a self-hosted Immich server, preserving Immich's own
+      asset UUIDs as iphoto's `Photo` ids. See specification.md for the full design (new
+      "Immich migration" section) — summarizing here:
+      - **Storage reorg**: new `service/PhotoStoragePathResolver.java` is the single owner of the
+        `{root}/{year}/{month}/` scheme (off `dateTaken`), used by both `PhotoUploadService` (had
+        to be reordered so metadata extraction — which sets `dateTaken` — runs before the file is
+        moved to its date-based folder, not after) and the new Immich per-asset ingestion path.
+        Safe against a later "edit photo date" because nothing in the codebase reconstructs a
+        path from date after creation — `PhotoEntity.originalPath`/`thumbnailPath` are always read
+        back verbatim. `ThumbnailService.generateThumbnail` gained a `dateTaken` param; a second
+        `regenerateThumbnailInPlace` overload was added for `EditPhotoService`'s "overwrite
+        original" edit path, which must keep writing to wherever the thumbnail already lives, not
+        move it. Optional backfill for photos already stored flat: `StorageMigrationService`
+        (idempotent, per-photo no-op if already organized) behind
+        `POST /api/admin/storage/migrate-flat-files` — deliberately **not** run automatically at
+        startup; old photos stay flat forever until an admin clicks it, which is fine since reads
+        never depend on the folder convention.
+      - **Immich migration, schema**: new `ImmichImportDayEntity`/`ImmichImportDayRepository`
+        (table `immich_import_days`, not space-scoped — indexes one external server, not per-user
+        data) is both the "table of days with photos on Immich" the user asked for and the
+        per-day progress tracker (`immichAssetCount`/`queuedCount`/`importedCount`/
+        `skippedCount`/`failedCount`/`status`). `AlbumEntity`/`ShareEntity` each gained a nullable
+        `externalSource`/`externalId` pair (+ unique constraint) so a re-run can find-or-create
+        the same album/share instead of hitting `AlbumService.createAlbum`'s/
+        `ShareService.createShare`'s name-collision throw. New `TaskType.PROCESS_IMMICH_ASSET`
+        (one task per asset, mirroring `PROCESS_UPLOAD`'s shape) reuses the existing
+        `TaskWorkerManager` scheduled-poller/virtual-thread infrastructure — the only async-job
+        mechanism in the codebase — rather than inventing a new one.
+      - **UUID preservation**: trivial for photos — `PhotoEntity.id` already has no
+        `@GeneratedValue` (it's assigned explicitly at task-creation time, same as
+        `UploadController` does with `UUID.randomUUID()`); Immich import just uses the Immich
+        asset's own UUID in that slot instead. Albums needed the new `externalId` column instead,
+        since `AlbumEntity.id` **is** `@GeneratedValue`.
+      - **`ImmichClient`** (`service/immich/`, new `RestClient`-based wrapper, `x-api-key` auth):
+        `/timeline/buckets?size=DAY` for the day-index, `/assets/{id}` + streamed
+        `/assets/{id}/original` download, `/albums` + `/albums/{id}`, `/shared-links`,
+        `/assets/statistics` (for the coverage check below). **Important caveat**: several
+        response shapes (day-bucket fields, `exifInfo` field names, the exact per-day
+        asset-listing endpoint) are BEST-EFFORT — built from Immich's public API docs, not
+        verified against a live server (none was available while building this). Chose
+        `POST /search/metadata` with day-boundary `takenAfter`/`takenBefore` over
+        `/timeline/bucket` for per-day asset listing specifically because the latter's response
+        shape is less certain/more version-sensitive. Every DTO in `model/immich/` is annotated
+        `@JsonIgnoreProperties(ignoreUnknown = true)` and flagged in a comment where verification
+        is needed — **this is the one part of this feature that still needs a real smoke test
+        against the user's actual Immich server** (which was the whole point of day-by-day import
+        in the first place — small, cheap, safe to iterate on). Outbound calls are throttled via
+        a `Semaphore(8)` inside `ImmichClient` since `TaskWorkerManager`'s poller has no
+        concurrency limit of its own.
+      - **`ImmichImportService`**: `syncDayIndex` upserts the day table from Immich;
+        `triggerDayImport` queues one `PROCESS_IMMICH_ASSET` task per not-yet-imported asset for
+        a day (skips assets that already exist locally, or that already have a non-`FAILED` task
+        in flight — a `FAILED` one is cleared and its earlier failure-count contribution undone,
+        since that's exactly what a retry should replace); `processAssetImportTask` does the
+        actual download/hash-dedup-check/metadata-extraction/`PhotoEntity` creation (hooking the
+        new photo into the existing hash/duplicate/face-detection task pipeline via
+        `TaskMapper.Action.ON_CREATE_PHOTO_ACTION`, same as any normal upload); day-row counters
+        are updated via atomic `@Modifying` increments (many assets for one day finish
+        concurrently on different virtual threads) in a `REQUIRES_NEW` transaction, with
+        `queuedCount` kept as the day's *total* known size (stable across re-runs) so cumulative
+        counters stay meaningful across multiple trigger calls, not reset per-call.
+      - **`ImmichAlbumImportService`**: recreates Immich albums (find-or-create by `externalId`)
+        and links already-imported photos into them (`AlbumService.addPhotosToAlbum`, which
+        requires the photo to already exist and be in a MAIN space — so this must run *after*
+        day-imports, and does, per the UI's ordering hint); recreates album-level Immich shared
+        links as iphoto `ShareEntity` rows. Immich shared links pointing at individual assets
+        (not a whole album) have no iphoto equivalent (iphoto shares are album-only) — skipped
+        with a warning surfaced in the summary, not silently mis-mapped. Runs each album/link in
+        its own transaction (via `TransactionTemplate`, not one `@Transactional` spanning the
+        whole run) so one broken item can't mark the entire run rollback-only.
+      - **Coverage check** (added mid-build after the user pointed out Immich will be *deleted*
+        once migration finishes, raising the stakes on completeness): `/timeline/buckets` only
+        surfaces assets with a determinable date — an asset with no usable date wouldn't appear
+        in any day bucket and would be silently missed. `GET /api/admin/immich/days` now returns
+        `{days, coverage}` where `coverage` compares Immich's true total asset count
+        (`/assets/statistics`) against the sum of day-bucket counts actually known locally,
+        surfaced as a visible warning banner on the admin page when they don't match — meant to
+        be checked *before* deleting the Immich server, not after.
+      - **Frontend**: new admin-only `/admin/immich` page (`ImmichImportManagement.jsx` +
+        `hooks/useImmichImport.js`), gated the same way `/admin/users` already is
+        (`{userRole === 'ADMIN' && (...)}` in `App.jsx`/`Sidebar.jsx`, new `Download` sidebar
+        icon). Table of days (reuses `UserManagement.css`'s generic container/table classes, like
+        `ShareLinksManagement.jsx` already does) with an Import/Retry button per row; per-day
+        polling is modeled directly on `UploadManager.jsx`'s `pollTaskStatus` (`setInterval`/
+        `clearInterval` on a terminal status) — no new polling pattern invented. "Import Albums &
+        Shares" button appears once at least one day is `COMPLETED`/`PARTIAL`.
+      - **Not in scope** (per explicit user confirmation): people/faces and favorites are not
+        migrated from Immich — only assets, EXIF/GPS metadata, albums, and album-level shares.
+      - Verified: `mvn`-equivalent `javac` compile clean (only the pre-existing unrelated
+        `SpringContext.java` unchecked-operations note); `npm run build` clean; full frontend
+        suite 86/86 pass. **Not yet verified against a live Immich server** — no credentials were
+        available while building this; the `ImmichClient`/DTO layer specifically should be
+        treated as the first thing to smoke-test once the user runs this against their real
+        server (see the "IMMICH_URL/IMMICH_API_KEY not configured" warning `ImmichClient` logs at
+        startup if those env vars are blank). Backend also not yet restarted/verified live for
+        the same reason noted on earlier entries in this file (IDE-debugger-managed process).
+- [x] **Backend test infra (new)**: first backend tests in the project (`src/test/java` didn't
+      exist before) — a real end-to-end integration test covering the photo lifecycle: log in ->
+      create a Space -> upload a photo straight into it -> move it to Main -> create an Album and
+      add the photo to it -> move it to Garbage -> permanently delete it. Driven entirely through
+      MockMvc against the real controllers/security filter chain, not by calling services
+      directly, and against a **real Postgres** via Testcontainers (`@ServiceConnection`) rather
+      than H2 — this app is Postgres-only in practice (native window-function queries, BYTEA
+      columns, hardcoded dialect) and has no Flyway/Liquibase (`ddl-auto: update`), so a real
+      Postgres instance is both more representative and no extra setup burden than an in-memory
+      substitute. New `pom.xml` test-scope deps: `spring-boot-testcontainers`,
+      `testcontainers:junit-jupiter`, `testcontainers:postgresql` (versions managed by the Spring
+      Boot parent BOM, no explicit versions needed — matches this pom's existing style). New
+      `AbstractIntegrationTest` (base class: `@SpringBootTest`+`@AutoConfigureMockMvc`+
+      `@Testcontainers`, and a `@DynamicPropertySource` pointing `iphoto.storage.*` at a
+      `Files.createTempDirectory` throwaway directory — tests must never write into the real
+      storage path configured in `application.yml`) + `PhotoLifecycleIntegrationTest`.
+      - **Real bug found and fixed along the way**: `IPhotoApplication`'s `CommandLineRunner`
+        bootstrapped the admin account via a raw `userRepository.save(admin)`, bypassing
+        `UserService.createUser` — which is also the only place a user's default MAIN space gets
+        created. On a genuinely fresh database, the bootstrapped admin therefore had **no space
+        at all**, and `SpaceService.getDefaultSpaceForUser(admin)` (used by upload, album
+        creation, etc.) would return null — this had never been exercised in the user's own
+        environment since their admin account has existed for a long time already, but would
+        break a fresh install outright. Fixed by routing the bootstrap through
+        `UserService.createUser(...)` instead of duplicating the save/encode logic inline, so the
+        default space is created the same way it is for any other user.
+      - Test-only per-asset upload processing note: `PROCESS_UPLOAD` tasks are normally picked up
+        by `TaskWorkerManager`'s `@Scheduled(fixedDelay=5000)` poller — the test calls
+        `taskWorkerManager.pollPendingTasks()` directly right after upload (same code path the
+        scheduler itself would run, just not idling for the 5s timer) and then polls
+        `GET /api/tasks/{id}` with a short bounded retry loop as a safety net for the async
+        virtual-thread dispatch this triggers.
+      - Album/Space assertions are made through the real HTTP endpoints (`GET
+        /api/photos/{id}/space`, `GET /api/albums/{id}/photos`), not by calling
+        `@MainSpaceLimited` repository methods directly from the test's own thread — that
+        annotation's AOP filter resolves the current user from `SecurityContextHolder`, which
+        only exists for the duration of an actual (mocked) authenticated HTTP request, not a bare
+        JUnit thread. Garbage/permanent-delete assertions use `PhotoRepository.findById`
+        directly instead, since that method is deliberately unfiltered.
+      - **Not yet actually executed**: this sandbox has no `mvn` binary and no JUnit Platform
+        launcher jar cached locally, so this was only verified via `javac` compiling cleanly
+        against the full dependency classpath (including the new Testcontainers jars, already
+        present in `~/.m2`) — never actually run. Docker and a `postgres:17` image are present
+        locally (a `georges-db-1` container already uses that image), so Testcontainers should be
+        able to start its own isolated container without a fresh pull, but this still needs a
+        real `mvn test` (or IDE test run) to confirm it genuinely passes. Please run it and report
+        back if anything fails — happy to fix promptly given how carefully this was derived from
+        the actual controller/service code.
+- [x] **Docker + CI**: new root `Dockerfile` (multi-stage: `maven:3.9-eclipse-temurin-25` build
+      stage, `eclipse-temurin:25-jre` runtime stage) and `.github/workflows/docker-image.yml`
+      (test job, then a build-and-push job publishing to GHCR). Also `.dockerignore`.
+      - **Discovery while picking the base image**: `pom.xml`'s `maven-compiler-plugin` targets
+        release **25** explicitly (`<source>25</source>/<target>25</target>`), distinct from — and
+        newer than — the `<java.version>21</java.version>` property. The system `javac`/`java` on
+        this machine's PATH is 21, but there's a JDK **26.0.1** under `~/.jdks` (IntelliJ's own
+        managed install), which is what the project actually gets compiled with day to day
+        (JDK 26 can target release 25 fine) — the CI workflow and Dockerfile both use JDK 25
+        explicitly to match the pom's real contract, not the unrelated system JDK 21.
+      - CI runs `mvn test` (the new Testcontainers-based integration test from the entry above)
+        as its own job on the runner directly — **not** inside `docker build` — since
+        Testcontainers needs real Docker access that a build step doesn't have without
+        Docker-in-Docker; GitHub's `ubuntu-latest` runners already have Docker available, so this
+        needs no extra setup. The image build only happens if that job passes.
+      - Runtime env vars (Spring's relaxed env-var binding, no `application.yml` changes needed):
+        `IPHOTO_STORAGE_BASE` (image sets a default of `/data/iphoto`, mounted as a volume —
+        override if you want it elsewhere), `SPRING_DATASOURCE_URL`/`_USERNAME`/`_PASSWORD`
+        (**must** be overridden for any real deployment — `application.yml`'s
+        `localhost:5432/postgres/password` default is only reachable with host networking),
+        `IPHOTO_ADMIN_PASSWORD`, `IMMICH_URL`/`IMMICH_API_KEY` (only if using the Immich import
+        feature).
+      - **Not verified end-to-end** (no way to actually run a Docker build or GitHub Actions from
+        this environment): the runtime stage's `apt-get install libgomp1 libsm6 libxext6
+        libxrender1` for OpenCV/FFmpeg native-library loading is a best-effort guess based on
+        common javacv/OpenCV Docker deployment knowledge, not confirmed against a real container
+        run of this exact app — if face detection/thumbnailing/duplicate-hashing throws a native
+        `UnsatisfiedLinkError` in the container, start there. Separately, `ai.djl.pytorch:
+        pytorch-model-zoo` has no bundled native engine in `pom.xml` (no `pytorch-native-*`
+        dependency), so DJL will try to download the PyTorch native engine from the internet on
+        first use at runtime — pre-existing app behavior, not introduced by Docker, but the
+        container needs outbound internet for that first call to succeed. GHCR package
+        visibility: a fresh package published via `GITHUB_TOKEN` isn't reliably private by
+        default just because the workflow does nothing else to configure it — check/set it
+        explicitly in the package's settings after the first push (linked in a workflow comment).
 - [ ] More regression tests worth adding, deliberately left out of the initial batch to keep
       it focused on what was quick to do well rather than rushed:
       - `UploadManager.jsx`'s "PENDING keeps polling instead of getting stuck" fix — needs

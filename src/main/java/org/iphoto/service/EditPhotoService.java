@@ -145,7 +145,7 @@ public class EditPhotoService {
             // overwrite original
             try {
                 BufferedImage workingImage = ImageIO.read(file.getInputStream());
-                thumbnailService.generateThumbnail(originalPhoto.getOriginalPath(), originalPhoto.getId().toString(), file.getContentType());
+                thumbnailService.regenerateThumbnailInPlace(originalPhoto.getOriginalPath(), originalPhoto.getId().toString(), file.getContentType(), originalPhoto.getThumbnailPath());
                 originalPhoto.setFileHash(HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(file.getInputStream().readAllBytes())));
                 originalPhoto.setFileSize(Files.size(Path.of(originalPhoto.getOriginalPath())));
                 originalPhoto.setWidth(workingImage.getWidth());

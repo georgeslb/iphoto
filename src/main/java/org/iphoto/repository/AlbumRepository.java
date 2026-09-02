@@ -30,6 +30,11 @@ public interface AlbumRepository extends JpaRepository<AlbumEntity, UUID> {
     @MainSpaceLimited
     Optional<AlbumEntity> findById(UUID id);
 
+    // Idempotency lookup for the Immich album import - lets a re-run find the album it already
+    // created instead of hitting findByName's collision throw or creating a duplicate.
+    @MainSpaceLimited
+    Optional<AlbumEntity> findByExternalSourceAndExternalId(String externalSource, String externalId);
+
     // Public/guest-facing lookup for the share flow — must NOT be @MainSpaceLimited: a guest
     // share session has no matching UserEntity, so the space-filter aspect would throw trying
     // to resolve one. Album-level authorization for guests is enforced separately (share ->

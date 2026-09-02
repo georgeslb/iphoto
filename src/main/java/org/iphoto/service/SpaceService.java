@@ -131,7 +131,7 @@ public class SpaceService {
 
     public static class AutoClosableLock extends ReentrantLock implements AutoCloseable {
         @Override
-        public void close() throws Exception {
+        public void close() {
             this.unlock();
         }
     }

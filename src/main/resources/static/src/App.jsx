@@ -26,6 +26,7 @@ import Persons from './components/Persons';
 import PersonDetail from './components/PersonDetail';
 import Login from './components/Login'; // Import Login component
 import UserManagement from './components/UserManagement'; // Import UserManagement component
+import ImmichImportManagement from './components/ImmichImportManagement';
 import SpaceGridDisplay from './components/SpaceGridDisplay'; // Import SpaceGridDisplay
 import SpaceDetail from './components/SpaceDetail'; // Import SpaceDetail
 import { usePhotoData } from './hooks/usePhotoData';
@@ -438,6 +439,7 @@ function App() {
                     />
                   } />
                   <Route path="/share-links" element={<ShareLinksManagement />} />
+                  <Route path="/immich" element={<ImmichImportManagement />} />
                   {userRole === 'ADMIN' && (
                       <Route path="/admin/users" element={<UserManagement />} />
                   )}

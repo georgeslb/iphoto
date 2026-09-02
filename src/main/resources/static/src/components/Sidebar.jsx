@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Image as ImageIcon, Library, Map as MapIcon, BookOpen, Copy, Trash2, Link as LinkIcon, Users, Settings, LayoutGrid, Menu, X } from 'lucide-react'; // Added LayoutGrid icon for Spaces
+import { Image as ImageIcon, Library, Map as MapIcon, BookOpen, Copy, Trash2, Link as LinkIcon, Users, Settings, LayoutGrid, Menu, X, Download } from 'lucide-react'; // Added LayoutGrid icon for Spaces
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 export default function Sidebar({ pathname, isAuthenticated, userRole, handleLogout, fromGarbage }) {
@@ -60,6 +60,7 @@ export default function Sidebar({ pathname, isAuthenticated, userRole, handleLog
             <Link to="/duplicates" className={`nav-item ${pathname === '/duplicates' ? 'active' : ''}`}><Copy size={20} /> {messages["duplicatesLink"]}</Link>
             <Link to="/garbage" className={`nav-item ${isGarbageActive ? 'active' : ''}`}><Trash2 size={20} /> {messages["garbageLink"]}</Link>
             <Link to="/share-links" className={`nav-item ${pathname === '/share-links' ? 'active' : ''}`}><LinkIcon size={20} /> {messages["shareLinksLink"]}</Link>
+            <Link to="/immich" className={`nav-item ${pathname === '/immich' ? 'active' : ''}`}><Download size={20} /> {messages["immichImportLink"]}</Link>
             {userRole === 'ADMIN' && (
               <Link to="/admin/users" className={`nav-item ${pathname === '/admin/users' ? 'active' : ''}`}><Settings size={20} /> {messages["userManagementLink"]}</Link>
             )}

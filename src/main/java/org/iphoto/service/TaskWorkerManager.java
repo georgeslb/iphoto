@@ -8,10 +8,13 @@ import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.TaskEntity;
 import org.iphoto.exception.PhotoUploadException;
 import org.iphoto.exception.ServiceNotAvailableException;
+import org.iphoto.exception.SpaceLockingException;
+import org.iphoto.model.ImmichAssetImportOutcome;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.UploadStatus;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.repository.TaskRepository;
+import org.iphoto.service.immich.ImmichImportService;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -23,6 +26,7 @@ import java.time.LocalDateTime;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -45,6 +49,7 @@ public class TaskWorkerManager {
     private final PhotoService photoService;
     private final FaceDetectionService faceDetectionService;
     private final FaceRecognitionService faceRecognitionService;
+    private final ImmichImportService immichImportService;
 
     private final ExecutorService executorService = Executors.newVirtualThreadPerTaskExecutor();
 
@@ -93,9 +98,31 @@ public class TaskWorkerManager {
                     // TODO to be updated
                     task.setExecuteAt(LocalDateTime.now().plusSeconds(30));
                     task.setStatus(TaskStatus.PENDING);
+                } else if (SYNC_FROM_IMMICH.equals(task.getTaskType())) {
+                    // Phase 1: staging only, never touches photos/photo_metadata (see
+                    // ImmichImportService). An outcome comes back only when the asset was fully
+                    // handled without needing phase 2 (already imported / content-duplicate) -
+                    // otherwise phase 2 (UPLOAD_FROM_IMMICH, already queued by this call) is what
+                    // records the day row's outcome once it finishes.
+                    Optional<ImmichAssetImportOutcome> outcome = immichImportService.processSyncFromImmichTask(task);
+                    task.setStatus(TaskStatus.COMPLETED);
+                    outcome.ifPresent(o -> immichImportService.recordAssetTaskOutcome(task, o));
+                } else if (UPLOAD_FROM_IMMICH.equals(task.getTaskType())) {
+                    ImmichAssetImportOutcome outcome = immichImportService.finalizeUploadFromImmich(task);
+                    task.setStatus(TaskStatus.COMPLETED);
+                    immichImportService.recordAssetTaskOutcome(task, outcome);
                 }
             }
             catch (ServiceNotAvailableException e) {
+                task.setStatus(TaskStatus.PENDING);
+                task.setExecuteAt(null);
+            }
+            // Multiple UPLOAD_FROM_IMMICH tasks for assets in the same space finish in parallel
+            // on different virtual threads, and SpaceService.lockSpace uses a non-blocking
+            // tryLock - one of them losing that race throws this rather than waiting. Treat it the
+            // same as ServiceNotAvailableException (immediate same-process retry on the next
+            // 5-second poll) rather than a real failure - the lock is normally held only briefly.
+            catch (SpaceLockingException e) {
                 task.setStatus(TaskStatus.PENDING);
                 task.setExecuteAt(null);
             }
@@ -106,6 +133,9 @@ public class TaskWorkerManager {
                 StringWriter sw = new StringWriter();
                 e.printStackTrace(new PrintWriter(sw));
                 task.setStackTrace(sw.toString());
+                if (SYNC_FROM_IMMICH.equals(task.getTaskType()) || UPLOAD_FROM_IMMICH.equals(task.getTaskType())) {
+                    immichImportService.recordAssetTaskFailure(task);
+                }
             }
             taskRepository.save(task);
         });

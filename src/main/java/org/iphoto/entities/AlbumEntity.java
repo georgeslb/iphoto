@@ -12,7 +12,10 @@ import java.util.Set;
 import java.util.UUID;
 
 @Entity
-@Table(name = "albums", uniqueConstraints = {@UniqueConstraint(name = "name_space_unique_albums", columnNames = { "name", "space_id"})})
+@Table(name = "albums", uniqueConstraints = {
+        @UniqueConstraint(name = "name_space_unique_albums", columnNames = { "name", "space_id"}),
+        @UniqueConstraint(name = "uk_albums_external", columnNames = { "external_source", "external_id" })
+})
 @EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true) // Changed callSuper to true
 @SuperBuilder
 @Getter
@@ -51,6 +54,17 @@ public final class AlbumEntity extends BaseEntity { // Extends BaseEntity
 
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+
+    // Set only for albums recreated from an external system (e.g. an Immich album import) - lets
+    // a re-run find-or-create the same album instead of hitting the name-collision throw in
+    // AlbumService.createAlbum, or creating a duplicate. Null/null for every ordinary album;
+    // Postgres treats each NULL pair as distinct, so the unique constraint above never fires for
+    // non-imported albums. e.g. externalSource="IMMICH", externalId=<immich album uuid>.
+    @Column(name = "external_source", length = 32)
+    private String externalSource;
+
+    @Column(name = "external_id", length = 128)
+    private String externalId;
 
     @Override
     public UUID getId() {

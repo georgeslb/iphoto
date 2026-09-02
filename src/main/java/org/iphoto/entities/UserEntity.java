@@ -29,6 +29,19 @@ public class UserEntity implements Persistable<UUID>  {
     private String password;
     private String role;
 
+    // Per-user Immich connection (see service/immich/ImmichCredentialCipher and
+    // service/UserService#resolveImmichCredentials): baseUrl is plain text (not sensitive), the
+    // API key is AES-GCM encrypted using a key derived from this same user's `password` field
+    // (the bcrypt hash, not the raw password - we never have the raw password except for the
+    // instant it's submitted). This lets any thread that can load this row (including a
+    // background SYNC_FROM_IMMICH/UPLOAD_FROM_IMMICH task with no HTTP session) decrypt it, at the cost of it
+    // being obfuscation-at-rest rather than a real password-derived secret - see the cipher class
+    // for the full rationale. UserService#resetPassword re-encrypts these two columns whenever
+    // `password` changes, so they always stay decryptable with the row's current password hash.
+    private String immichBaseUrl;
+    private String immichApiKeyEncrypted;
+    private String immichApiKeyIv;
+
     @OneToMany(mappedBy = "user", fetch = FetchType.EAGER, cascade = CascadeType.REMOVE)
     Set<SpaceEntity> spaces;
 

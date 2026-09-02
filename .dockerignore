@@ -1,0 +1,17 @@
+# Keep the build context small and avoid baking stale local artifacts into the image - the
+# Dockerfile rebuilds all of this from source inside the build stage anyway.
+target/
+frontend/dist/
+src/main/resources/static/node_modules/
+src/main/resources/static/dist/
+
+.git/
+.gitignore
+.idea/
+*.iml
+*.log
+hs_err_pid*.log
+
+.dockerignore
+Dockerfile
+README.md
