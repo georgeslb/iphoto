@@ -1,0 +1,81 @@
+name: Docker image
+
+# Builds the backend/frontend, runs the test suite, then builds and pushes the Docker image to
+# GitHub Container Registry (ghcr.io) as a private package - only on pushes to master (not PRs),
+# plus a manual trigger for one-off rebuilds.
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Matches pom.xml's maven-compiler-plugin release (25) - not the project's
+      # <java.version>21</java.version> property, which is a separate, older setting; see the
+      # Dockerfile's top comment for the same note.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      # The backend's integration tests (src/test/java) spin up a real Postgres via
+      # Testcontainers - this needs Docker, which GitHub-hosted ubuntu-latest runners already
+      # have available out of the box, no extra setup required.
+      - name: Run backend tests
+        run: mvn -B test
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # GHCR requires a lowercase image name; github.repository isn't guaranteed to be (GitHub
+      # usernames/org names can contain uppercase letters), so lowercase it explicitly rather
+      # than assume.
+      - name: Compute lowercase image name
+        id: image
+        run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}
+          tags: |
+            type=raw,value=latest
+            type=sha,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # A brand-new GHCR package isn't reliably private-by-default just because this workflow
+      # uses GITHUB_TOKEN - after the first successful push, check the package's visibility under
+      # https://github.com/users/<you>/packages (or the org equivalent) / "Package settings", and
+      # set it to Private + link it to this repo if it isn't already.
