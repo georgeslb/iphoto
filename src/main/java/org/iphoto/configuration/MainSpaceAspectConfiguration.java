@@ -31,7 +31,7 @@ public class MainSpaceAspectConfiguration {
         // Intercepts all execution of Spring Data Repositories before query execution
         @Before("@annotation(org.iphoto.configuration.MainSpaceLimited)")
         public void enableSpaceFilter(JoinPoint jp) {
-            if (!Thread.currentThread().getName().startsWith("backend-task")) {
+            if (!Thread.currentThread().getName().startsWith("lightThread") && !Thread.currentThread().getName().startsWith("heavyThread")) {
                 String methodName = jp.getSignature().getName();
                 log.debug("Executing method: {}", methodName);
                 Authentication authentication = SecurityContextHolder.getContext().getAuthentication();

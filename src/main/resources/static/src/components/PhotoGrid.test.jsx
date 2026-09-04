@@ -10,7 +10,7 @@ function makePhotos(n) {
 
 // Thin harness holding real React state so PhotoGrid's controlled selectedIds prop
 // behaves exactly as it does under App.jsx, instead of hand-rolling rerenders.
-function Harness({ photos, handleMoveToGarbage }) {
+function Harness({ photos, handleMoveToGarbage, handleUnlinkDuplicate }) {
   const [selectedIds, setSelectedIds] = useState([]);
   return (
     <PhotoGrid
@@ -22,12 +22,16 @@ function Harness({ photos, handleMoveToGarbage }) {
       setSelectedPhoto={() => {}}
       isLightboxOpen={false}
       handleMoveToGarbage={handleMoveToGarbage}
+      handleUnlinkDuplicate={handleUnlinkDuplicate}
     />
   );
 }
 
-function renderHarness(photos, handleMoveToGarbage) {
-  const utils = render(<Harness photos={photos} handleMoveToGarbage={handleMoveToGarbage} />, { wrapper: localeWrapper });
+function renderHarness(photos, handleMoveToGarbage, handleUnlinkDuplicate) {
+  const utils = render(
+    <Harness photos={photos} handleMoveToGarbage={handleMoveToGarbage} handleUnlinkDuplicate={handleUnlinkDuplicate} />,
+    { wrapper: localeWrapper }
+  );
   const cards = () => utils.container.querySelectorAll('.photo-card');
   return { ...utils, cards };
 }
@@ -98,6 +102,14 @@ describe('PhotoGrid duplicate grouping', () => {
     ];
   }
 
+  function makePhotosWithTripleDuplicate() {
+    const dup1 = { id: 'p1-dup1', url: '/photo1-dup1.jpg' };
+    const dup2 = { id: 'p1-dup2', url: '/photo1-dup2.jpg' };
+    return [
+      { id: 'p1', url: '/photo1.jpg', duplicates: [dup1, dup2] },
+    ];
+  }
+
   it('renders a single collapsed card with a badge instead of two separate cards, popup closed', () => {
     const { cards, container } = renderHarness(makePhotosWithDuplicate());
 
@@ -107,18 +119,69 @@ describe('PhotoGrid duplicate grouping', () => {
     expect(container.querySelector('.duplicate-modal-content')).toBeFalsy();
   });
 
-  it('opens a popup showing every member of the cluster, and the X closes it', () => {
+  it('opens a popup flickering the suggested keeper against the other member, and the X closes it', () => {
     const { container } = renderHarness(makePhotosWithDuplicate());
 
     fireEvent.click(container.querySelector('.duplicate-badge'));
 
     expect(container.querySelector('.duplicate-modal-content')).toBeTruthy();
-    expect(container.querySelectorAll('.duplicate-modal-item').length).toBe(2); // p1 + p1-dup
-    expect(container.querySelector('.duplicate-modal-item img[src="/api/photos/p1-dup/original"]')).toBeTruthy();
+    expect(container.querySelectorAll('.duplicate-rail-thumb').length).toBe(2); // p1 + p1-dup
+    // Neither fixture photo has width/height, so they tie on resolution and the first
+    // (p1) is the suggested keeper — the flicker stage starts showing it full-size.
+    expect(container.querySelector('.flicker-stage img[src="/api/photos/p1/original"]')).toBeTruthy();
 
     fireEvent.click(container.querySelector('.duplicate-modal-close'));
 
     expect(container.querySelector('.duplicate-modal-content')).toBeFalsy();
+  });
+
+  it('toggles the flicker stage between the keeper and the compared member', () => {
+    const { container } = renderHarness(makePhotosWithDuplicate());
+    fireEvent.click(container.querySelector('.duplicate-badge'));
+
+    expect(container.querySelector('.flicker-stage img[src="/api/photos/p1/original"]')).toBeTruthy();
+
+    fireEvent.click(container.querySelector('.flicker-stage'));
+    expect(container.querySelector('.flicker-stage img[src="/api/photos/p1-dup/original"]')).toBeTruthy();
+
+    fireEvent.click(container.querySelector('.flicker-stage'));
+    expect(container.querySelector('.flicker-stage img[src="/api/photos/p1/original"]')).toBeTruthy();
+  });
+
+  it('cycles the flicker stage through every member of a cluster larger than 2, not just two', () => {
+    const { container } = renderHarness(makePhotosWithTripleDuplicate());
+    fireEvent.click(container.querySelector('.duplicate-badge'));
+
+    expect(container.querySelectorAll('.duplicate-rail-thumb').length).toBe(3);
+    expect(container.querySelector('.flicker-stage img[src="/api/photos/p1/original"]')).toBeTruthy();
+
+    fireEvent.click(container.querySelector('.flicker-stage'));
+    expect(container.querySelector('.flicker-stage img[src="/api/photos/p1-dup1/original"]')).toBeTruthy();
+
+    fireEvent.click(container.querySelector('.flicker-stage'));
+    expect(container.querySelector('.flicker-stage img[src="/api/photos/p1-dup2/original"]')).toBeTruthy();
+
+    // Wraps back around to the first member instead of getting stuck alternating between two.
+    fireEvent.click(container.querySelector('.flicker-stage'));
+    expect(container.querySelector('.flicker-stage img[src="/api/photos/p1/original"]')).toBeTruthy();
+  });
+
+  it('clicking a member thumbnail shows that photo directly and marks it as the active thumbnail', () => {
+    const { container } = renderHarness(makePhotosWithDuplicate());
+    fireEvent.click(container.querySelector('.duplicate-badge'));
+
+    const thumbs = container.querySelectorAll('.duplicate-rail-thumb');
+    const keeperThumb = Array.from(thumbs).find(el => el.querySelector('img[src="/photo1.jpg"]'));
+    const dupThumb = Array.from(thumbs).find(el => el.querySelector('img[src="/photo1-dup.jpg"]'));
+
+    expect(keeperThumb).toHaveClass('active');
+    expect(dupThumb).not.toHaveClass('active');
+
+    fireEvent.click(dupThumb);
+
+    expect(container.querySelector('.flicker-stage img[src="/api/photos/p1-dup/original"]')).toBeTruthy();
+    expect(dupThumb).toHaveClass('active');
+    expect(keeperThumb).not.toHaveClass('active');
   });
 
   it('shows a move-to-garbage icon on each member in the popup, and it removes just that one photo', () => {
@@ -133,11 +196,33 @@ describe('PhotoGrid duplicate grouping', () => {
     const removeButtons = container.querySelectorAll('.duplicate-remove-btn');
     expect(removeButtons.length).toBe(2); // one per member in the popup
 
-    const dupItem = Array.from(container.querySelectorAll('.duplicate-modal-item'))
-      .find(el => el.querySelector('img[src="/api/photos/p1-dup/original"]'));
-    fireEvent.click(dupItem.querySelector('.duplicate-remove-btn'));
+    const dupThumb = Array.from(container.querySelectorAll('.duplicate-rail-thumb'))
+      .find(el => el.querySelector('img[src="/photo1-dup.jpg"]'));
+    fireEvent.click(dupThumb.querySelector('.duplicate-remove-btn'));
 
     expect(handleMoveToGarbage).toHaveBeenCalledWith(['p1-dup']);
     expect(handleMoveToGarbage).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows trash and unlink icons on the main stage, acting on whichever member is shown', () => {
+    const handleMoveToGarbage = vi.fn();
+    const handleUnlinkDuplicate = vi.fn();
+    const { container } = renderHarness(makePhotosWithDuplicate(), handleMoveToGarbage, handleUnlinkDuplicate);
+
+    fireEvent.click(container.querySelector('.duplicate-badge'));
+
+    const stageTrashBtn = container.querySelector('.flicker-icon-btn-danger');
+    const stageUnlinkBtn = container.querySelector('.flicker-photo-actions button:not(.flicker-icon-btn-danger)');
+    expect(stageTrashBtn).toBeTruthy();
+    expect(stageUnlinkBtn).toBeTruthy();
+
+    // Stage starts on the keeper (p1); unlink must send both the photo being unlinked and every
+    // member of the group as currently known client-side (backend confirms the group hasn't
+    // changed since).
+    fireEvent.click(stageUnlinkBtn);
+    expect(handleUnlinkDuplicate).toHaveBeenCalledWith('p1', ['p1', 'p1-dup']);
+
+    fireEvent.click(stageTrashBtn);
+    expect(handleMoveToGarbage).toHaveBeenCalledWith(['p1']);
   });
 });

@@ -6,6 +6,7 @@ import org.iphoto.model.ImmichAlbumImportSummaryDTO;
 import org.iphoto.model.ImmichImportDayDTO;
 import org.iphoto.model.ImmichImportOverviewDTO;
 import org.iphoto.model.ImmichSettingsDTO;
+import org.iphoto.model.request.ImmichBulkImportRequest;
 import org.iphoto.model.request.ImmichSettingsRequest;
 import org.iphoto.repository.UserRepository;
 import org.iphoto.service.UserService;
@@ -16,6 +17,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.util.List;
 
 // Per-user migration feature (see specification.md / TODO.md): each user connects their own
 // self-hosted Immich server (baseUrl + API key, see /settings below) and imports photos,
@@ -79,6 +81,13 @@ public class ImmichImportController extends AbstractBaseController {
     @PostMapping("/days/{day}/import")
     public ImmichImportDayDTO importDay(@PathVariable @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate day) {
         return immichImportService.triggerDayImport(day, getCurrentUser(), currentTimezoneOffset());
+    }
+
+    // Bulk version of the single-day trigger above (see ImmichImportService.triggerBulkDayImport
+    // for the day-count cap) - backs the frontend's multi-select "Import Selected" action.
+    @PostMapping("/days/import-bulk")
+    public List<ImmichImportDayDTO> importDaysBulk(@RequestBody ImmichBulkImportRequest request) {
+        return immichImportService.triggerBulkDayImport(request.days(), getCurrentUser(), currentTimezoneOffset());
     }
 
     @PostMapping("/albums/import")

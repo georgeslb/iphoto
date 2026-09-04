@@ -124,7 +124,7 @@ public class PhotoService {
 
     @Transactional
     @Retryable(maxAttempts = 5, retryFor = {SpaceLockingException.class}, backoff = @Backoff(delay = 1000))
-    public void restoreAssetsFromGarbage(UserEntity currentUser, List<UUID> ids) throws Exception {
+    public void restoreAssetsFromGarbage(UserEntity currentUser, List<UUID> ids) {
         List<PhotoEntity> photos = photoRepository.findByIdIn(ids).stream().toList();
 
         for (PhotoEntity photo : photos) {
@@ -346,5 +346,14 @@ public class PhotoService {
         return photoSelectionRequest.menuSelectionRequest().albumIds() != null
                 && photoSelectionRequest.menuSelectionRequest().albumIds().size() == 1
                 && albumRepository.existsById(photoSelectionRequest.menuSelectionRequest().albumIds().get(0));
+    }
+
+    // Backs POST /api/photos/check-hashes - lets a client (mobile camera-sync) skip re-uploading
+    // files the server already has, cheaply, before spending bandwidth on them.
+    public List<String> checkExistingHashes(List<String> hashes) {
+        if (hashes == null || hashes.isEmpty()) {
+            return List.of();
+        }
+        return photoRepository.findExistingFileHashes(hashes);
     }
 }

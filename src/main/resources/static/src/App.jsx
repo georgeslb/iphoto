@@ -73,7 +73,7 @@ function App() {
   const [selectedIds, setSelectedIds] = useState([]);
   const [selectedAlbumIds, setSelectedAlbumIds] = useState([]);
   const [selectedSpaceIds, setSelectedSpaceIds] = useState([]); // For deleting multiple spaces
-  const { photos, setPage, hasMore, hasNewer, fetchPhotos, jumpToMonth, loadNewer } = usePhotoData(effectivePath, isLightboxOpen);
+  const { photos, setPhotos, setPage, hasMore, hasNewer, fetchPhotos, jumpToMonth, loadNewer } = usePhotoData(effectivePath, isLightboxOpen);
   const { months: timelineMonths } = useMonthlyTimeline(selectedMenu === 'library');
 
   const { saveScrollPosition } = useScrollRestoration(mainContentRef, isLightboxOpen, photos);
@@ -208,12 +208,13 @@ function App() {
 
   const {
     handleMoveToGarbage,
+    handleUnlinkDuplicate,
     handleMoveToMain,
     handleRestore,
     handlePermanentDelete,
     handleUpdateDate,
     handleEditPhoto,
-  } = usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, selectedIds, setSelectedIds);
+  } = usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, selectedIds, setSelectedIds, setPhotos, fetchAlbums, fetchSpaces);
 
   const {
     handleRestoreSpaces,
@@ -278,6 +279,7 @@ function App() {
           setSelectedPhoto={handlePhotoClick}
           isLightboxOpen={isLightboxOpen}
           handleMoveToGarbage={handleMoveToGarbage}
+          handleUnlinkDuplicate={handleUnlinkDuplicate}
           hasNewer={selectedMenu === 'library' ? hasNewer : undefined}
           onLoadNewer={selectedMenu === 'library' ? loadNewer : undefined}
           mainContentRef={mainContentRef}

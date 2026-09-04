@@ -63,6 +63,7 @@ public class AdminService {
                 Set<TaskType> tasksToAdd = SetUtils.disjunction(taskTypes, photosTasks.stream().map(TaskEntity::getTaskType).collect(Collectors.toSet()));
                 tasksToAdd.forEach(taskType -> {
                     // execute task in the future depending on order if order is greater it will execute later
+                    log.info("Creating new task {} for photo {}", taskType, photo.getId());
                     taskManagerService.createTaskEntity(taskType, photo.getId(), null, LocalDateTime.now().plusMinutes(taskType.getOrder()));
                 });
             });

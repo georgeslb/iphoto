@@ -6,9 +6,6 @@ import lombok.Getter;
 import lombok.Setter;
 import lombok.ToString;
 import lombok.experimental.SuperBuilder;
-import org.hibernate.annotations.OnDelete;
-import org.hibernate.annotations.OnDeleteAction;
-import org.iphoto.model.DuplicateStatus;
 
 import java.util.Set;
 import java.util.UUID;
@@ -27,22 +24,28 @@ public class DuplicateEntity extends BaseEntity {
     @EqualsAndHashCode.Include
     private UUID id;
 
-    @ManyToMany(fetch = FetchType.LAZY)
-    @JoinTable(
-            name = "duplicate_photos",
-            joinColumns = @JoinColumn(name = "duplicate_id" ),
-            inverseJoinColumns = @JoinColumn(name = "photo_id")
-    )
-    @OnDelete(action = OnDeleteAction.CASCADE)
-    private Set<PhotoEntity> photos;
-
-    @Enumerated(EnumType.STRING)
-    private DuplicateStatus status;
+    @OneToMany(fetch = FetchType.LAZY, mappedBy = "duplicate", cascade = {CascadeType.ALL})
+    private Set<PhotoDuplicateEntity> photoDuplicates;
 
     @Column(unique = true)
     private String hash;
 
     public DuplicateEntity() {
+        super();
+    }
 
+    @Override
+    public boolean isNew() {
+        return isNew || id == null;
+    }
+
+    @PostLoad
+    void markNotNew() {
+        this.isNew = false;
+    }
+
+    @PrePersist
+    protected void onCreate() {
+        this.isNew = false;
     }
 }

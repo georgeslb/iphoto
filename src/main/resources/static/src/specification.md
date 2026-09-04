@@ -115,10 +115,10 @@ This section describes the application's features. For the corresponding backend
     UI and does not use this range-select behavior.
 *   **Upload:** Users can upload new photos. A progress manager (`components/UploadManager.jsx`)
     shows the status of ongoing uploads, chunk-by-chunk; the completion response of
-    `POST /api/upload/chunk` includes a `task` object (`{id, status, photoId}` — `photoId` is
+    `POST /api/upload/chunk` includes a `task` object (`{id, status, photoId}` — `unlinkedPhotoId` is
     generated up front at task creation, so it's valid immediately, not just once `COMPLETED`),
     which is then polled via `GET /api/tasks/{id}` until the backend processing task finishes.
-    Once a queue item has a `photoId` and its status is anything **other than `PENDING` or
+    Once a queue item has a `unlinkedPhotoId` and its status is anything **other than `PENDING` or
     `FAILED`**, its file name becomes a clickable link (no separate "Show" button) that opens
     `components/UploadPreviewModal.jsx` — a small, standard-sized popup (not a full-screen
     takeover: transparent click-outside-to-close overlay, no dark backdrop, so the page behind
@@ -244,7 +244,7 @@ This section describes the application's features. For the corresponding backend
             requires tightening a threshold rather than a genuine grouping/logic bug.
     *   Grouping (`DuplicationUniquenessService.consolidateDuplicates`) treats duplicate clusters as
         connected components, not per-pair matches: when a newly-detected duplicate touches one or more
-        existing `DuplicateEntity` groups (`findByPhotosIdIn`), all of them are merged into a single
+        existing `DuplicateEntity` groups (`findByPhotoDuplicatesPhotoIdIn`), all of them are merged into a single
         group (one kept id, `hash` recomputed from the full membership, the other touched groups
         deleted) rather than only ever extending the first candidate. A previously `CLOSED` group is
         reopened to `OPEN` when a new duplicate is folded into it, since it now has a new photo to

@@ -6,30 +6,23 @@ import lombok.experimental.FieldDefaults;
 import lombok.extern.slf4j.Slf4j;
 import org.bytedeco.javacpp.indexer.FloatIndexer;
 import org.bytedeco.javacv.FFmpegFrameGrabber;
-import org.bytedeco.opencv.opencv_core.DMatch;
-import org.bytedeco.opencv.opencv_core.DMatchVector;
-import org.bytedeco.opencv.opencv_core.KeyPointVector;
-import org.bytedeco.opencv.opencv_core.Mat;
-import org.bytedeco.opencv.opencv_core.Point2f;
-import org.bytedeco.opencv.opencv_core.Size;
+import org.bytedeco.opencv.opencv_core.*;
 import org.bytedeco.opencv.opencv_features2d.BFMatcher;
 import org.bytedeco.opencv.opencv_features2d.ORB;
 import org.bytedeco.opencv.opencv_img_hash.AverageHash;
 import org.bytedeco.opencv.opencv_img_hash.PHash;
 import org.iphoto.entities.*;
-import org.iphoto.exception.DuplicationBatchInProgressException;
 import org.iphoto.exception.ServiceNotAvailableException;
-import org.iphoto.mappers.PhotoMapper;
 import org.iphoto.model.DuplicateGroupDTO;
-import org.iphoto.model.Photo;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.repository.DuplicateRepository;
+import org.iphoto.repository.PhotoDuplicateRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Slice;
-import org.springframework.data.domain.SliceImpl;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.ByteBuffer;
 import java.time.LocalDateTime;
@@ -42,11 +35,8 @@ import static org.bytedeco.opencv.global.opencv_calib3d.RANSAC;
 import static org.bytedeco.opencv.global.opencv_calib3d.findHomography;
 import static org.bytedeco.opencv.global.opencv_core.*;
 import static org.bytedeco.opencv.global.opencv_imgcodecs.imread;
-import static org.bytedeco.opencv.global.opencv_imgproc.COLOR_BGR2GRAY;
-import static org.bytedeco.opencv.global.opencv_imgproc.cvtColor;
-import static org.bytedeco.opencv.global.opencv_imgproc.resize;
-import static org.iphoto.model.DuplicateStatus.CLOSED;
-import static org.iphoto.model.DuplicateStatus.OPEN;
+import static org.bytedeco.opencv.global.opencv_imgproc.*;
+import static org.iphoto.model.DuplicateStatus.*;
 
 @Service
 @RequiredArgsConstructor
@@ -56,7 +46,7 @@ public class DuplicationService {
 
     private PhotoRepository photoRepository;
     private DuplicateRepository duplicateRepository;
-    private PhotoMapper photoMapper;
+    private PhotoDuplicateRepository photoDuplicateRepository;
     private DuplicationUniquenessService duplicateUniquenessService;
     private TaskMapper taskMapper;
     private ReentrantLock mHashLock = new ReentrantLock();
@@ -93,40 +83,37 @@ public class DuplicationService {
 
 
     public void deleteDuplicatesForPhoto(PhotoEntity photo) {
-        duplicateRepository.findByPhotosIdIn(Collections.singletonList(photo.getId()))
-                .forEach(duplicate -> {
-                    if (duplicate.getPhotos().size() == 2) {
-                        duplicateRepository.delete(duplicate);
-                    } else {
-                        duplicateRepository.deleteByIdAndPhotosId(duplicate.getId(), photo.getId());
-                    }
-                });
-
-
+        photoDuplicateRepository.deleteByPhotoIdIn(Collections.singletonList(photo.getId()));
     }
 
     public void processMovingToGarbage(Set<PhotoEntity> photosMovedToGarbage) {
         List<UUID> photoIds = photosMovedToGarbage.stream().map(PhotoEntity::getId).collect(Collectors.toList());
-        List<DuplicateEntity> duplicateEntities = duplicateRepository.findByPhotosIdIn(photoIds);
+        List<PhotoDuplicateEntity> photoDuplicateEntities = photoDuplicateRepository.findByPhotoIdIn(photoIds);
         // in case we moved a photo to garbage, we don't remove photo from its duplication group
         // in case only one photo stands in duplication group, remove duplication group
-        duplicateEntities.forEach(duplicateEntity -> {
-            if (duplicateEntity.getStatus() == OPEN && duplicateEntity.getPhotos()
-                    .stream().filter(photoEntity -> !photoEntity.getIsGarbage()).count() < 2) {
-                duplicateEntity.setStatus(CLOSED);
+        photoDuplicateEntities.forEach(pd -> {
+            if (pd.getStatus() == IN_GROUP) {
+                pd.setStatus(MOVED_TO_GARBAGE);
+            } else if (pd.getStatus() == UNLINKED) {
+                pd.setStatus(UNLINKED_BUT_MOVED_TO_GARBAGE);
             }
         });
+        photoDuplicateRepository.saveAll(photoDuplicateEntities);
     }
 
     public void restoreFromGarbage(List<PhotoEntity> photosRestored) {
         List<UUID> photoIds = photosRestored.stream().map(PhotoEntity::getId).collect(Collectors.toList());
-        List<DuplicateEntity> duplicateEntities = duplicateRepository.findByPhotosIdIn(photoIds);
-        duplicateEntities.forEach(duplicateEntity -> {
-            if (duplicateEntity.getStatus() == CLOSED && duplicateEntity.getPhotos()
-                    .stream().filter(photoEntity -> !photoEntity.getIsGarbage()).count() > 1) {
-                duplicateEntity.setStatus(OPEN);
+        List<PhotoDuplicateEntity> photoDuplicateEntities = photoDuplicateRepository.findByPhotoIdIn(photoIds);
+        // in case we moved a photo to garbage, we don't remove photo from its duplication group
+        // in case only one photo stands in duplication group, remove duplication group
+        photoDuplicateEntities.forEach(pd -> {
+            if (pd.getStatus() == MOVED_TO_GARBAGE) {
+                pd.setStatus(IN_GROUP);
+            } else if (pd.getStatus() == UNLINKED_BUT_MOVED_TO_GARBAGE) {
+                pd.setStatus(UNLINKED);
             }
         });
+        photoDuplicateRepository.saveAll(photoDuplicateEntities);
     }
 
     public void hashImage(TaskEntity task) {
@@ -156,15 +143,12 @@ public class DuplicationService {
 
     }
 
-    public void closeDuplicates (String hash) {
-        List<UUID> photosInDuplicationGroup = duplicateUniquenessService.undoGenerateUniqueHash(hash);
-        if (duplicationInProgress.stream().anyMatch(photosInDuplicationGroup::contains)) {
-            throw new DuplicationBatchInProgressException();
-        }
-        duplicateRepository.findByHash(hash).ifPresent(duplicate -> {
-            duplicate.setStatus(CLOSED);
-            duplicateRepository.save(duplicate);
-        });
+    public void closeDuplicates(String hash) {
+//        List<UUID> photosInDuplicationGroup = duplicateUniquenessService.undoGenerateUniqueHash(hash);
+//        if (duplicationInProgress.stream().anyMatch(photosInDuplicationGroup::contains)) {
+//            throw new DuplicationBatchInProgressException();
+//        }
+//        Set<DuplicateEntity> duplicates = duplicateRepository.findByHash(hash);
     }
     // ---------------------------------------------------
     // PREPROCESS
@@ -208,7 +192,7 @@ public class DuplicationService {
             hash.release();
         }
 
-        try (AverageHash  averageHash = AverageHash.create()) {
+        try (AverageHash averageHash = AverageHash.create()) {
             Mat hash = new Mat();
 
             averageHash.compute(image, hash);
@@ -376,6 +360,7 @@ public class DuplicationService {
             throw new ServiceNotAvailableException("Duplication is busy with another task");
         }
         try {
+            checkDuplicationLock.lock();
             duplicationInProgress.add(task.getPhotoId());
             photoRepository
                     .findById(task.getPhotoId()).ifPresent(photo -> {
@@ -406,12 +391,18 @@ public class DuplicationService {
 
                         if (!duplicatesPhotos.isEmpty()) {
                             try {
-                                TaskStatus taskStatus = duplicateUniquenessService.consolidateDuplicates(photo, duplicatesPhotos);
-                                if (taskStatus == TaskStatus.COMPLETED || taskStatus == TaskStatus.FAILED) {
-                                    task.setStatus(taskStatus);
+                                if (!duplicatesPhotos.contains(photo)) {
+                                    TaskStatus taskStatus = duplicateUniquenessService.consolidateDuplicates(photo, duplicatesPhotos);
+                                    if (taskStatus == TaskStatus.COMPLETED || taskStatus == TaskStatus.FAILED) {
+                                        task.setStatus(taskStatus);
+                                    } else {
+                                        task.setStatus(TaskStatus.PENDING);
+                                    }
                                 } else {
-                                    task.setStatus(TaskStatus.PENDING);
+                                    // photo already exists in group no need to add it again
+                                    task.setStatus(TaskStatus.COMPLETED);
                                 }
+
                             } catch (Exception e) {
                                 task.setStatus(TaskStatus.PENDING);
                                 task.setExecuteAt(LocalDateTime.now().plusMinutes(1));
@@ -438,29 +429,29 @@ public class DuplicationService {
     private PhotoEntity evaluatePair(PhotoEntity photo, PhotoEntity targetPhoto) {
         int pHashDistance = calculateHammingDistance(photo.getPhash(), targetPhoto.getPhash());
         int averageHashDistance = calculateHammingDistance(photo.getMhash(), targetPhoto.getMhash());
-        log.info("evaluatePair photo={} target={}: pHashDistance={} (strong<={}, candidate<={}), mHashDistance={} (strong<={}, candidate<={})",
+        log.debug("evaluatePair photo={} target={}: pHashDistance={} (strong<={}, candidate<={}), mHashDistance={} (strong<={}, candidate<={})",
                 photo.getId(), targetPhoto.getId(), pHashDistance, STRONG_PHASH_MAX, CANDIDATE_PHASH_MAX,
                 averageHashDistance, STRONG_MHASH_MAX, CANDIDATE_MHASH_MAX);
 
         if (pHashDistance <= STRONG_PHASH_MAX && averageHashDistance <= STRONG_MHASH_MAX) {
-            log.info("DUPLICATE via strong hash match: photo={} target={} pHashDistance={} mHashDistance={}",
+            log.debug("DUPLICATE via strong hash match: photo={} target={} pHashDistance={} mHashDistance={}",
                     photo.getId(), targetPhoto.getId(), pHashDistance, averageHashDistance);
             return targetPhoto;
         }
 
         boolean plausibleByHash = pHashDistance <= CANDIDATE_PHASH_MAX || averageHashDistance <= CANDIDATE_MHASH_MAX;
         if (!plausibleByHash) {
-            log.info("NOT duplicate: photo={} target={} outside candidate hash band, skipping feature matching",
+            log.debug("NOT duplicate: photo={} target={} outside candidate hash band, skipping feature matching",
                     photo.getId(), targetPhoto.getId());
             return null;
         }
 
-        log.info("candidate hash band: photo={} target={} falling back to ORB feature matching", photo.getId(), targetPhoto.getId());
+        log.debug("candidate hash band: photo={} target={} falling back to ORB feature matching", photo.getId(), targetPhoto.getId());
         if (confirmWithFeatureMatching(photo, targetPhoto)) {
             log.info("DUPLICATE via feature matching: photo={} target={}", photo.getId(), targetPhoto.getId());
             return targetPhoto;
         }
-        log.info("NOT duplicate: photo={} target={} feature matching did not confirm", photo.getId(), targetPhoto.getId());
+        log.debug("NOT duplicate: photo={} target={} feature matching did not confirm", photo.getId(), targetPhoto.getId());
         return null;
     }
 
@@ -478,7 +469,7 @@ public class DuplicationService {
         byte[] descriptorBytes2 = targetPhoto.getOrbDescriptors();
         if (descriptorBytes1 == null || descriptorBytes1.length == 0
                 || descriptorBytes2 == null || descriptorBytes2.length == 0) {
-            log.info("feature matching photo={} target={}: no stored ORB descriptors (not yet hashed?)",
+            log.debug("feature matching photo={} target={}: no stored ORB descriptors (not yet hashed?)",
                     photo.getId(), targetPhoto.getId());
             return false;
         }
@@ -511,7 +502,7 @@ public class DuplicationService {
             float[] points2 = bytesToPoints(targetPhoto.getOrbKeypoints());
             int inliers = countHomographyInliers(goodMatches, points1, points2);
             double inlierRatio = (double) inliers / goodMatches.size();
-            log.info("feature matching photo={} target={}: homography inliers={}/{} ratio={} (min count {}, min ratio {})",
+            log.debug("feature matching photo={} target={}: homography inliers={}/{} ratio={} (min count {}, min ratio {})",
                     photo.getId(), targetPhoto.getId(), inliers, goodMatches.size(), inlierRatio, ORB_MIN_INLIERS, ORB_MIN_INLIER_RATIO);
             return inliers >= ORB_MIN_INLIERS && inlierRatio >= ORB_MIN_INLIER_RATIO;
         } catch (Exception e) {
@@ -577,30 +568,32 @@ public class DuplicationService {
         }
     }
 
-    public Slice<DuplicateGroupDTO> getDuplicates(Pageable pageable) { // Added UserEntity parameter
-        // Pageable is equals to 1, we will see only one DuplicateEntity
-        Slice<DuplicateEntity> hashesSlice = duplicateRepository.findByStatus(OPEN, pageable); // Filter by user
-        List<DuplicateEntity> duplicateEntities = hashesSlice.getContent();
-
-        if (duplicateEntities.isEmpty()) {
-            return new SliceImpl<>(Collections.emptyList(), pageable, hashesSlice.hasNext());
-        }
-        List<Photo> photos = duplicateEntities.getFirst().getPhotos().stream()
-                .filter(photoEntity -> !photoEntity.getIsGarbage())
-                .map(photoMapper::photoEntityToPhoto).toList();
-
-        List<DuplicateGroupDTO> result = Collections.emptyList();
-        if (photos.size() > 1) {
-            result = duplicateEntities.stream()
-                    .map(hash -> new DuplicateGroupDTO(duplicateEntities.getFirst().getId().toString(), photos))
-                    .collect(Collectors.toList());
-        }
-
-        return new SliceImpl<>(result, pageable, hashesSlice.hasNext());
+    public Slice<DuplicateGroupDTO> getDuplicates(Pageable pageable) {
+//        // Pageable is equals to 1, we will see only one DuplicateEntity
+//        Slice<DuplicateEntity> hashesSlice = duplicateRepository.findByStatus(IN_GROUP, pageable);
+//        List<DuplicateEntity> duplicateEntities = hashesSlice.getContent();
+//
+//        if (duplicateEntities.isEmpty()) {
+//            return new SliceImpl<>(Collections.emptyList(), pageable, hashesSlice.hasNext());
+//        }
+//        List<Photo> photos = duplicateEntities.getFirst().getPhotos().stream()
+//                .filter(photoEntity -> !photoEntity.getIsGarbage())
+//                .map(photoMapper::photoEntityToPhoto).toList();
+//
+//        List<DuplicateGroupDTO> result = Collections.emptyList();
+//        if (photos.size() > 1) {
+//            result = duplicateEntities.stream()
+//                    .map(hash -> new DuplicateGroupDTO(duplicateEntities.getFirst().getId().toString(), photos))
+//                    .collect(Collectors.toList());
+//        }
+//
+//        return new SliceImpl<>(result, pageable, hashesSlice.hasNext());
+        return null;
     }
 
     /**
      * Calculates the Hamming Distance between two 8-byte (64-bit) pHashes.
+     *
      * @return 0 if identical, higher numbers mean less similar.
      */
     private static int calculateHammingDistance(byte[] hash1, byte[] hash2) {
@@ -620,13 +613,29 @@ public class DuplicationService {
     }
 
     public Set<PhotoEntity> getDuplicates(PhotoEntity photo) {
-        return duplicateRepository.findByPhotosIdIn(List.of(photo.getId()))
+        return photoDuplicateRepository.findByPhotoIdIn(List.of(photo.getId()))
                 .stream()
-                .map(DuplicateEntity::getPhotos)
+                .filter(pd -> pd.getStatus() == IN_GROUP)
+                .map(PhotoDuplicateEntity::getDuplicate)
+                .map(DuplicateEntity::getPhotoDuplicates)
                 .flatMap(Collection::stream)
+                .filter(pd -> pd.getStatus() == IN_GROUP)
+                .map(PhotoDuplicateEntity::getPhoto)
                 .filter(photoEntity -> !photoEntity.getId().equals(photo.getId()))
                 .filter(p -> !p.getIsGarbage())
                 .collect(Collectors.toSet());
 
+    }
+
+    @Transactional
+    public void unlinkPhotoFromGroup(UUID photoId, Set<UUID> photosId) {
+        duplicateRepository.findByPhotoDuplicatesPhotoIdIn(List.of(photoId)).forEach(duplicate -> {
+            Set<UUID> includedPhotoInDuplicateGroup = duplicate.getPhotoDuplicates().stream().filter(pd -> pd.getStatus() == IN_GROUP)
+                    .map(PhotoDuplicateEntity::getPhoto).map(PhotoEntity::getId).collect(Collectors.toSet());
+            if (includedPhotoInDuplicateGroup.containsAll(photosId)) {
+                duplicate.getPhotoDuplicates().stream().filter(pd -> pd.getPhoto().getId().equals(photoId))
+                        .findAny().ifPresent(pd -> pd.setStatus(UNLINKED));
+            }
+        });
     }
 }

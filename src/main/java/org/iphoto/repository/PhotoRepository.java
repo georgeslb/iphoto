@@ -12,6 +12,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -25,11 +26,11 @@ public interface PhotoRepository extends JpaRepository<PhotoEntity, UUID> {
     Page<PhotoEntity> findBySpaceIdInAndIsGarbageTrue(Set<UUID> spaceIds, Pageable pageable);
 
 
-    Page<PhotoEntity> findByIsGarbageFalseAndAlbums(AlbumEntity album, Pageable pageable);
+    Page<PhotoEntity> findByIsGarbageFalseAndAlbums(Set<AlbumEntity> albums, Pageable pageable);
 
     Page<PhotoEntity> findByFacesPerson(PersonEntity person, Pageable pageable);
 
-    long countByIsGarbageFalseAndAlbums(AlbumEntity album);
+    long countByIsGarbageFalseAndAlbums(Set<AlbumEntity> album);
 
     Slice<PhotoEntity> findBySpaceIdAndDateTakenBetweenAndPhashNotNullAndMhashNotNullAndIsGarbageFalse(UUID spaceId, LocalDateTime startDateTaken, LocalDateTime endDateTaken, Pageable pageable);
 
@@ -41,6 +42,17 @@ public interface PhotoRepository extends JpaRepository<PhotoEntity, UUID> {
     Page<PhotoEntity> findBySpaceId(UUID space, Pageable pageable);
 
     Optional<PhotoEntity> findByFileHash(String hash);
+
+    // Backs POST /api/photos/check-hashes (mobile camera-sync: "which of these do you already
+    // have"). Deliberately a global lookup, not @MainSpaceLimited/per-user - findByFileHash above
+    // already isn't user-scoped either (TaskWorkerManager's upload-hashing and
+    // ImmichImportService both rely on file-hash uniqueness being a global, not per-user,
+    // invariant), so this mirrors that existing semantic rather than giving a client an answer
+    // inconsistent with what will actually happen when it uploads. A projection to just the hash
+    // string, never the photo id/owner, keeps this from becoming a cross-user existence oracle
+    // beyond "this exact byte content is stored somewhere."
+    @Query("SELECT p.fileHash FROM PhotoEntity p WHERE p.fileHash IN :hashes")
+    List<String> findExistingFileHashes(@Param("hashes") Collection<String> hashes);
 
     Set<PhotoEntity> findByIdIn(List<UUID> photoId);
 

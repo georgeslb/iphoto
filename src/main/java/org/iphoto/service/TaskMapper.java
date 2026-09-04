@@ -33,11 +33,11 @@ public class TaskMapper {
 
             }
             case ON_EDIT_PHOTO_ACTION, ON_CREATE_PHOTO_ACTION  -> {
-                taskManagerService.createTaskEntity(TaskType.HASH_IMAGE, photoId, null,  LocalDateTime.now().plusMinutes(2));
-                taskManagerService.createTaskEntity(TaskType.ISOLATE_FACES, photoId, null,  LocalDateTime.now().plusMinutes(3));
+                taskManagerService.createTaskEntity(TaskType.HASH_IMAGE, photoId, null,  null);
+                taskManagerService.createTaskEntity(TaskType.ISOLATE_FACES, photoId, null,  null);
             }
             case AFTER_PHOTO_HASH  -> {
-                taskManagerService.createTaskEntity(TaskType.CHECK_DUPLICATION, photoId, null, LocalDateTime.now().plusMinutes(1));
+                taskManagerService.createTaskEntity(TaskType.CHECK_DUPLICATION, photoId, null, null);
             }
             case PHOTO_PERMANENTLY_DELETED -> {
                 List<TaskEntity> pendingTasks = taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), LocalDateTime.now().plusYears(1), List.of(photoId));

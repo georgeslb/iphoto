@@ -3,9 +3,6 @@ package org.iphoto.service;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.AlbumEntity;
-import org.iphoto.entities.DuplicateEntity;
-import org.iphoto.entities.PhotoEntity;
-import org.iphoto.repository.DuplicateRepository;
 import org.iphoto.repository.PhotoMetadataRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.springframework.stereotype.Service;
@@ -26,7 +23,6 @@ public class PhotoDeletionService {
     private final PhotoRepository photoRepository;
     private final PhotoMetadataRepository metadataRepository;
     private final AlbumService albumService;
-    private final DuplicateRepository duplicateRepository;
     private final TaskMapper taskMapper;
 
     public void permanentDeleteAssets(UUID photoId) {
@@ -44,17 +40,17 @@ public class PhotoDeletionService {
                     // Handle duplicates: This logic assumes DuplicateEntity might contain photos from different users.
                     // If DuplicateEntity is user-scoped, this needs to be adjusted.
                     // For now, we'll remove the specific photo from any duplicate groups it's part of.
-                    List<DuplicateEntity> duplicateEntities = duplicateRepository.findByPhotosIdIn(List.of(photo.getId()));
-                    for (DuplicateEntity duplicateEntity : duplicateEntities) {
-                        if (duplicateEntity.getPhotos().contains(photo)) {
-                            duplicateEntity.getPhotos().remove(photo);
-                            if (duplicateEntity.getPhotos().isEmpty()) {
-                                duplicateRepository.delete(duplicateEntity);
-                            } else {
-                                duplicateRepository.save(duplicateEntity);
-                            }
-                        }
-                    }
+//                    List<DuplicateEntity> duplicateEntities = duplicateRepository.findByPhotoDuplicatesPhotosIdIn(List.of(photo.getId()));
+//                    for (DuplicateEntity duplicateEntity : duplicateEntities) {
+//                        if (duplicateEntity.getPhotos().contains(photo)) {
+//                            duplicateEntity.getPhotos().remove(photo);
+//                            if (duplicateEntity.getPhotos().isEmpty()) {
+//                                duplicateRepository.delete(duplicateEntity);
+//                            } else {
+//                                duplicateRepository.save(duplicateEntity);
+//                            }
+//                        }
+//                    }
 
                     metadataRepository.deleteById(photo.getId());
                     taskMapper.updateTasksToAction(TaskMapper.Action.PHOTO_PERMANENTLY_DELETED, photo.getId());

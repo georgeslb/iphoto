@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
-export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, selectedIds, setSelectedIds) { // Added selectedIds, setSelectedIds as props
+export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, selectedIds, setSelectedIds, setPhotos, fetchAlbums, fetchSpaces) { // Added selectedIds, setSelectedIds as props
   const { messages } = useLocale(); // Use the useLocale hook
   // const [selectedIds, setSelectedIds] = useState([]); // Removed internal state
 
@@ -11,11 +11,49 @@ export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, hand
     const res = await fetch('/api/photos/garbage', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ids) });
     if (res.ok) {
       setSelectedIds([]);
-      await refreshAndMaintainScroll();
+      // Deliberately NOT refreshAndMaintainScroll here: that resets the grid to page 0 only,
+      // silently dropping every page loaded past the first and then trying to restore the old
+      // scrollTop pixel value against much shorter content - it both yanks the user's scroll
+      // position and, when triggered from DuplicateClusterModal (whose visible cluster is
+      // derived live from `photos`, see PhotoGrid.jsx), can wipe the open cluster's primary
+      // out of the reset list and auto-close the modal even though the cluster itself still
+      // has other members left. Instead, remove exactly the garbage'd ids from the
+      // already-loaded `photos` in place - and scrub them out of every remaining photo's own
+      // `duplicates` list too, since that's what PhotoGrid.jsx's cluster grouping actually
+      // reads members from, not a re-derivation off the top-level array.
+      setPhotos(prev =>
+        prev
+          .filter(p => !ids.includes(p.id))
+          .map(p => (
+            p.duplicates && p.duplicates.some(d => ids.includes(d.id))
+              ? { ...p, duplicates: p.duplicates.filter(d => !ids.includes(d.id)) }
+              : p
+          ))
+      );
+      await fetchAlbums();
+      await fetchSpaces();
     } else {
       alert(messages["failedToMoveToGarbage"](res.status));
     }
-  }, [refreshAndMaintainScroll, setSelectedIds, messages]);
+  }, [setPhotos, fetchAlbums, fetchSpaces, setSelectedIds, messages]);
+
+  // Removes one photo from its duplicate cluster without touching the photo itself — distinct
+  // from handleMoveToGarbage, which deletes/trashes it. `groupPhotoIds` is every member of that
+  // cluster as currently known client-side (DuplicateController.unlinkPhoto uses it to confirm
+  // the group hasn't changed server-side since). Used by DuplicateClusterModal.jsx's unlink icon
+  // ("this isn't actually a duplicate of the rest of this group").
+  const handleUnlinkDuplicate = useCallback(async (photoId, groupPhotoIds) => {
+    const res = await fetch('/api/photos/duplicates/unlink', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ unlinkedPhotoId: photoId, duplicatesId: groupPhotoIds }),
+    });
+    if (res.ok) {
+      await refreshAndMaintainScroll();
+    } else {
+      alert(messages["failedToUnlinkDuplicate"](res.status));
+    }
+  }, [refreshAndMaintainScroll, messages]);
 
   const handleRestore = useCallback(async (ids) => {
     const res = await fetch('/api/photos/garbage/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ids) });
@@ -95,6 +133,7 @@ export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, hand
     // selectedIds, // No longer returned as internal state
     // setSelectedIds, // No longer returned as internal state
     handleMoveToGarbage,
+    handleUnlinkDuplicate,
     handleMoveToMain,
     handleRestore,
     handlePermanentDelete,

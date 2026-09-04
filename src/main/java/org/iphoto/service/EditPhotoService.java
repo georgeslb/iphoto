@@ -150,7 +150,7 @@ public class EditPhotoService {
                 originalPhoto.setFileSize(Files.size(Path.of(originalPhoto.getOriginalPath())));
                 originalPhoto.setWidth(workingImage.getWidth());
                 originalPhoto.setHeight(workingImage.getHeight());
-                originalPhoto.getFaces().forEach(faceRepository::delete);
+                faceRepository.deleteAll(originalPhoto.getFaces());
                 duplicationService.deleteDuplicatesForPhoto(originalPhoto);
                 taskMapper.updateTasksToAction(TaskMapper.Action.ON_EDIT_PHOTO_ACTION, originalPhoto.getId());
                 return photoRepository.save(originalPhoto);

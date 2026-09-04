@@ -4,9 +4,11 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.hibernate.exception.ConstraintViolationException;
 import org.iphoto.entities.DuplicateEntity;
+import org.iphoto.entities.PhotoDuplicateEntity;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.repository.DuplicateRepository;
+import org.iphoto.repository.PhotoDuplicateRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -17,8 +19,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.*;
 import java.util.stream.Collectors;
 
-import static org.iphoto.model.DuplicateStatus.CLOSED;
-import static org.iphoto.model.DuplicateStatus.OPEN;
+import static org.iphoto.model.DuplicateStatus.IN_GROUP;
 
 @Service
 @RequiredArgsConstructor
@@ -26,42 +27,45 @@ import static org.iphoto.model.DuplicateStatus.OPEN;
 public class DuplicationUniquenessService {
 
     private final DuplicateRepository duplicateRepository;
+    private final PhotoDuplicateRepository photoDuplicateRepository;
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public TaskStatus consolidateDuplicates(PhotoEntity photo, Set<PhotoEntity> duplicatesPhotos) { // Added UserEntity parameter
+    public TaskStatus consolidateDuplicates(PhotoEntity photo, Set<PhotoEntity> duplicatesPhotos) {
         try {
             List<UUID> ids = duplicatesPhotos.stream().map(PhotoEntity::getId).toList();
-            List<DuplicateEntity> existingDuplicates =  duplicateRepository.findByPhotosIdIn(ids); // Filter by user
-            boolean addNewDuplicatePhoto = true;
-            for (DuplicateEntity duplicate : existingDuplicates.stream().filter(duplicateEntity -> duplicateEntity.getStatus() == OPEN).collect(Collectors.toSet())) {
-                if (duplicate.getPhotos().stream().map(PhotoEntity::getId)
-                        .filter(id -> !id.equals(photo.getId()))
-                        .allMatch(ids::contains) && duplicate.getPhotos().size() - 1 >= ids.size()) {
-                    // photo should be added to duplicate group
-                    if (duplicate.getPhotos().stream().noneMatch(p -> p.getId().equals(photo.getId()))) {
-                        duplicate.getPhotos().add(photo);
-                        duplicateRepository.saveAndFlush(duplicate);
+            List<PhotoDuplicateEntity> photoDuplicateEntities = photoDuplicateRepository.findByPhotoIdIn(ids);
+            Set<DuplicateEntity> existingDuplicates = photoDuplicateEntities.stream().map(PhotoDuplicateEntity::getDuplicate).collect(Collectors.toSet());
+            if (!existingDuplicates.isEmpty()) {
+                for (DuplicateEntity duplicateEntity : existingDuplicates) {
+                    Set<PhotoDuplicateEntity> existingDuplicatePhotosInEntity = duplicateEntity.getPhotoDuplicates();
+                    // photo may already be a member of this group (e.g. this task is a retry, or
+                    // another of its candidate duplicates already pulled it in during this same
+                    // pass) - only add it once. PhotoDuplicateEntity's own equals/hashCode
+                    // (photo+duplicate) would normally make the Set.add below a safe no-op on its
+                    // own, but that relies on the lazy `photo` proxy comparing equal to the fresh
+                    // one built here, which needs PhotoEntity's own equals/hashCode to cooperate -
+                    // an explicit id check here doesn't depend on that.
+                    boolean alreadyInGroup = existingDuplicatePhotosInEntity.stream()
+                            .anyMatch(pd -> pd.getPhoto().getId().equals(photo.getId()));
+                    if (alreadyInGroup) {
+                        continue;
                     }
-                    addNewDuplicatePhoto = false;
-                    break;
+                    existingDuplicatePhotosInEntity.add(buildPhotoDuplicate(photo, duplicateEntity));
+                    duplicateEntity.setHash(generateUniqueHash(existingDuplicatePhotosInEntity));
+                    duplicateRepository.save(duplicateEntity);
                 }
-            }
-            if (addNewDuplicatePhoto) {
+            } else {
                 // create a new duplicate group
-                Set<PhotoEntity> duplicatesPhotosToAdd = new HashSet<>(duplicatesPhotos);
-                duplicatesPhotosToAdd.add(photo);
                 DuplicateEntity duplicateEntity = DuplicateEntity.builder()
                         .id(UUID.randomUUID())
-                        .photos(duplicatesPhotosToAdd)
                         .space(photo.getSpace())
-                        .status(OPEN)
-                        .hash(generateUniqueHash(duplicatesPhotosToAdd))
                         .build();
-                duplicateRepository.saveAndFlush(duplicateEntity);
-                existingDuplicates.forEach(existingDuplicate -> {
-                    existingDuplicate.setStatus(CLOSED);
-                    duplicateRepository.saveAndFlush(duplicateEntity);
-                });
+                //FIXME les duplicate sont ajouté plusieurs fois
+                Set<PhotoDuplicateEntity> duplicatesPhotosToAdd = duplicatesPhotos.stream().map(p -> buildPhotoDuplicate(p, duplicateEntity)).collect(Collectors.toSet());
+                duplicatesPhotosToAdd.add(buildPhotoDuplicate(photo, duplicateEntity));
+                duplicateEntity.setHash(generateUniqueHash(duplicatesPhotosToAdd));
+                duplicateEntity.setPhotoDuplicates(duplicatesPhotosToAdd);
+                duplicateRepository.save(duplicateEntity);
             }
            return TaskStatus.COMPLETED;
         } catch (Exception e) {
@@ -71,6 +75,10 @@ public class DuplicationUniquenessService {
             }
         }
         return TaskStatus.PENDING;
+    }
+
+    private PhotoDuplicateEntity buildPhotoDuplicate(PhotoEntity photo, DuplicateEntity duplicateEntity) {
+        return PhotoDuplicateEntity.builder().photo(photo).duplicate(duplicateEntity).status(IN_GROUP).build();
     }
 
     private boolean isUniqueConstraintViolation(Exception e) {
@@ -85,12 +93,12 @@ public class DuplicationUniquenessService {
         return false;
     }
 
-    private String generateUniqueHash(Set<PhotoEntity> photos){
+    private String generateUniqueHash(Set<PhotoDuplicateEntity> photoDuplicates){
         MessageDigest digest = null;
         try {
             digest = MessageDigest.getInstance("SHA-256");
-            String canonical = photos.stream()
-                    .distinct()
+            String canonical = photoDuplicates.stream()
+                    .map(PhotoDuplicateEntity::getPhoto)
                     .sorted(Comparator.comparing(PhotoEntity::getFileHash))
                     .map(PhotoEntity::getFileHash)
                     .collect(Collectors.joining(","));
@@ -106,7 +114,8 @@ public class DuplicationUniquenessService {
     public List<UUID> undoGenerateUniqueHash(String hexHash) {
         Optional<DuplicateEntity> duplicateEntityOptional = duplicateRepository.findByHash(hexHash);
         return duplicateEntityOptional.map(duplicateEntity ->
-                duplicateEntity.getPhotos().stream()
+                duplicateEntity.getPhotoDuplicates().stream()
+                        .map(PhotoDuplicateEntity::getPhoto)
                         .map(PhotoEntity::getId)
                         .collect(Collectors.toList()))
                 .orElse(Collections.emptyList());

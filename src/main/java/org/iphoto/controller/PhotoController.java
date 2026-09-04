@@ -8,6 +8,7 @@ import org.iphoto.entities.UserEntity;
 import org.iphoto.mappers.PhotoMapper;
 import org.iphoto.mappers.PhotoMetadataMapper;
 import org.iphoto.model.*;
+import org.iphoto.model.request.CheckHashesRequest;
 import org.iphoto.model.request.PhotoEditRequest;
 import org.iphoto.model.request.PhotoSelectionRequest;
 import org.iphoto.model.request.UpdatePhotoDateRequest;
@@ -190,6 +191,14 @@ public class PhotoController {
     public PhotoSelectionDTO getSelection(@RequestBody PhotoSelectionRequest photoSelectionRequest) {
         UserEntity currentUser = getCurrentUser();
         return photoService.getSelection(photoSelectionRequest, currentUser);
+    }
+
+    // Mobile camera-sync: "which of these do you already have" before spending bandwidth
+    // uploading them. See PhotoRepository.findExistingFileHashes for why this is a deliberately
+    // global (not per-user) lookup, and why the response only ever echoes back hashes.
+    @PostMapping("/check-hashes")
+    public CheckHashesResponse checkHashes(@RequestBody CheckHashesRequest request) {
+        return new CheckHashesResponse(photoService.checkExistingHashes(request.hashes()));
     }
 
     @PostMapping("/garbage")

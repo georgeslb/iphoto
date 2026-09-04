@@ -13,6 +13,7 @@ export default function PhotoGrid({
   setSelectedPhoto,
   isLightboxOpen, // Accept the new prop
   handleMoveToGarbage,
+  handleUnlinkDuplicate, // Only passed where duplicates are populated (Library) — DuplicateClusterModal's unlink icon
   handleUnlinkPerson, // Only passed from PersonDetail.jsx — unlinks this person from a photo
   // The three below are only ever passed by the Library route (App.jsx), after a
   // LibraryTimeline.jsx jump — they enable back-scrolling above the jumped-to point. Left
@@ -320,6 +321,8 @@ export default function PhotoGrid({
         item={openDuplicateItem}
         onClose={() => setOpenDuplicatePrimaryId(null)}
         handleMoveToGarbage={handleMoveToGarbage}
+        handleUnlinkDuplicate={handleUnlinkDuplicate}
+        onExpand={setSelectedPhoto}
       />
     </div>
   );

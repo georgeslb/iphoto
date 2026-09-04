@@ -5,6 +5,100 @@ new work is identified or completed, so nothing gets lost between sessions.
 
 ## Done
 
+- [x] **`DuplicateClusterModal.jsx` redesigned — flicker compare instead of a static image grid.**
+      User feedback on the equal-size-columns `/duplicates` page ("hard to see differences and
+      choose") led to exploring four options (metadata diff strip, auto-suggested keeper badge,
+      bigger images + zoom, flicker/slider toggle compare) via an interactive artifact demo. User
+      picked flicker as primary, asked for all four combined with flicker highest-precedence — but
+      clarified the target was this popup (opened from a "×N similar" badge in `PhotoGrid.jsx`),
+      not the separate `/duplicates` page, which they don't use in practice (the popup superseded
+      it as their actual workflow). First implementation landed on `DuplicatePhotoGrid.jsx`
+      (`/duplicates`) by mistake and was reverted (`git checkout`) once corrected.
+      Implementation: the cluster's highest-resolution member (`width*height`, already on the
+      `Photo` DTO — no backend change) is the "keeper" (gold star badge), shown flickering in place
+      against whichever other member is picked from a thumbnail chip row underneath (click,
+      spacebar, or an "auto-flicker" checkbox alternating every 700ms) — generalizes to any cluster
+      size, not just pairs, since it's always keeper-vs-one-other rather than a fixed grid. A
+      metadata diff table (resolution/file size/camera/date) sits below the stage, differing values
+      in red. A `Maximize2` button on the stage — and clicking the keeper's own chip — closes the
+      popup and opens the photo in the full Lightbox (`onExpand` prop, wired from `PhotoGrid.jsx`'s
+      `setSelectedPhoto`) for actual pixel-level zoom, reusing Lightbox rather than building new
+      zoom UI. Kept the per-member trash icon (`handleMoveToGarbage`, already wired from
+      `PhotoGrid.jsx`). Modal widened from a fixed `90vw` two-column grid to `min(720px, 90vw)`
+      single-column (`.duplicate-modal-body` now scrolls independently under a fixed header). New
+      i18n keys (`duplicateShowingKeeper`, `duplicateToggleButton`, `duplicateAutoFlickerLabel`,
+      `duplicateKeeperLabel`/`duplicateCompareLabel`, `duplicateResolutionLabel`/
+      `duplicateFileSizeLabel`/`duplicateCameraLabel`, `duplicateSinglePhotoNotice`, etc.) added for
+      en/fr. New CSS in `App.css` (`.flicker-stage`, `.duplicate-meta-diff`, `.duplicate-chip-row`,
+      `.keeper-badge`, ...); removed the now-unused `.duplicate-modal-grid`/`.duplicate-modal-item`
+      rules. `PhotoGrid.jsx` is on CLAUDE.md's regression-tested hook list, so `PhotoGrid.test.jsx`
+      was updated to match the new DOM (`.duplicate-chip` instead of `.duplicate-modal-item`, flicker
+      toggle assertions instead of "every member rendered at once") rather than left broken; added a
+      new test for the toggle itself. `npm run build` and `npm test -- --run` (87/87) both clean.
+      `DuplicatePhotoGrid.jsx`/`/duplicates` itself is unchanged/reverted to its original static
+      side-by-side layout — still exists as a route, just not where this redesign went.
+
+- [x] **`DuplicateClusterModal.jsx` follow-up 2 — cycle all members, stage-level trash/unlink icons.**
+      User: the previous pass's "any pair by clicking them in sequence" model was still only ever
+      showing "one of two assets even with more than 2" per member visible at a time — confusing
+      given a cluster of 3+. Replaced the `shownIndex`/`previousIndex` swap-between-last-two model
+      with a single `shownIndex` that cycles through **every** member in order on toggle/space/
+      auto-flicker (`(i + 1) % members.length`, wrapping) — direct thumbnail clicks still jump to
+      any specific one instantly. Simpler code too (no more previous-index bookkeeping). Added a
+      3-member test (`makePhotosWithTripleDuplicate`) asserting the stage visits all three and
+      wraps back around, not just alternates between two.
+      Also added trash and unlink icons to the bottom-right of the main stage itself (previously
+      the trash icon only existed on each small rail thumbnail) — `.flicker-photo-actions`, acting
+      on whichever member is currently shown. Trash reuses `handleMoveToGarbage` (already wired).
+      **Unlink backend**: the user built this themselves in parallel (`DuplicateController`/
+      `DuplicationService`/`DuplicationUniquenessService` — a real data-model change too, replacing
+      `DuplicateEntity`'s plain `Set<PhotoEntity> photos` with a `Set<PhotoDuplicateEntity>` join
+      entity carrying its own per-photo `status`, expanding `DuplicateStatus` to
+      `IN_GROUP/UNLINKED/MOVED_TO_GARBAGE/UNLINKED_BUT_MOVED_TO_GARBAGE`). A first backend attempt
+      was made here before that was noticed (`DuplicationUniquenessService.unlinkPhotoFromGroup(UUID)`,
+      a `DuplicationService` wrapper, `DELETE /api/photos/duplicates/photos/{photoId}`) and fully
+      reverted by hand once told "no backend change on you side" (not `git checkout`, to avoid
+      clobbering the user's own concurrent edits to the same files).
+      Final contract, per the user: `PUT /api/photos/duplicates/unlink` with body
+      `UnlinkPhotoDuplicate{unlinkedPhotoId, duplicatesId}` — `duplicatesId` is every member of the
+      group as currently known client-side; `DuplicationService.unlinkPhotoFromGroup` only acts if
+      the server's live IN_GROUP set for that photo's cluster still contains all of them (stale-view
+      guard), then flips just that one `PhotoDuplicateEntity` to `UNLINKED`.
+      Frontend wiring: `usePhotoActions.js` gained `handleUnlinkDuplicate(photoId, groupPhotoIds)`
+      (PUT the pair above, then `refreshAndMaintainScroll` — same pattern as `handleMoveToGarbage`),
+      threaded `App.jsx` → `PhotoGrid.jsx` → `DuplicateClusterModal.jsx`. The stage's `Unlink2`
+      button calls it with `(shown.id, members.map(m => m.id))` — the full member list, including
+      the photo being unlinked itself, since the backend check is a `containsAll` (a superset is
+      fine). New i18n `failedToUnlinkDuplicate`. `PhotoGrid.test.jsx` gained a test asserting the
+      stage's trash/unlink buttons act on whichever member is currently shown, with the correct
+      args. `npm run build` and `npm test -- --run` (90/90) both clean.
+
+- [x] **`DuplicateClusterModal.jsx` follow-up — any-pair flicker, side rail, single-photo metadata.**
+      User feedback on the first pass above: flicker/metadata only ever compared 2 of the cluster's
+      members (keeper fixed as one side); thumbnails should be a side rail, not a row underneath;
+      the thumbnail that's highlighted should track whichever photo is actually on stage; and the
+      metadata panel should describe only that one shown photo, not a two-column diff.
+      Replaced the fixed `keeper`/`compare` pairing with a single `shownIndex` (whichever member is
+      currently on the stage — starts on the keeper) plus a `previousIndex` (whichever was shown
+      right before it). Clicking *any* thumbnail calls `selectMember(i)`, which displays that member
+      immediately and remembers the one it replaced; flicker/space/auto-toggle now swap between
+      those last two, so any two members become flickerable just by clicking them in sequence — not
+      only keeper-vs-one-other. Thumbnail rail moved from `.duplicate-chip-row` (bottom, horizontal)
+      to `.duplicate-chip-rail` (side, vertical, own scroll, row layout under 560px) — the `.active`
+      highlight now follows `shownIndex` directly, so exactly one thumbnail is highlighted and it's
+      always the one on stage. The two-column `.duplicate-meta-diff` table (keeper vs compare, diff
+      cells in red) was replaced with `.duplicate-meta-list` — a plain label/value list for `shown`
+      alone, headed by "Suggested keep"/"Comparing" depending on whether the shown member is the
+      keeper. Dropped the keeper-chip-click-opens-Lightbox shortcut (inconsistent once every
+      thumbnail's job is "show this one") — the `Maximize2` button on the stage is now the only way
+      to open the full Lightbox from here. Modal widened to `min(820px, 92vw)` to fit the rail
+      alongside the stage. i18n: dropped now-unused `duplicateSinglePhotoNotice`/
+      `duplicateSetCompareTitle`, added `duplicateShowMemberTitle` for en/fr.
+      `PhotoGrid.test.jsx` updated again (`.duplicate-rail-thumb` instead of `.duplicate-chip`) plus
+      a new test asserting a thumbnail click both switches the stage and moves the `.active` class.
+      `npm run build` and `npm test -- --run` (88/88) both clean. Not yet manually verified against
+      a live duplicate cluster in the running app.
+
 - [x] **Bug fix**: `App.jsx` called
       `useAppNavigationAndSelection(photos, null, backgroundLocation, effectivePath, null)` —
       the 2nd (`currentDuplicateGroup`) and 5th (`saveScrollPosition`) arguments were hardcoded to
@@ -484,13 +578,13 @@ new work is identified or completed, so nothing gets lost between sessions.
       **not** a route/navigation change — the user stays on exactly the page they were
       on; the popup is just an overlay.
       - Backend: `TaskDTO` (`model/TaskDTO.java`) only exposed `id`/`status`; added
-        `photoId`. `TaskEntity.photoId` is generated up front at task creation
+        `unlinkedPhotoId`. `TaskEntity.photoId` is generated up front at task creation
         (`UploadController.java`, `UUID.randomUUID()`) and reused as the final
         `PhotoEntity`'s id in `PhotoUploadService.processNewAsset`, so it's already
         correct and available even mid-poll, not just once `COMPLETED`. Updated
         `TaskService.getTask`'s mapping to include it (only call site).
       - Frontend: `pollTaskStatus` now stores `task.photoId` onto the matching queue item.
-        `UploadPreviewModal` takes just a `photoId` + `onClose`, fetches
+        `UploadPreviewModal` takes just a `unlinkedPhotoId` + `onClose`, fetches
         `GET /api/photos/{photoId}` itself (same fallback-fetch pattern already used in
         `useAppNavigationAndSelection.js` for hard-refreshed asset URLs) to get
         `contentType`/`fileHash`/`title`, then renders `<img>`/`<video>` against
@@ -501,7 +595,7 @@ new work is identified or completed, so nothing gets lost between sessions.
         per explicit user request; the scroll/highlight code and its
         `data-photo-id` attribute were removed again.
       - `components/UploadManager.test.jsx` covers: "Show" button appears once
-        `COMPLETED` with a `photoId`; clicking it renders the popup's `<img>` with the
+        `COMPLETED` with a `unlinkedPhotoId`; clicking it renders the popup's `<img>` with the
         correct cache-busted `src` and no `.metadata-sidebar` in the DOM; Escape closes
         it.
       - **Explicitly out of scope** (per user decision): no equivalent for Space uploads.
@@ -516,12 +610,12 @@ new work is identified or completed, so nothing gets lost between sessions.
       - **Follow-up**: the user independently reshaped the chunk-upload completion response
         on the backend (`UploadController.java`, `model/UploadChunkResponse.java`) from a flat
         `{status, taskId}` map to `{status, chunkIndex, task}` where `task` is a full `TaskDTO`
-        (`id`/`status`/`photoId`) — consistent with what `GET /api/tasks/{id}` already returns.
+        (`id`/`status`/`unlinkedPhotoId`) — consistent with what `GET /api/tasks/{id}` already returns.
         Updated `UploadManager.jsx` (frontend only, per explicit instruction not to touch the
         already-changed backend) to read `data.task.id`/`data.task.photoId` instead of the old
-        `data.taskId`, and to seed `photoId` on the item immediately from that first response
+        `data.taskId`, and to seed `unlinkedPhotoId` on the item immediately from that first response
         rather than waiting for the first poll tick (previously up to 3s later for no reason,
-        since the backend generates `photoId` at task-creation time — see above). Updated the
+        since the backend generates `unlinkedPhotoId` at task-creation time — see above). Updated the
         mocked chunk-upload response shape in `UploadManager.test.jsx` to match.
       - **UX refinement, per explicit user feedback**: three changes to the above.
         1. The preview link's eligibility rule is now explicit: available for every queue-item
@@ -556,7 +650,7 @@ new work is identified or completed, so nothing gets lost between sessions.
           covering the FAILED-item case (no link) and a PENDING→COMPLETED transition (no link
           while PENDING, appears once past it).
         - **Test-flakiness gotcha hit and fixed**: the two popup-behavior tests used to finish
-          (via `findByRole`) as soon as `photoId` arrived — before their own `pollTaskStatus`
+          (via `findByRole`) as soon as `unlinkedPhotoId` arrived — before their own `pollTaskStatus`
           `setInterval` ever ticked once (3s), since eligibility no longer waits for a poll at
           all. That left a live `setInterval` still pending when the test function returned, so
           Vitest moved on to the *next* test while it was still ticking in real time — and when it
@@ -1591,10 +1685,426 @@ new work is identified or completed, so nothing gets lost between sessions.
       - Verified: whole backend `javac` compile clean (main sources). Not yet checked against a
         live Immich server's real `key` format/length.
 
+- [x] **Feature** (user request): allow reimporting a `COMPLETED` Immich day.
+      `ImmichImportService#triggerDayImport` was already idempotent/re-runnable by design (its own
+      comment already said so) - it re-fetches the day's asset list from Immich fresh on every
+      call and only queues what `isFullyImported` says isn't already there, correctly picking up
+      assets added on Immich *after* the last import and refreshing `immichAssetCount`. The only
+      thing actually stopping a reimport was the frontend: `ImmichImportManagement.jsx`'s
+      `IMPORTABLE_STATUSES` didn't include `COMPLETED`, so the button was disabled once a day
+      finished. Added `COMPLETED` to that list (still excluding `IN_PROGRESS` - re-triggering a run
+      that's already mid-flight would just be confusing) and a distinct "Reimport" label/i18n key
+      (`immichReimportButton`, en/fr) for that case, separate from "Retry" (`PARTIAL`/`FAILED`,
+      implies a failure) and "Import" (`NOT_IMPORTED`, first run).
+      - Verified: `npm run build` clean. No backend change was needed.
+
+- [x] **Fix/reliability** (user request): isolated heavy task processing (face detection,
+      duplication) onto their own strictly-bounded pool. `TaskWorkerManager` previously ran every
+      task type - `PROCESS_UPLOAD`, `PERMANENT_DELETE`, the Immich import tasks, and also
+      `HASH_IMAGE`/`CHECK_DUPLICATION`/`ISOLATE_FACES`/`FACE_RECOGNITION` - through the same
+      `Executors.newVirtualThreadPerTaskExecutor()`, with no cap on how many could run at once.
+      That's fine for I/O-bound work (uploads, DB writes, Immich HTTP calls - virtual threads park
+      cheaply while waiting), but the four CPU-bound post-upload pipeline stages (image
+      hashing/ORB-descriptor extraction and duplicate matching in `DuplicationService`; face
+      detection/recognition in `FaceDetectionService`/`FaceRecognitionService`) are native/CPU-heavy
+      and don't yield the way virtual threads expect - they pin their carrier thread rather than
+      parking - so a burst of them (e.g. right after importing a big Immich day) could monopolize
+      every carrier thread and starve unrelated tasks (new uploads, Immich sync) of progress.
+      - Added a new `Set<TaskType> HEAVY_TASK_TYPES` (`HASH_IMAGE`, `CHECK_DUPLICATION`,
+        `ISOLATE_FACES`, `FACE_RECOGNITION`) and a second, isolated `ExecutorService` -
+        `Executors.newFixedThreadPool(3, ...)`, named platform threads (`heavy-task-N`) rather than
+        virtual ones, since the whole point is a hard cap on real parallelism, which virtual
+        threads don't reliably give for non-yielding work. `pollPendingTasks` now routes each task
+        to `heavyTaskExecutor` or the existing `executorService` based on its type - at most 3 heavy
+        tasks run at once, however many are queued; everything else is unaffected.
+      - `pollPendingTasks` had to start carrying task type, not just id, to make that routing
+        decision - added a small local `TaskRef(UUID id, TaskType type)` record.
+      - **Found and fixed a real pre-existing bug while touching this method**: the old dispatch
+        (`executorService.submit(() -> { Thread t = Thread.ofVirtual()...start(...); t.start(); })`)
+        called `Thread.start()` *twice* on the same virtual thread - `.start(runnable)` already
+        starts it, then the code called `.start()` again, which throws `IllegalThreadStateException`
+        every time (silently swallowed since the `Future` from the outer `submit()` was never
+        checked). The task still ran fine because the first `start()` had already kicked it off
+        independently - but the outer virtual thread was pure waste, spawned only to immediately
+        throw. Simplified both dispatch paths to a plain `executor.submit(() -> processTask(id))`,
+        which is already correct.
+      - `@PreDestroy shutdown()` now shuts down both executors.
+      - **Follow-up (user request)**: that simplification had dropped the per-task thread naming
+        (`"backend-task" + taskId`) the old buggy dispatch was trying to give each light task -
+        useful for identifying which task a given virtual thread is running from a thread dump.
+        Reintroduced it, still without the double-`start()` bug: light tasks (everything not in
+        `HEAVY_TASK_TYPES`) now get `Thread.ofVirtual().name("backend-task" + ref.id()).start(...)`
+        directly - one named virtual thread per task, `start()` called exactly once - rather than
+        going through a shared `Executors.newVirtualThreadPerTaskExecutor()` (removed, since a
+        `ThreadFactory`-based executor can only name threads with an auto-incrementing counter, not
+        the actual per-task id needed here; heavy tasks still go through `heavyTaskExecutor.submit`
+        since that pool's own `heavy-task-N` naming is enough and it needs the bounded queue).
+        `shutdown()` updated accordingly - only `heavyTaskExecutor` is an actual `ExecutorService`
+        now.
+      - Verified: whole backend `javac` compile clean (main + test sources).
+
+- [x] **Feature** (user request): bulk-import up to 30 Immich days at once, plus a button to hide
+      already-completed days from the table.
+      - **Backend**: `ImmichImportService.triggerDayImport` was split into a thin
+        `@Transactional` public entry point and a private `triggerDayImportInternal` carrying the
+        actual logic, so the new `triggerBulkDayImport(List<LocalDate> days, user, tz)` could call
+        it per-day without hitting the classic Spring AOP self-invocation trap (calling `this
+        .triggerDayImport(...)` from within the same class would silently skip the
+        `@Transactional` proxy entirely). Each day instead runs in its own independently-committed
+        transaction via the existing `RequiresNewTransactionService`, and is individually
+        try/caught so one broken day can't affect any other - same per-item-transaction pattern
+        `ImmichAlbumImportService` already uses, for the same reason. Capped at
+        `MAX_BULK_IMPORT_DAYS = 30`, throwing `IllegalArgumentException` above that (a day can
+        itself queue hundreds of per-asset tasks, and Immich calls are already throttled via
+        `ImmichClient`'s own `Semaphore(8)` - a much bigger batch would just queue an enormous
+        number of tasks in one request for no real benefit over clicking "Import Selected" a few
+        times). New `POST /api/immich/days/import-bulk` (`ImmichBulkImportRequest{days}` →
+        `List<ImmichImportDayDTO>`).
+      - **Frontend**: `ImmichImportManagement.jsx` gained a checkbox column (disabled for
+        non-importable/`IN_PROGRESS` days, and once 30 are already selected), a header
+        "select all importable" checkbox (visible-rows-aware, still capped at 30), and an
+        "Import Selected (n/30)" button calling the hook's new `startBulkImport` (which polls each
+        triggered day individually, same as `startImport` already does for a single day). Also
+        added a "Hide completed days" toggle button (`hideCompleted` local state, filters `days`
+        client-side before rendering - no backend change) with a message shown when every day ends
+        up hidden.
+      - Verified: whole backend `javac` compile clean (main + test sources); `npm run build`
+        clean; full `npm test -- --run` 86/86 pass. Not yet run against a live Immich server.
+
+- [x] **Fix** (user request): unstick a day permanently stuck at `IN_PROGRESS`, plus a
+      show/hide toggle for in-progress days.
+      - **Root cause**: `TaskWorkerManager.pollPendingTasks` only ever picks up `PENDING` tasks
+        (`taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), ...)`). If the app
+        restarts (or a virtual thread otherwise dies) while a `SYNC_FROM_IMMICH`/
+        `UPLOAD_FROM_IMMICH` task is `PROCESSING`, nothing ever picks it back up - the task, and
+        the day it belongs to, is orphaned at `IN_PROGRESS` forever. `triggerDayImportInternal`'s
+        per-asset loop only ever reclaimed a task that was `FAILED`, so re-triggering that day
+        (even once the frontend allowed it) wouldn't actually do anything for an orphaned one.
+      - **Fix**: new `ImmichImportService#isReclaimable(TaskEntity)` - true for a `FAILED` task
+        (unchanged) or a `PROCESSING` one whose `updatedAt` is older than `STUCK_TASK_THRESHOLD`
+        (15 minutes - comfortably longer than even a slow face-detection run or large video
+        download, chosen since `TaskEntity`'s `@PreUpdate` bumps `updatedAt` right when
+        `pollPendingTasks` first flips a task to `PROCESSING`, so it doubly serves as "when
+        processing started"). The per-asset loop now reclaims (deletes + requeues) a stale
+        `UPLOAD_FROM_IMMICH` the same way it already did for a failed one (reuse the staged file,
+        no need to re-hit Immich), and for anything else reclaimable (stale/failed
+        `SYNC_FROM_IMMICH`) deletes it and restarts that asset from step 1 - safe, since
+        `SYNC_FROM_IMMICH` re-downloads deterministically to the same `immich-temp` path and
+        `finalizeUploadFromImmich` is already idempotent/resumable.
+      - **Frontend**: `IMPORTABLE_STATUSES` now includes `IN_PROGRESS` (button label falls back to
+        "Retry", same as `PARTIAL`/`FAILED`) - retriggering a *genuinely* still-running day is a
+        harmless no-op server-side (nothing reclaimable yet), so there's no real downside to always
+        allowing the click. Also added a "Hide in-progress days"/"Show in-progress days" toggle
+        button (`hideInProgress` local state), mirroring the existing "Hide completed days" one -
+        both filters now compose together on `visibleDays`.
+      - Verified: whole backend `javac` compile clean (main + test sources); `npm run build`
+        clean; full `npm test -- --run` 86/86 pass. Not yet exercised against the user's actual
+        stuck day - should confirm clicking "Retry" on it actually reclaims the orphaned task and
+        the day eventually reaches a terminal status.
+
+- [x] **Reliability** (user request): a database error or a network error (talking to Immich)
+      mid-task no longer permanently fails the task - it's retried 5 minutes later instead.
+      `TaskWorkerManager.processTask`'s catch chain previously only special-cased
+      `ServiceNotAvailableException`/`SpaceLockingException` (both: `PENDING` +
+      `executeAt=null`, immediate same-process retry on the next 5s poll) before falling through
+      to the generic `catch (Throwable e)` → `FAILED`. Added two more catches, both before the
+      generic one, both `PENDING` + `executeAt = now + 5 minutes` (a real delay this time, not
+      immediate - a DB/network problem is more likely to need actual recovery time than momentary
+      lock contention):
+      - `DataAccessException` (Spring's own translation target for essentially every low-level
+        persistence failure - JDBC `SQLException`, connection pool errors, deadlocks, query
+        timeouts - so this one catch covers the DB-error case broadly, no need to chase individual
+        driver exception types).
+      - `ImmichApiException` (the catch-all every `ImmichClient` method already wraps REST/network
+        failures in, including plain connectivity/timeout issues).
+      - Neither path calls `ImmichImportService#recordAssetTaskFailure` (same as the two existing
+        retry catches) - a delayed retry isn't a real failure for the Immich day counters.
+      - **Documented but not solved caveat** (inherent to the problem, not a gap in this fix): if
+        the database is down badly enough that even the recovery write
+        (`taskRepository.save(task)`, right after the catch block, inside the same transaction)
+        can't complete either, the task is left exactly as it was (`PROCESSING`) - persisting
+        "retry later" itself requires the database to be reachable. Only Immich's
+        `SYNC_FROM_IMMICH`/`UPLOAD_FROM_IMMICH` tasks currently have any reclaim path for that
+        orphaned state (`ImmichImportService#isReclaimable`, and only once a user re-triggers that
+        day) - other task types (`HASH_IMAGE`, `ISOLATE_FACES`, etc.) have none yet. A general
+        orphaned-`PROCESSING`-task sweeper (e.g. on startup, mirroring `isReclaimable`'s staleness
+        idea) would close that gap but is a bigger change, out of scope here.
+      - Verified: whole backend `javac` compile clean (main + test sources). Not exercised against
+        a real DB outage or network blip - hard to simulate in this sandbox.
+
+- [x] **UX** (user request): replaced the "Hide completed days"/"Hide in-progress days" toggle
+      buttons with a single status-filter dropdown on the Immich import page. User's framing: a
+      dropdown with "COMPLETED, IN PROGRESS, PENDING" (their word for a day that hasn't started
+      importing yet - `ImmichImportDayStatus.NOT_IMPORTED`). Implemented as one `<select>`
+      (`statusFilter` state, default `'ALL'`) with every real day status as an option -
+      `NOT_IMPORTED`/`IN_PROGRESS`/`PARTIAL`/`FAILED`/`COMPLETED` - not just the three named, so
+      `PARTIAL`/`FAILED` days remain reachable through the same mechanism rather than only through
+      "All". `visibleDays` is now a single `statusFilter === 'ALL' ? days :
+      days.filter(...)` instead of two independently-composing boolean toggles. Relabelled
+      `NOT_IMPORTED`'s displayed text from "Not imported" to "Pending" (`immichDayStatusNotImported`
+      i18n string, en/fr) per the user's own wording, matching what shows both in the dropdown and
+      the status badge column - the enum name itself is unchanged, this is a display-string-only
+      change. Removed the now-unused hide/show button i18n keys and the old "all days hidden"
+      message key (replaced with a filter-agnostic `immichNoDaysMatchFilterMessage`).
+      - Verified: `npm run build` clean, full `npm test -- --run` 86/86 pass. No backend change.
+
+- [x] **Bug fix, found via live investigation** (user report: "on day 2023-12-24 second import
+      didn't import all photos, first try failed with many database access exception"). Root-caused
+      against the actual running app + live DB (`docker exec ... psql`) + disk, not guessed:
+      - **Every one of the 140 assets for 2023-12-24 was, in reality, already fully imported** -
+        140/140 `photos` rows committed, every `original_path` pointing at a real file on disk.
+        Yet the day sat at `IN_PROGRESS`, `imported_count` stuck at 133 (later 133, originally 121
+        before the user's "second import" click). The gap: 7 `UPLOAD_FROM_IMMICH` tasks were
+        orphaned in `PROCESSING` - their real work (DB commit + file move) had already fully
+        succeeded, but the task never reached the `task.setStatus(COMPLETED)` +
+        `recordAssetTaskOutcome` lines a couple of statements later in
+        `TaskWorkerManager.processTask`, most likely killed by an app restart at exactly that
+        instant. `triggerDayImportInternal`'s `isFullyImported` check correctly recognized these 7
+        as done and skipped re-touching them (so no risk of re-download/duplication) - but nothing
+        credited the day's counters for them either, so the day could never reach a terminal
+        status even though it was, in truth, 100% complete.
+      - The "first try failed with many database access exception" part: `hs_err_pid9398.log`
+        (this machine) shows a real JVM-level `SIGSEGV` inside `libtorch_cpu.so`
+        (`dnnl_primitive_execute`) during face-detection inference
+        (`FaceDetectionService.detectAndSaveFaces` → DJL's PyTorch engine), on a `heavy-task-0`
+        thread. A native crash like that kills the whole process instantly, severing every open DB
+        connection mid-flight - explaining a burst of `DataAccessException`s across whatever tasks
+        happened to be writing at that exact moment (caught by this session's earlier
+        `DataAccessException`-retry fix, which is why they became delayed retries rather than
+        permanent `FAILED`s). **This crash is not new or caused by anything from this session** -
+        the identical crash signature also appears in `hs_err_pid11623.log` (Aug 29) and
+        `hs_err_pid24151.log` (Aug 17), so it's a pre-existing, recurring native-library
+        instability worth its own separate investigation (likely a DJL/PyTorch native
+        thread-safety issue under concurrent inference) - flagged here, not fixed, since it's a
+        different problem from the counter/status bug this entry actually fixes.
+      - **Fix**: new `ImmichImportService#reconcileOrphanedCompletedAsset(photoId, dayRowId)`,
+        called from the `isFullyImported` branch of the per-asset loop instead of a bare
+        `continue`. Finds any non-`COMPLETED` `SYNC_FROM_IMMICH`/`UPLOAD_FROM_IMMICH` task left
+        over for an asset that's already genuinely done, deletes it, and credits the day's
+        imported counter exactly once (`immichImportDayRepository.incrementImported` +
+        `finalizeDayStatusIfDone` - the same atomic-increment path `recordAssetTaskOutcome`
+        already uses). Idempotent by construction: once the lingering task is cleared, a later
+        call for the same asset finds nothing left and is a no-op, so this can never double-count.
+      - Verified: whole backend `javac` compile clean (main + test sources). Not yet re-run
+        against the live app - restarting it (a real restart, not just an IDE hot-swap - see below)
+        and clicking "Retry" on 2023-12-24 again should now bring it to `COMPLETED`.
+      - **Separate observation, not addressed here**: the currently-running app instance is
+        launched under an IntelliJ debug session (`-agentlib:jdwp=...`). IntelliJ's HotSwap can
+        only update method *bodies* on already-loaded classes, not add new methods/fields - so
+        several of this session's earlier structural changes to `ImmichImportService`
+        (`isReclaimable`, the `reconcileOrphanedCompletedAsset` above, etc.) may silently not have
+        taken effect in the live process even though `target/classes` on disk has the correct
+        compiled bytecode (confirmed via `javap`). A genuine stop-and-restart of the run
+        configuration (not relying on live HotSwap) is needed for this fix - and every other
+        `TaskWorkerManager`/`ImmichImportService` structural change from earlier this session - to
+        actually take effect.
+
+- [x] **Reliability** (user request): general hourly sweep to reclaim tasks orphaned in
+      `PROCESSING`, across every task type - closes the gap flagged in the two entries just above
+      (both scoped to Immich specifically: `isReclaimable`'s per-day-retry reclaim, and the
+      DataAccessException/ImmichApiException retry-with-delay catch). `pollPendingTasks` only ever
+      looks at `PENDING` tasks, so a task left `PROCESSING` when its worker thread dies mid-task
+      (app restart, JVM crash - a real instance of exactly this was found and root-caused in this
+      session's live investigation) is otherwise never picked up again, for any task type, unless a
+      human happens to notice and manually retry through a feature-specific button.
+      - New `TaskRepository#findByStatusAndUpdatedAtBefore(status, before)` - `updatedAt` is used
+        as "when processing started", since `TaskEntity`'s own `@PreUpdate` bumps it the moment
+        `pollPendingTasks` first flips a task to `PROCESSING` (same reasoning `isReclaimable`
+        already relies on).
+      - New `TaskWorkerManager#reclaimStuckProcessingTasks`, `@Scheduled(fixedDelay = 1 hour)`:
+        finds every task `PROCESSING` for over `STUCK_TASK_AGE` (1 hour) and resets it to
+        `PENDING` with `executeAt` set to a **randomized** 1-15 minute delay
+        (`MIN_RETRY_DELAY_MINUTES`/`MAX_RETRY_DELAY_MINUTES`, `ThreadLocalRandom`) rather than one
+        fixed offset - spreads reclaimed tasks out so a sweep that reclaims many at once doesn't
+        make them all executable at the exact same instant and recreate the very pile-up that
+        likely orphaned some of them in the first place.
+      - Deliberately independent of the existing Immich-specific `isReclaimable` mechanism, not a
+        replacement for it - that one still runs on-demand (import-day click) and knows how to
+        reuse a stuck `UPLOAD_FROM_IMMICH`'s payload without re-hitting Immich; this one is a
+        blunter, fully-automatic, all-task-types safety net that needs no user action at all.
+        Reprocessing after being swept is safe for every task type verified: `PROCESS_UPLOAD`
+        (hash-dedup on the temp file), `SYNC_FROM_IMMICH`/`UPLOAD_FROM_IMMICH` (idempotent/resumable
+        by design), `HASH_IMAGE`/`CHECK_DUPLICATION`/`ISOLATE_FACES`/`FACE_RECOGNITION` (recompute
+        in place, harmless to redo) - `PERMANENT_DELETE`'s idempotency on a second run wasn't
+        independently verified here (not touched by this change either way; worst case if it
+        somehow isn't is a task ending FAILED instead of stuck forever, still strictly better than
+        today).
+      - Verified: whole backend `javac` compile clean (main + test sources). Not yet observed
+        firing against a real stuck task in the live app.
+
+- [x] **Investigated, no code change needed** (user report: asset not added to a specific album
+      even after triggering "Import Album and Share Link"; more broadly, no photos added to any
+      created album). Root-caused against the live DB, not guessed - both symptoms trace back to
+      the same cause, working as designed, not a bug:
+      - **The album id the user searched by was the album's Immich id, not its iphoto id.**
+        Albums don't keep the Immich UUID as their own primary key the way photos do -
+        `PhotoEntity.id` has no `@GeneratedValue` (set directly to the Immich asset UUID, per the
+        original migration design), but `AlbumEntity.id` does have `@GeneratedValue` and can't be
+        overridden the same way - the Immich album id is preserved separately in `external_id`
+        instead. Confirmed via `select * from albums where external_id = '<the id searched for>'`
+        - found immediately under a different `id`.
+      - **Why no photos were linked**: `ImmichAlbumImportService.processOneAlbum` only links a
+        member asset that already passes `photoRepository.existsById` *at the moment the album
+        import runs* (`AlbumService.addPhotosToAlbum` requires the photo already committed and in
+        a MAIN space) - anything not yet locally imported is counted as skipped, not queued for
+        later. Timestamps proved this precisely for the reported case: the album ("Noël 2023",
+        and 87 of the user's other 88 albums) was processed by "Import Albums & Shares" at
+        22:45:09, but the specific asset in question wasn't actually committed to `photos` until
+        23:26:55 - 41 minutes *later*, as day 2023-12-24's import finished during this same
+        session. At 22:45:09 almost no days were fully imported yet, so nearly every album's
+        `linkable` list came back empty - the album shells still got created correctly (all 88
+        rows have the right `external_id`), just with 0 photos each. Only one album (13 photos)
+        happened to have every member already imported by then.
+      - **Not data loss, fully recoverable**: `triggerAlbumImport` is idempotent (find-or-create
+        by `external_id`) and re-checks membership fresh on every call - simply re-clicking
+        "Import Albums & Shares" now that more days are imported picks up everything that's since
+        become available, no code fix required.
+      - **Decision point raised, user chose not to change it for now**: offered to make a
+        newly-imported album's `id` equal the Immich album UUID (mirroring photos, by dropping
+        `@GeneratedValue` on `AlbumEntity.id` for the Immich-import path) instead of the current
+        generated-id-plus-`external_id` scheme. User picked "re-click Import Albums for now" over
+        changing the id scheme - revisit only if the current scheme actually causes a real problem
+        later, not preemptively.
+
+- [x] **Reliability** (user request): capped light-task virtual thread concurrency at 40 - closes
+      a real DB-connection-exhaustion risk that the reintroduced per-task named virtual threads
+      (previous entry) had no protection against. `pollPendingTasks`'s light-task path (everything
+      not in `HEAVY_TASK_TYPES`: `PROCESS_UPLOAD`, `PERMANENT_DELETE`, `SYNC_FROM_IMMICH`,
+      `UPLOAD_FROM_IMMICH`) spawned one fresh, unbounded virtual thread per executable task -
+      each one holds a DB connection/transaction for its duration (`processTask`'s
+      `transactionTemplate`), so a burst of simultaneously-executable tasks (a big Immich day
+      queuing hundreds of `SYNC_FROM_IMMICH` tasks at once, say) could each grab a connection at
+      the same instant against `application.yml`'s finite `hikari.maximum-pool-size` (100) - the
+      same kind of exhaustion this session's live investigation of day 2023-12-24 saw play out
+      (there triggered by a JVM crash instead, but the underlying risk is identical).
+      - New `Semaphore lightTaskConcurrency` (`MAX_CONCURRENT_LIGHT_TASKS = 40`, comfortably under
+        the pool's max, leaving headroom for `heavyTaskExecutor` (3) and everything else - web
+        requests included - sharing the same pool). `pollPendingTasks` now calls
+        `lightTaskConcurrency.acquireUninterruptibly()` before starting each light task's named
+        virtual thread, `release()`d in a `finally` around `processTask`.
+      - Deliberately blocks the *scheduled-poller invocation itself* when at capacity, not any
+        individual task - same idea as a bounded thread pool's `submit()` blocking when full. Safe
+        here specifically because `@Scheduled(fixedDelay = ...)` only starts the next tick after
+        the current one returns, so a burst just delays the next 5-second poll rather than piling
+        up concurrent `pollPendingTasks` invocations.
+      - Heavy tasks are unaffected (already capped at 3 via their own separate, non-virtual pool);
+        worst-case total concurrent DB-connection users across both paths is ~43, still well under
+        the pool's 100 max.
+      - Verified: whole backend `javac` compile clean (main + test sources). Not yet observed
+        under a real high-concurrency burst in the live app.
+
+- [x] **Follow-up** (user request): heavy tasks now hold back while light-task load is at
+      capacity, rather than being dispatched on top of it. `pollPendingTasks` now checks
+      `lightTaskConcurrency.availablePermits() == 0` before submitting a heavy task to
+      `heavyTaskExecutor` - since the semaphore can never actually hold more than
+      `MAX_CONCURRENT_LIGHT_TASKS` (40) permits out, `== 0` is exactly "light-task demand is
+      at/over capacity". Heavy tasks hold a DB connection for their duration too, so piling them on
+      top of an already-saturated light-task load would add further pressure on the same finite
+      connection pool for no benefit. When held back, the task is reverted to `PENDING`
+      (`executeAt` cleared, undoing the `PROCESSING` flip from earlier in the same
+      `pollPendingTasks` call) via a new `holdBackTask` helper - same "immediate retry on the very
+      next 5-second poll" shape `processTask`'s `ServiceNotAvailableException`/
+      `SpaceLockingException` catches already use, just invoked before the task ever started
+      running rather than after a failure. Deliberately doesn't wait for the much coarser 1-hour
+      stuck-task sweep to notice - it'll just get reconsidered on the next poll once light-task
+      load eases.
+      - Verified: whole backend `javac` compile clean (main + test sources). Not yet observed
+        under a real high-concurrency burst in the live app.
+
 ## Open / Not Yet Done
 
+- [ ] **Fix** (user request, intent confirmed): `DuplicateEntity`'s unique key should take `status`
+      into account instead of being on `hash` alone. Not started - recording only, per the user's
+      own "TODO" framing.
+      - **Current state**: `DuplicateEntity.hash` is `@Column(unique = true)` - globally unique
+        across the whole `duplicates` table, `status` (`DuplicateStatus`: `OPEN`/`CLOSED`) plays no
+        part in the constraint.
+      - **Why this is probably a real bug, not just cleanup**: `DuplicationUniquenessService
+        .consolidateDuplicates` computes `hash` deterministically from the *sorted set of member
+        photos' fileHashes* (`generateUniqueHash`) - the same combination of photos always
+        produces the same hash. When a group's membership changes, it inserts a *new*
+        `DuplicateEntity` row (new hash) and marks the old one(s) `CLOSED` - the old, now-`CLOSED`
+        row is deliberately kept, not deleted (`undoGenerateUniqueHash`/`findByHash` still needs to
+        resolve it later). Because the constraint is on `hash` alone, if that same exact photo
+        combination should ever need to become an active `OPEN` group again (e.g., a later merge/
+        split reproduces the same member set), inserting it collides with the old `CLOSED` row's
+        hash - caught by `isUniqueConstraintViolation` and treated as "retry later"
+        (`TaskStatus.PENDING`), which would retry forever without ever succeeding, since a `CLOSED`
+        historical row for that exact hash will always still be there blocking it.
+      - **Confirmed with the user**: the fix is unique on `(hash, status)`, not the literal
+        `(status, id)` originally said (which would've been a no-op, since `id` is already the
+        primary key and trivially unique on its own regardless of `status`). Implementation: drop
+        `@Column(unique = true)` from `DuplicateEntity.hash`, add a table-level
+        `@UniqueConstraint(columnNames = {"hash", "status"})` on `@Table(name = "duplicates")`
+        instead (`ddl-auto: update` picks this up on next boot - no migration needed, same pattern
+        as `AlbumEntity`/`ShareEntity`'s `externalSource`/`externalId` pair constraints). Worth
+        double-checking whether Postgres's default null-handling matters here first - `hash` is
+        presumably always populated by `generateUniqueHash`, so this is likely a non-issue, but
+        confirm before assuming.
+
+- [ ] **Fix** (user report): light-task virtual threads aren't actually showing the
+      `"backend-task" + taskId` name (`TaskWorkerManager.pollPendingTasks`,
+      `Thread.ofVirtual().name("backend-task" + ref.id()).start(...)`) in whatever tool the user is
+      observing them in - instead showing something like `ad-ce09d24e39a9`, no `backend` prefix
+      visible at all. User confirmed this naming *was* visible before this session's later
+      `TaskWorkerManager` changes, which rules out an inherent/unfixable OS-level limitation as the
+      primary theory - if it worked before with the same naming approach, it should be fixable.
+      Not confirmed live yet (no running app instance available when this was last checked):
+      - **Leading theory, given it's already a proven issue in this exact project this session**:
+        the same IntelliJ debug-session HotSwap limitation found earlier with `ImmichImportService`
+        (see the day-2023-12-24 investigation entry above) - HotSwap can update method *bodies* on
+        an already-loaded class but can't add new fields/methods. This session added several new
+        fields/methods to `TaskWorkerManager` across multiple edits (`lightTaskConcurrency`,
+        `heavyTaskExecutor`, `holdBackTask`, `reclaimStuckProcessingTasks`, the naming
+        reintroduction itself...) - a JVM still running from before all of those landed would keep
+        silently executing an older, un-hot-swappable version of the class, quite possibly the
+        intermediate version where naming had already been stripped out but not yet reintroduced.
+        Checked and ruled out as the explanation *for what's on disk*: `target/classes/org/iphoto/
+        service/TaskWorkerManager.class` is compiled after the current source and does contain the
+        current naming code (confirmed via `javap`) - so the fix is correct on disk, the open
+        question is only whether the actually-running JVM has it loaded.
+      - **To confirm**: after a genuine stop-and-restart of the run configuration (not relying on
+        live HotSwap), get a live thread dump (`jcmd <pid> Thread.print` or `jstack <pid>`) and
+        check whether the Java-level thread names show the full `backend-task<uuid>` there. If yes,
+        this was purely the stale-JVM issue and needs no code change - just don't trust HotSwap for
+        structural changes to this class going forward. If the JVM's own thread dump *still* shows
+        a truncated/wrong name even fresh after a real restart, that's the signal to go back to
+        investigating an OS-level native-name-length cap (`pthread_setname_np` is capped at 15
+        visible characters on Linux) as a second theory - not before.
+
+- [x] **Bugfix** (user report): moving a photo to garbage from `DuplicateClusterModal` (the "×N
+      similar" popup in `PhotoGrid.jsx`) closed the modal and lost the Library grid's scroll
+      position. Root cause: `handleMoveToGarbage` (`usePhotoActions.js`) went through the shared
+      `refreshAndMaintainScroll` (`App.jsx`), which does `fetchPhotos(0, true, ...)` — a full
+      reset to page 0 only, silently dropping every later page the user had scrolled into, then
+      trying to restore the old `scrollTop` pixel value against much shorter content. Since
+      `DuplicateClusterModal`'s visible cluster is deliberately re-derived live from `photos`
+      (so removing a member updates it in place, see `PhotoGrid.jsx`'s `openDuplicateItem`
+      comment), a page-0 reset could drop the open cluster's primary out of the list entirely,
+      auto-closing the modal even though the cluster itself still had other members left.
+      - **Fix**: `handleMoveToGarbage` no longer calls `refreshAndMaintainScroll`. It now updates
+        `photos` in place — `setPhotos` and `fetchAlbums`/`fetchSpaces` (for the count badges)
+        are now threaded into `usePhotoActions`, added as new trailing params. The `setPhotos`
+        updater both filters the garbage'd ids out of the top-level array and scrubs them out of
+        every *remaining* photo's own `duplicates` sub-array (that's what `PhotoGrid.jsx`'s
+        cluster grouping actually reads members from — not a re-derivation off the top-level
+        list), so a cluster's members stay correct even after its displayed "primary" (whichever
+        photo happens to be first-in-array) gets garbage'd out from under it.
+      - **Deliberately not touched**: `handleRestore`/`handleMoveToMain`/`handlePermanentDelete`
+        still go through the old `refreshAndMaintainScroll` full-reset path, and have the same
+        latent scroll/page-0 issue if triggered from a scrolled-down view - just not what was
+        reported. Worth the same treatment later if it comes up.
+      - **Tests**: `hooks/usePhotoActions.test.js` updated — asserts `refreshAndMaintainScroll` is
+        NOT called from `handleMoveToGarbage` anymore, and a new regression test drives the
+        `setPhotos` updater directly to confirm both the removal and the cross-photo
+        `duplicates`-scrubbing.
+
 - [ ] **Refactor** (user request): fetch photos day-by-day instead of arbitrary fixed-size pages.
-      Not started - design sketch only, grounded in the current mechanism below.
+      Not started - design sketch only, grounded in the current mechanism below. **Decided**: if
+      built, this REPLACES the month-timeline/cursor machinery below (`jumpToMonth`/`beforeDate`/
+      `afterDate`, `LibraryTimeline.jsx`) rather than sitting alongside it - not yet started,
+      still gated on the open design questions below (esp. #1, the write-time maintenance
+      burden, and #4, Album detail's scope).
       - **Current mechanism** (`PhotoController.getPhotos` / `PhotoService` / `usePhotoData.js` /
         `PhotoGrid.jsx`): fixed `size=20` pages, paged via a `dateTaken` cursor
         (`beforeDate`/`afterDate`/`jumpToMonth`), with top/bottom `IntersectionObserver` sentinels
@@ -1916,7 +2426,7 @@ new work is identified or completed, so nothing gets lost between sessions.
       *that person's* face is in the photo — like the existing Lightbox face-box overlay, but on
       the grid, and scoped to the one person being viewed (not every detected face). Needs backend
       support: neither `Photo` nor the `getPersonPhotos` response currently carries the face's
-      x/y/width/height for that person/photo pair — `FaceDTO` has the box but no `photoId` to join
+      x/y/width/height for that person/photo pair — `FaceDTO` has the box but no `unlinkedPhotoId` to join
       on, and `getPersonFaces`/`getPersonPhotos` are two separate paginated endpoints, not
       guaranteed to be in step. Cleanest fix is probably to extend `PersonController`'s
       `getPersonPhotos` path so each returned `Photo` (or a small new DTO wrapping it) carries that

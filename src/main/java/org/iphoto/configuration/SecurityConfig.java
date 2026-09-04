@@ -17,7 +17,8 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain securityFilterChain(
             HttpSecurity http,
-            ShareAccessFilter shareAccessFilter
+            ShareAccessFilter shareAccessFilter,
+            DeviceTokenAuthenticationFilter deviceTokenAuthenticationFilter
     ) throws Exception {
 
         http
@@ -26,7 +27,8 @@ public class SecurityConfig {
                         .requestMatchers(
                                 "/api/share/**",
                                 "/api/login",
-                                "/api/logout"
+                                "/api/logout",
+                                "/api/auth/mobile/login"
                         ).permitAll()
 
                         // Admin operations
@@ -58,6 +60,14 @@ public class SecurityConfig {
                         .authenticationEntryPoint(
                                 (request, response, authException) -> response.sendError(401)
                         )
+                )
+                // deviceTokenAuthenticationFilter establishes authentication from a Bearer token;
+                // shareAccessFilter authorizes an already-established one - registered in that
+                // order (both anchored "before" UsernamePasswordAuthenticationFilter, so
+                // registration order here is what determines their relative order in the chain).
+                .addFilterBefore(
+                        deviceTokenAuthenticationFilter,
+                        UsernamePasswordAuthenticationFilter.class
                 )
                 .addFilterBefore(
                         shareAccessFilter,

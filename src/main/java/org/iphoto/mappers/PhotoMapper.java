@@ -9,6 +9,9 @@ import java.util.Set;
 
 @Mapper(componentModel = "spring")
 public interface PhotoMapper {
+
+
+
     default Photo photoEntityToPhoto(PhotoEntity entity) {
         return photoEntityToPhoto(entity, null);
     }

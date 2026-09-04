@@ -140,6 +140,44 @@ public class ImmichImportService {
     // endpoint), since a PARTIAL/FAILED day's failed assets are exactly what get re-queued.
     @Transactional
     public ImmichImportDayDTO triggerDayImport(LocalDate day, UserEntity user, String timezoneOffset) {
+        return triggerDayImportInternal(day, user, timezoneOffset);
+    }
+
+    // At most this many days per triggerBulkDayImport call. Each day can itself queue up to
+    // hundreds of per-asset tasks, and Immich calls are already throttled server-side
+    // (ImmichClient's own Semaphore(8)) - a much larger batch would just queue an enormous number
+    // of tasks in one request for no real benefit over clicking "Import Selected" a few times.
+    private static final int MAX_BULK_IMPORT_DAYS = 30;
+
+    // Bulk version of triggerDayImport, for the frontend's multi-select "Import Selected" action.
+    // Each day runs in its own independently-committed transaction, via
+    // RequiresNewTransactionService rather than just calling the @Transactional triggerDayImport
+    // above from within this same class - that would be a same-class ("self-invocation") call,
+    // which Spring's proxy-based @Transactional silently does NOT intercept (see
+    // RequiresNewTransactionService's own comment for the general pitfall) - so one broken day's
+    // exception can never roll back or block any other day in the batch, mirroring
+    // ImmichAlbumImportService's per-item transaction pattern for the same reason.
+    public List<ImmichImportDayDTO> triggerBulkDayImport(List<LocalDate> days, UserEntity user, String timezoneOffset) {
+        if (days == null || days.isEmpty()) return List.of();
+        if (days.size() > MAX_BULK_IMPORT_DAYS) {
+            throw new IllegalArgumentException("Cannot import more than " + MAX_BULK_IMPORT_DAYS + " days at once (got " + days.size() + ")");
+        }
+        List<ImmichImportDayDTO> results = new ArrayList<>();
+        for (LocalDate day : days) {
+            try {
+                results.add(requiresNewTransactionService.runInNewTransaction(() -> triggerDayImportInternal(day, user, timezoneOffset)));
+            } catch (Exception e) {
+                log.warn("Failed to trigger Immich import for day {} during bulk import", day, e);
+                // Still report this day's current row state (rather than dropping it from the
+                // response) so the frontend can tell the user it didn't start, instead of it just
+                // silently vanishing from the results.
+                immichImportDayRepository.findByDayAndUser(day, user).map(this::toDTO).ifPresent(results::add);
+            }
+        }
+        return results;
+    }
+
+    private ImmichImportDayDTO triggerDayImportInternal(LocalDate day, UserEntity user, String timezoneOffset) {
         ImmichCredentials creds = userService.requireImmichCredentials(user);
         ImmichImportDayEntity dayRow = immichImportDayRepository.findByDayAndUser(day, user)
                 .orElseGet(() -> ImmichImportDayEntity.builder().day(day).user(user).status(ImmichImportDayStatus.NOT_IMPORTED).build());
@@ -163,35 +201,50 @@ public class ImmichImportService {
             // committed with its original file still only staged in immich-temp if phase 2 fails
             // between its DB commit and the final file move (see UPLOAD_FROM_IMMICH) - that state
             // must still be picked up by a retry, not silently treated as done.
-            if (isFullyImported(photoId)) continue;
+            if (isFullyImported(photoId)) {
+                // The asset itself is genuinely done - but if its own UPLOAD_FROM_IMMICH task
+                // never reached COMPLETED (see reconcileOrphanedCompletedAsset for exactly how
+                // that happens), the day's counters were never credited for it and this day would
+                // otherwise stay IN_PROGRESS forever despite every one of its assets being
+                // actually present. Reconcile that here rather than just silently skipping.
+                reconcileOrphanedCompletedAsset(photoId, dayRow.getId());
+                continue;
+            }
 
             List<TaskEntity> existing = taskRepository.findByPhotoIdAndTaskTypeIn(photoId,
                     Set.of(TaskType.SYNC_FROM_IMMICH, TaskType.UPLOAD_FROM_IMMICH));
 
-            Optional<TaskEntity> failedUpload = existing.stream()
-                    .filter(t -> t.getTaskType() == TaskType.UPLOAD_FROM_IMMICH && t.getStatus() == TaskStatus.FAILED)
+            Optional<TaskEntity> reclaimableUpload = existing.stream()
+                    .filter(t -> t.getTaskType() == TaskType.UPLOAD_FROM_IMMICH && isReclaimable(t))
                     .findFirst();
-            if (failedUpload.isPresent()) {
-                // Phase 1 already succeeded and staged the file in immich-temp - only phase 2
-                // (the local DB write + final move) failed, so retry that alone by re-queuing its
-                // own payload verbatim (staged file path + all metadata already known), rather
-                // than re-hitting Immich for something that was never the problem.
-                String payload = failedUpload.get().getPayload();
-                taskRepository.delete(failedUpload.get());
+            if (reclaimableUpload.isPresent()) {
+                // Phase 1 already succeeded and staged the file in immich-temp - only phase 2 (the
+                // local DB write + final move) failed or got orphaned (see isReclaimable), so
+                // retry that alone by re-queuing its own payload verbatim (staged file path + all
+                // metadata already known), rather than re-hitting Immich for something that was
+                // never the problem.
+                String payload = reclaimableUpload.get().getPayload();
+                taskRepository.delete(reclaimableUpload.get());
                 clearedFailures++;
                 taskManagerService.createTaskEntity(user, TaskType.UPLOAD_FROM_IMMICH, photoId, payload, LocalDateTime.now().plusMinutes(1));
                 queued++;
                 continue;
             }
 
-            boolean stillInFlightOrHandled = existing.stream().anyMatch(t -> t.getStatus() != TaskStatus.FAILED);
-            if (stillInFlightOrHandled) continue;
+            boolean stillGenuinelyInFlight = existing.stream().anyMatch(t -> !isReclaimable(t));
+            if (stillGenuinelyInFlight) continue;
 
-            existing.stream()
-                    .filter(t -> t.getTaskType() == TaskType.SYNC_FROM_IMMICH && t.getStatus() == TaskStatus.FAILED)
-                    .findFirst()
-                    .ifPresent(taskRepository::delete);
-            if (!existing.isEmpty()) clearedFailures += existing.size();
+            // Everything left in `existing` at this point is reclaimable (FAILED, or orphaned
+            // mid-PROCESSING - see isReclaimable) - clear it and fall through to queue a brand new
+            // SYNC_FROM_IMMICH below, a full restart from step 1 for this asset. Safe even for an
+            // orphaned SYNC_FROM_IMMICH that might have actually finished staging its file before
+            // being orphaned - SYNC_FROM_IMMICH re-downloads deterministically to the same
+            // immich-temp path (see its own comment), so nothing is lost, just possibly-redundant
+            // re-download work.
+            if (!existing.isEmpty()) {
+                taskRepository.deleteAll(existing);
+                clearedFailures += existing.size();
+            }
 
             try {
                 Map<String, String> payload = new HashMap<>();
@@ -215,6 +268,23 @@ public class ImmichImportService {
         dayRow.setLastAttemptedAt(LocalDateTime.now());
         dayRow.setStatus(queued > 0 ? ImmichImportDayStatus.IN_PROGRESS : statusForNoNewWork(dayRow));
         return toDTO(immichImportDayRepository.save(dayRow));
+    }
+
+    // How long a SYNC_FROM_IMMICH/UPLOAD_FROM_IMMICH task can sit in PROCESSING before
+    // triggerDayImportInternal treats it as orphaned rather than genuinely in flight. Needed
+    // because TaskWorkerManager.pollPendingTasks only ever picks up PENDING tasks - if the app
+    // restarts (or a virtual thread otherwise dies) while a task is PROCESSING, nothing will ever
+    // pick it up again, and its day would stay stuck at IN_PROGRESS forever with no way to unstick
+    // it short of manually editing the database. 15 minutes comfortably covers even a slow face
+    // detection run or a large video download; a task genuinely still running that long would be
+    // unusual enough that restarting it from scratch is the right call anyway.
+    private static final Duration STUCK_TASK_THRESHOLD = Duration.ofMinutes(15);
+
+    private boolean isReclaimable(TaskEntity task) {
+        if (task.getStatus() == TaskStatus.FAILED) return true;
+        return task.getStatus() == TaskStatus.PROCESSING
+                && task.getUpdatedAt() != null
+                && task.getUpdatedAt().isBefore(LocalDateTime.now().minus(STUCK_TASK_THRESHOLD));
     }
 
     private ImmichImportDayStatus statusForNoNewWork(ImmichImportDayEntity dayRow) {
@@ -486,6 +556,34 @@ public class ImmichImportService {
         return photoRepository.findById(photoId)
                 .map(photo -> StringUtils.hasText(photo.getOriginalPath()) && Files.exists(Paths.get(photo.getOriginalPath())))
                 .orElse(false);
+    }
+
+    // An asset can end up genuinely done - photo row committed, file moved to its final path,
+    // isFullyImported == true - while its own UPLOAD_FROM_IMMICH task row is still stuck at
+    // PROCESSING (or, less commonly, SYNC_FROM_IMMICH left non-terminal). This happens when the
+    // app is killed/restarted at exactly the wrong instant: between Files.move succeeding inside
+    // finalizeUploadFromImmich and TaskWorkerManager.processTask reaching
+    // task.setStatus(COMPLETED) + recordAssetTaskOutcome for that same task, a couple of lines
+    // later in the same method. The two-phase design already guarantees the *photo* itself is
+    // safe either way (isFullyImported already stops this method from ever touching it again) -
+    // but nothing else ever notices that this leftover task's outcome was never actually recorded
+    // against the day's counters, so the day would stay IN_PROGRESS forever even once every one of
+    // its assets is genuinely present (this exact scenario, on a real day, is what prompted this
+    // fix - 7 orphaned UPLOAD_FROM_IMMICH tasks left the day permanently stuck at 133/140 despite
+    // all 140 photos and files actually existing). Idempotent: once the lingering task(s) are
+    // deleted here, a later call for the same asset finds nothing left and does nothing, so this
+    // never double-counts.
+    private void reconcileOrphanedCompletedAsset(UUID photoId, UUID dayRowId) {
+        List<TaskEntity> lingering = taskRepository.findByPhotoIdAndTaskTypeIn(photoId,
+                        Set.of(TaskType.SYNC_FROM_IMMICH, TaskType.UPLOAD_FROM_IMMICH)).stream()
+                .filter(t -> t.getStatus() != TaskStatus.COMPLETED)
+                .toList();
+        if (lingering.isEmpty()) return;
+        log.info("Reconciling {} orphaned-but-actually-completed task(s) for already-imported Immich asset {}",
+                lingering.size(), photoId);
+        taskRepository.deleteAll(lingering);
+        immichImportDayRepository.incrementImported(dayRowId);
+        finalizeDayStatusIfDone(dayRowId);
     }
 
     private List<ImmichImportDayDTO> getAllDaysDTO(UserEntity user) {

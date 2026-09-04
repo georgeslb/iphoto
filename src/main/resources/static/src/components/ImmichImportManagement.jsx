@@ -11,7 +11,26 @@ const STATUS_MESSAGE_KEYS = {
   FAILED: 'immichDayStatusFailed',
 };
 
-const IMPORTABLE_STATUSES = ['NOT_IMPORTED', 'PARTIAL', 'FAILED'];
+// IN_PROGRESS is included alongside the rest: a day can get permanently stuck there if the app
+// restarts mid-task (TaskWorkerManager only ever resumes PENDING tasks, never orphaned PROCESSING
+// ones - see ImmichImportService.isReclaimable for the actual backend-side fix), with no other way
+// to unstick it. Retriggering a *genuinely* still-running day is a harmless no-op server-side
+// (nothing reclaimable yet), so there's no real downside to allowing it here too. COMPLETED is
+// included so a user can re-check a day for assets added on Immich after the last sync -
+// triggerDayImport is idempotent/re-runnable by design (see its own comment): it only ever queues
+// what isn't already fully imported.
+const IMPORTABLE_STATUSES = ['NOT_IMPORTED', 'PARTIAL', 'FAILED', 'COMPLETED', 'IN_PROGRESS'];
+
+// Mirrors ImmichImportService.MAX_BULK_IMPORT_DAYS - kept in sync manually since the frontend has
+// no build-time link to the backend constant; the backend still enforces its own copy of this cap
+// regardless, this just keeps the UI from ever forming a request that would be rejected.
+const MAX_BULK_IMPORT_DAYS = 30;
+
+// Status filter dropdown options, in roughly the order a day moves through them. 'ALL' is the
+// default (no filtering) - every real value after it is one of ImmichImportDayStatus. Labelled
+// "Pending" for NOT_IMPORTED in the UI (see immichDayStatusNotImported's i18n text) since that's
+// clearer to a user than "not imported" for a day that simply hasn't been queued yet.
+const STATUS_FILTER_VALUES = ['ALL', 'NOT_IMPORTED', 'IN_PROGRESS', 'PARTIAL', 'FAILED', 'COMPLETED'];
 
 export default function ImmichImportManagement() {
   const { messages } = useLocale();
@@ -19,11 +38,13 @@ export default function ImmichImportManagement() {
     settings, settingsLoading, saveSettings, disconnect,
     days, coverage, loading, error, message,
     albumImportSummary, albumImporting,
-    syncDays, startImport, importAlbums,
+    syncDays, startImport, startBulkImport, importAlbums,
   } = useImmichImport();
 
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
+  const [statusFilter, setStatusFilter] = useState('ALL');
+  const [selectedDays, setSelectedDays] = useState(() => new Set());
 
   useEffect(() => {
     if (settings) setBaseUrl(settings.baseUrl || '');
@@ -35,6 +56,42 @@ export default function ImmichImportManagement() {
     e.preventDefault();
     saveSettings(baseUrl, apiKey);
     setApiKey('');
+  };
+
+  const visibleDays = statusFilter === 'ALL' ? days : days.filter(d => d.status === statusFilter);
+  const importableVisibleDays = visibleDays.filter(d => IMPORTABLE_STATUSES.includes(d.status)).map(d => d.day);
+  const allVisibleSelected = importableVisibleDays.length > 0 && importableVisibleDays.every(day => selectedDays.has(day));
+
+  const toggleDaySelection = (day) => {
+    setSelectedDays(prev => {
+      const next = new Set(prev);
+      if (next.has(day)) {
+        next.delete(day);
+      } else if (next.size < MAX_BULK_IMPORT_DAYS) {
+        next.add(day);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectAllVisible = () => {
+    setSelectedDays(prev => {
+      const next = new Set(prev);
+      if (allVisibleSelected) {
+        importableVisibleDays.forEach(day => next.delete(day));
+      } else {
+        for (const day of importableVisibleDays) {
+          if (next.size >= MAX_BULK_IMPORT_DAYS) break;
+          next.add(day);
+        }
+      }
+      return next;
+    });
+  };
+
+  const handleImportSelected = () => {
+    startBulkImport(Array.from(selectedDays));
+    setSelectedDays(new Set());
   };
 
   return (
@@ -93,6 +150,24 @@ export default function ImmichImportManagement() {
               {albumImporting ? messages["immichImportingAlbumsButton"] : messages["immichImportAlbumsButton"]}
             </button>
           )}
+          <label style={{ marginLeft: 8 }}>
+            {messages["immichStatusFilterLabel"]}
+            <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} style={{ marginLeft: 4 }}>
+              {STATUS_FILTER_VALUES.map(status => (
+                <option key={status} value={status}>
+                  {status === 'ALL' ? messages["immichStatusFilterAll"] : messages[STATUS_MESSAGE_KEYS[status]]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            onClick={handleImportSelected}
+            disabled={selectedDays.size === 0}
+            style={{ marginLeft: 8 }}
+          >
+            {messages["immichImportSelectedButton"](selectedDays.size, MAX_BULK_IMPORT_DAYS)}
+          </button>
 
           {coverage && (
             <div className={`immich-coverage-banner ${coverage.unaccountedForCount > 0 ? 'warning' : 'ok'}`}>
@@ -123,10 +198,21 @@ export default function ImmichImportManagement() {
             <p>{messages["immichLoading"]}</p>
           ) : days.length === 0 ? (
             <p>{messages["immichNoDaysYet"]}</p>
+          ) : visibleDays.length === 0 ? (
+            <p>{messages["immichNoDaysMatchFilterMessage"]}</p>
           ) : (
             <table className="users-table">
               <thead>
                 <tr>
+                  <th>
+                    <input
+                      type="checkbox"
+                      aria-label={messages["immichSelectAllLabel"]}
+                      checked={allVisibleSelected}
+                      disabled={importableVisibleDays.length === 0}
+                      onChange={toggleSelectAllVisible}
+                    />
+                  </th>
                   <th>{messages["immichDayColumn"]}</th>
                   <th>{messages["immichAssetCountColumn"]}</th>
                   <th>{messages["tableHeaderStatus"]}</th>
@@ -134,25 +220,39 @@ export default function ImmichImportManagement() {
                 </tr>
               </thead>
               <tbody>
-                {days.map(d => (
-                  <tr key={d.day}>
-                    <td>{d.day}</td>
-                    <td>{d.immichAssetCount}</td>
-                    <td>
-                      <span className={`status-text ${d.status}`}>{messages[STATUS_MESSAGE_KEYS[d.status]] || d.status}</span>
-                      <div>{messages["immichDaySummary"](d.importedCount || 0, d.failedCount || 0, d.queuedCount || d.immichAssetCount || 0)}</div>
-                    </td>
-                    <td>
-                      <button
-                        type="button"
-                        disabled={!IMPORTABLE_STATUSES.includes(d.status)}
-                        onClick={() => startImport(d.day)}
-                      >
-                        {d.status === 'PARTIAL' || d.status === 'FAILED' ? messages["immichRetryButton"] : messages["immichImportDayButton"]}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {visibleDays.map(d => {
+                  const importable = IMPORTABLE_STATUSES.includes(d.status);
+                  const selected = selectedDays.has(d.day);
+                  return (
+                    <tr key={d.day}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          disabled={!importable || (!selected && selectedDays.size >= MAX_BULK_IMPORT_DAYS)}
+                          onChange={() => toggleDaySelection(d.day)}
+                        />
+                      </td>
+                      <td>{d.day}</td>
+                      <td>{d.immichAssetCount}</td>
+                      <td>
+                        <span className={`status-text ${d.status}`}>{messages[STATUS_MESSAGE_KEYS[d.status]] || d.status}</span>
+                        <div>{messages["immichDaySummary"](d.importedCount || 0, d.failedCount || 0, d.queuedCount || d.immichAssetCount || 0)}</div>
+                      </td>
+                      <td>
+                        <button
+                          type="button"
+                          disabled={!importable}
+                          onClick={() => startImport(d.day)}
+                        >
+                          {d.status === 'PARTIAL' || d.status === 'FAILED' || d.status === 'IN_PROGRESS' ? messages["immichRetryButton"]
+                              : d.status === 'COMPLETED' ? messages["immichReimportButton"]
+                              : messages["immichImportDayButton"]}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}

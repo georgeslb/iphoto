@@ -12,11 +12,14 @@ function renderPhotoActions(overrides = {}) {
   const setSelectedPhoto = overrides.setSelectedPhoto || vi.fn();
   const handlePhotoClick = overrides.handlePhotoClick || vi.fn();
   const setSelectedIds = overrides.setSelectedIds || vi.fn();
+  const setPhotos = overrides.setPhotos || vi.fn();
+  const fetchAlbums = overrides.fetchAlbums || vi.fn();
+  const fetchSpaces = overrides.fetchSpaces || vi.fn();
   const { result } = renderHook(
-    () => usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, [], setSelectedIds),
+    () => usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, [], setSelectedIds, setPhotos, fetchAlbums, fetchSpaces),
     { wrapper: localeWrapper }
   );
-  return { result, refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, setSelectedIds };
+  return { result, refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, setSelectedIds, setPhotos, fetchAlbums, fetchSpaces };
 }
 
 describe('usePhotoActions', () => {
@@ -37,17 +40,51 @@ describe('usePhotoActions', () => {
       expect(global.fetch).not.toHaveBeenCalled();
     });
 
-    it('clears selection and refreshes on success', async () => {
+    it('clears selection and refreshes album/space counts on success, without a full grid reset', async () => {
       vi.spyOn(window, 'confirm').mockReturnValue(true);
       global.fetch = vi.fn(() => jsonResponse({}));
-      const { result, setSelectedIds, refreshAndMaintainScroll } = renderPhotoActions();
+      const { result, setSelectedIds, setPhotos, fetchAlbums, fetchSpaces, refreshAndMaintainScroll } = renderPhotoActions();
 
       await act(async () => {
         await result.current.handleMoveToGarbage(['p1']);
       });
 
       expect(setSelectedIds).toHaveBeenCalledWith([]);
-      expect(refreshAndMaintainScroll).toHaveBeenCalled();
+      expect(setPhotos).toHaveBeenCalled();
+      expect(fetchAlbums).toHaveBeenCalled();
+      expect(fetchSpaces).toHaveBeenCalled();
+      // Regression: refreshAndMaintainScroll resets the grid to page 0 only, dropping every
+      // later page and yanking scroll position - garbage should update `photos` in place instead.
+      expect(refreshAndMaintainScroll).not.toHaveBeenCalled();
+    });
+
+    // Regression: garbage-ing a photo from DuplicateClusterModal (whose visible cluster is
+    // derived live from `photos`, see PhotoGrid.jsx) used to close the modal and lose the
+    // library scroll position, because the old refreshAndMaintainScroll-based refresh reset the
+    // whole grid to page 0. The updater passed to setPhotos must both drop the garbage'd photo
+    // itself and scrub it out of every remaining photo's own `duplicates` list, since that's
+    // what PhotoGrid.jsx's cluster grouping actually reads members from.
+    it('removes the garbage-d photo and scrubs it from other photos’ duplicates lists', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      global.fetch = vi.fn(() => jsonResponse({}));
+      const { result, setPhotos } = renderPhotoActions();
+
+      await act(async () => {
+        await result.current.handleMoveToGarbage(['dup1']);
+      });
+
+      const updater = setPhotos.mock.calls[0][0];
+      const prev = [
+        { id: 'primary', duplicates: [{ id: 'dup1' }, { id: 'dup2' }] },
+        { id: 'dup1', duplicates: [{ id: 'primary' }, { id: 'dup2' }] },
+        { id: 'dup2', duplicates: [{ id: 'primary' }, { id: 'dup1' }] },
+      ];
+
+      const next = updater(prev);
+
+      expect(next.map(p => p.id)).toEqual(['primary', 'dup2']);
+      expect(next.find(p => p.id === 'primary').duplicates.map(d => d.id)).toEqual(['dup2']);
+      expect(next.find(p => p.id === 'dup2').duplicates.map(d => d.id)).toEqual(['primary']);
     });
 
     // Regression: this used to fail completely silently (no alert, no console.error) —
@@ -56,7 +93,7 @@ describe('usePhotoActions', () => {
       vi.spyOn(window, 'confirm').mockReturnValue(true);
       const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
       global.fetch = vi.fn(() => jsonResponse({}, false, 500));
-      const { result, setSelectedIds } = renderPhotoActions();
+      const { result, setSelectedIds, setPhotos } = renderPhotoActions();
 
       await act(async () => {
         await result.current.handleMoveToGarbage(['p1']);
@@ -64,6 +101,7 @@ describe('usePhotoActions', () => {
 
       expect(alertSpy).toHaveBeenCalled();
       expect(setSelectedIds).not.toHaveBeenCalled();
+      expect(setPhotos).not.toHaveBeenCalled();
     });
   });
 

@@ -3,7 +3,7 @@ package org.iphoto.controller;
 import lombok.AccessLevel;
 import lombok.experimental.FieldDefaults;
 import org.iphoto.model.DuplicateGroupDTO;
-import org.iphoto.model.request.FinishComparisonRequest;
+import org.iphoto.model.request.UnlinkPhotoDuplicate;
 import org.iphoto.repository.UserRepository;
 import org.iphoto.service.DuplicationService;
 import org.iphoto.service.SpaceService;
@@ -26,16 +26,14 @@ public class DuplicateController extends AbstractBaseController {
     }
 
     @GetMapping
+    @Deprecated
     public Slice<DuplicateGroupDTO> getDuplicates(@PageableDefault(size = 1) Pageable pageable) {
         return duplicationService.getDuplicates(pageable);
     }
 
-    @PutMapping("/finishChanges")
-    public ResponseEntity<Void> finishChanges(@RequestBody FinishComparisonRequest payload) {
-        String hash = payload.hash();
-        if (hash != null) {
-            duplicationService.closeDuplicates(hash);
-        }
+    @PutMapping("/unlink")
+    public ResponseEntity<Void> finishChanges(@RequestBody UnlinkPhotoDuplicate payload) {
+        duplicationService.unlinkPhotoFromGroup(payload.unlinkedPhotoId(), payload.duplicatesId());
         return ResponseEntity.ok().build();
     }
 }

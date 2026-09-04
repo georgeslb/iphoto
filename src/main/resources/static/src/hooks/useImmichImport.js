@@ -136,6 +136,30 @@ export function useImmichImport() {
     }
   }, [messages, pollDay]);
 
+  // Bulk version of startImport - triggers up to MAX_BULK_IMPORT_DAYS days (see
+  // ImmichImportService, mirrored in ImmichImportManagement.jsx) in one request, then polls each
+  // non-terminal one individually just like a single startImport would.
+  const startBulkImport = useCallback(async (selectedDays) => {
+    setError(null);
+    setMessage(null);
+    try {
+      const res = await fetch('/api/immich/days/import-bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ days: selectedDays }),
+      });
+      if (!res.ok) throw new Error(messages["failedToStartImmichImport"]);
+      const updatedDays = await res.json();
+      const byDay = new Map(updatedDays.map(d => [d.day, d]));
+      setDays(prev => prev.map(d => byDay.has(d.day) ? byDay.get(d.day) : d));
+      updatedDays.forEach(d => {
+        if (!TERMINAL_DAY_STATUSES.includes(d.status)) pollDay(d.day);
+      });
+    } catch (err) {
+      setError(err.message);
+    }
+  }, [messages, pollDay]);
+
   const importAlbums = useCallback(async () => {
     setError(null);
     setMessage(null);
@@ -155,6 +179,6 @@ export function useImmichImport() {
     settings, settingsLoading, saveSettings, disconnect,
     days, coverage, loading, error, message,
     albumImportSummary, albumImporting,
-    syncDays, startImport, importAlbums,
+    syncDays, startImport, startBulkImport, importAlbums,
   };
 }

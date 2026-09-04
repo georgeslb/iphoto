@@ -35,6 +35,13 @@ build/
 ### VS Code ###
 .vscode/
 
+### Android ###
+android/.gradle/
+android/local.properties
+android/.idea/
+android/*/.cxx/
+android/captures/
+
 ### Mac OS ###
 .DS_Store
 /src/main/resources/static/dist/

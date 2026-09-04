@@ -15,6 +15,12 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @EnableRetry
 public class IPhotoApplication {
     public static void main(String[] args) {
+        // PyTorch's CPU backend defaults to using every available core for the tensor math inside
+        // a single inference call (intra-op parallelism), independent of how many Java-level
+        // worker threads are running face-detection tasks - so even one task in flight can peg the
+        // whole machine. Must be set before the DJL PyTorch engine initializes (its first
+        // Criteria.loadModel() call, in FaceDetectionConfiguration), so as early as possible here.
+        System.setProperty("ai.djl.pytorch.num_threads", "8");
         SpringApplication.run(IPhotoApplication.class, args);
     }
 
