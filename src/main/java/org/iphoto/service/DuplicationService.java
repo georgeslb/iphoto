@@ -342,6 +342,11 @@ public class DuplicationService {
         }
         try {
             checkDuplicationLock.lock();
+            if (photoAlreadyDuplicated(task.getPhotoId())) {
+                task.setStatus(TaskStatus.COMPLETED);
+                return;
+            }
+
             photoRepository
                     .findById(task.getPhotoId()).ifPresent(photo -> {
 
@@ -393,6 +398,10 @@ public class DuplicationService {
         } finally {
             checkDuplicationLock.unlock();
         }
+    }
+
+    private boolean photoAlreadyDuplicated(UUID photoId) {
+        return !photoDuplicateRepository.findByPhotoIdIn(List.of(photoId)).isEmpty();
     }
 
 

@@ -37,8 +37,51 @@ public interface PhotoRepository extends JpaRepository<PhotoEntity, UUID> {
 
     Page<PhotoEntity> findByIsGarbageFalseAndAlbumsAndGroupedDay(Set<AlbumEntity> albums, LocalDate groupedDay, Pageable pageable);
 
-    // Garbage's day-index equivalent - cross-space (spaceIdIn, matching the flat endpoint this
-    // replaced) since a user's garbage isn't scoped to one space.
+    // --- Day-index counts (see model/DayBucketDTO) ---
+    // Plain GROUP BY count query - index-friendly on idx_photos_space_grouped_day, no sort needed.
+    // No per-day cover photo here (that was computed for every day but never actually rendered
+    // anywhere in the frontend) - the only place a cover/representative photo is needed is
+    // Library's Memories bar, which only needs a handful of photos for a handful of specific days
+    // (see findRandomPhotosBySpaceIdAndGroupedDay below), not for every day in the index.
+
+    @Query("SELECT p.groupedDay as day, COUNT(p) as count FROM PhotoEntity p " +
+            "WHERE p.space.id = :spaceId AND p.isGarbage = false AND p.groupedDay IS NOT NULL " +
+            "GROUP BY p.groupedDay ORDER BY p.groupedDay DESC")
+    List<DayCountProjection> countDailyPhotosBySpaceId(@Param("spaceId") UUID spaceId);
+
+    @Query("SELECT p.groupedDay as day, COUNT(p) as count FROM PhotoEntity p JOIN p.albums a " +
+            "WHERE a IN :albums AND p.isGarbage = false AND p.groupedDay IS NOT NULL " +
+            "GROUP BY p.groupedDay ORDER BY p.groupedDay DESC")
+    List<DayCountProjection> countDailyPhotosByAlbums(@Param("albums") Set<AlbumEntity> albums);
+
+    // Garbage: cross-space (spaceIdIn), matching the flat endpoint this replaced.
+    @Query("SELECT p.groupedDay as day, COUNT(p) as count FROM PhotoEntity p " +
+            "WHERE p.space.id IN :spaceIds AND p.isGarbage = true AND p.groupedDay IS NOT NULL " +
+            "GROUP BY p.groupedDay ORDER BY p.groupedDay DESC")
+    List<DayCountProjection> countDailyGarbagePhotosBySpaceIds(@Param("spaceIds") Set<UUID> spaceIds);
+
+    // Person: joined through faces instead of space_id/album_photos - deliberately no isGarbage
+    // filter, matching findByFacesPerson's existing (no-filter) semantics.
+    @Query("SELECT p.groupedDay as day, COUNT(p) as count FROM PhotoEntity p JOIN p.faces f " +
+            "WHERE f.person.id = :personId AND p.groupedDay IS NOT NULL " +
+            "GROUP BY p.groupedDay ORDER BY p.groupedDay DESC")
+    List<DayCountProjection> countDailyPhotosByPersonId(@Param("personId") UUID personId);
+
+    interface DayCountProjection {
+        LocalDate getDay();
+        Long getCount();
+    }
+
+    // Library's Memories bar (PhotoService.getMemories): up to `limit` random non-garbage photos
+    // for an EXACT single day (unlike the DISTINCT-ON-per-many-days pattern the old per-day cover
+    // query used, this only ever needs to answer for one day at a time) - fewer than `limit`, or
+    // empty, if that day doesn't have that many (or any).
+    @Query(value = "SELECT * FROM photos p WHERE p.space_id = :spaceId AND p.is_garbage = false " +
+            "AND p.grouped_day = :day ORDER BY random() LIMIT :limit", nativeQuery = true)
+    List<PhotoEntity> findRandomPhotosBySpaceIdAndGroupedDay(@Param("spaceId") UUID spaceId, @Param("day") LocalDate day, @Param("limit") int limit);
+
+    // Garbage's day-index equivalent - cross-space (spaceIdIn), matching the flat endpoint this
+    // replaced, since a user's garbage isn't scoped to one space.
     Page<PhotoEntity> findBySpaceIdInAndIsGarbageTrueAndGroupedDay(Set<UUID> spaceIds, LocalDate groupedDay, Pageable pageable);
 
     Page<PhotoEntity> findByFacesPerson(PersonEntity person, Pageable pageable);
@@ -77,85 +120,6 @@ public interface PhotoRepository extends JpaRepository<PhotoEntity, UUID> {
     // link grants access to, before serving it (guest sessions never have space-filtering
     // applied, so this containment check is the real authorization boundary for them).
     Optional<PhotoEntity> findByIdAndAlbums_IdAndIsGarbageFalse(UUID id, UUID albumId);
-
-    // Day-index: the Library/Space equivalent of the old month-timeline query this replaced,
-    // just grouped by the indexed groupedDay column instead of extracting year/month from
-    // date_taken live on every call - one row per day that has a non-garbage photo, newest first,
-    // each with a randomly-picked cover (same "fresh pick every call" rationale as the month
-    // version).
-    @Query(value = "select day, count, photo_id, file_hash from (" +
-            "  select" +
-            "    p.grouped_day as day," +
-            "    count(*) over (partition by p.grouped_day) as count," +
-            "    p.id as photo_id," +
-            "    p.file_hash as file_hash," +
-            "    row_number() over (partition by p.grouped_day order by random()) as rn" +
-            "  from photos p" +
-            "  where p.space_id = :spaceId and p.is_garbage = false and p.grouped_day is not null" +
-            ") days_with_cover" +
-            " where rn = 1" +
-            " order by day desc", nativeQuery = true)
-    List<DayBucketProjection> findDailyPhotoCountsWithCoverBySpaceId(@Param("spaceId") UUID spaceId);
-
-    // Same shape, scoped through the album_photos join instead of space_id - the day-index
-    // equivalent for Album detail (an album references photos rather than owning them, so this
-    // can't be scoped by space_id the way the method above is).
-    @Query(value = "select day, count, photo_id, file_hash from (" +
-            "  select" +
-            "    p.grouped_day as day," +
-            "    count(*) over (partition by p.grouped_day) as count," +
-            "    p.id as photo_id," +
-            "    p.file_hash as file_hash," +
-            "    row_number() over (partition by p.grouped_day order by random()) as rn" +
-            "  from photos p" +
-            "  join album_photos ap on ap.photo_id = p.id" +
-            "  where ap.album_id = :albumId and p.is_garbage = false and p.grouped_day is not null" +
-            ") days_with_cover" +
-            " where rn = 1" +
-            " order by day desc", nativeQuery = true)
-    List<DayBucketProjection> findDailyPhotoCountsWithCoverByAlbumId(@Param("albumId") UUID albumId);
-
-    // Garbage's day-index equivalent - same shape, opposite is_garbage filter and cross-space
-    // (space_id in (:spaceIds)) instead of a single space_id, matching getGarbagePhotosForDay's
-    // cross-space scope.
-    @Query(value = "select day, count, photo_id, file_hash from (" +
-            "  select" +
-            "    p.grouped_day as day," +
-            "    count(*) over (partition by p.grouped_day) as count," +
-            "    p.id as photo_id," +
-            "    p.file_hash as file_hash," +
-            "    row_number() over (partition by p.grouped_day order by random()) as rn" +
-            "  from photos p" +
-            "  where p.space_id in (:spaceIds) and p.is_garbage = true and p.grouped_day is not null" +
-            ") days_with_cover" +
-            " where rn = 1" +
-            " order by day desc", nativeQuery = true)
-    List<DayBucketProjection> findDailyPhotoCountsWithCoverBySpaceIdInAndIsGarbageTrue(@Param("spaceIds") Set<UUID> spaceIds);
-
-    // Person's day-index equivalent - joined through the faces table instead of space_id/
-    // album_photos, since a person's photos aren't scoped to one space. No is_garbage filter,
-    // matching findByFacesPerson's existing (no-filter) semantics.
-    @Query(value = "select day, count, photo_id, file_hash from (" +
-            "  select" +
-            "    p.grouped_day as day," +
-            "    count(*) over (partition by p.grouped_day) as count," +
-            "    p.id as photo_id," +
-            "    p.file_hash as file_hash," +
-            "    row_number() over (partition by p.grouped_day order by random()) as rn" +
-            "  from photos p" +
-            "  join faces f on f.photo_id = p.id" +
-            "  where f.person_id = :personId and p.grouped_day is not null" +
-            ") days_with_cover" +
-            " where rn = 1" +
-            " order by day desc", nativeQuery = true)
-    List<DayBucketProjection> findDailyPhotoCountsWithCoverByPersonId(@Param("personId") UUID personId);
-
-    interface DayBucketProjection {
-        LocalDate getDay();
-        Long getCount();
-        UUID getPhotoId();
-        String getFileHash();
-    }
 
     // One-time backfill for rows that existed before groupedDay was introduced - ddl-auto:update
     // only adds the new column, it doesn't populate it. Idempotent (guarded by the IS NULL

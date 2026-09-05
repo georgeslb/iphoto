@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Check, Layers, Unlink2 } from 'lucide-react';
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 import DuplicateClusterModal from './DuplicateClusterModal';
+import TimelineScrubber from './TimelineScrubber';
 
 // Clusters a flat list of photos into {primary, members} display items, same rule everywhere
 // duplicates are populated (Library/Space, day-indexed or not): a photo carries its known
@@ -158,7 +159,12 @@ export default function PhotoGrid({
           if (day) dayIndex.loadDayPage(day);
         });
       },
-      { threshold: 0.1, rootMargin: '0px 0px 1500px 0px' }
+      // Symmetric top/bottom margin - every not-yet-loaded day (regardless of position) already
+      // renders its own sentinel up front (see groups/groupOrder above, built from the full
+      // dayIndex.days list), so scrolling UP after a TimelineScrubber jump needs to prefetch
+      // upward the same way scrolling down already prefetches downward, not just load once a
+      // section is already on screen.
+      { threshold: 0.1, rootMargin: '1500px 0px 1500px 0px' }
     );
 
     const sentinels = gridContainerRef.current?.querySelectorAll('[data-day-sentinel]') || [];
@@ -169,6 +175,19 @@ export default function PhotoGrid({
     // flatSelectionPhotos above), which would tear down and recreate the observer every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dayIndex.days, dayIndex.photosByDay, dayIndex.dayPageState, isLightboxOpen, dayIndex.loadDayPage]);
+
+  // TimelineScrubber jump target: an INSTANT (not smooth) scroll straight to that day's section -
+  // smooth scrolling would transiently intersect every sentinel it animates past, defeating the
+  // whole point of jumping without fetching everything in between. Also eagerly triggers
+  // loadDayPage itself rather than waiting on the IntersectionObserver to notice the new scroll
+  // position, so the jump feels instant instead of depending on observer timing.
+  const seekToDay = useCallback((day) => {
+    const el = gridContainerRef.current?.querySelector(`[data-day-group="${day}"]`);
+    if (el) el.scrollIntoView({ block: 'start' });
+    dayIndex.loadDayPage(day);
+    // dayIndex itself deliberately excluded - see the day-sentinel observer effect above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dayIndex.loadDayPage]);
 
   const renderPhotoCard = (p, badge, size = 220) => {
     const aspectRatio = (p.width && p.height) ? (p.width / p.height) : 1;
@@ -236,6 +255,7 @@ export default function PhotoGrid({
 
   return (
     <div className="content-body" ref={gridContainerRef}>
+      <TimelineScrubber days={dayIndex.days} onSeek={seekToDay} />
       {dayIndex.loadingDays && (
         <div style={{ padding: '40px', textAlign: 'center', color: '#888' }}>{messages["loadingMorePhotos"]}</div>
       )}
@@ -250,7 +270,7 @@ export default function PhotoGrid({
         const showDaySentinel = !pageState?.isLast;
 
         return (
-          <div key={day} className="day-group">
+          <div key={day} className="day-group" data-day-group={day}>
             <div className="day-header" style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <h3>{day}</h3>
               {groupIds.length > 0 && (

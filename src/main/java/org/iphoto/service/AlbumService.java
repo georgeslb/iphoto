@@ -31,6 +31,7 @@ public class AlbumService {
     private final AlbumRepository albumRepository;
     private final PhotoRepository photoRepository;
     private final PhotoMapper photoMapper;
+    private final DayIndexCache dayIndexCache;
 
 
     @Transactional
@@ -101,7 +102,9 @@ public class AlbumService {
         Set<PhotoEntity> photosToAdd = photoRepository.findByIdIn(photoIds);
         checkPhotosAreInMainSpace(photosToAdd);
         album.getPhotos().addAll(photosToAdd);
-        return updateAlbumAndGetDto(album);
+        AlbumDTO dto = updateAlbumAndGetDto(album);
+        dayIndexCache.evictAlbum(albumId);
+        return dto;
     }
 
 
@@ -116,7 +119,9 @@ public class AlbumService {
         if (album.getCoverPhoto() != null && photoIds.stream().anyMatch(photoId -> photoId.equals(album.getCoverPhoto().getId()))) {
             album.setCoverPhoto(null);
         }
-        return updateAlbumAndGetDto(album);
+        AlbumDTO dto = updateAlbumAndGetDto(album);
+        dayIndexCache.evictAlbum(albumId);
+        return dto;
     }
 
     private void checkPhotosAreInMainSpace(Set<PhotoEntity> photosToAdd) {
@@ -141,17 +146,12 @@ public class AlbumService {
     // Space equivalent) - an album references photos rather than owning them, so this groups
     // through the album_photos join instead of by space_id. No buildDedupedPage-style
     // duplicate-clustering here, matching getAlbumPhotos above (Album detail doesn't get that
-    // treatment today either).
+    // treatment today either). Cached (see DayIndexCache), evicted on addPhotosToAlbum/
+    // removePhotosFromAlbum above.
     @Transactional(readOnly = true)
     public List<DayBucketDTO> getAlbumDailyPhotoCounts(UUID albumId) {
         AlbumEntity album = getAlbum(albumId);
-        return photoRepository.findDailyPhotoCountsWithCoverByAlbumId(album.getId()).stream()
-                .map(row -> new DayBucketDTO(
-                        row.getDay(),
-                        row.getCount(),
-                        "/api/photos/" + row.getPhotoId() + "/thumbnail"
-                                + (row.getFileHash() != null ? "?v=" + row.getFileHash() : "")))
-                .toList();
+        return dayIndexCache.getAlbumDayCounts(albumId, () -> DayBucketDTO.from(photoRepository.countDailyPhotosByAlbums(Set.of(album))));
     }
 
     @Transactional(readOnly = true)

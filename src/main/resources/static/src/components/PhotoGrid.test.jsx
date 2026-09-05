@@ -13,7 +13,7 @@ function makePhotos(n) {
 // App.jsx.
 function makeDayIndex(photos) {
   return {
-    days: [{ day: 'd1', count: photos.length, coverPhotoUrl: '' }],
+    days: [{ day: 'd1', count: photos.length }],
     loadingDays: false,
     photosByDay: { d1: photos },
     dayPageState: { d1: { isLast: true } },

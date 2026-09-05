@@ -19,6 +19,7 @@ import org.apache.tomcat.util.http.fileupload.FileUploadException;
 import org.bytedeco.javacv.FFmpegFrameGrabber;
 import org.iphoto.entities.*;
 import org.iphoto.exception.NoMatchUserSpaceException;
+import org.iphoto.exception.NoUserFoundException;
 import org.iphoto.exception.SpaceLockingException;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.UploadStatus;
@@ -52,20 +53,23 @@ import static org.iphoto.model.UploadStatus.SUCCESS;
 @FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
 public class PhotoUploadService {
 
-    private PhotoRepository photoRepository;
-    private PhotoMetadataRepository metadataRepository;
-    private ThumbnailService thumbnailService;
-    private PhotoStoragePathResolver photoStoragePathResolver;
-    private ObjectMapper objectMapper;
-    private AlbumService albumService;
-    private SpaceService spaceService;
-    private TaskMapper taskMapper;
-    private final EntityManager entityManager;
+    PhotoRepository photoRepository;
+    PhotoMetadataRepository metadataRepository;
+    ThumbnailService thumbnailService;
+    PhotoStoragePathResolver photoStoragePathResolver;
+    ObjectMapper objectMapper;
+    AlbumService albumService;
+    SpaceService spaceService;
+    TaskMapper taskMapper;
+    EntityManager entityManager;
+    DayIndexCache dayIndexCache;
+    UserService userService;
 
 
 
     @Retryable(maxAttempts = 5, retryFor = {SpaceLockingException.class}, backoff = @Backoff(delay = 1000))
-    public UploadStatus processNewAsset(TaskEntity task, UserEntity user, Map<String, String> payload, File tempFile, String hash) throws Exception {
+    public UploadStatus processNewAsset(TaskEntity task, UUID userId, Map<String, String> payload, File tempFile, String hash) throws Exception {
+        UserEntity user = userService.findById(userId).orElseThrow(NoUserFoundException::new);
 
         SpaceEntity space;
         String spaceId = payload.get("spaceId");
@@ -134,6 +138,9 @@ public class PhotoUploadService {
 
             photoRepository.save(photo);
             metadataRepository.save(metadataEntity);
+            // Covers both a regular upload and "save as new" (EditPhotoService routes saveAsNew
+            // through this same PROCESS_UPLOAD task path) - one hook point for both triggers.
+            dayIndexCache.evictSpace(space.getId());
             String albumId = payload.get("albumId");
             if (albumId != null) {
                 albumService.addPhotosToAlbum(UUID.fromString(albumId), List.of(photo.getId())); // Pass user to albumService

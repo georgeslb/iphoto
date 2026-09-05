@@ -97,6 +97,14 @@ public class PhotoController {
                 .orElseGet(() -> PageResponse.from(Page.empty()));
     }
 
+    // Library's "N months/years ago" bar - see PhotoService.getMemories/IPhotoProperties.Memories.
+    @GetMapping("/memories")
+    public List<MemoryDTO> getMemories() {
+        UserEntity currentUser = getCurrentUser();
+        SpaceEntity space = spaceService.getDefaultSpaceForUser(currentUser);
+        return photoService.getMemories(space.getId());
+    }
+
     @GetMapping("/space/{spaceId}/days")
     public List<DayBucketDTO> getSpaceDays(@PathVariable UUID spaceId) {
         UserEntity currentUser = getCurrentUser();

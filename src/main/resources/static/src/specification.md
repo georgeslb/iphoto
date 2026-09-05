@@ -9,6 +9,23 @@ This document outlines the functionality and behavior of the IPHOTO web applicat
     *   **Main Space:** The default space. Photos in this space are displayed in the "Library" menu. Users can move photos from any other space into the Main space.
 *   **Album:** A virtual collection or a "playlist" of photos. An album contains links (references) to photos that exist **in the Main Space only**. A single photo can be included in multiple albums without being moved or duplicated. The visibility of albums (i.e., which albums are displayed to the user) is managed by the backend.
 *   **Library:** The view that displays all photos residing in the "Main" space.
+    *   **Memories bar:** a horizontal strip above the day-sectioned grid showing one random Main
+        Space photo per configured "N months ago" offset (today minus N months, matched against
+        `groupedDay`) — e.g. "1 month ago," "1 year ago," "5 years ago." Offsets come from
+        `IPhotoProperties.Memories.monthsAgo` (`iphoto.memories.months-ago` in `application.yml`,
+        default `[1, 6, 12, 36, 60, 120]`), not hardcoded — change the property to change which
+        offsets show. An offset with no photo taken that exact day is simply omitted, not shown as
+        an empty slot. Backend: `GET /api/photos/memories` (`PhotoService.getMemories`). Frontend:
+        `hooks/useMemories.js` + `components/MemoriesBar.jsx`, rendered only for the Library view
+        (not Garbage/Album/Space/Person), clicking a memory opens it in the Lightbox the same way
+        any grid photo click does.
+*   **Timeline scrubber:** every day-indexed view (Library/Album/Space/Garbage/Person, plus the
+    share-guest flow) shows a right-edge vertical scrubber (`components/TimelineScrubber.jsx`) with
+    one label per year. Click or drag-and-release jumps straight to that day's section — an
+    instant, not animated, scroll, so nothing between the current position and the target is ever
+    fetched (a `PhotoGrid.jsx` day section is rendered as a stub for every day up front regardless
+    of load state, so this works for any day whether or not it's been loaded yet). Purely frontend;
+    no new backend endpoint — reuses whichever `dayIndex.days`/`loadDayPage` the view already has.
 *   **Garbage:** A temporary holding place for deleted photos and spaces before permanent deletion.
     It has two distinct sections, both shown on the `/garbage` view:
     *   **Deleted Spaces section:** Spaces that were deleted (soft-delete) from the `/spaces` menu.

@@ -28,6 +28,7 @@ import UserManagement from './components/UserManagement'; // Import UserManageme
 import ImmichImportManagement from './components/ImmichImportManagement';
 import SpaceGridDisplay from './components/SpaceGridDisplay'; // Import SpaceGridDisplay
 import SpaceDetail from './components/SpaceDetail'; // Import SpaceDetail
+import MemoriesBar from './components/MemoriesBar';
 import { useDayIndexedPhotos } from './hooks/useDayIndexedPhotos';
 import { removeFromPhotosByDay } from './utils/photoListUpdates';
 import { useAlbumManagement } from './hooks/useAlbumManagement';
@@ -282,18 +283,22 @@ function App() {
 
   // Shared by "/" and "/asset/:photoId" (Library) AND "/garbage"'s embedded grid (Garbage) -
   // /asset/:photoId's effectivePath resolves to whatever backgroundLocation it was opened from
-  // (see useRouteContext).
+  // (see useRouteContext). MemoriesBar is Library-only (gated on selectedMenu, which already
+  // correctly resolves to 'garbage' rather than 'library' for the Garbage instance of this).
   const libraryPhotoGrid = (
-    <PhotoGrid
-        dayIndex={dayIndexed}
-        type={selectedMenu}
-        selectedIds={selectedIds}
-        setSelectedIds={setSelectedIds}
-        setSelectedPhoto={handlePhotoClick}
-        isLightboxOpen={isLightboxOpen}
-        handleMoveToGarbage={handleMoveToGarbage}
-        handleUnlinkDuplicate={handleUnlinkDuplicate}
-    />
+    <>
+      {selectedMenu === 'library' && <MemoriesBar onPhotoClick={handlePhotoClick} />}
+      <PhotoGrid
+          dayIndex={dayIndexed}
+          type={selectedMenu}
+          selectedIds={selectedIds}
+          setSelectedIds={setSelectedIds}
+          setSelectedPhoto={handlePhotoClick}
+          isLightboxOpen={isLightboxOpen}
+          handleMoveToGarbage={handleMoveToGarbage}
+          handleUnlinkDuplicate={handleUnlinkDuplicate}
+      />
+    </>
   );
 
   const albumDetailElement = (

@@ -15,7 +15,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @Slf4j
 @SpringBootApplication
 @EnableScheduling
-@EnableRetry
+@EnableRetry(proxyTargetClass=true)
 public class IPhotoApplication {
 
     public static void main(String[] args) {

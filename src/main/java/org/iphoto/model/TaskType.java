@@ -7,7 +7,8 @@ public enum TaskType {
     PERMANENT_DELETE (false, 0, false),
     PROCESS_UPLOAD (false, 0, false),
     HASH_IMAGE(true, 1, false),
-    CHECK_DUPLICATION(true, 2, false),
+    ACTIVATE_HEAVY_TASKS(true, 3, false),
+    CHECK_DUPLICATION(true, 2, true),
     ISOLATE_FACES(true, 1, true),
     FACE_RECOGNITION (false, 2, true),
     // Immich asset import is split into two chained phases (see ImmichImportService), one task

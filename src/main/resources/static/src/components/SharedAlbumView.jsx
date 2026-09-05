@@ -102,7 +102,7 @@ export default function SharedAlbumView() {
     const dayPageState = {};
     order.forEach(day => { dayPageState[day] = { isLast: day !== lastKey || !hasMore }; });
     return {
-      days: order.map(day => ({ day, count: photosByDay[day].length, coverPhotoUrl: '' })),
+      days: order.map(day => ({ day, count: photosByDay[day].length })),
       loadingDays: false,
       photosByDay,
       dayPageState,

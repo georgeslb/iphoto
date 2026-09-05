@@ -21,7 +21,6 @@ import org.iphoto.repository.*;
 import org.iphoto.service.*;
 import org.iphoto.service.UserService.ImmichCredentials;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -69,6 +68,7 @@ public class ImmichImportService {
     // transaction - see RequiresNewTransactionService for why this exists instead of just
     // @Transactional(REQUIRES_NEW) on that method (it's called from within this same class).
     private final RequiresNewTransactionService requiresNewTransactionService;
+    private final DayIndexCache dayIndexCache;
 
     // ---------------------------------------------------------------
     // Day-index sync + coverage
@@ -478,6 +478,7 @@ public class ImmichImportService {
 
                 photoRepository.save(photo);
                 photoMetadataRepository.save(metadataEntity);
+                dayIndexCache.evictSpace(spaceId);
                 // Hooks the imported photo into the same async hash/duplicate-check/face-detection
                 // pipeline any normally-uploaded photo goes through - see TaskMapper.
                 taskMapper.updateTasksToAction(TaskMapper.Action.ON_CREATE_PHOTO_ACTION, photo.getId());
@@ -501,7 +502,19 @@ public class ImmichImportService {
     // Day-row outcome recording (called from TaskWorkerManager)
     // ---------------------------------------------------------------
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    // Deliberately NOT REQUIRES_NEW (as this used to be): TaskWorkerManager.processTask calls this
+    // then immediately does task.setStatus(COMPLETED)/taskRepository.save(task) in the SAME
+    // transactionTemplate block. A REQUIRES_NEW here would suspend that block and commit the
+    // counter increment on its own, independently and immediately - well before the task's own
+    // COMPLETED status commits moments later. A crash/restart landing in that exact window left
+    // the counter already incremented but the task still showing its old (non-COMPLETED) status;
+    // reconcileOrphanedCompletedAsset (below) later finds that same task looking "never recorded"
+    // and increments AGAIN, double-counting one real import as two. Plain @Transactional here joins
+    // the caller's ambient transaction instead, so the counter update and the task's COMPLETED
+    // status commit atomically together - either both survive a crash or neither does, closing the
+    // window entirely. (The atomic UPDATE ... SET x = x+1 queries this calls into stay safe under
+    // concurrent tasks either way - that's a separate concern from transaction propagation.)
+    @Transactional
     public void recordAssetTaskOutcome(TaskEntity task, ImmichAssetImportOutcome outcome) {
         UUID dayRowId = parseDayRowId(task);
         if (dayRowId == null) return;
@@ -512,7 +525,9 @@ public class ImmichImportService {
         finalizeDayStatusIfDone(dayRowId);
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    // Same reasoning as recordAssetTaskOutcome above - joins the caller's transaction rather than
+    // committing independently ahead of task.setStatus(FAILED).
+    @Transactional
     public void recordAssetTaskFailure(TaskEntity task) {
         UUID dayRowId = parseDayRowId(task);
         if (dayRowId == null) return;

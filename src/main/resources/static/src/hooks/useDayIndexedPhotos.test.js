@@ -31,7 +31,7 @@ describe('useDayIndexedPhotos', () => {
 
   it('fetches the day index up front for the Library path', async () => {
     global.fetch = vi.fn(() =>
-      Promise.resolve({ json: () => Promise.resolve([{ day: '2024-03-15', count: 3, coverPhotoUrl: '/x' }]) })
+      Promise.resolve({ json: () => Promise.resolve([{ day: '2024-03-15', count: 3 }]) })
     );
 
     const { result } = renderHook(() => useDayIndexedPhotos('/'));
@@ -82,7 +82,7 @@ describe('useDayIndexedPhotos', () => {
   // between the /days call and the actual per-day fetches doesn't strand the UI.
   it('loads a day\'s first page, tracks the next page number, and stops once isLast is true', async () => {
     global.fetch = vi.fn()
-      .mockResolvedValueOnce({ json: () => Promise.resolve([{ day: '2024-03-15', count: 150, coverPhotoUrl: '/x' }]) }) // days
+      .mockResolvedValueOnce({ json: () => Promise.resolve([{ day: '2024-03-15', count: 150 }]) }) // days
       .mockResolvedValueOnce({ json: () => Promise.resolve({ content: [{ id: 'a' }], pageNumber: 0, pageSize: 100, totalElements: 150, totalPages: 2, last: false }) }) // page 0
       .mockResolvedValueOnce({ json: () => Promise.resolve({ content: [{ id: 'b' }], pageNumber: 1, pageSize: 100, totalElements: 150, totalPages: 2, last: true }) }); // page 1
 
@@ -106,7 +106,7 @@ describe('useDayIndexedPhotos', () => {
 
   it('builds the garbage per-day photos URL', async () => {
     global.fetch = vi.fn()
-      .mockResolvedValueOnce({ json: () => Promise.resolve([{ day: '2024-03-15', count: 1, coverPhotoUrl: '/x' }]) })
+      .mockResolvedValueOnce({ json: () => Promise.resolve([{ day: '2024-03-15', count: 1 }]) })
       .mockResolvedValueOnce({ json: () => Promise.resolve({ content: [{ id: 'a' }], last: true }) });
 
     const { result } = renderHook(() => useDayIndexedPhotos('/garbage'));
@@ -118,7 +118,7 @@ describe('useDayIndexedPhotos', () => {
 
   it('builds the person per-day photos URL', async () => {
     global.fetch = vi.fn()
-      .mockResolvedValueOnce({ json: () => Promise.resolve([{ day: '2024-03-15', count: 1, coverPhotoUrl: '/x' }]) })
+      .mockResolvedValueOnce({ json: () => Promise.resolve([{ day: '2024-03-15', count: 1 }]) })
       .mockResolvedValueOnce({ json: () => Promise.resolve({ content: [{ id: 'a' }], page: { size: 100, number: 0, totalElements: 1, totalPages: 1 } }) });
 
     const { result } = renderHook(() => useDayIndexedPhotos('/persons/abc123'));
@@ -133,7 +133,7 @@ describe('useDayIndexedPhotos', () => {
   // isLast must be derived from page.number/page.totalPages instead.
   it('derives isLast from the raw Page envelope (Album\'s per-day endpoint)', async () => {
     global.fetch = vi.fn()
-      .mockResolvedValueOnce({ json: () => Promise.resolve([{ day: '2024-03-15', count: 1, coverPhotoUrl: '/x' }]) })
+      .mockResolvedValueOnce({ json: () => Promise.resolve([{ day: '2024-03-15', count: 1 }]) })
       .mockResolvedValueOnce({ json: () => Promise.resolve({ content: [{ id: 'a' }], page: { size: 100, number: 0, totalElements: 1, totalPages: 1 } }) });
 
     const { result } = renderHook(() => useDayIndexedPhotos('/albums/abc'));
@@ -145,9 +145,9 @@ describe('useDayIndexedPhotos', () => {
 
   it('resets photosByDay/dayPageState and refetches the day index when the path changes', async () => {
     global.fetch = vi.fn()
-      .mockResolvedValueOnce({ json: () => Promise.resolve([{ day: '2024-03-15', count: 1, coverPhotoUrl: '/x' }]) })
+      .mockResolvedValueOnce({ json: () => Promise.resolve([{ day: '2024-03-15', count: 1 }]) })
       .mockResolvedValueOnce({ json: () => Promise.resolve({ content: [{ id: 'a' }], last: true }) })
-      .mockResolvedValueOnce({ json: () => Promise.resolve([{ day: '2024-04-01', count: 1, coverPhotoUrl: '/y' }]) });
+      .mockResolvedValueOnce({ json: () => Promise.resolve([{ day: '2024-04-01', count: 1 }]) });
 
     const { result, rerender } = renderHook(({ path }) => useDayIndexedPhotos(path), { initialProps: { path: '/' } });
     await waitFor(() => expect(result.current.days).toHaveLength(1));
@@ -157,7 +157,7 @@ describe('useDayIndexedPhotos', () => {
 
     rerender({ path: '/albums/def' });
 
-    await waitFor(() => expect(result.current.days).toEqual([{ day: '2024-04-01', count: 1, coverPhotoUrl: '/y' }]));
+    await waitFor(() => expect(result.current.days).toEqual([{ day: '2024-04-01', count: 1 }]));
     expect(result.current.photosByDay).toEqual({});
     expect(result.current.dayPageState).toEqual({});
   });

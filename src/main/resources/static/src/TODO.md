@@ -1932,6 +1932,44 @@ new work is identified or completed, so nothing gets lost between sessions.
       - Verified: whole backend `javac` compile clean (main + test sources). Not yet observed
         firing against a real stuck task in the live app.
 
+- [x] **Bug fix** (user report: "import of immich on 2026-08-01 result is more imported photo
+      count than expected, meanwhile number of photo imported is good, only count in immich
+      import tool is bad"). Root-caused by analysis (no live DB access this time) - the actual
+      `photos` rows/files are correct, only the day's tracked `imported_count` was inflated. This
+      is the double-counting hole in `reconcileOrphanedCompletedAsset` (added two entries above,
+      for the 2023-12-24 investigation) that its own "Idempotent by construction... can never
+      double-count" claim missed:
+      - **The real race**: `TaskWorkerManager.processTask` does `task.setStatus(COMPLETED)` then
+        `immichImportService.recordAssetTaskOutcome(task, outcome)` then
+        `taskRepository.save(task)`, all inside one `transactionTemplate` block - but
+        `recordAssetTaskOutcome`/`recordAssetTaskFailure` were `@Transactional(propagation =
+        REQUIRES_NEW)`, which suspends that block and commits the counter increment
+        independently, immediately - well before the task's own `COMPLETED` status commits a
+        couple of statements later. A crash/restart landing in that exact window (the same class
+        of interruption the 2023-12-24 investigation already found this app susceptible to -
+        JVM-level native crashes, forced restarts) leaves the counter already incremented but the
+        task still showing its old, non-`COMPLETED` status. `reconcileOrphanedCompletedAsset` has
+        no way to tell that apart from "outcome truly never recorded" - it finds the same task,
+        deletes it, and increments the counter a SECOND time for one single real import.
+      - **Fix**: `recordAssetTaskOutcome`/`recordAssetTaskFailure` changed from
+        `@Transactional(propagation = REQUIRES_NEW)` to plain `@Transactional` (joins the ambient
+        transaction from `TaskWorkerManager`'s `transactionTemplate` block instead of committing
+        independently) - the counter update and the task's terminal status now commit atomically
+        together, closing the crash window entirely. Nothing else needed `REQUIRES_NEW` here (only
+        caller is `TaskWorkerManager.processTask`); the atomic `UPDATE ... SET x = x+1` queries
+        these call into stay safe under concurrent tasks regardless of transaction propagation,
+        and the counter's own cache staleness after those bulk updates is already handled by
+        `@Modifying(clearAutomatically = true)` - so `finalizeDayStatusIfDone`'s subsequent
+        `findById` still sees fresh values either way. `reconcileOrphanedCompletedAsset` itself
+        left untouched - it stays correct for the case it was actually built for (outcome truly
+        never recorded) once this race is closed.
+      - Verified: whole backend `javac` compile clean. Not yet re-run against the live app -
+        needs a real restart (not IntelliJ HotSwap, per the caveat two entries above) to take
+        effect, and there's no way to retroactively correct `imported_count` values already
+        inflated by this bug before today (2026-08-01's day row, and any other day that hit the
+        same crash-timing window, will still show its already-doubled count until manually
+        corrected or that day is re-triggered from scratch).
+
 - [x] **Investigated, no code change needed** (user report: asset not added to a specific album
       even after triggering "Import Album and Share Link"; more broadly, no photos added to any
       created album). Root-caused against the live DB, not guessed - both symptoms trace back to
@@ -2216,6 +2254,118 @@ new work is identified or completed, so nothing gets lost between sessions.
         - **Tests**: `useDayIndexedPhotos.test.js` gained garbage/person `resolveDayIndexTarget`
           and fetch-URL cases; `PhotoGrid.test.jsx`'s harness now wraps its fixture photos into a
           single-day `dayIndex` object instead of passing a flat `photos` array, same assertions.
+      - **Follow-up (user request): split the count+cover query, cache Library/Space/Album's day
+        index**. The single native query computing count+cover together (`count(*) over (partition
+        by ...)` + `row_number() over (... order by random())`) forced a full sort of every
+        matching row per partition just to answer "how many," even when the caller only wanted the
+        count. Split into two queries per view (space/album/garbage/person, 8 total): a plain
+        `GROUP BY groupedDay` JPQL count (index-friendly on `idx_photos_space_grouped_day`, no sort
+        needed) and a separate native `DISTINCT ON (grouped_day) ... ORDER BY grouped_day, random()`
+        cover query (Postgres idiom for "one random row per group," replacing the old
+        `row_number()`-then-filter-`rn=1` trick). `PhotoRepository.DayBucketProjection` split into
+        `DayCountProjection`/`DayCoverProjection`; `DayBucketDTO.zip(counts, covers)` (new static
+        method) merges the two lists back into one DTO per day, tolerating a count with no matching
+        cover (null `coverPhotoUrl`) rather than throwing.
+        - **Caching**: new `service/DayIndexCache.java` (`@Component`, two plain
+          `ConcurrentHashMap<UUID, List<DayBucketDTO>>` - this app runs single-instance, no need for
+          a distributed cache) - caches `PhotoService.getDailyPhotoCounts` (Library/Space, keyed by
+          spaceId) and `AlbumService.getAlbumDailyPhotoCounts` (keyed by albumId) only. Garbage/
+          Person's equivalents (`getGarbageDailyPhotoCounts`/`getPersonDailyPhotoCounts`)
+          deliberately NOT cached, per explicit instruction - low-traffic pages, not worth the
+          invalidation bookkeeping. Kept as its own component rather than fields on
+          `PhotoService`/`AlbumService` directly so `PhotoUploadService`/`ImmichImportService` (which
+          need to evict a space's entry after creating a photo) can depend on it too without a
+          circular dependency (`PhotoService` already depends on `PhotoUploadService`).
+        - **Invalidation call sites** (evict-on-mutation, no TTL): `PhotoUploadService.
+          processTheAsset` (covers both a regular upload AND "save as new" - `EditPhotoService`'s
+          `saveAsNew` path routes through the same `PROCESS_UPLOAD` task/upload code, one hook
+          point for both), `ImmichImportService.persistPhotoAndMetadata` (import), `PhotoService.
+          moveAssetsToGarbage`/`restoreAssetsFromGarbage` (evict the affected photo's space),
+          `moveAssetsToMain` (evict both the source space, captured before reassignment, and the
+          destination Main space), `updatePhotoDate` (a `dateTaken` edit can move a photo to a
+          different `groupedDay` bucket entirely), `AlbumService.addPhotosToAlbum`/
+          `removePhotosFromAlbum` (evict that album - also covers `moveAssetsToGarbage`'s existing
+          internal call to `removePhotosFromAlbum` for free, no separate hook needed there).
+          Explicitly not evicted (judged harmless): permanent-delete of an already-garbage photo
+          (doesn't change the non-garbage day-index this cache holds) and a permanently-deleted
+          space/album's now-orphaned cache entry (that id is never queried again - a bounded,
+          negligible memory cost, not a correctness issue).
+        - **Not yet runtime-verified**: the JPQL `GROUP BY`/`JOIN p.faces`/`JOIN p.albums ... a IN
+          :albums` queries are only javac-clean (query syntax itself isn't validated until
+          Hibernate parses it against a live app context) - needs a real restart against Postgres
+          to confirm before trusting this in production.
+      - **Follow-up (user request): dropped the per-day cover photo, added a "Memories" bar
+        instead**. Turned out `coverPhotoUrl` (computed for every single day via a `DISTINCT ON`
+        query, even after the count/cover split above) was never actually rendered anywhere in the
+        frontend - a leftover carried over from the old `TimelineMonthDTO`/`LibraryTimeline.jsx`
+        month-timeline this whole feature replaced, which DID show a per-month cover in its "jump
+        to month" strip, a UI the day-index plan explicitly chose not to rebuild. Removed entirely:
+        `DayBucketDTO` is now just `(day, count)`; `DayCoverProjection` and all four
+        `findRandomCoverPhotoPerDay*` native queries deleted; `PhotoRepository/AlbumService/
+        PhotoService`'s day-count methods simplified back down to one query + `DayBucketDTO.from(...)`
+        (no more `zip`).
+        - **New feature in its place**: Library-only horizontal bar showing one random photo per
+          configured "N months ago" offset (today minus N months, matched against `groupedDay`) -
+          "1 month ago," "6 months ago," "1 year ago," etc. Offsets are configurable, not
+          hardcoded: `IPhotoProperties.Memories.monthsAgo` (`iphoto.memories.months-ago` in
+          `application.yml`, defaults `[1, 6, 12, 36, 60, 120]`).
+        - **Backend**: `PhotoRepository.findRandomPhotoBySpaceIdAndGroupedDay(spaceId, day)` (native,
+          `ORDER BY random() LIMIT 1`, exact single day - not the DISTINCT-ON-across-many-days
+          pattern the deleted cover queries used) → `PhotoService.getMemories(spaceId)` (one lookup
+          per configured offset, skips any offset with nothing that day rather than returning an
+          empty slot; deliberately NOT cached - each lookup is already a cheap indexed point query,
+          and today's date only changes once a day anyway) → new `model/MemoryDTO.java`
+          `(monthsAgo, day, Photo)` (embeds the full `Photo` DTO, not just a thumbnail URL, so the
+          frontend can open it directly in the Lightbox without a second round-trip) →
+          `GET /api/photos/memories` (`PhotoController`, Main space only, same pattern as
+          `GET /api/photos/days`).
+        - **Frontend**: new `hooks/useMemories.js` (fetch-once-on-mount, mirrors `usePersons.js`'s
+          shape) + `components/MemoriesBar.jsx` (arrow-scrollable strip, structurally mirrors
+          `PersonStrip.jsx` - rectangular photo thumbnails instead of circular avatars, one label
+          per item via the already-existing-but-previously-unused `memoryMonthsAgo`/
+          `memoryYearsAgo` i18n functions, a leftover from the old timeline that finally has a
+          consumer). Clicking a memory calls the same `handlePhotoClick` every grid card uses, with
+          the memory's embedded `Photo` object - works even though that photo isn't part of the
+          currently-loaded day-index pages, no special-casing needed. Rendered in `App.jsx` directly
+          above `PhotoGrid` inside `libraryPhotoGrid`, gated on `selectedMenu === 'library'` (not
+          shown for the Garbage-embedded instance of the same shared JSX, nor Album/Space/Person).
+        - **CSS**: `.memories-strip*` classes mirror `.person-strip*` almost exactly; the sticky
+          `.day-header` z-index conflict `.person-strip` already had to work around (see its own
+          CSS comment) needed the same fix here, but via an adjacent-sibling selector instead of
+          `:has()` - `MemoriesBar` is a sibling of `PhotoGrid`'s own `.content-body`, not nested
+          inside a shared wrapper the way `PersonStrip` is inside `PersonDetail.jsx`'s.
+- [x] **Feature** (user request): a side scrubber over day-indexed browsing so the user can jump
+      straight from one day to a distant one without scrolling (and so without fetching) through
+      every day in between; scrolling up after such a jump needed to start fetching too, not just
+      scrolling down.
+      - **`components/TimelineScrubber.jsx`** (new): fixed vertical strip on the right edge, one
+        year label per first occurrence of a new (older) year in `dayIndex.days` (already sorted
+        newest-first). Position is index-based (`index / (days.length - 1)`), not a real
+        pixel-measured scale - a day's actual rendered height depends on how its photos wrap,
+        which isn't cheap to know for every day up front. Pointer Events (down/move/up, unifies
+        mouse/touch/pen) rather than separate mouse/touch handlers. Dragging only updates a live
+        hover tooltip (day string at the current pointer position); the actual jump only fires
+        once, on release - firing it on every intermediate position during a slow drag would load
+        every day swept over, defeating the whole point. A plain click still jumps immediately
+        (down+up at the same position naturally produces one hover value, committed on release).
+      - **`PhotoGrid.jsx`**: added `data-day-group={day}` on each day's wrapper `div` (already
+        rendered for every day up front regardless of load state, per the day-index design) so a
+        jump can `querySelector` straight to any day's section, loaded or not. New `seekToDay(day)`
+        callback: an INSTANT `scrollIntoView` (deliberately not `behavior: 'smooth'` - an animated
+        scroll would transiently intersect every sentinel it passes over on the way, fetching
+        everything in between exactly like the feature is meant to avoid) plus an eager
+        `dayIndex.loadDayPage(day)` call, so the jump doesn't wait on the IntersectionObserver to
+        notice the new scroll position before starting to load. Rendered unconditionally
+        (`<TimelineScrubber days={dayIndex.days} onSeek={seekToDay} />`, no-ops itself when
+        `days.length < 2`) - lives in `PhotoGrid.jsx` itself rather than being wired per-view like
+        `MemoriesBar`, so it applies everywhere day-indexed browsing already does (Library/Album/
+        Space/Garbage/Person/the share-guest flow's local `dayIndex` adapter) with no extra wiring.
+      - **Scroll-up fix**: the day-sentinel `IntersectionObserver`'s `rootMargin` was
+        `'0px 0px 1500px 0px'` (prefetch margin below the viewport only) - every not-yet-loaded
+        day already renders its own sentinel regardless of position (same reason `seekToDay`'s
+        `querySelector` above works for any day), so scrolling UP after a jump landed on
+        previously-unloaded sentinels with no prefetch margin above them at all, only loading once
+        a section was already fully on screen. Changed to `'1500px 0px 1500px 0px'` (symmetric).
 - [ ] **Feature** (user request): two new bulk photo-selection actions, available everywhere a
       multi-select photo grid already exists — Library, Album detail, Space detail (all three
       share `components/Header.jsx`'s bulk-action bar, gated per-button by the capability flags

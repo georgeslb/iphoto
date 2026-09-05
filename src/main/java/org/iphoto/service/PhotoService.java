@@ -9,6 +9,7 @@ import org.iphoto.mappers.PhotoMapper;
 import org.iphoto.model.*;
 import org.iphoto.model.request.PhotoEditRequest;
 import org.iphoto.model.request.PhotoSelectionRequest;
+import org.iphoto.properties.IPhotoProperties;
 import org.iphoto.repository.AlbumRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.springframework.data.domain.*;
@@ -53,6 +54,8 @@ public class PhotoService {
     private final MenuService menuService;
     private final PhotoUploadService photoUploadService;
     private final UserService userService;
+    private final DayIndexCache dayIndexCache;
+    private final IPhotoProperties iPhotoProperties;
 
     public Page<Photo> getPhotos(UUID spaceId, Pageable pageable) {
         return buildDedupedPage(photoRepository.findBySpaceIdAndIsGarbageFalse(spaceId, pageable));
@@ -77,14 +80,30 @@ public class PhotoService {
     // Day-index browsing (replaces the old month-timeline this app used to have): one row per
     // day that has a non-garbage photo in this space, newest first. Fetched once up front so the
     // client can render every day section immediately and only lazily fetch each day's actual
-    // photos (getPhotosForDay) as its section scrolls into view.
+    // photos (getPhotosForDay) as its section scrolls into view. Cached (see DayIndexCache) since
+    // Library/Space are the most-visited views - evicted on every mutation that can change a
+    // space's day counts/covers (upload, move to/from garbage, move to main, date edit).
     public List<DayBucketDTO> getDailyPhotoCounts(UUID spaceId) {
-        return photoRepository.findDailyPhotoCountsWithCoverBySpaceId(spaceId).stream()
-                .map(row -> new DayBucketDTO(
-                        row.getDay(),
-                        row.getCount(),
-                        "/api/photos/" + row.getPhotoId() + "/thumbnail"
-                                + (row.getFileHash() != null ? "?v=" + row.getFileHash() : "")))
+        return dayIndexCache.getSpaceDayCounts(spaceId, () -> DayBucketDTO.from(photoRepository.countDailyPhotosBySpaceId(spaceId)));
+    }
+
+    // Library's "N months/years ago" bar - one candidate day per configured offset (see
+    // IPhotoProperties.Memories.monthsAgo), each resolved to a random non-garbage photo taken on
+    // that exact day, if any (offsets with nothing that day are simply omitted, not returned as an
+    // empty slot). Deliberately not cached: today's date changes daily anyway, and each lookup is
+    // a single indexed (space_id, grouped_day) point query - already cheap without it.
+    public List<MemoryDTO> getMemories(UUID spaceId) {
+        LocalDate today = LocalDate.now();
+        int photosPerBlock = iPhotoProperties.getMemories().getPhotosPerBlock();
+        return iPhotoProperties.getMemories().getMonthsAgo().stream()
+                .map(monthsAgo -> {
+                    LocalDate day = today.minusMonths(monthsAgo);
+                    List<Photo> photos = photoRepository.findRandomPhotosBySpaceIdAndGroupedDay(spaceId, day, photosPerBlock).stream()
+                            .map(photoMapper::photoEntityToPhoto)
+                            .toList();
+                    return photos.isEmpty() ? null : new MemoryDTO(monthsAgo, day, photos);
+                })
+                .filter(Objects::nonNull)
                 .toList();
     }
 
@@ -96,16 +115,12 @@ public class PhotoService {
 
     // Garbage's day-index equivalent of getDailyPhotoCounts/getPhotosForDay above - cross-space
     // (a user's garbage isn't scoped to one space), no dedup treatment (matching the old flat
-    // getGarbagePhotos this replaces, which never called buildDedupedPage either).
+    // getGarbagePhotos this replaces, which never called buildDedupedPage either). Deliberately
+    // NOT cached (unlike getDailyPhotoCounts above) - Garbage is a low-traffic view, not worth the
+    // invalidation bookkeeping.
     public List<DayBucketDTO> getGarbageDailyPhotoCounts(UserEntity user) {
         Set<UUID> allUserSpacesIds = spaceService.getAllSpaces(user).stream().map(SpaceDTO::id).collect(Collectors.toSet());
-        return photoRepository.findDailyPhotoCountsWithCoverBySpaceIdInAndIsGarbageTrue(allUserSpacesIds).stream()
-                .map(row -> new DayBucketDTO(
-                        row.getDay(),
-                        row.getCount(),
-                        "/api/photos/" + row.getPhotoId() + "/thumbnail"
-                                + (row.getFileHash() != null ? "?v=" + row.getFileHash() : "")))
-                .toList();
+        return DayBucketDTO.from(photoRepository.countDailyGarbagePhotosBySpaceIds(allUserSpacesIds));
     }
 
     public Page<Photo> getGarbagePhotosForDay(UserEntity user, LocalDate day, Pageable pageable) {
@@ -134,6 +149,7 @@ public class PhotoService {
                 photo.setGarbageAt(null);
                 photoRepository.save(photo);
                 taskMapper.updateTasksToAction(TaskMapper.Action.PHOTO_REMOVED_FROM_GARBAGE, photo.getId());
+                dayIndexCache.evictSpace(space.getId());
             }
         }
         duplicationService.restoreFromGarbage(photos);
@@ -155,6 +171,7 @@ public class PhotoService {
                 photo.setGarbageAt(LocalDateTime.now());
                 photoRepository.save(photo);
                 taskMapper.updateTasksToAction(TaskMapper.Action.PHOTO_MOVED_TO_GARBAGE, photo.getId());
+                dayIndexCache.evictSpace(space.getId());
             }
         }
 
@@ -186,7 +203,7 @@ public class PhotoService {
 
         }).orElseGet(() -> {
             try {
-                return photoUploadService.processNewAsset(task, user, payload, tempFile, hash);
+                return photoUploadService.processNewAsset(task, user.getId(), payload, tempFile, hash);
             } catch (Exception e) {
                 throw new PhotoUploadException(e);
             }
@@ -248,6 +265,9 @@ public class PhotoService {
                 .orElseThrow(() -> new NoSuchElementException("Photo not found with ID: " + id));
         photoEntity.setDateTaken(newDate);
         photoRepository.save(photoEntity);
+        // dateTaken drives groupedDay (see PhotoEntity.syncGroupedDay), so this can move the photo
+        // to a different day bucket entirely - evict rather than try to patch the cached counts.
+        dayIndexCache.evictSpace(photoEntity.getSpace().getId());
         return photoMapper.photoEntityToPhoto(photoEntity);
     }
 
@@ -277,14 +297,9 @@ public class PhotoService {
     // Person's day-index equivalent of getDailyPhotoCounts/getPhotosForDay above - joined through
     // faces rather than scoped by space_id, since a person's photos can span multiple spaces. No
     // dedup treatment, matching findByPerson above (Person view has never had that either).
+    // Deliberately NOT cached - same reasoning as getGarbageDailyPhotoCounts above.
     public List<DayBucketDTO> getPersonDailyPhotoCounts(PersonEntity person) {
-        return photoRepository.findDailyPhotoCountsWithCoverByPersonId(person.getId()).stream()
-                .map(row -> new DayBucketDTO(
-                        row.getDay(),
-                        row.getCount(),
-                        "/api/photos/" + row.getPhotoId() + "/thumbnail"
-                                + (row.getFileHash() != null ? "?v=" + row.getFileHash() : "")))
-                .toList();
+        return DayBucketDTO.from(photoRepository.countDailyPhotosByPersonId(person.getId()));
     }
 
     public Page<Photo> getPersonPhotosForDay(PersonEntity person, LocalDate day, Pageable pageable) {
@@ -301,12 +316,15 @@ public class PhotoService {
         SpaceEntity mainUserSpace = spaceService.getDefaultSpaceForUser(user);
         try (SpaceService.AutoClosableLock ignore = spaceService.lockSpace(mainUserSpace)){
             photoRepository.findByIdIn(ids).forEach(photo -> {
+                UUID originalSpaceId = photo.getSpace().getId();
                 try (SpaceService.AutoClosableLock ignore2 = spaceService.lockSpace(photo.getSpace())){
                     spaceService.decreaseSpacePhotoCount(photo.getSpace());
                     photo.setSpace(mainUserSpace);
                     spaceService.increaseSpacePhotoCount(mainUserSpace);
                     photoRepository.save(photo);
                     taskMapper.updateTasksToAction(TaskMapper.Action.PHOTO_MOVED_TO_MAIN, photo.getId());
+                    dayIndexCache.evictSpace(originalSpaceId);
+                    dayIndexCache.evictSpace(mainUserSpace.getId());
                 } catch (Exception e) {
                     throw new PhotoMoveToMainException("can't move photo " + photo.getId(), e);
                 }

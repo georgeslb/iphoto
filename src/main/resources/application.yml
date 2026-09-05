@@ -45,6 +45,9 @@ iphoto:
     username: admin
     password: admin
     role: ADMIN
+  memories:
+    months-ago: [1, 6, 12, 36, 60, 120] # Library's "on this day" bar - one candidate per offset
+    photos-per-block: 5 # up to this many random photos auto-cycled per offset
 
 server:
   port: 8080
