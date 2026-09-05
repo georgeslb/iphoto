@@ -41,13 +41,21 @@ export default function PhotoGrid({
   const { messages } = useLocale(); // Use the useLocale hook
   const [hoveredVideoId, setHoveredVideoId] = useState(null);
   // Which duplicate cluster's "×N similar" popup is open (DuplicateClusterModal.jsx, replacing
-  // the old expand-in-place row) — the PRIMARY PHOTO'S ID, not the item object itself, so the
-  // modal always re-derives its member list from the current `groups` below (computed below,
-  // after this) rather than a stale snapshot. That matters because moving a member to garbage
-  // from inside the modal changes `photos`/`groups` on the next render, and the modal should
-  // reflect that (member disappears) rather than keep showing an already-garbage-collected photo
-  // until manually closed.
-  const [openDuplicatePrimaryId, setOpenDuplicatePrimaryId] = useState(null);
+  // the old expand-in-place row) — every MEMBER id the cluster had at the moment it was opened,
+  // not the item/primary object itself, so the modal always re-derives its current member list
+  // from the live `groups` below (computed after this) rather than a stale snapshot. That matters
+  // because moving a member to garbage from inside the modal changes `photos`/`groups` on the
+  // next render, and the modal should reflect that (member disappears) rather than keep showing
+  // an already-garbage-collected photo until manually closed.
+  //
+  // Tracking every member id (not just the primary's) matters specifically for garbage-ing the
+  // PRIMARY itself (the suggested keep): a cluster's non-primary members only ever exist nested
+  // inside the primary's own `duplicates` array (see utils/photoListUpdates.js), so removing the
+  // primary promotes a survivor to take its place with a DIFFERENT id. Anchoring on the primary's
+  // id alone would find nothing after that promotion (that exact id is now genuinely gone) and
+  // wrongly close the modal even though the cluster itself is still very much alive, just under a
+  // new primary - matching on ANY surviving member id finds it correctly either way.
+  const [openDuplicateMemberIds, setOpenDuplicateMemberIds] = useState(null);
   const gridContainerRef = useRef(null);
   const lastClickedIndexRef = useRef(null);
 
@@ -113,11 +121,12 @@ export default function PhotoGrid({
     groups[day] = clusterIntoItems(dayIndex.photosByDay[day] || [], consumedIds);
   });
 
-  // Re-derived every render from the live `groups` above (see openDuplicatePrimaryId's own
-  // comment for why) — null once the id no longer matches anything, which also naturally closes
-  // the modal if its entire cluster is ever fully cleared out from under it.
-  const openDuplicateItem = openDuplicatePrimaryId
-    ? Object.values(groups).flat().find(it => it.primary.id === openDuplicatePrimaryId) || null
+  // Re-derived every render from the live `groups` above (see openDuplicateMemberIds' own comment
+  // for why this matches on ANY member id, not just the primary's) — null once none of the
+  // tracked ids match anything anymore, which also naturally closes the modal if its entire
+  // cluster is ever fully cleared out from under it.
+  const openDuplicateItem = openDuplicateMemberIds
+    ? Object.values(groups).flat().find(it => it.members.some(m => openDuplicateMemberIds.includes(m.id))) || null
     : null;
 
   const handleSelectGroup = (dayItems, e) => {
@@ -245,7 +254,7 @@ export default function PhotoGrid({
         type="button"
         className="duplicate-badge"
         title={messages["expandDuplicateGroup"]}
-        onClick={(e) => { e.stopPropagation(); setOpenDuplicatePrimaryId(item.primary.id); }}
+        onClick={(e) => { e.stopPropagation(); setOpenDuplicateMemberIds(item.members.map(m => m.id)); }}
       >
         <Layers size={12} /> {messages["similarPhotosBadge"](item.members.length)}
       </button>
@@ -300,7 +309,7 @@ export default function PhotoGrid({
 
       <DuplicateClusterModal
         item={openDuplicateItem}
-        onClose={() => setOpenDuplicatePrimaryId(null)}
+        onClose={() => setOpenDuplicateMemberIds(null)}
         handleMoveToGarbage={handleMoveToGarbage}
         handleUnlinkDuplicate={handleUnlinkDuplicate}
         onExpand={setSelectedPhoto}

@@ -5,11 +5,23 @@ import { useMemories } from '../hooks/useMemories';
 
 const AUTO_SWITCH_INTERVAL_MS = 3000;
 
+// A memory's photos can each land on a DIFFERENT actual day when its offset carries tolerance
+// (see MemoryOffset/IPhotoProperties.Memories.offsets - up to photosPerBlock photos are drawn from
+// anywhere in the whole window, not necessarily the same day), so there's no single well-defined
+// day for a whole block - only for whichever photo is currently shown. fullDateTime is always a
+// real ISO_LOCAL_DATE_TIME string here (Memories photos are only ever found via a groupedDay
+// query, so dateTaken - and so fullDateTime - is never the "Unknown Date/Time" fallback), and its
+// first 10 characters are guaranteed to be the plain yyyy-MM-dd day, matching dayIndex.days'/
+// data-day-group's own format exactly - no need for a dedicated backend field just for this.
+function dayOf(photo) {
+  return photo.fullDateTime.slice(0, 10);
+}
+
 // One block: cycles automatically through its own memory.photos (up to
 // IPhotoProperties.Memories.photosPerBlock on the backend, fewer if that day has less) instead of
 // showing a single static photo. Its own component (not inline in the map below) so each block's
 // rotation timer/state is independent and cleaned up correctly per block.
-function MemoryItem({ memory, label, onPhotoClick }) {
+function MemoryItem({ memory, label, onSeekToDay }) {
   const [index, setIndex] = useState(0);
   const photos = memory.photos;
 
@@ -24,7 +36,7 @@ function MemoryItem({ memory, label, onPhotoClick }) {
   const current = photos[index];
 
   return (
-    <div className="memories-strip-item" onClick={() => onPhotoClick(current)}>
+    <div className="memories-strip-item" onClick={() => onSeekToDay(dayOf(current))}>
       {/* key forces a remount on every switch, restarting the CSS fade-in animation */}
       <img key={current.id} src={current.url} alt={label}/>
       <span>{label}</span>
@@ -35,7 +47,7 @@ function MemoryItem({ memory, label, onPhotoClick }) {
 // Library-only horizontal strip: one block per configured "N months/years ago" offset (see
 // IPhotoProperties.Memories.monthsAgo on the backend) that actually has a photo that day. Mirrors
 // PersonStrip.jsx's arrow-scrollable layout.
-export default function MemoriesBar({ onPhotoClick }) {
+export default function MemoriesBar({ onSeekToDay }) {
   const { messages } = useLocale();
   const { memories, loading } = useMemories();
   const trackRef = useRef(null);
@@ -68,7 +80,7 @@ export default function MemoriesBar({ onPhotoClick }) {
             key={memory.monthsAgo}
             memory={memory}
             label={labelFor(memory.monthsAgo)}
-            onPhotoClick={onPhotoClick}
+            onSeekToDay={onSeekToDay}
           />
         ))}
       </div>

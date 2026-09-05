@@ -41,8 +41,9 @@ public interface PhotoRepository extends JpaRepository<PhotoEntity, UUID> {
     // Plain GROUP BY count query - index-friendly on idx_photos_space_grouped_day, no sort needed.
     // No per-day cover photo here (that was computed for every day but never actually rendered
     // anywhere in the frontend) - the only place a cover/representative photo is needed is
-    // Library's Memories bar, which only needs a handful of photos for a handful of specific days
-    // (see findRandomPhotosBySpaceIdAndGroupedDay below), not for every day in the index.
+    // Library's Memories bar, which only needs a handful of photos for a handful of specific day
+    // windows (see findRandomPhotosBySpaceIdAndGroupedDayBetween below), not for every day in the
+    // index.
 
     @Query("SELECT p.groupedDay as day, COUNT(p) as count FROM PhotoEntity p " +
             "WHERE p.space.id = :spaceId AND p.isGarbage = false AND p.groupedDay IS NOT NULL " +
@@ -73,12 +74,14 @@ public interface PhotoRepository extends JpaRepository<PhotoEntity, UUID> {
     }
 
     // Library's Memories bar (PhotoService.getMemories): up to `limit` random non-garbage photos
-    // for an EXACT single day (unlike the DISTINCT-ON-per-many-days pattern the old per-day cover
-    // query used, this only ever needs to answer for one day at a time) - fewer than `limit`, or
-    // empty, if that day doesn't have that many (or any).
+    // within a day window (unlike the DISTINCT-ON-per-many-days pattern the old per-day cover
+    // query used, this only ever needs to answer for one window at a time) - fewer than `limit`,
+    // or empty, if the window doesn't have that many (or any). An exact single day is just a
+    // window where startDay == endDay - see MemoryOffset/IPhotoProperties.Memories.offsets for
+    // where the window's bounds come from.
     @Query(value = "SELECT * FROM photos p WHERE p.space_id = :spaceId AND p.is_garbage = false " +
-            "AND p.grouped_day = :day ORDER BY random() LIMIT :limit", nativeQuery = true)
-    List<PhotoEntity> findRandomPhotosBySpaceIdAndGroupedDay(@Param("spaceId") UUID spaceId, @Param("day") LocalDate day, @Param("limit") int limit);
+            "AND p.grouped_day BETWEEN :startDay AND :endDay ORDER BY random() LIMIT :limit", nativeQuery = true)
+    List<PhotoEntity> findRandomPhotosBySpaceIdAndGroupedDayBetween(@Param("spaceId") UUID spaceId, @Param("startDay") LocalDate startDay, @Param("endDay") LocalDate endDay, @Param("limit") int limit);
 
     // Garbage's day-index equivalent - cross-space (spaceIdIn), matching the flat endpoint this
     // replaced, since a user's garbage isn't scoped to one space.

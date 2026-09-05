@@ -2334,6 +2334,65 @@ new work is identified or completed, so nothing gets lost between sessions.
           CSS comment) needed the same fix here, but via an adjacent-sibling selector instead of
           `:has()` - `MemoriesBar` is a sibling of `PhotoGrid`'s own `.content-body`, not nested
           inside a shared wrapper the way `PersonStrip` is inside `PersonDetail.jsx`'s.
+      - **Follow-up (user request): show `photosPerBlock` photos per offset instead of 1, auto-
+        cycled**. `findRandomPhotoBySpaceIdAndGroupedDay` → `findRandomPhotosBySpaceIdAndGroupedDay
+        (spaceId, day, limit)` (`LIMIT :limit` instead of `LIMIT 1`); `MemoryDTO.photo` → `MemoryDTO.
+        photos` (a list); new `IPhotoProperties.Memories.photosPerBlock` (default 5, same
+        configurable-not-hardcoded treatment as the offsets themselves). Frontend: new `MemoryItem`
+        sub-component (its own `setInterval`-driven rotation state/cleanup, independent per block)
+        cycles through `memory.photos` every 3s with a CSS fade-in (`key={current.id}` forces a
+        remount, restarting the animation); clicking opens whichever photo is *currently showing*,
+        not always the first.
+      - **Follow-up (user request): day-tolerance window instead of an exact-day-only match**.
+        User's framing: "6-2d+3d which is equals to 6+3d-2d instead of 6" - widen the search
+        around an anchor day that might not have an exact hit, rather than requiring one. New
+        `model/MemoryOffset.java` (`record(monthsAgo, beforeDays, afterDays)` + `parse(String)`) -
+        a plain integer stays exact-day-only (`beforeDays=afterDays=0`); appending `-Nd`/`+Nd`
+        tokens in EITHER order widens the window that many days earlier/later than the anchor.
+        `IPhotoProperties.Memories.monthsAgo` (`List<Integer>`) → `.offsets` (`List<String>`,
+        defaults unchanged/still exact - `[1, 6, 12, 36, 60, 120]`, now as strings so the tolerance
+        syntax fits the same list). `PhotoRepository.findRandomPhotosBySpaceIdAndGroupedDay(spaceId,
+        day, limit)` → `...GroupedDayBetween(spaceId, startDay, endDay, limit)` (`BETWEEN` instead
+        of `=` - an exact day is just the degenerate case where `startDay == endDay`, one query
+        path for both). `PhotoService.getMemories` parses each configured entry via
+        `MemoryOffset.parse`, skipping (with a `log.warn`, not a 500) any entry that fails to parse
+        rather than letting one bad config string break the whole feature. `MemoryDTO.day` still
+        reports the ANCHOR day (not the actual day of whichever photo was found) - unchanged
+        meaning, still purely informational since the frontend doesn't currently render it.
+        - **Not tested**: no backend JUnit test added for `MemoryOffset`'s parsing (order-
+          independence, missing tokens, invalid input) - this project's only test sources are
+          integration tests (`AbstractIntegrationTest`/`PhotoLifecycleIntegrationTest`), and this
+          sandbox has no working `mvn` to actually run anything against them; every other
+          backend-only change this session was verified the same way (javac compile only), so
+          this stays consistent with that rather than being a one-off addition that can't even be
+          confirmed to pass.
+        - Verified: whole backend `javac` compile clean (main + test sources). No frontend change
+          (day-tolerance is backend-only - the frontend already just renders whatever `photos`
+          array comes back, regardless of how the window that produced them was computed). **Not
+          yet exercised against the live app** - needs a real restart, and the actual date-math
+          (order-independence of `-Nd`/`+Nd`, the `BETWEEN` query) hasn't been observed against a
+          real Postgres instance.
+      - **Follow-up (user request): clicking a memory scrolls to its day instead of opening the
+        Lightbox**. Motivated by the tolerance window above - once a memory's photos can span
+        several days, "open in the Lightbox" was less useful than "take me to that day in the
+        grid" would be (matches `TimelineScrubber`'s own jump behavior). Each auto-cycled photo
+        in a block can be on a DIFFERENT actual day (tolerance draws from the whole window, not
+        one day), so there's no single well-defined day for a whole block - only for whichever
+        photo is currently shown, same principle the existing "click opens whichever photo is
+        showing" behavior already followed. New `MemoriesBar.jsx#dayOf(photo)` derives the plain
+        `yyyy-MM-dd` day from `photo.fullDateTime`'s first 10 characters (guaranteed to be exactly
+        that, since `fullDateTime` is `DateTimeFormatter.ISO_LOCAL_DATE_TIME` and Memories photos
+        always have a real `dateTaken` - they're only ever found via a `groupedDay` query) rather
+        than adding a dedicated backend field just for this. `App.jsx` gained `seekToMemoryDay`,
+        replicating `PhotoGrid.jsx#seekToDay`'s instant-`scrollIntoView`-plus-eager-`loadDayPage`
+        behavior but via `document.querySelector('[data-day-group="..."]')` instead of a local ref
+        - `MemoriesBar` is a sibling of `PhotoGrid`, not a child, and only one Library `PhotoGrid`
+        is ever on screen at a time, so a global query is unambiguous. `MemoriesBar`'s `onPhotoClick`
+        prop renamed to `onSeekToDay` throughout.
+      - Verified: `npm test -- --run` 105/105, `npm run build` clean, lint unchanged (the one new
+        `useCallback` warning matches an already-accepted pattern twice elsewhere in this same
+        file - a stable method dependency instead of the whole `dayIndexed` object, which is a
+        fresh literal every render). No backend change. **Not yet clicked in a real browser.**
 - [x] **Feature** (user request): a side scrubber over day-indexed browsing so the user can jump
       straight from one day to a distant one without scrolling (and so without fetching) through
       every day in between; scrolling up after such a jump needed to start fetching too, not just
@@ -2966,3 +3025,189 @@ new work is identified or completed, so nothing gets lost between sessions.
       `package.json`/`package-lock.json`, and new-but-uncommitted `useMenuSelection.js`). These
       are pre-existing local work, not part of this refactor — just noting so nothing gets
       confused as unrelated/accidental changes when reviewing the diff.
+
+- [x] **Feature** (user request): admin on/off switch for heavy task processing, replacing the old
+      one-shot "Activate Face Recognition" admin button; heavy tasks isolated into their own,
+      much-less-frequent scheduler. User added `TaskType.ACTIVATE_HEAVY_TASKS` themselves before
+      this request - a control record, not real work, `heavy=false` so it still flows through the
+      light poller/thread pool.
+      - **Backend - the switch itself**: exactly ONE `ACTIVATE_HEAVY_TASKS` `TaskEntity` ever
+        exists (confirmed with the user after an initial pass that instead created a new row per
+        toggle) - `AdminService.activateHeavyTasks(boolean)` finds it
+        (`TaskRepository.findFirstByTaskTypeOrderByCreatedAtDesc` - tolerant of more than one row
+        existing, e.g. from the earlier per-toggle-row design if this ever ran against a live DB
+        with history) and updates its `payload` (`{"activate": "true"|"false"}`) in place,
+        resetting `status`/`executeAt` so the light poller still picks it up and marks it
+        `COMPLETED` again like any task's normal lifecycle; only creates a new row via
+        `taskManagerService.createTaskEntity` the very first time, when none exists yet.
+        `AdminService.isHeavyTasksActivated()` reads that row and parses its `activate` field
+        (Jackson's `JsonNode.asBoolean()` handles both a real boolean and a `"true"/"false"` string
+        transparently); no row yet defaults to `false` - opt-in, not opt-out. `TaskType.
+        ACTIVATE_HEAVY_TASKS` is `canBeReplayed=false` (a global control record, `photoId` always
+        `null`, isn't a per-photo task type `AdminService.updateImageTaskToDo` should ever touch -
+        see that enum constant's own comment). New `GET`/`POST /api/admin/heavyTasks`
+        (`AdminController`) replace the old `GET /activateFaceRecognition`.
+        `TaskWorkerManager.processTask` gained a trivial `ACTIVATE_HEAVY_TASKS` branch
+        (`task.setStatus(COMPLETED)`, no real work) - required because this task type is still
+        `heavy=false`, so the light poller picks it up and dispatches it like any other task;
+        without a branch it would sit stuck in `PROCESSING` forever (no case in the switch ever
+        moves it to a terminal status).
+      - **Backend - isolated heavy scheduler**: `TaskWorkerManager.pollHeavyTasks`, new
+        `@Scheduled(fixedDelay = 300_000)` (5 minutes, vs the light poller's unchanged 5 seconds) -
+        checks `adminService.isHeavyTasksActivated()` first; if not activated, returns immediately
+        with no query/dispatch at all. If activated, same fetch-and-submit logic
+        `pollPendingTasks` used to do for heavy tasks, moved here verbatim. The heavy-pool
+        `MaxPoolSize` 3⇄8 adjustment heuristic (reacting to light-queue pressure) stayed in the
+        *light* poller (`adjustHeavyPoolSizeForLightLoad`) since it needs to react at the light
+        poller's 5-second cadence, not the heavy poller's new 5-minute one.
+      - **Bootstrap gap this created, and its fix**: the old admin button was the ONLY place that
+        ever created the first `FACE_RECOGNITION` task (which perpetually reschedules itself 30s
+        after each run once started - see `TaskWorkerManager#processTask`'s `FACE_RECOGNITION`
+        branch). Removing that button without another trigger would have silently stopped face
+        grouping from ever running again. Fixed with a new `IPhotoApplication#bootstrapFaceRecognition`
+        `CommandLineRunner` (idempotent, guarded by new `TaskRepository#existsByTaskType`),
+        mirroring the existing `initDatabase`/`backfillGroupedDay` bean precedent there.
+      - **Bug found in passing, superseded by the single-row correction above**: initially caught
+        that `AdminService.updateImageTaskToDo()` (the other admin button, unrelated to this
+        request but touched by it) replays every `canBeReplayed` task type *for every photo*
+        missing one, and would have created one spurious, payload-less `ACTIVATE_HEAVY_TASKS` row
+        per photo had the enum stayed `canBeReplayed=true` - patched with a one-line exclusion
+        filter at the time. Once the user settled on `canBeReplayed=false` for the enum constant
+        itself (the single-row design's natural consequence, not an independent fix), that filter
+        became redundant and was removed again in favor of the simpler, single root cause.
+      - **Frontend**: `UserManagement.jsx`'s old "Activate Face Recognition" button replaced with a
+        checkbox (`heavyTasksActivated` state, fetched on mount from `GET /api/admin/heavyTasks`,
+        `POST`s on change) - i18n keys `activateFaceRecognition`/`faceRecognitionActivatedSuccessfully`/
+        etc. replaced with `heavyTasksActivationLabel`/`heavyTasksActivationUpdated`/etc. (en/fr).
+      - **CPU-based light-pool concurrency** (user question: "is this even possible?"): yes, but
+        not via `corePoolSize`/`maxPoolSize` the way the existing heavy-pool adjustment works -
+        `lightThreadPoolExecutor` runs on virtual threads (`setVirtualThreads(true)`), which don't
+        pool in the traditional sense, so those fields are essentially inert for it; and
+        `queueCapacity` can't be resized after the executor's own initialization (Spring only reads
+        it once, to size the underlying queue, at `afterPropertiesSet` time - confirmed, not just
+        assumed). The real lever is how many new tasks `pollPendingTasks` pulls from the database
+        each tick - new `TaskWorkerManager#lightConcurrencyLimit` (`AtomicInteger`, seeded from the
+        executor's own `queueCapacity` as its ceiling), stepped ±10 each tick by
+        `adjustLightConcurrencyForCpuLoad` based on `com.sun.management.OperatingSystemMXBean#
+        getCpuLoad()` (0.0-1.0 recent system-wide load; despite the `com.sun` package name, this
+        has been a stable, standard part of every HotSpot-derived JVM - Oracle, OpenJDK, Temurin -
+        for years; returns `-1` only on its very first call or if genuinely unsupported, treated as
+        a no-op). Below 50% load, steps the limit up (capped at `queueCapacity`); above 85%, steps
+        it down (floored at 10); in between, leaves it alone to avoid thrashing on noisy samples.
+      - Verified: whole backend `javac` compile clean (main + test sources), frontend
+        `npm test -- --run` 101/101, `npm run build` clean, lint unchanged from its pre-existing
+        baseline. **Not yet exercised against the live app** - needs a real restart (not IntelliJ
+        HotSwap) like every other backend change this session, and the CPU-based scaling in
+        particular has had no chance to be observed reacting to real machine load.
+
+- [x] **Bug fix** (user report: "tasks are scheduled to run multiple times"). Root-caused by
+      inspection, not guessed: `pollPendingTasks`/`pollHeavyTasks` query for `status = PENDING`
+      then `submit()` to an executor - but a task's status only flips to `PROCESSING` once
+      `processTask` actually *starts running* on a worker thread (`markProcessing`), which lags
+      behind submission whenever the executor is backed up (easy for the 3-thread heavy pool).
+      In that window the row still looks `PENDING` in the DB, so the next poll tick's query
+      matched it again and submitted it a SECOND time before the first submission had even run -
+      the same task executing concurrently more than once.
+      - **Fix**: new `TaskStatus.QUEUED` - both pollers now mark every fetched batch `QUEUED`
+        (new `TaskWorkerManager#markQueued`, one transaction for the whole batch) BEFORE calling
+        `submit()`, not after. `findExecutableTasks` still only matches `PENDING`, so a `QUEUED`
+        row can never be re-selected while it's sitting in the executor's queue.
+        `markProcessing` transitions `QUEUED → PROCESSING` exactly as before once the runnable
+        actually starts - no change needed there.
+      - **Two complementary recovery mechanisms, discussed with the user** (confirmed neither
+        alone was enough): the existing hourly `reclaimStuckProcessingTasks` sweep widened to also
+        reclaim stale `QUEUED` rows (new `TaskRepository#findByStatusInAndUpdatedAtBefore`,
+        replacing the single-status version) - this stays the ongoing safety net for a task
+        orphaned *without* a restart (e.g. `submit()` itself throwing after the DB was already
+        flipped to `QUEUED`), where "stuck for over an hour" is the only available signal. New
+        `IPhotoApplication#resetOrphanedTasksOnStartup` `CommandLineRunner` (new
+        `TaskRepository#findByStatusIn`) unconditionally resets ANY `QUEUED`/`PROCESSING` row at
+        boot, no staleness check needed - a fresh JVM means nothing in-memory survived the
+        restart, so there's no "might still genuinely be running" ambiguity to wait out the way
+        the hourly sweep has to. Without this second piece, every restart would leave whatever was
+        in flight at that exact moment dead for up to an hour before the sweep's threshold caught
+        up to it - a real (if minor) regression in restart recovery time, not just for this new
+        `QUEUED` status but also, it turns out, for pre-existing `PROCESSING` orphaning that the
+        hourly sweep alone already had this same gap for.
+      - **Found and fixed in passing while auditing every other `TaskStatus` comparison in the
+        codebase for `QUEUED`-awareness**: `ImmichImportService#isReclaimable` (the Immich-specific,
+        15-minute-threshold reclaim used when a user manually retries a day's import) only checked
+        `PROCESSING`, not `QUEUED` - `SYNC_FROM_IMMICH`/`UPLOAD_FROM_IMMICH` are light tasks too, so
+        they can now land in `QUEUED` the same way. Widened to check both. Checked every other
+        `TaskStatus` reference in the codebase: `UploadManager.jsx`'s upload-progress poller
+        already treats any non-terminal, non-`PENDING` status as "leave the optimistically-set
+        `PROCESSING` label alone" (it never special-cased `PROCESSING` explicitly either) - `QUEUED`
+        falls into that same existing bucket for free, no frontend change needed.
+      - Verified: whole backend `javac` compile clean (main + test sources), frontend
+        `npm test -- --run` 101/101 (backend-only change, but confirmed nothing broke). **Not yet
+        exercised against the live app** - needs a real restart, and the actual "does this stop
+        duplicate execution" claim can only be confirmed by observing the heavy pool under a real
+        backlog, which hasn't been done here.
+
+- [x] **Bug fix** (user report: "if user move to garbage the suggested keep in duplicates, the
+      duplicate popup disappear it should not"). Root cause was worse than the reported symptom -
+      real data loss, not just the modal closing:
+      - **`PhotoService.buildDedupedPage`/`PhotoMapper`**: a cluster's non-primary members exist
+        ONLY nested inside the primary's own `duplicates` array - they're deliberately excluded
+        from ever appearing as their own top-level page entries (`contentPhotos.removeAll
+        (duplicatedPhotos)`). `utils/photoListUpdates.js#removeFromFlatPhotos` didn't know this -
+        it just `filter()`ed out garbage'd ids, so garbage-ing the PRIMARY (the suggested keep)
+        deleted its surviving duplicate members from the client's in-memory list entirely (not
+        just from the modal - from the whole Library/day grid), since nothing else in the list
+        ever referenced them. They'd only reappear on a full page refresh, once the backend
+        naturally promoted a new primary on its own.
+      - **Fix**: `removeFromFlatPhotos` now promotes the first surviving duplicate to take a
+        removed primary's place (inheriting the rest as its own `duplicates`) instead of just
+        dropping everything nested inside the removed primary. `removeFromPhotosByDay` gets this
+        for free (delegates per-bucket). Rewrote `utils/photoListUpdates.test.js`'s fixtures to
+        match the REAL single-top-level-entry-per-cluster shape (the old fixture had every member
+        redundantly duplicated as its own top-level entry too, which isn't how the backend actually
+        shapes this and would have hidden this exact bug from ever being caught by a test).
+      - **`PhotoGrid.jsx`**: even with the data-loss fixed, the modal itself was still anchored by
+        `openDuplicatePrimaryId` (the PRIMARY's id only) - after a promotion, that exact id is
+        genuinely gone (the removed primary), so the lookup would still find nothing and wrongly
+        close the modal even though the cluster survived under a new primary. Renamed to
+        `openDuplicateMemberIds` (every member id the cluster had when opened) and match on ANY
+        surviving member, not just the primary - correctly re-finds the cluster regardless of
+        which specific member (including the primary) got removed. `DuplicateClusterModal.jsx`
+        needed no change - it already renders a 1-member `item` gracefully (`canFlicker =
+        members.length > 1` already false in that case), for the case where resolving the last
+        actual duplicate leaves nothing left to compare.
+      - **Tests**: new `PhotoGrid.test.jsx` case simulates the exact user-reported scenario
+        (rerender with the post-garbage props `removeFromFlatPhotos` would actually produce) and
+        asserts the modal stays open, now showing the promoted member. Plus new
+        `photoListUpdates.test.js` cases for the promotion path itself, and for the cluster
+        correctly disappearing entirely when the primary and all its remaining duplicates are
+        removed together.
+      - Verified: `npm test -- --run` 105/105, `npm run build` clean, lint unchanged from its
+        pre-existing baseline. No backend change.
+
+- [x] **Bug fix** (user report: `HttpMessageNotWritableException: No converter for [class
+      java.util.HashMap] with preset Content-Type 'video/mp4'` when opening a video; user's own
+      correct hunch: "related to the fact that I close lightbox without finishing to read the
+      video"). The logged exception was a secondary, masking one, not the real cause:
+      - **Actual mechanism**: closing the Lightbox mid-video aborts the browser's connection to
+        `PhotoController#streamVideo`. Writing the in-flight response then throws a plain
+        `IOException` once the connection is gone - but by that point the response is already
+        COMMITTED (`Content-Type: video/mp4`, HTTP 206, partial bytes already streamed).
+        `GlobalExceptionHandler`'s catch-all `@ExceptionHandler(Exception.class)` doesn't
+        distinguish this from any other exception and tries to write its usual JSON error
+        `HashMap` body anyway - Spring can't find a converter to write a `HashMap` as `video/mp4`,
+        throws `HttpMessageNotWritableException`, and THAT'S what ends up in the logs, masking the
+        real (and entirely benign) client-disconnect as the apparent error.
+      - **Fix**: `handleAllExceptions` now takes an `HttpServletResponse` param and checks
+        `response.isCommitted()` first - if already committed, nothing (headers or body) can be
+        changed regardless of what's returned anyway, and the client is gone, so it just logs at
+        `debug` and returns `null` (the standard way to tell Spring's
+        `HttpEntityMethodProcessor` "already handled, don't write anything" from a
+        `ResponseEntity`-typed `@ExceptionHandler` - it returns immediately for a null return
+        value). Deliberately checks `isCommitted()` rather than pattern-matching specific
+        exception types/messages (`ClientAbortException`, "Broken pipe", "Connection reset by
+        peer", ...) - those vary by servlet container/OS and are fragile to match; "can this
+        response still be written to at all" is the actually-correct, container-agnostic
+        condition, and covers any other exception-after-commit scenario the same way, not just
+        this one video-specific case.
+      - Verified: whole backend `javac` compile clean (main + test sources). No frontend change.
+        **Not yet exercised against the live app** - needs a real restart, and confirming the fix
+        requires reproducing the exact repro (open a video, close the Lightbox before it finishes)
+        against a running instance, which hasn't been done here.

@@ -1,5 +1,6 @@
 package org.iphoto.controller;
 
+import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -40,7 +41,25 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<Map<String, Object>> handleAllExceptions(Exception ex) {
+    public ResponseEntity<Map<String, Object>> handleAllExceptions(Exception ex, HttpServletResponse response) {
+        // A client aborting an in-flight response - e.g. closing the Lightbox before a video
+        // finishes streaming (PhotoController#streamVideo) - surfaces here as a plain IOException
+        // once the connection is gone. By then the response is already committed with whatever
+        // content-type the original endpoint was streaming (video/mp4, image/*, ...): trying to
+        // write a JSON error body over that is what actually throws
+        // HttpMessageNotWritableException ("No converter for HashMap with preset Content-Type
+        // 'video/mp4'"), masking this as the real cause in the logs. Once committed, headers/body
+        // can't be changed at all regardless of what we return here - the client is gone anyway,
+        // so there's nothing to do but log quietly and stop. Returning null from a
+        // ResponseEntity-typed @ExceptionHandler is the standard way to say "already handled,
+        // nothing more to write" - Spring's HttpEntityMethodProcessor returns immediately for a
+        // null return value.
+        if (response.isCommitted()) {
+            log.debug("Exception after the response was already committed (client likely "
+                    + "disconnected mid-stream) - not attempting to write an error body", ex);
+            return null;
+        }
+
         log.error("Unhandled exception occurred:", ex);
 
         StringWriter sw = new StringWriter();

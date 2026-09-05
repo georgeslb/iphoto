@@ -87,6 +87,17 @@ function App() {
     [dayIndexed.days, dayIndexed.photosByDay]
   );
 
+  // MemoriesBar's click target: scroll to that photo's day section, same instant-scroll-plus-
+  // eager-load behavior as PhotoGrid.jsx's own seekToDay (TimelineScrubber) - not the Lightbox.
+  // Queries the DOM directly (data-day-group, rendered by PhotoGrid for every day up front)
+  // rather than threading a ref down from PhotoGrid, since MemoriesBar is a sibling of it, not a
+  // child - only one Library PhotoGrid is ever on screen at a time, so this is unambiguous.
+  const seekToMemoryDay = useCallback((day) => {
+    const el = document.querySelector(`[data-day-group="${day}"]`);
+    if (el) el.scrollIntoView({ block: 'start' });
+    dayIndexed.loadDayPage(day);
+  }, [dayIndexed.loadDayPage]);
+
   const { saveScrollPosition } = useScrollRestoration(mainContentRef, isLightboxOpen, effectivePhotos);
 
   const {
@@ -287,7 +298,7 @@ function App() {
   // correctly resolves to 'garbage' rather than 'library' for the Garbage instance of this).
   const libraryPhotoGrid = (
     <>
-      {selectedMenu === 'library' && <MemoriesBar onPhotoClick={handlePhotoClick} />}
+      {selectedMenu === 'library' && <MemoriesBar onSeekToDay={seekToMemoryDay} />}
       <PhotoGrid
           dayIndex={dayIndexed}
           type={selectedMenu}

@@ -270,19 +270,19 @@ public class ImmichImportService {
         return toDTO(immichImportDayRepository.save(dayRow));
     }
 
-    // How long a SYNC_FROM_IMMICH/UPLOAD_FROM_IMMICH task can sit in PROCESSING before
+    // How long a SYNC_FROM_IMMICH/UPLOAD_FROM_IMMICH task can sit QUEUED or PROCESSING before
     // triggerDayImportInternal treats it as orphaned rather than genuinely in flight. Needed
     // because TaskWorkerManager.pollPendingTasks only ever picks up PENDING tasks - if the app
-    // restarts (or a virtual thread otherwise dies) while a task is PROCESSING, nothing will ever
-    // pick it up again, and its day would stay stuck at IN_PROGRESS forever with no way to unstick
-    // it short of manually editing the database. 15 minutes comfortably covers even a slow face
-    // detection run or a large video download; a task genuinely still running that long would be
-    // unusual enough that restarting it from scratch is the right call anyway.
+    // restarts (or a virtual thread otherwise dies) while a task is QUEUED/PROCESSING, nothing
+    // will ever pick it up again, and its day would stay stuck at IN_PROGRESS forever with no way
+    // to unstick it short of manually editing the database. 15 minutes comfortably covers even a
+    // slow face detection run or a large video download; a task genuinely still running that long
+    // would be unusual enough that restarting it from scratch is the right call anyway.
     private static final Duration STUCK_TASK_THRESHOLD = Duration.ofMinutes(15);
 
     private boolean isReclaimable(TaskEntity task) {
         if (task.getStatus() == TaskStatus.FAILED) return true;
-        return task.getStatus() == TaskStatus.PROCESSING
+        return (task.getStatus() == TaskStatus.PROCESSING || task.getStatus() == TaskStatus.QUEUED)
                 && task.getUpdatedAt() != null
                 && task.getUpdatedAt().isBefore(LocalDateTime.now().minus(STUCK_TASK_THRESHOLD));
     }
@@ -446,7 +446,7 @@ public class ImmichImportService {
             // this lambda (TransactionCallback) can't declare checked exceptions, and
             // AutoClosableLock.close() is declared `throws Exception`.
 
-            try(SpaceService.AutoClosableLock lock = spaceService.lockSpace(space)){
+            try(SpaceService.AutoClosableLock ignore = spaceService.lockSpace(space)){
                 PhotoEntity photo = PhotoEntity.builder().id(payload.photoId())
                         .fileName(payload.fileName())
                         .fileHash(payload.fileHash())

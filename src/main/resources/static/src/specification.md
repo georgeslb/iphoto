@@ -9,13 +9,17 @@ This document outlines the functionality and behavior of the IPHOTO web applicat
     *   **Main Space:** The default space. Photos in this space are displayed in the "Library" menu. Users can move photos from any other space into the Main space.
 *   **Album:** A virtual collection or a "playlist" of photos. An album contains links (references) to photos that exist **in the Main Space only**. A single photo can be included in multiple albums without being moved or duplicated. The visibility of albums (i.e., which albums are displayed to the user) is managed by the backend.
 *   **Library:** The view that displays all photos residing in the "Main" space.
-    *   **Memories bar:** a horizontal strip above the day-sectioned grid showing one random Main
-        Space photo per configured "N months ago" offset (today minus N months, matched against
-        `groupedDay`) — e.g. "1 month ago," "1 year ago," "5 years ago." Offsets come from
-        `IPhotoProperties.Memories.monthsAgo` (`iphoto.memories.months-ago` in `application.yml`,
-        default `[1, 6, 12, 36, 60, 120]`), not hardcoded — change the property to change which
-        offsets show. An offset with no photo taken that exact day is simply omitted, not shown as
-        an empty slot. Backend: `GET /api/photos/memories` (`PhotoService.getMemories`). Frontend:
+    *   **Memories bar:** a horizontal strip above the day-sectioned grid showing up to
+        `photosPerBlock` random Main Space photos (auto-cycled, see `components/MemoriesBar.jsx`)
+        per configured "N months ago" offset — e.g. "1 month ago," "1 year ago," "5 years ago."
+        Offsets come from `IPhotoProperties.Memories.offsets` (`iphoto.memories.offsets` in
+        `application.yml`, default `[1, 6, 12, 36, 60, 120]`), not hardcoded — change the property
+        to change which offsets show. Each entry is a plain integer (exact day, `today.minusMonths
+        (N)`, matched against `groupedDay`) or that integer plus a day-tolerance suffix parsed by
+        `MemoryOffset` — `"6-2d+3d"` (order-independent, so `"6+3d-2d"` is identical) searches every
+        day from 2 days before to 3 days after the anchor day instead of requiring an exact hit.
+        An offset with nothing in its window is simply omitted, not shown as an empty slot.
+        Backend: `GET /api/photos/memories` (`PhotoService.getMemories`). Frontend:
         `hooks/useMemories.js` + `components/MemoriesBar.jsx`, rendered only for the Library view
         (not Garbage/Album/Space/Person), clicking a memory opens it in the Lightbox the same way
         any grid photo click does.

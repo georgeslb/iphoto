@@ -7,7 +7,12 @@ public enum TaskType {
     PERMANENT_DELETE (false, 0, false),
     PROCESS_UPLOAD (false, 0, false),
     HASH_IMAGE(true, 1, false),
-    ACTIVATE_HEAVY_TASKS(true, 3, false),
+    // Global admin on/off switch, not a per-photo task - exactly one row ever exists, updated in
+    // place on every admin toggle rather than a new row per click (see AdminService#
+    // activateHeavyTasks). canBeReplayed=false: AdminService#updateImageTaskToDo replays
+    // canBeReplayed types once per photo, which would be meaningless (and actively harmful - see
+    // that method's own comment) for a single global row with photoId always null.
+    ACTIVATE_HEAVY_TASKS(false, 3, false),
     CHECK_DUPLICATION(true, 2, true),
     ISOLATE_FACES(true, 1, true),
     FACE_RECOGNITION (false, 2, true),

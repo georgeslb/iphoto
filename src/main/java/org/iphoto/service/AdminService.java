@@ -1,5 +1,6 @@
 package org.iphoto.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.SetUtils;
@@ -17,6 +18,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -30,9 +32,49 @@ public class AdminService {
     private final PhotoRepository photoRepository;
     private final TaskRepository taskRepository;
     private final StorageMigrationService storageMigrationService;
+    private final ObjectMapper objectMapper;
 
-    public void activateFaceRecognition() {
-        taskManagerService.createTaskEntity(TaskType.FACE_RECOGNITION, null, null, LocalDateTime.now());
+    // Replaces the old one-shot "activate face recognition" admin button: a plain boolean switch
+    // pausing/resuming heavy task processing as a whole (see TaskWorkerManager#pollHeavyTasks).
+    // Exactly one ACTIVATE_HEAVY_TASKS row ever exists - updated in place on every toggle, not a
+    // new row per click, so isHeavyTasksActivated never has to reason about "which one is current."
+    // Reset to PENDING/executeAt=now on update so the light poller still picks it up and marks it
+    // COMPLETED again (same lifecycle every task goes through - see TaskWorkerManager's
+    // ACTIVATE_HEAVY_TASKS branch), even though its terminal status itself doesn't matter to
+    // isHeavyTasksActivated below (that reads the row regardless of status).
+    public void activateHeavyTasks(boolean activate) {
+        String payload = writePayload(activate);
+        TaskEntity task = taskRepository.findFirstByTaskTypeOrderByCreatedAtDesc(TaskType.ACTIVATE_HEAVY_TASKS).orElse(null);
+        if (task != null) {
+            task.setPayload(payload);
+            task.setStatus(TaskStatus.PENDING);
+            task.setExecuteAt(LocalDateTime.now());
+            task.setErrorMessage(null);
+            taskRepository.save(task);
+        } else {
+            taskManagerService.createTaskEntity(TaskType.ACTIVATE_HEAVY_TASKS, null, payload, LocalDateTime.now());
+        }
+    }
+
+    public boolean isHeavyTasksActivated() {
+        return taskRepository.findFirstByTaskTypeOrderByCreatedAtDesc(TaskType.ACTIVATE_HEAVY_TASKS)
+                .map(task -> {
+                    try {
+                        return objectMapper.readTree(task.getPayload()).path("activate").asBoolean(false);
+                    } catch (Exception e) {
+                        log.warn("Could not read 'activate' from ACTIVATE_HEAVY_TASKS task {} payload", task.getId(), e);
+                        return false;
+                    }
+                })
+                .orElse(false); // No toggle ever created yet - opt-in by design, not opt-out.
+    }
+
+    private String writePayload(boolean activate) {
+        try {
+            return objectMapper.writeValueAsString(Map.of("activate", String.valueOf(activate)));
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     // Optional, admin-triggered backfill - see StorageMigrationService for why this isn't automatic.
@@ -41,6 +83,9 @@ public class AdminService {
     }
 
     public void updateImageTaskToDo() {
+        // Note: ACTIVATE_HEAVY_TASKS is canBeReplayed=false specifically so it's never included
+        // here - it's a global control record (photoId always null), not a per-photo task type;
+        // see its own enum comment.
         Set<TaskType> taskTypes = Stream.of(TaskType.values()).filter(TaskType::isCanBeReplayed)
                 .collect(Collectors.toSet());
         Slice<PhotoEntity> photosSlice;

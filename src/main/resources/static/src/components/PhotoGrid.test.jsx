@@ -236,4 +236,25 @@ describe('PhotoGrid duplicate grouping', () => {
     fireEvent.click(stageTrashBtn);
     expect(handleMoveToGarbage).toHaveBeenCalledWith(['p1']);
   });
+
+  // Regression: garbage-ing the SUGGESTED KEEP (p1, the primary) used to close the modal
+  // entirely, because the item it was anchored to (found by primary id) vanished from `groups`
+  // once p1 was removed - see utils/photoListUpdates.js's promotion fix. The modal should instead
+  // stay open, now showing whichever member survived (p1-dup, promoted to primary).
+  it('keeps the modal open, now anchored to the promoted member, when the primary itself is garbage\'d', () => {
+    const { container, rerender } = render(
+      <Harness photos={makePhotosWithDuplicate()} />,
+      { wrapper: localeWrapper }
+    );
+
+    fireEvent.click(container.querySelector('.duplicate-badge'));
+    expect(container.querySelector('.duplicate-modal-content')).toBeTruthy();
+
+    // What removeFromFlatPhotos produces after garbage-ing p1: p1-dup promoted to take its place,
+    // with no duplicates of its own left (this was the whole cluster).
+    rerender(<Harness photos={[{ id: 'p1-dup', url: '/photo1-dup.jpg', duplicates: [] }]} />);
+
+    expect(container.querySelector('.duplicate-modal-content')).toBeTruthy();
+    expect(container.querySelector('.flicker-stage img[src="/api/photos/p1-dup/original"]')).toBeTruthy();
+  });
 });

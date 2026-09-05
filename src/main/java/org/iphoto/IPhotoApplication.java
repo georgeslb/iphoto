@@ -1,9 +1,14 @@
 package org.iphoto;
 
 import lombok.extern.slf4j.Slf4j;
+import org.iphoto.entities.TaskEntity;
+import org.iphoto.model.TaskStatus;
+import org.iphoto.model.TaskType;
 import org.iphoto.properties.AdminProperties; // Import AdminProperties
 import org.iphoto.repository.PhotoRepository;
+import org.iphoto.repository.TaskRepository;
 import org.iphoto.repository.UserRepository;
+import org.iphoto.service.TaskManagerService;
 import org.iphoto.service.UserService;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
@@ -11,6 +16,10 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
 import org.springframework.retry.annotation.EnableRetry;
 import org.springframework.scheduling.annotation.EnableScheduling;
+
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Set;
 
 @Slf4j
 @SpringBootApplication
@@ -56,6 +65,44 @@ public class IPhotoApplication {
             int updated = photoRepository.backfillGroupedDay();
             if (updated > 0) {
                 log.info("Backfilled groupedDay for {} existing photo(s)", updated);
+            }
+        };
+    }
+
+    // FACE_RECOGNITION perpetually reschedules itself 30s after each run (see
+    // TaskWorkerManager#processTask) once started, but nothing ever creates the FIRST one anymore -
+    // that used to be the admin "Activate Face Recognition" button, replaced by the heavy-tasks
+    // activate/deactivate switch (see AdminService/AdminController). Bootstrap it here instead, once,
+    // so face grouping keeps working without needing a manual admin trigger. Idempotent (guarded by
+    // existsByTaskType), so a cheap no-op on every boot after the first.
+    @Bean
+    CommandLineRunner bootstrapFaceRecognition(TaskRepository taskRepository, TaskManagerService taskManagerService) {
+        return args -> {
+            if (!taskRepository.existsByTaskType(TaskType.FACE_RECOGNITION)) {
+                taskManagerService.createTaskEntity(TaskType.FACE_RECOGNITION, null, null, LocalDateTime.now());
+                log.info("Bootstrapped the initial FACE_RECOGNITION task");
+            }
+        };
+    }
+
+    // Complements TaskWorkerManager#reclaimStuckProcessingTasks (the ongoing, age-gated hourly
+    // sweep for tasks orphaned without a restart) rather than replacing it: at this exact moment,
+    // the app has just booted, so there's no "might still genuinely be running" ambiguity to wait
+    // out the way the hourly sweep has to - ANY row still QUEUED (claimed by a poller, submitted,
+    // but never actually started - see TaskStatus.QUEUED) or PROCESSING (started but never
+    // finished) from before this JVM existed is unconditionally orphaned; nothing in-memory
+    // survives a restart. Without this, every restart would leave whatever was in flight at that
+    // moment dead for up to an hour before the hourly sweep's staleness threshold caught up to it.
+    @Bean
+    CommandLineRunner resetOrphanedTasksOnStartup(TaskRepository taskRepository) {
+        return args -> {
+            List<TaskEntity> orphaned = taskRepository.findByStatusIn(Set.of(TaskStatus.QUEUED.name(), TaskStatus.PROCESSING.name()));
+            if (orphaned.isEmpty()) return;
+            log.info("Resetting {} task(s) left QUEUED/PROCESSING from before this startup back to PENDING", orphaned.size());
+            for (TaskEntity task : orphaned) {
+                task.setStatus(TaskStatus.PENDING);
+                task.setExecuteAt(LocalDateTime.now());
+                taskRepository.save(task);
             }
         };
     }

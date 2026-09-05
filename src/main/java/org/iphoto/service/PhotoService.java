@@ -87,21 +87,31 @@ public class PhotoService {
         return dayIndexCache.getSpaceDayCounts(spaceId, () -> DayBucketDTO.from(photoRepository.countDailyPhotosBySpaceId(spaceId)));
     }
 
-    // Library's "N months/years ago" bar - one candidate day per configured offset (see
-    // IPhotoProperties.Memories.monthsAgo), each resolved to a random non-garbage photo taken on
-    // that exact day, if any (offsets with nothing that day are simply omitted, not returned as an
-    // empty slot). Deliberately not cached: today's date changes daily anyway, and each lookup is
-    // a single indexed (space_id, grouped_day) point query - already cheap without it.
+    // Library's "N months/years ago" bar - one candidate window per configured offset (see
+    // IPhotoProperties.Memories.offsets/MemoryOffset), each resolved to random non-garbage photos
+    // taken anywhere within that window (an exact day if the offset carries no tolerance), if any
+    // (offsets with nothing in range are simply omitted, not returned as an empty slot).
+    // Deliberately not cached: today's date changes daily anyway, and each lookup is a single
+    // indexed (space_id, grouped_day) range query - already cheap without it.
     public List<MemoryDTO> getMemories(UUID spaceId) {
         LocalDate today = LocalDate.now();
         int photosPerBlock = iPhotoProperties.getMemories().getPhotosPerBlock();
-        return iPhotoProperties.getMemories().getMonthsAgo().stream()
-                .map(monthsAgo -> {
-                    LocalDate day = today.minusMonths(monthsAgo);
-                    List<Photo> photos = photoRepository.findRandomPhotosBySpaceIdAndGroupedDay(spaceId, day, photosPerBlock).stream()
+        return iPhotoProperties.getMemories().getOffsets().stream()
+                .map(raw -> {
+                    MemoryOffset offset;
+                    try {
+                        offset = MemoryOffset.parse(raw);
+                    } catch (IllegalArgumentException e) {
+                        log.warn("Skipping invalid iphoto.memories.offsets entry '{}': {}", raw, e.getMessage());
+                        return null;
+                    }
+                    LocalDate anchor = today.minusMonths(offset.monthsAgo());
+                    LocalDate startDay = anchor.minusDays(offset.beforeDays());
+                    LocalDate endDay = anchor.plusDays(offset.afterDays());
+                    List<Photo> photos = photoRepository.findRandomPhotosBySpaceIdAndGroupedDayBetween(spaceId, startDay, endDay, photosPerBlock).stream()
                             .map(photoMapper::photoEntityToPhoto)
                             .toList();
-                    return photos.isEmpty() ? null : new MemoryDTO(monthsAgo, day, photos);
+                    return photos.isEmpty() ? null : new MemoryDTO(offset.monthsAgo(), anchor, photos);
                 })
                 .filter(Objects::nonNull)
                 .toList();

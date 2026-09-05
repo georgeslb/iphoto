@@ -8,10 +8,25 @@ function UserManagement() {
     const [newUser, setNewUser] = useState({ username: '', password: '', role: 'USER' });
     const [error, setError] = useState('');
     const [message, setMessage] = useState('');
+    const [heavyTasksActivated, setHeavyTasksActivated] = useState(false);
 
     useEffect(() => {
         fetchUsers();
+        fetchHeavyTasksActivated();
     }, []);
+
+    const fetchHeavyTasksActivated = async () => {
+        try {
+            const response = await fetch('/api/admin/heavyTasks');
+            if (response.ok) {
+                const data = await response.json();
+                setHeavyTasksActivated(!!data.activate);
+            }
+        } catch (err) {
+            setError(messages["errorFetchingHeavyTasksActivation"]);
+            console.error('Fetch heavy tasks activation error:', err);
+        }
+    };
 
     const fetchUsers = async () => {
         try {
@@ -104,19 +119,25 @@ function UserManagement() {
         }
     };
 
-    const handleActivateFaceRecognition = async () => {
+    const handleToggleHeavyTasksActivated = async () => {
+        const activate = !heavyTasksActivated;
         setError('');
         setMessage('');
         try {
-            const response = await fetch('/api/admin/activateFaceRecognition');
+            const response = await fetch('/api/admin/heavyTasks', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ activate }),
+            });
             if (response.ok) {
-                setMessage(messages["faceRecognitionActivatedSuccessfully"]);
+                setHeavyTasksActivated(activate);
+                setMessage(messages["heavyTasksActivationUpdated"]);
             } else {
-                setError(messages["failedToActivateFaceRecognition"]);
+                setError(messages["failedToUpdateHeavyTasksActivation"]);
             }
         } catch (err) {
-            setError(messages["errorActivatingFaceRecognition"]);
-            console.error('Activate face recognition error:', err);
+            setError(messages["errorUpdatingHeavyTasksActivation"]);
+            console.error('Update heavy tasks activation error:', err);
         }
     };
 
@@ -206,7 +227,9 @@ function UserManagement() {
 
             <h3>{messages["adminOperationsTitle"]}</h3>
             <div className="admin-operations">
-                <button onClick={handleActivateFaceRecognition}>{messages["activateFaceRecognition"]}</button>
+                <button onClick={handleToggleHeavyTasksActivated}>
+                    {heavyTasksActivated ? messages["deactivateHeavyTasks"] : messages["activateHeavyTasks"]}
+                </button>
                 <button onClick={handleUpdateImageTaskToDo}>{messages["updateImageTaskToDo"]}</button>
             </div>
         </div>

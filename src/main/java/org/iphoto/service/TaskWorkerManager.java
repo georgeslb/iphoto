@@ -2,6 +2,7 @@ package org.iphoto.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sun.management.OperatingSystemMXBean;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.TaskEntity;
@@ -16,6 +17,8 @@ import org.iphoto.repository.TaskRepository;
 import org.iphoto.service.immich.ImmichImportService;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DataAccessException;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.NonTransientDataAccessException;
 import org.springframework.data.domain.Limit;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -23,10 +26,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.io.*;
+import java.lang.management.ManagementFactory;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -44,6 +49,7 @@ public class TaskWorkerManager {
     private final FaceDetectionService faceDetectionService;
     private final FaceRecognitionService faceRecognitionService;
     private final ImmichImportService immichImportService;
+    private final AdminService adminService;
     private final ThreadPoolTaskExecutor lightThreadPoolExecutor;
     private final ThreadPoolTaskExecutor heavyThreadPoolExecutor;
 
@@ -52,8 +58,18 @@ public class TaskWorkerManager {
     private static final Set<TaskType> LIGHT_TASK_TYPES =
             Stream.of(TaskType.values()).filter(taskType -> !taskType.isHeavy()).collect(Collectors.toSet());
 
+    // See adjustLightConcurrencyForCpuLoad below for why this (not corePoolSize/maxPoolSize) is
+    // the actual concurrency knob for the light pool.
+    private static final OperatingSystemMXBean OS_BEAN =
+            (OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
+    private static final int LIGHT_CONCURRENCY_MIN = 10;
+    private static final int LIGHT_CONCURRENCY_STEP = 10;
+    private static final double CPU_LOAD_LOW_THRESHOLD = 0.5;
+    private static final double CPU_LOAD_HIGH_THRESHOLD = 0.85;
+    private final AtomicInteger lightConcurrencyLimit;
+
     public TaskWorkerManager(TaskRepository taskRepository, ObjectMapper objectMapper, TransactionTemplate transactionTemplate, DuplicationService duplicationService, PhotoService photoService, FaceDetectionService faceDetectionService, FaceRecognitionService faceRecognitionService
-            , ImmichImportService immichImportService, @Qualifier("lightThreadPoolExecutor") ThreadPoolTaskExecutor lightThreadPoolExecutor, @Qualifier("heavyThreadPoolExecutor") ThreadPoolTaskExecutor heavyThreadPoolExecutor) {
+            , ImmichImportService immichImportService, AdminService adminService, @Qualifier("lightThreadPoolExecutor") ThreadPoolTaskExecutor lightThreadPoolExecutor, @Qualifier("heavyThreadPoolExecutor") ThreadPoolTaskExecutor heavyThreadPoolExecutor) {
         this.taskRepository = taskRepository;
         this.objectMapper = objectMapper;
         this.transactionTemplate = transactionTemplate;
@@ -62,44 +78,122 @@ public class TaskWorkerManager {
         this.faceDetectionService = faceDetectionService;
         this.faceRecognitionService = faceRecognitionService;
         this.immichImportService = immichImportService;
+        this.adminService = adminService;
         this.lightThreadPoolExecutor = lightThreadPoolExecutor;
         this.heavyThreadPoolExecutor = heavyThreadPoolExecutor;
+        // Seeded from the executor's own configured queueCapacity (its ceiling - see
+        // adjustLightConcurrencyForCpuLoad) rather than a hardcoded number, so it stays correct if
+        // that config value ever changes.
+        this.lightConcurrencyLimit = new AtomicInteger(lightThreadPoolExecutor.getQueueCapacity());
     }
 
     // @Scheduled(fixedDelay=...) guarantees the next tick only starts once this method returns -
-    // one poller invocation runs start-to-finish on a single thread, never overlapping itself - so
-    // fetched candidates only need flipping to PROCESSING one at a time, right before each is
-    // actually dispatched, rather than the whole batch upfront in one transaction. A task not yet
-    // reached this iteration - or deliberately skipped, see the heavy-task branch below - simply
-    // stays PENDING and is reconsidered on this same pass or the next one 5 seconds later; there's
-    // no window where a task can be marked PROCESSING without also being dispatched in the same
-    // step, so no separate "revert back to PENDING" undo path is needed either.
+    // one poller invocation runs start-to-finish on a single thread, never overlapping itself.
+    // Fetched candidates are marked QUEUED (see markQueued/TaskStatus.QUEUED) BEFORE being
+    // submitted, not after - a task submitted to an executor doesn't actually start running (and
+    // so doesn't flip to PROCESSING via markProcessing) until a worker thread picks it up, which
+    // can lag behind submission whenever the executor is backed up. Without marking QUEUED first,
+    // that still-PENDING-looking row would match this same query again on the next tick and get
+    // submitted a SECOND time before the first submission ever ran - the same task executing
+    // multiple times concurrently. Heavy tasks have their own, much less frequent poller - see
+    // pollHeavyTasks.
     @Scheduled(fixedDelay = 5000)
     public void pollPendingTasks() {
+        adjustLightConcurrencyForCpuLoad();
+        int limit = lightConcurrencyLimit.get();
+
         Set<TaskEntity> lightTasks = new HashSet<>();
-        if (lightThreadPoolExecutor.getQueueSize() < lightThreadPoolExecutor.getQueueCapacity()) {
+        if (lightThreadPoolExecutor.getQueueSize() < limit) {
             lightTasks = transactionTemplate.execute(status ->
-                    taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), LocalDateTime.now(), LIGHT_TASK_TYPES, Limit.of(lightThreadPoolExecutor.getQueueCapacity() - lightThreadPoolExecutor.getQueueSize())));
+                    taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), LocalDateTime.now(), LIGHT_TASK_TYPES, Limit.of(limit - lightThreadPoolExecutor.getQueueSize())));
         }
+
+        adjustHeavyPoolSizeForLightLoad(limit);
+        markQueued(lightTasks);
+        for (TaskEntity task : lightTasks) {
+            lightThreadPoolExecutor.submit(() -> processTask(task.getId()));
+        }
+    }
+
+    // See pollPendingTasks' own comment for why this has to happen before submit(), not after -
+    // one transaction for the whole batch (not one per task) since this always runs synchronously,
+    // right here, well before any of these tasks could possibly have already started (they haven't
+    // even been submitted yet).
+    private void markQueued(Set<TaskEntity> tasks) {
+        if (tasks.isEmpty()) return;
+        transactionTemplate.executeWithoutResult(status -> {
+            for (TaskEntity task : tasks) {
+                task.setStatus(TaskStatus.QUEUED);
+                taskRepository.save(task);
+            }
+        });
+    }
+
+    // lightThreadPoolExecutor runs on virtual threads (see ThreadPoolConfiguration), which makes
+    // corePoolSize/maxPoolSize essentially inert for controlling concurrency here - a
+    // virtual-thread-per-task executor doesn't pool in the traditional sense, so adjusting those
+    // fields (the way adjustHeavyPoolSizeForLightLoad below does for the heavy pool) wouldn't
+    // actually change anything. queueCapacity isn't adjustable at runtime either - Spring only
+    // reads it once, to size the underlying queue, at executor initialization. So the real lever
+    // for "how much light-task concurrency is allowed right now" is how many new tasks
+    // pollPendingTasks pulls from the database each tick - lightConcurrencyLimit, stepped up/down
+    // here based on overall machine CPU load rather than a fixed number.
+    // com.sun.management.OperatingSystemMXBean#getCpuLoad() (0.0-1.0, recent load since the last
+    // call) is JDK-internal-looking by package name but has been a stable, standard part of every
+    // HotSpot-derived JVM (OpenJDK, Temurin, ...) for years - returns -1 only on its very first
+    // call or if genuinely unsupported on this platform, in which case this is a no-op and the
+    // limit stays wherever it last was.
+    private void adjustLightConcurrencyForCpuLoad() {
+        double cpuLoad = OS_BEAN.getCpuLoad();
+        if (cpuLoad < 0) return;
+        int ceiling = lightThreadPoolExecutor.getQueueCapacity();
+        int previous = lightConcurrencyLimit.get();
+        int updated;
+        if (cpuLoad > CPU_LOAD_HIGH_THRESHOLD) {
+            updated = lightConcurrencyLimit.updateAndGet(v -> Math.max(LIGHT_CONCURRENCY_MIN, v - LIGHT_CONCURRENCY_STEP));
+        } else if (cpuLoad < CPU_LOAD_LOW_THRESHOLD) {
+            updated = lightConcurrencyLimit.updateAndGet(v -> Math.min(ceiling, v + LIGHT_CONCURRENCY_STEP));
+        } else {
+            return;
+        }
+        if (updated != previous) {
+            log.info("CPU load {} - adjusted light task concurrency limit from {} to {}", String.format("%.2f", cpuLoad), previous, updated);
+        }
+    }
+
+    // Unchanged heuristic, just parameterized on the dynamic limit above instead of the executor's
+    // own (now largely vestigial for this purpose) queueCapacity.
+    private void adjustHeavyPoolSizeForLightLoad(int limit) {
+        if (lightThreadPoolExecutor.getQueueSize() < limit / 2 && heavyThreadPoolExecutor.getMaxPoolSize() != 8) {
+            log.warn("adjusting heavyThreadPoolExecutor MaxPoolSize to 8");
+            heavyThreadPoolExecutor.setMaxPoolSize(8);
+        }
+        if (lightThreadPoolExecutor.getQueueSize() > limit - 10 && heavyThreadPoolExecutor.getMaxPoolSize() != 3) {
+            log.warn("adjusting heavyThreadPoolExecutor MaxPoolSize to 3");
+            heavyThreadPoolExecutor.setMaxPoolSize(3);
+        }
+    }
+
+    // Heavy tasks (HASH_IMAGE/CHECK_DUPLICATION/ISOLATE_FACES/FACE_RECOGNITION/the Immich phases)
+    // are the expensive, resource-intensive half of the pipeline - gated behind an admin on/off
+    // switch (see AdminService#isHeavyTasksActivated/ACTIVATE_HEAVY_TASKS) so a struggling machine
+    // can pause this half entirely without touching light/control tasks. Runs far less often than
+    // the light poller (5 minutes vs 5 seconds) since that's the whole point of isolating it: a
+    // resource-constrained machine only wants to consider starting new heavy work occasionally,
+    // not every 5 seconds. No row yet, or its most recent payload says activate=false, means
+    // heavy tasks stay paused - opt-in by design, not opt-out.
+    @Scheduled(fixedDelay = 300_000)
+    public void pollHeavyTasks() {
+        if (!adminService.isHeavyTasksActivated()) return;
+
         Set<TaskEntity> heavyTasks = new HashSet<>();
         if (heavyThreadPoolExecutor.getQueueSize() < heavyThreadPoolExecutor.getQueueCapacity()) {
             heavyTasks = transactionTemplate.execute(status ->
                     taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), LocalDateTime.now(), HEAVY_TASK_TYPES, Limit.of(heavyThreadPoolExecutor.getQueueCapacity() - heavyThreadPoolExecutor.getQueueSize())));
         }
-
-        if (lightThreadPoolExecutor.getQueueSize() < lightThreadPoolExecutor.getQueueCapacity()  / 2 && heavyThreadPoolExecutor.getMaxPoolSize() != 8 ) {
-            log.warn("adjusting heavyThreadPoolExecutor MaxPoolSize to 8");
-            heavyThreadPoolExecutor.setMaxPoolSize(8);
-        }
-        if (lightThreadPoolExecutor.getQueueSize() > lightThreadPoolExecutor.getQueueCapacity()  - 10 && heavyThreadPoolExecutor.getMaxPoolSize() != 3 ) {
-            log.warn("adjusting heavyThreadPoolExecutor MaxPoolSize to 3");
-            heavyThreadPoolExecutor.setMaxPoolSize(3);
-        }
+        markQueued(heavyTasks);
         for (TaskEntity task : heavyTasks) {
             heavyThreadPoolExecutor.submit(() -> processTask(task.getId()));
-        }
-        for (TaskEntity task : lightTasks) {
-            lightThreadPoolExecutor.submit(() -> processTask(task.getId()));
         }
     }
 
@@ -120,20 +214,34 @@ public class TaskWorkerManager {
     private static final int MIN_RETRY_DELAY_MINUTES = 1;
     private static final int MAX_RETRY_DELAY_MINUTES = 15;
 
+    // Statuses that mean "in flight" (claimed by a poller or actively running) rather than a
+    // terminal/not-yet-claimed state - see reclaimStuckProcessingTasks and IPhotoApplication's
+    // startup reset, which both treat these two identically (the only difference between them is
+    // WHEN each is orphaned: QUEUED if submit() itself never actually ran, PROCESSING if the
+    // worker thread died after starting).
+    private static final Set<String> IN_FLIGHT_STATUSES = Set.of(TaskStatus.QUEUED.name(), TaskStatus.PROCESSING.name());
+
     // General safety net, across every task type: pollPendingTasks above only ever looks at
-    // PENDING tasks, so a task left in PROCESSING when its worker thread dies mid-task (app
-    // restart, JVM crash, ...) is otherwise never picked up again and sits stuck forever - this is
-    // exactly what happened to a real Immich import day (see specification.md/TODO.md), where the
-    // fix at the time was scoped to just that one feature's own retry button
-    // (ImmichImportService#isReclaimable). This sweep is the general version: runs hourly,
-    // independent of any user action, and covers every task type, not just Immich's.
+    // PENDING tasks, so a task left QUEUED (submit() itself failed/never actually entered the
+    // executor) or PROCESSING (worker thread died mid-task - app restart, JVM crash, ...) is
+    // otherwise never picked up again and sits stuck forever - this is exactly what happened to a
+    // real Immich import day (see specification.md/TODO.md), where the fix at the time was scoped
+    // to just that one feature's own retry button (ImmichImportService#isReclaimable). This sweep
+    // is the general version: runs hourly, independent of any user action, and covers every task
+    // type, not just Immich's. Distinct from (and a complement to) IPhotoApplication's startup
+    // reset - that one runs once at boot and needs no staleness check at all (a fresh JVM means
+    // ANY leftover QUEUED/PROCESSING row is unconditionally orphaned); this one is the ongoing
+    // safety net for the app staying up but a task still getting orphaned some other way (e.g. a
+    // silently-dying worker thread, or submit() throwing without a restart ever happening), where
+    // "stuck for over an hour" is the only signal available to tell that apart from genuinely
+    // still running.
     @Scheduled(fixedDelay = 3_600_000)
     public void reclaimStuckProcessingTasks() {
         LocalDateTime threshold = LocalDateTime.now().minus(STUCK_TASK_AGE);
         transactionTemplate.executeWithoutResult(status -> {
-            List<TaskEntity> stuck = taskRepository.findByStatusAndUpdatedAtBefore(TaskStatus.PROCESSING.name(), threshold);
+            List<TaskEntity> stuck = taskRepository.findByStatusInAndUpdatedAtBefore(IN_FLIGHT_STATUSES, threshold);
             if (stuck.isEmpty()) return;
-            log.warn("Reclaiming {} task(s) stuck in PROCESSING for over {} - resetting to PENDING with a randomized retry delay",
+            log.warn("Reclaiming {} task(s) stuck QUEUED/PROCESSING for over {} - resetting to PENDING with a randomized retry delay",
                     stuck.size(), STUCK_TASK_AGE);
             for (TaskEntity task : stuck) {
                 task.setStatus(TaskStatus.PENDING);
@@ -183,11 +291,23 @@ public class TaskWorkerManager {
                     ImmichAssetImportOutcome outcome = immichImportService.finalizeUploadFromImmich(task);
                     task.setStatus(TaskStatus.COMPLETED);
                     immichImportService.recordAssetTaskOutcome(task, outcome);
+                } else if (ACTIVATE_HEAVY_TASKS.equals(task.getTaskType())) {
+                    // Not real work to execute - this row exists purely so pollHeavyTasks can read
+                    // the admin's latest activate/deactivate choice (see
+                    // AdminService#isHeavyTasksActivated, which queries for it directly rather than
+                    // relying on this task ever actually running). Still picked up by the light
+                    // poller like any other light task type though (heavy=false), so it needs a
+                    // terminal status here or it would sit stuck in PROCESSING forever.
+                    task.setStatus(TaskStatus.COMPLETED);
                 }
             }
             catch (ServiceNotAvailableException | SpaceLockingException e) {
                 task.setStatus(TaskStatus.PENDING);
                 task.setExecuteAt(LocalDateTime.now().plusMinutes(randomRetryDelayMinutes()));
+            }
+            catch (NonTransientDataAccessException e) {
+                log.warn("Task {} hit a Not transient database error", task.getId(), e);
+                task.setStatus(TaskStatus.FAILED);
             }
             catch (DataAccessException e) {
                 log.warn("Task {} hit a database error", task.getId(), e);

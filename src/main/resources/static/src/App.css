@@ -1425,7 +1425,10 @@ button.upload-item-name.upload-item-name-link:hover {
   right: 0;
   bottom: 0;
   width: 28px;
-  z-index: 40;
+  /* Higher than .day-header's 40 - same value, later in the DOM, was painting the day header on
+     top of the scrubber's year labels/hover tooltip wherever they overlapped. Matches
+     .person-strip/.memories-strip's own 45 for the same family of sticky overlay. */
+  z-index: 45;
   cursor: pointer;
   touch-action: none;
   user-select: none;

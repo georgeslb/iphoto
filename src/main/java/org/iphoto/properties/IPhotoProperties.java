@@ -22,14 +22,19 @@ public class IPhotoProperties {
         String chunks;
     }
 
-    // Library's "N months/years ago" bar (see PhotoService.getMemories) - one candidate day per
-    // configured offset, computed as today minus that many months. Configurable here rather than
+    // Library's "N months/years ago" bar (see PhotoService.getMemories) - one candidate window per
+    // configured offset, searched today minus that many months. Configurable here rather than
     // hardcoded so the set of offsets can change without a code change.
     @Data
     public static class Memories {
-        List<Integer> monthsAgo = List.of(1, 6, 12, 36, 60, 120);
+        // Each entry is a plain integer ("6" - exact day, no tolerance) or that integer plus one
+        // or both signed day-tolerance tokens in either order ("6-2d+3d" == "6+3d-2d"): "-Nd"
+        // widens the search N days earlier than the anchor day, "+Nd" widens it N days later -
+        // see MemoryOffset#parse for the exact grammar. Useful for an anchor day that rarely has a
+        // photo taken on it exactly, without needing an exact hit every time.
+        List<String> offsets = List.of("1", "6", "12", "36", "60", "120");
         // Up to this many random photos per offset, auto-cycled in the frontend's one block
-        // instead of a single static photo - fewer than this if the day itself has fewer photos.
+        // instead of a single static photo - fewer than this if the window has fewer photos.
         int photosPerBlock = 5;
     }
 
