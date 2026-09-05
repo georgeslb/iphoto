@@ -13,8 +13,6 @@ import org.iphoto.properties.IPhotoProperties;
 import org.iphoto.repository.AlbumRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.springframework.data.domain.*;
-import org.springframework.retry.annotation.Backoff;
-import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -144,7 +142,6 @@ public class PhotoService {
     }
 
     @Transactional
-    @Retryable(maxAttempts = 5, retryFor = {SpaceLockingException.class}, backoff = @Backoff(delay = 1000))
     public void restoreAssetsFromGarbage(UserEntity currentUser, List<UUID> ids) {
         List<PhotoEntity> photos = photoRepository.findByIdIn(ids).stream().toList();
 
@@ -153,20 +150,17 @@ public class PhotoService {
             SpaceEntity space = photo.getSpace();
             if (!space.getUser().getId().equals(currentUser.getId())) continue;
 
-            try (SpaceService.AutoClosableLock ignore = spaceService.lockSpace(space)) {
-                spaceService.increaseSpacePhotoCount(space);
-                photo.setIsGarbage(false);
-                photo.setGarbageAt(null);
-                photoRepository.save(photo);
-                taskMapper.updateTasksToAction(TaskMapper.Action.PHOTO_REMOVED_FROM_GARBAGE, photo.getId());
-                dayIndexCache.evictSpace(space.getId());
-            }
+            spaceService.increaseSpacePhotoCount(space);
+            photo.setIsGarbage(false);
+            photo.setGarbageAt(null);
+            photoRepository.save(photo);
+            taskMapper.updateTasksToAction(TaskMapper.Action.PHOTO_REMOVED_FROM_GARBAGE, photo.getId());
+            dayIndexCache.evictSpace(space.getId());
         }
         duplicationService.restoreFromGarbage(photos);
     }
 
     @Transactional
-    @Retryable(maxAttempts = 5, retryFor = {SpaceLockingException.class}, backoff = @Backoff(delay = 1000))
     public void moveAssetsToGarbage(UserEntity currentUser, List<UUID> ids) throws Exception {
 
         Set<PhotoEntity> photos = photoRepository.findByIdIn(ids);
@@ -175,14 +169,12 @@ public class PhotoService {
             if (photo == null || photo.getIsGarbage()) continue;
             SpaceEntity space = photo.getSpace();
             if (!space.getUser().getId().equals(currentUser.getId())) continue;
-            try (SpaceService.AutoClosableLock ignore = spaceService.lockSpace(space)) {
-                spaceService.decreaseSpacePhotoCount(space);
-                photo.setIsGarbage(true);
-                photo.setGarbageAt(LocalDateTime.now());
-                photoRepository.save(photo);
-                taskMapper.updateTasksToAction(TaskMapper.Action.PHOTO_MOVED_TO_GARBAGE, photo.getId());
-                dayIndexCache.evictSpace(space.getId());
-            }
+            spaceService.decreaseSpacePhotoCount(space);
+            photo.setIsGarbage(true);
+            photo.setGarbageAt(LocalDateTime.now());
+            photoRepository.save(photo);
+            taskMapper.updateTasksToAction(TaskMapper.Action.PHOTO_MOVED_TO_GARBAGE, photo.getId());
+            dayIndexCache.evictSpace(space.getId());
         }
 
         duplicationService.processMovingToGarbage(photos);
@@ -192,14 +184,13 @@ public class PhotoService {
 
     public UploadStatus uploadAsset(TaskEntity task, Map<String, String> payload, File tempFile) throws FileNotFoundException {
         String hash;
-        UserEntity user = userService.findById(UUID.fromString(payload.get("userId"))).orElseThrow(NoUserFoundException::new);
         try (FileInputStream fis = new FileInputStream(tempFile)) {
             hash = HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(fis.readAllBytes()));
         } catch (IOException | NoSuchAlgorithmException e) {
             throw new RuntimeException(e);
         }
 
-        return photoRepository.findByFileHash(user.getId() + hash).map(photoEntity -> {
+        return photoRepository.findByFileHash(hash).map(photoEntity -> {
             try {
                 Files.deleteIfExists(tempFile.toPath());
                 task.setPhotoId(photoEntity.getId());
@@ -213,7 +204,7 @@ public class PhotoService {
 
         }).orElseGet(() -> {
             try {
-                return photoUploadService.processNewAsset(task, user.getId(), payload, tempFile, hash);
+                return photoUploadService.processNewAsset(task, UUID.fromString(payload.get("userId")), payload, tempFile, hash);
             } catch (Exception e) {
                 throw new PhotoUploadException(e);
             }
@@ -321,25 +312,22 @@ public class PhotoService {
     }
 
     @Transactional
-    @Retryable(maxAttempts = 5, retryFor = {SpaceLockingException.class}, backoff = @Backoff(delay = 1000))
     public void moveAssetsToMain(UserEntity user, List<UUID> ids) throws Exception {
         SpaceEntity mainUserSpace = spaceService.getDefaultSpaceForUser(user);
-        try (SpaceService.AutoClosableLock ignore = spaceService.lockSpace(mainUserSpace)){
-            photoRepository.findByIdIn(ids).forEach(photo -> {
-                UUID originalSpaceId = photo.getSpace().getId();
-                try (SpaceService.AutoClosableLock ignore2 = spaceService.lockSpace(photo.getSpace())){
-                    spaceService.decreaseSpacePhotoCount(photo.getSpace());
-                    photo.setSpace(mainUserSpace);
-                    spaceService.increaseSpacePhotoCount(mainUserSpace);
-                    photoRepository.save(photo);
-                    taskMapper.updateTasksToAction(TaskMapper.Action.PHOTO_MOVED_TO_MAIN, photo.getId());
-                    dayIndexCache.evictSpace(originalSpaceId);
-                    dayIndexCache.evictSpace(mainUserSpace.getId());
-                } catch (Exception e) {
-                    throw new PhotoMoveToMainException("can't move photo " + photo.getId(), e);
-                }
-            });
-        }
+        photoRepository.findByIdIn(ids).forEach(photo -> {
+            UUID originalSpaceId = photo.getSpace().getId();
+            try {
+                photo.setSpace(mainUserSpace);
+                photoRepository.save(photo);
+                taskMapper.updateTasksToAction(TaskMapper.Action.PHOTO_MOVED_TO_MAIN, photo.getId());
+                dayIndexCache.evictSpace(originalSpaceId);
+                dayIndexCache.evictSpace(mainUserSpace.getId());
+                spaceService.decreaseSpacePhotoCount(photo.getSpace());
+                spaceService.increaseSpacePhotoCount(mainUserSpace);
+            } catch (Exception e) {
+                throw new PhotoMoveToMainException("can't move photo " + photo.getId(), e);
+            }
+        });
     }
 
     public void deletePhotoInSpace(UserEntity userEntity, UUID spaceId) {

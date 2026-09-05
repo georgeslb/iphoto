@@ -8,7 +8,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.TaskEntity;
 import org.iphoto.exception.ImmichApiException;
 import org.iphoto.exception.ServiceNotAvailableException;
-import org.iphoto.exception.SpaceLockingException;
 import org.iphoto.model.ImmichAssetImportOutcome;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.TaskType;
@@ -301,7 +300,7 @@ public class TaskWorkerManager {
                     task.setStatus(TaskStatus.COMPLETED);
                 }
             }
-            catch (ServiceNotAvailableException | SpaceLockingException e) {
+            catch (ServiceNotAvailableException e) {
                 task.setStatus(TaskStatus.PENDING);
                 task.setExecuteAt(LocalDateTime.now().plusMinutes(randomRetryDelayMinutes()));
             }

@@ -734,13 +734,18 @@ Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
             immich-temp), a retrigger re-queues phase 2 alone, reusing its failed task's own
             payload verbatim — no need to re-hit Immich for a failure that was never Immich's
             fault. If phase 1 itself failed, a retrigger re-queues a fresh phase 1.
-        *   **Space-lock contention as a same-process retry, not a failure**: multiple assets'
-            phase-2 tasks for the same space can finish concurrently on different virtual threads,
-            all contending on `SpaceService.lockSpace`'s per-space, non-blocking `tryLock` — one
-            losing that race throws `SpaceLockingException`. `TaskWorkerManager` now catches this
-            the same way it already catches `ServiceNotAvailableException`: reset the task to
-            `PENDING` with `executeAt=null` so the next 5-second poll retries it immediately in the
-            same process, instead of a spurious permanent `FAILED`.
+        *   **Space photo count updates are event-driven and atomic, not lock-based**: multiple
+            assets' phase-2 tasks for the same space can finish concurrently on different virtual
+            threads, all needing to adjust that space's `photoCount`. There's no per-space lock
+            (an earlier `SpaceService.lockSpace`/`tryLock`/`SpaceLockingException` mechanism was
+            removed) — `SpaceService.increaseSpacePhotoCount`/`decreaseSpacePhotoCount` instead
+            publish a `SpacePhotoCountChangedEvent`, handled synchronously (same transaction as the
+            triggering photo add/remove) by `SpacePhotoCountListener`, which applies a single
+            atomic `UPDATE ... SET photo_count = photo_count + :delta` (`SpaceRepository
+            .adjustPhotoCount`) — inherently race-free under concurrent writers to the same row,
+            no lock/retry needed. Every place a photo is added to or removed from a space (upload,
+            Immich import, move to/from garbage, move to another space) goes through this same
+            path.
     *   Albums/shares don't have Immich's UUID as their iphoto id (both are `@GeneratedValue`), so
         they instead get a new nullable `externalSource`/`externalId` pair (+ unique constraint,
         still global not per-user — collision across two different users' Immich servers is

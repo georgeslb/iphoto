@@ -3,7 +3,6 @@ package org.iphoto.service.immich;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.io.FilenameUtils;
@@ -59,7 +58,6 @@ public class ImmichImportService {
     private final ThumbnailService thumbnailService;
     private final IPhotoProperties iPhotoProperties;
     private final ObjectMapper objectMapper;
-    private final EntityManager entityManager;
     private final UserService userService;
     // Reused only for its EXIF/video/filename/filesystem date-guessing (extractBestCreationDate) -
     // see resolveDateTaken's fallback below.
@@ -340,7 +338,7 @@ public class ImmichImportService {
             hash = HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(fis.readAllBytes()));
         }
 
-        if (photoRepository.findByFileHash(user.getId() + "-" + hash).isPresent()) {
+        if (photoRepository.findByFileHash(hash).isPresent()) {
             Files.deleteIfExists(stagedPath);
             log.info("SYNC_FROM_IMMICH task {} done: asset {} is a content-duplicate of an existing photo, skipped", task.getId(), immichAssetId);
             return Optional.of(ImmichAssetImportOutcome.SKIPPED_DUPLICATE_CONTENT);
@@ -430,11 +428,11 @@ public class ImmichImportService {
     // Deliberately its own independently-committed transaction - see RequiresNewTransactionService
     // for why (this method is called from within this same class, where Spring's proxy-based
     // @Transactional(REQUIRES_NEW) would silently be a no-op). Takes plain ids, not entity
-    // instances, and re-fetches its own `user`/`space` inside the new
-    // transaction - reusing entities loaded by finalizeUploadFromImmich's outer (here, suspended)
-    // transaction would hand this transaction "foreign" instances belonging to a different
-    // persistence context, and entityManager.refresh below requires a genuinely managed entity
-    // (same id is not enough).
+    // instances, and re-fetches its own `user`/`space` inside the new transaction - reusing
+    // entities loaded by finalizeUploadFromImmich's outer (here, suspended) transaction would hand
+    // this transaction "foreign" instances belonging to a different persistence context, which
+    // photoRepository.save(photo) below (photo references both) can't safely persist relationships
+    // against.
     private void persistPhotoAndMetadata(ImmichPendingUploadPayload payload, UUID userId, UUID spaceId,
                                           Path finalPath, String thumbPath, long fileSize) {
         requiresNewTransactionService.runInNewTransaction(() -> {
@@ -442,47 +440,42 @@ public class ImmichImportService {
             SpaceEntity space = spaceRepository.findById(spaceId)
                     .orElseThrow(() -> new NoSuchElementException("Space not found for Immich import: " + spaceId));
 
-            // Plain try/finally with the lock's own (unchecked) unlock(), not try-with-resources:
-            // this lambda (TransactionCallback) can't declare checked exceptions, and
-            // AutoClosableLock.close() is declared `throws Exception`.
+            PhotoEntity photo = PhotoEntity.builder().id(payload.photoId())
+                    .fileName(payload.fileName())
+                    .fileHash(payload.fileHash())
+                    .contentType(payload.contentType())
+                    .dateTaken(payload.dateTaken())
+                    .user(user)
+                    .space(space)
+                    .originalPath(finalPath.toString())
+                    .thumbnailPath(thumbPath)
+                    .fileSize(fileSize)
+                    .build();
+            photo.setNew(true);
 
-            try(SpaceService.AutoClosableLock ignore = spaceService.lockSpace(space)){
-                PhotoEntity photo = PhotoEntity.builder().id(payload.photoId())
-                        .fileName(payload.fileName())
-                        .fileHash(payload.fileHash())
-                        .contentType(payload.contentType())
-                        .dateTaken(payload.dateTaken())
-                        .user(user)
-                        .space(space)
-                        .originalPath(finalPath.toString())
-                        .thumbnailPath(thumbPath)
-                        .fileSize(fileSize)
-                        .build();
-                photo.setNew(true);
-
-                PhotoMetadataEntity metadataEntity = new PhotoMetadataEntity(photo);
-                metadataEntity.setAperture(payload.aperture());
-                metadataEntity.setShutterSpeed(payload.shutterSpeed());
-                metadataEntity.setIso(payload.iso());
-                metadataEntity.setFocalLength(payload.focalLength());
-                metadataEntity.setLensModel(payload.lensModel());
-                metadataEntity.setLatitude(payload.latitude());
-                metadataEntity.setLongitude(payload.longitude());
-                if (payload.latitude() != null && payload.longitude() != null) {
-                    photo.setLocation(payload.latitude() + ", " + payload.longitude());
-                }
-                metadataEntity.setRawMetadataJson(payload.rawMetadataJson());
-
-                entityManager.refresh(space);
-                spaceService.increaseSpacePhotoCount(space);
-
-                photoRepository.save(photo);
-                photoMetadataRepository.save(metadataEntity);
-                dayIndexCache.evictSpace(spaceId);
-                // Hooks the imported photo into the same async hash/duplicate-check/face-detection
-                // pipeline any normally-uploaded photo goes through - see TaskMapper.
-                taskMapper.updateTasksToAction(TaskMapper.Action.ON_CREATE_PHOTO_ACTION, photo.getId());
+            PhotoMetadataEntity metadataEntity = new PhotoMetadataEntity(photo);
+            metadataEntity.setAperture(payload.aperture());
+            metadataEntity.setShutterSpeed(payload.shutterSpeed());
+            metadataEntity.setIso(payload.iso());
+            metadataEntity.setFocalLength(payload.focalLength());
+            metadataEntity.setLensModel(payload.lensModel());
+            metadataEntity.setLatitude(payload.latitude());
+            metadataEntity.setLongitude(payload.longitude());
+            if (payload.latitude() != null && payload.longitude() != null) {
+                photo.setLocation(payload.latitude() + ", " + payload.longitude());
             }
+            metadataEntity.setRawMetadataJson(payload.rawMetadataJson());
+
+            // Atomic - see SpacePhotoCountListener - no lock/refresh needed to avoid a stale
+            // in-memory count here anymore.
+            spaceService.increaseSpacePhotoCount(space);
+
+            photoRepository.save(photo);
+            photoMetadataRepository.save(metadataEntity);
+            dayIndexCache.evictSpace(spaceId);
+            // Hooks the imported photo into the same async hash/duplicate-check/face-detection
+            // pipeline any normally-uploaded photo goes through - see TaskMapper.
+            taskMapper.updateTasksToAction(TaskMapper.Action.ON_CREATE_PHOTO_ACTION, photo.getId());
         });
     }
 

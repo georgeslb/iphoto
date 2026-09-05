@@ -3211,3 +3211,69 @@ new work is identified or completed, so nothing gets lost between sessions.
         **Not yet exercised against the live app** - needs a real restart, and confirming the fix
         requires reproducing the exact repro (open a video, close the Lightbox before it finishes)
         against a running instance, which hasn't been done here.
+
+- [x] **Refactor** (user request): replaced `SpaceService`'s in-JVM per-space lock
+      (`AutoClosableLock`/`ReentrantLock` in a `ConcurrentHashMap`, `tryLock()` + `SpaceLockingException`
+      + `@Retryable`) with an event-driven atomic count update. Every call site of the lock existed
+      for exactly one reason - guarding `space.photoCount`'s Java-side read/increment/save against
+      a lost update under concurrency - and nothing else, so removing the lock meant touching every
+      one of those call sites (upload, Immich import, move to/from garbage, move to another space).
+      - **`SpacePhotoCountChangedEvent`** (new, `org.iphoto.event`): a plain `record(spaceId, delta)`
+        - not the `SpaceEntity` itself, so publishing never needs a managed instance.
+        **`SpacePhotoCountListener`** (new, `@Component`): a plain `@EventListener` (deliberately
+        NOT `@TransactionalEventListener` - this must fire SYNCHRONOUSLY, in the publisher's own
+        active transaction, so the count change commits/rolls back atomically together with
+        whatever photo add/remove triggered it; Spring invokes plain listeners immediately, in the
+        publishing thread, which is exactly that) calling new
+        **`SpaceRepository#adjustPhotoCount(spaceId, delta)`** - a single
+        `UPDATE ... SET photo_count = photo_count + :delta WHERE id = :spaceId`.
+      - **Why a plain atomic UPDATE instead of the compare-and-swap/optimistic-locking retry loop
+        the user proposed** (raised and agreed before implementing): a pure delta increment doesn't
+        need to read the current value first at all - the single UPDATE statement is already
+        atomic and lost-update-free under concurrency (Postgres serializes concurrent writers to
+        the same row for a plain UPDATE), so there's no read-then-write race window to guard
+        against with a WHERE-guard-and-retry loop. That pattern earns its complexity when the new
+        value depends on some in-memory computation that can't be expressed as a pure SQL
+        expression (a real optimistic-locking use case) - not here, where it's always exactly
+        `current ± 1`. Deliberately did NOT add `@Modifying(clearAutomatically = true)` either
+        (unlike the similar existing `ImmichImportDayRepository#incrementImported` pattern this
+        mirrors) - `moveAssetsToGarbage`/`restoreAssetsFromGarbage` fire this once per photo
+        *inside a loop* over a `Set<PhotoEntity>` all loaded from ONE earlier query; clearing the
+        whole persistence context on the first iteration would detach every other already-loaded
+        photo in that same set, and calling `.getSpace()` (a LAZY relation - confirmed on
+        `BaseEntity`) on any of them afterward would throw `LazyInitializationException`.
+        Confirmed no caller actually re-reads a space's `photoCount` from the same managed entity
+        within the same transaction after firing this event (grepped every `getPhotoCount()` call
+        in the codebase) - the only reader is `SpaceService#mapSpaceEntityToSpaceDto`, always from
+        a fresh, separate query in a different request/transaction, so there's no staleness gap to
+        guard against either way.
+      - **Call sites updated** (lock removed, direct `spaceService.increase/decreaseSpacePhotoCount`
+        calls kept as-is - same public API, only what happens inside changed):
+        `PhotoService#restoreAssetsFromGarbage`/`moveAssetsToGarbage`/`moveAssetsToMain`,
+        `PhotoUploadService#processTheAsset` (also dropped its now-pointless
+        `entityManager.refresh(space)` - that existed solely to avoid incrementing a stale
+        in-memory count, moot once the increment itself is a pure atomic UPDATE that never reads
+        the Java-side value at all; `EntityManager` field/import removed, now fully unused),
+        `ImmichImportService#persistPhotoAndMetadata` (same `entityManager.refresh` removal, and
+        updated its neighboring comment - it had specifically justified re-fetching `space`/`user`
+        in the new transaction by needing "a genuinely managed entity" for the refresh call, which
+        no longer exists; the OTHER reason to re-fetch, avoiding handing this transaction foreign
+        persistence-context instances for `photoRepository.save(photo)`'s relationships, still
+        holds and is what the comment says now). `PhotoUploadService#saveNewPendingTaskOnUploadingProcess`
+        (the `@Recover` method for lock-exhausted retries) deleted outright - dead once
+        `SpaceLockingException` can never be thrown. `TaskWorkerManager#processTask`'s
+        `ServiceNotAvailableException | SpaceLockingException` catch narrowed to just the former.
+        `@Retryable`/`@Backoff`/`@Recover` imports/annotations removed everywhere they were only
+        ever used for `SpaceLockingException` (every occurrence in the codebase, confirmed by
+        grep). `SpaceLockingException.java` itself deleted (no longer thrown anywhere).
+      - **Bonus, not the original goal but a direct consequence**: `moveAssetsToMain`'s old nested
+        locks (destination space, then per-photo source space) had a latent lock-ordering deadlock
+        hazard if two concurrent moves ever ran in opposite directions between the same two spaces.
+        Gone entirely now - each event targets one space by primary key, and Postgres row-level
+        locking during a single-row UPDATE can't deadlock the way two independently-acquired
+        in-JVM locks held across a whole block could.
+      - Verified: whole backend `javac` compile clean (main + test sources; no test references to
+        any of the removed lock/exception classes). **Not yet exercised against the live app** -
+        needs a real restart, and confirming the actual concurrency property (two simultaneous
+        uploads into the same space both correctly land on the right final count) requires load
+        against a running instance with a real Postgres, which hasn't been done here.

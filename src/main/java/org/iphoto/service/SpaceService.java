@@ -6,23 +6,21 @@ import org.iphoto.entities.BaseEntity;
 import org.iphoto.entities.SpaceEntity;
 import org.iphoto.entities.SpaceType;
 import org.iphoto.entities.UserEntity;
+import org.iphoto.event.SpacePhotoCountChangedEvent;
 import org.iphoto.exception.MainSpaceDeletionConfigurationException;
 import org.iphoto.exception.NoMatchUserSpaceException;
 import org.iphoto.exception.NoPhotoInSpace;
-import org.iphoto.exception.SpaceLockingException;
 import org.iphoto.model.SpaceDTO;
 import org.iphoto.model.request.SpaceCreateRequest;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.repository.SpaceRepository;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.locks.ReentrantLock;
 
 @Service
 @RequiredArgsConstructor
@@ -32,8 +30,7 @@ public class SpaceService {
 
     private final SpaceRepository spaceRepository;
     private final PhotoRepository photoRepository;
-
-    Map<UUID, AutoClosableLock> locks = new ConcurrentHashMap<>();
+    private final ApplicationEventPublisher eventPublisher;
 
 
     public SpaceEntity getDefaultSpaceForUser(UserEntity user) {
@@ -80,15 +77,6 @@ public class SpaceService {
         spaceRepository.save(space);
     }
 
-    public AutoClosableLock lockSpace (SpaceEntity space) {
-        locks.putIfAbsent(space.getId(), new AutoClosableLock());
-        if (!locks.get(space.getId()).tryLock()) {
-            log.debug("space is locked");
-            throw new SpaceLockingException("lock space " + space.getId() +  " not possible");
-        }
-        return locks.get(space.getId());
-    }
-
     public SpaceDTO getPhotoSpace(UserEntity currentUser, UUID id) {
         return photoRepository.findById(id)
                 .filter(photoEntity -> photoEntity.getSpace().getUser().getId().equals(currentUser.getId()))
@@ -105,11 +93,13 @@ public class SpaceService {
         increaseSpacePhotoCount(space, -1);
     }
 
+    // Publishes SpacePhotoCountChangedEvent instead of a Java-side read/increment/save - see
+    // SpacePhotoCountListener for the atomic UPDATE this triggers, and why that alone (no lock,
+    // no compare-and-swap retry loop) is enough. Fires synchronously, in the caller's own
+    // transaction (a plain @EventListener, not @TransactionalEventListener) so the count change
+    // commits or rolls back together with whatever photo add/remove triggered it.
     public void increaseSpacePhotoCount(SpaceEntity space, int delta) {
-            log.debug ("space {} photo count {} before", space.getName(), space.getPhotoCount());
-            space.setPhotoCount(space.getPhotoCount() + delta);
-            log.debug ("space {} photo count {} after", space.getName(), space.getPhotoCount());
-            spaceRepository.save(space);
+        eventPublisher.publishEvent(new SpacePhotoCountChangedEvent(space.getId(), delta));
     }
 
     public List<SpaceDTO> getGarbageSpaces(UserEntity currentUser) {
@@ -127,12 +117,5 @@ public class SpaceService {
 
     public void deleteSpace(UUID spaceId) {
         spaceRepository.deleteById(spaceId);
-    }
-
-    public static class AutoClosableLock extends ReentrantLock implements AutoCloseable {
-        @Override
-        public void close() {
-            this.unlock();
-        }
     }
 }

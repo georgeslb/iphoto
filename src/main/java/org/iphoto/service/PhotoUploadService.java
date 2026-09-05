@@ -9,7 +9,6 @@ import com.drew.metadata.exif.GpsDirectory;
 import com.drew.metadata.jpeg.JpegDirectory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.common.util.StringUtils;
-import jakarta.persistence.EntityManager;
 import lombok.AccessLevel;
 import lombok.AllArgsConstructor;
 import lombok.experimental.FieldDefaults;
@@ -20,14 +19,9 @@ import org.bytedeco.javacv.FFmpegFrameGrabber;
 import org.iphoto.entities.*;
 import org.iphoto.exception.NoMatchUserSpaceException;
 import org.iphoto.exception.NoUserFoundException;
-import org.iphoto.exception.SpaceLockingException;
-import org.iphoto.model.TaskStatus;
 import org.iphoto.model.UploadStatus;
 import org.iphoto.repository.PhotoMetadataRepository;
 import org.iphoto.repository.PhotoRepository;
-import org.springframework.retry.annotation.Backoff;
-import org.springframework.retry.annotation.Recover;
-import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -61,13 +55,11 @@ public class PhotoUploadService {
     AlbumService albumService;
     SpaceService spaceService;
     TaskMapper taskMapper;
-    EntityManager entityManager;
     DayIndexCache dayIndexCache;
     UserService userService;
 
 
 
-    @Retryable(maxAttempts = 5, retryFor = {SpaceLockingException.class}, backoff = @Backoff(delay = 1000))
     public UploadStatus processNewAsset(TaskEntity task, UUID userId, Map<String, String> payload, File tempFile, String hash) throws Exception {
         UserEntity user = userService.findById(userId).orElseThrow(NoUserFoundException::new);
 
@@ -82,72 +74,62 @@ public class PhotoUploadService {
         return processTheAsset(task, payload, tempFile, hash, space);
     }
 
-    @Recover
-    public UploadStatus saveNewPendingTaskOnUploadingProcess (SpaceLockingException e, TaskEntity task, Map<String, String> payload, File tempFile, String hash, SpaceEntity space) {
-        log.warn("recovering photo with hash {}", hash);
-        task.setErrorMessage(e.getMessage());
-        task.setStatus(TaskStatus.PENDING);
-        task.setExecuteAt(LocalDateTime.now().plusSeconds(5));
-        return UploadStatus.PENDING;
-    }
-
-
     private UploadStatus processTheAsset(TaskEntity task, Map<String, String> payload, File tempFile, String hash, SpaceEntity space) throws Exception {
-        try (SpaceService.AutoClosableLock ignored = spaceService.lockSpace(space)){
-            String contentType = payload.get("contentType");
+        String contentType = payload.get("contentType");
 
-            PhotoEntity photo = PhotoEntity.builder().id(task.getPhotoId())
-                    .fileName(payload.get("originalFileName"))
-                    .fileHash(hash)
-                    .contentType(contentType)
-                    .user(space.getUser())
-                    .space(space)
-                    .build();
-            photo.setNew(true);
+        PhotoEntity photo = PhotoEntity.builder().id(task.getPhotoId())
+                .fileName(payload.get("originalFileName"))
+                .fileHash(hash)
+                .contentType(contentType)
+                .user(space.getUser())
+                .space(space)
+                .build();
+        photo.setNew(true);
 
-            PhotoMetadataEntity metadataEntity = new PhotoMetadataEntity(photo);
-            Map<String, String> rawMetadata = new HashMap<>();
+        PhotoMetadataEntity metadataEntity = new PhotoMetadataEntity(photo);
+        Map<String, String> rawMetadata = new HashMap<>();
 
-            // Metadata extraction (in particular dateTaken) runs against the temp file, BEFORE the
-            // asset is moved to its final home - the storage layout below is organized by
-            // year/month of dateTaken, so the date has to be known first.
-            if (contentType != null) {
-                if (contentType.startsWith("image"))
-                    extractImageMetadata(tempFile, photo, metadataEntity, rawMetadata);
-                else if (contentType.startsWith("video"))
-                    extractVideoMetadata(tempFile, photo, metadataEntity);
-                else
-                    throw new FileUploadException("contentType " + contentType + " is not allowed");
-            } else {
-                throw new FileUploadException("contentType is empty");
-            }
-
-            Path finalPath = photoStoragePathResolver.resolveOriginalPath(task.getPhotoId(), FilenameUtils.getExtension(payload.get("originalFileName")), photo.getDateTaken());
-            Files.move(tempFile.toPath(), finalPath);
-            String thumbPath = thumbnailService.generateThumbnail(finalPath.toString(), task.getPhotoId().toString(), contentType, photo.getDateTaken());
-
-            photo.setOriginalPath(finalPath.toString());
-            photo.setThumbnailPath(thumbPath);
-            photo.setFileSize(Files.size(finalPath));
-
-            log.info ("upload photo {} in space {} ", task.getId(), space.getName());
-            entityManager.refresh(space);
-            spaceService.increaseSpacePhotoCount(space);
-
-            metadataEntity.setRawMetadataJson(objectMapper.writeValueAsString(rawMetadata));
-
-            photoRepository.save(photo);
-            metadataRepository.save(metadataEntity);
-            // Covers both a regular upload and "save as new" (EditPhotoService routes saveAsNew
-            // through this same PROCESS_UPLOAD task path) - one hook point for both triggers.
-            dayIndexCache.evictSpace(space.getId());
-            String albumId = payload.get("albumId");
-            if (albumId != null) {
-                albumService.addPhotosToAlbum(UUID.fromString(albumId), List.of(photo.getId())); // Pass user to albumService
-            }
-            taskMapper.updateTasksToAction(TaskMapper.Action.ON_CREATE_PHOTO_ACTION, photo.getId());
-            return SUCCESS;
+        // Metadata extraction (in particular dateTaken) runs against the temp file, BEFORE the
+        // asset is moved to its final home - the storage layout below is organized by
+        // year/month of dateTaken, so the date has to be known first.
+        if (contentType != null) {
+            if (contentType.startsWith("image"))
+                extractImageMetadata(tempFile, photo, metadataEntity, rawMetadata);
+            else if (contentType.startsWith("video"))
+                extractVideoMetadata(tempFile, photo, metadataEntity);
+            else
+                throw new FileUploadException("contentType " + contentType + " is not allowed");
+        } else {
+            throw new FileUploadException("contentType is empty");
         }
+
+        Path finalPath = photoStoragePathResolver.resolveOriginalPath(task.getPhotoId(), FilenameUtils.getExtension(payload.get("originalFileName")), photo.getDateTaken());
+        Files.move(tempFile.toPath(), finalPath);
+        String thumbPath = thumbnailService.generateThumbnail(finalPath.toString(), task.getPhotoId().toString(), contentType, photo.getDateTaken());
+
+        photo.setOriginalPath(finalPath.toString());
+        photo.setThumbnailPath(thumbPath);
+        photo.setFileSize(Files.size(finalPath));
+
+        log.info ("upload photo {} in space {} ", task.getId(), space.getName());
+
+
+        metadataEntity.setRawMetadataJson(objectMapper.writeValueAsString(rawMetadata));
+
+        photoRepository.save(photo);
+        metadataRepository.save(metadataEntity);
+        // Covers both a regular upload and "save as new" (EditPhotoService routes saveAsNew
+        // through this same PROCESS_UPLOAD task path) - one hook point for both triggers.
+        dayIndexCache.evictSpace(space.getId());
+        String albumId = payload.get("albumId");
+        if (albumId != null) {
+            albumService.addPhotosToAlbum(UUID.fromString(albumId), List.of(photo.getId())); // Pass user to albumService
+        }
+        // Atomic - see SpacePhotoCountListener - no lock/refresh needed to avoid a stale in-memory
+        // count here anymore.
+        spaceService.increaseSpacePhotoCount(space);
+        taskMapper.updateTasksToAction(TaskMapper.Action.ON_CREATE_PHOTO_ACTION, photo.getId());
+        return SUCCESS;
     }
 
     private void extractImageMetadata(File file, PhotoEntity photo, PhotoMetadataEntity meta, Map<String, String> raw) {
