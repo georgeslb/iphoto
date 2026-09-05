@@ -4,16 +4,9 @@ import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.CollectionUtils;
 import org.iphoto.entities.*;
-import org.iphoto.exception.NoMatchUserSpaceException;
-import org.iphoto.exception.PhotoDeletionException;
-import org.iphoto.exception.PhotoMoveToMainException;
-import org.iphoto.exception.SpaceLockingException;
+import org.iphoto.exception.*;
 import org.iphoto.mappers.PhotoMapper;
-import org.iphoto.model.AlbumDTO;
-import org.iphoto.model.Photo;
-import org.iphoto.model.PhotoSelectionDTO;
-import org.iphoto.model.SpaceDTO;
-import org.iphoto.model.TimelineMonthDTO;
+import org.iphoto.model.*;
 import org.iphoto.model.request.PhotoEditRequest;
 import org.iphoto.model.request.PhotoSelectionRequest;
 import org.iphoto.repository.AlbumRepository;
@@ -25,13 +18,22 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.stream.Collectors;
+
+import static org.iphoto.model.UploadStatus.DUPLICATED;
+import static org.iphoto.model.UploadStatus.TRASHED;
 
 @Service
 @AllArgsConstructor
@@ -48,39 +50,15 @@ public class PhotoService {
     private final EditPhotoService editPhotoService;
     private final AlbumRepository albumRepository;
     private final SpaceService spaceService;
-    final MenuService menuService;
+    private final MenuService menuService;
+    private final PhotoUploadService photoUploadService;
+    private final UserService userService;
 
     public Page<Photo> getPhotos(UUID spaceId, Pageable pageable) {
         return buildDedupedPage(photoRepository.findBySpaceIdAndIsGarbageFalse(spaceId, pageable));
     }
 
-    // Same as getPhotos(spaceId, pageable), but only photos taken strictly before `beforeExclusive`
-    // — backs "jump to month" (Memories / the browse-by-month list): the caller passes the first
-    // instant of the month AFTER the target one, so the returned feed starts exactly at the
-    // requested month, sorted the same dateTaken-desc way the normal feed already is. A null
-    // cutoff (the common case — no jump requested) is just the normal, unfiltered feed.
-    public Page<Photo> getPhotos(UUID spaceId, Pageable pageable, LocalDateTime beforeExclusive) {
-        if (beforeExclusive == null) {
-            return getPhotos(spaceId, pageable);
-        }
-        return buildDedupedPage(photoRepository.findBySpaceIdAndIsGarbageFalseAndDateTakenLessThan(spaceId, beforeExclusive, pageable));
-    }
-
-    // The mirror-image "newer" direction — back-scrolling above a jumped-to point
-    // (LibraryTimeline.jsx's usePhotoData.loadNewer). `ascendingPageable` must already be sorted
-    // dateTaken ascending (the controller builds it that way) so the query takes the photos
-    // *closest* to the cursor, not the oldest ones in the whole space. The underlying fetch and
-    // page metadata (isLast etc.) all stay in ascending terms; only the returned `content` list is
-    // reversed back to the newest-first order every other feed uses, so callers don't need to know
-    // this method works "backwards" internally.
-    public Page<Photo> getPhotosAfter(UUID spaceId, Pageable ascendingPageable, LocalDateTime afterExclusive) {
-        Page<Photo> ascendingPage = buildDedupedPage(photoRepository.findBySpaceIdAndIsGarbageFalseAndDateTakenGreaterThan(spaceId, afterExclusive, ascendingPageable));
-        List<Photo> newestFirst = new ArrayList<>(ascendingPage.getContent());
-        Collections.reverse(newestFirst);
-        return new PageImpl<>(newestFirst, ascendingPage.getPageable(), ascendingPage.getTotalElements());
-    }
-
-    // Shared by both getPhotos overloads above: attaches each photo's known duplicates and drops
+    // Shared by getPhotos/getPhotosForDay above: attaches each photo's known duplicates and drops
     // any photo from the top-level page that is itself someone else's duplicate (it's already
     // shown attached to its primary), so the same photo never appears twice in one page.
     private Page<Photo> buildDedupedPage(Page<PhotoEntity> rawPage) {
@@ -96,25 +74,43 @@ public class PhotoService {
         return new PageImpl<>(contentPhotos, firstSelection.getPageable(), firstSelection.getTotalElements());
     }
 
-    // The Library "month/year index" backing Memories and the browse-by-month list — see
-    // TimelineMonthDTO and PhotoRepository.findMonthlyPhotoCountsWithCoverBySpaceId. Builds the
-    // same cache-busted thumbnail URL shape PhotoMapper uses for every other photo, so the cover
-    // image behaves identically (browser cache invalidates correctly if that photo is later
-    // edited in place).
-    public List<TimelineMonthDTO> getTimeline(UUID spaceId) {
-        return photoRepository.findMonthlyPhotoCountsWithCoverBySpaceId(spaceId).stream()
-                .map(row -> new TimelineMonthDTO(
-                        row.getYear(),
-                        row.getMonth(),
+    // Day-index browsing (replaces the old month-timeline this app used to have): one row per
+    // day that has a non-garbage photo in this space, newest first. Fetched once up front so the
+    // client can render every day section immediately and only lazily fetch each day's actual
+    // photos (getPhotosForDay) as its section scrolls into view.
+    public List<DayBucketDTO> getDailyPhotoCounts(UUID spaceId) {
+        return photoRepository.findDailyPhotoCountsWithCoverBySpaceId(spaceId).stream()
+                .map(row -> new DayBucketDTO(
+                        row.getDay(),
                         row.getCount(),
                         "/api/photos/" + row.getPhotoId() + "/thumbnail"
                                 + (row.getFileHash() != null ? "?v=" + row.getFileHash() : "")))
                 .toList();
     }
 
-    public Page<Photo> getGarbagePhotos(UserEntity user, Pageable pageable) {
+    // One page of a single day's photos - same dedup treatment as the plain feed (getPhotos)
+    // so duplicate-clustering stays consistent between the two.
+    public PageResponse<Photo> getPhotosForDay(UUID spaceId, LocalDate day, Pageable pageable) {
+        return PageResponse.from(buildDedupedPage(photoRepository.findBySpaceIdAndIsGarbageFalseAndGroupedDay(spaceId, day, pageable)));
+    }
+
+    // Garbage's day-index equivalent of getDailyPhotoCounts/getPhotosForDay above - cross-space
+    // (a user's garbage isn't scoped to one space), no dedup treatment (matching the old flat
+    // getGarbagePhotos this replaces, which never called buildDedupedPage either).
+    public List<DayBucketDTO> getGarbageDailyPhotoCounts(UserEntity user) {
         Set<UUID> allUserSpacesIds = spaceService.getAllSpaces(user).stream().map(SpaceDTO::id).collect(Collectors.toSet());
-        return photoRepository.findBySpaceIdInAndIsGarbageTrue(allUserSpacesIds, pageable).map(photoMapper::photoEntityToPhoto);
+        return photoRepository.findDailyPhotoCountsWithCoverBySpaceIdInAndIsGarbageTrue(allUserSpacesIds).stream()
+                .map(row -> new DayBucketDTO(
+                        row.getDay(),
+                        row.getCount(),
+                        "/api/photos/" + row.getPhotoId() + "/thumbnail"
+                                + (row.getFileHash() != null ? "?v=" + row.getFileHash() : "")))
+                .toList();
+    }
+
+    public Page<Photo> getGarbagePhotosForDay(UserEntity user, LocalDate day, Pageable pageable) {
+        Set<UUID> allUserSpacesIds = spaceService.getAllSpaces(user).stream().map(SpaceDTO::id).collect(Collectors.toSet());
+        return photoRepository.findBySpaceIdInAndIsGarbageTrueAndGroupedDay(allUserSpacesIds, day, pageable).map(photoMapper::photoEntityToPhoto);
     }
 
     public Page<Photo> getSpacePhotos(UserEntity currentUser, UUID spaceId, Pageable pageable) {
@@ -167,6 +163,35 @@ public class PhotoService {
                 .forEach(album -> albumService.removePhotosFromAlbum(album.getId(), ids));
     }
 
+    public UploadStatus uploadAsset(TaskEntity task, Map<String, String> payload, File tempFile) throws FileNotFoundException {
+        String hash;
+        UserEntity user = userService.findById(UUID.fromString(payload.get("userId"))).orElseThrow(NoUserFoundException::new);
+        try (FileInputStream fis = new FileInputStream(tempFile)) {
+            hash = HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(fis.readAllBytes()));
+        } catch (IOException | NoSuchAlgorithmException e) {
+            throw new RuntimeException(e);
+        }
+
+        return photoRepository.findByFileHash(user.getId() + hash).map(photoEntity -> {
+            try {
+                Files.deleteIfExists(tempFile.toPath());
+                task.setPhotoId(photoEntity.getId());
+                if (photoEntity.getIsGarbage()) {
+                    return TRASHED;
+                }
+                return DUPLICATED;
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+
+        }).orElseGet(() -> {
+            try {
+                return photoUploadService.processNewAsset(task, user, payload, tempFile, hash);
+            } catch (Exception e) {
+                throw new PhotoUploadException(e);
+            }
+        });
+    }
     /**
      * called only from system
      * @param photoId
@@ -247,6 +272,23 @@ public class PhotoService {
 
     public Page<Photo> findByPerson(PersonEntity personEntity, Pageable pageable) {
         return photoRepository.findByFacesPerson(personEntity, pageable).map(photoMapper::photoEntityToPhoto);
+    }
+
+    // Person's day-index equivalent of getDailyPhotoCounts/getPhotosForDay above - joined through
+    // faces rather than scoped by space_id, since a person's photos can span multiple spaces. No
+    // dedup treatment, matching findByPerson above (Person view has never had that either).
+    public List<DayBucketDTO> getPersonDailyPhotoCounts(PersonEntity person) {
+        return photoRepository.findDailyPhotoCountsWithCoverByPersonId(person.getId()).stream()
+                .map(row -> new DayBucketDTO(
+                        row.getDay(),
+                        row.getCount(),
+                        "/api/photos/" + row.getPhotoId() + "/thumbnail"
+                                + (row.getFileHash() != null ? "?v=" + row.getFileHash() : "")))
+                .toList();
+    }
+
+    public Page<Photo> getPersonPhotosForDay(PersonEntity person, LocalDate day, Pageable pageable) {
+        return photoRepository.findByFacesPersonAndGroupedDay(person, day, pageable).map(photoMapper::photoEntityToPhoto);
     }
 
     public Optional<PhotoEntity> findById(UUID id) {

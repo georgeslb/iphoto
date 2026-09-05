@@ -9,6 +9,7 @@ import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.UserEntity; // Import UserEntity
 import org.iphoto.exception.PersonNameCollisionException;
 import org.iphoto.exception.PersonNameCollisionsException;
+import org.iphoto.model.DayBucketDTO;
 import org.iphoto.model.FaceDTO;
 import org.iphoto.model.PersonDTO;
 import org.iphoto.model.Photo;
@@ -21,6 +22,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -97,8 +99,15 @@ public class FaceService {
                 .map(this::mapToDTO);
     }
 
-    public Page<Photo> getPersonPhotos(UUID id, Pageable pageable) {
-        return personRepository.findById(id).map(personEntity -> photoService.findByPerson(personEntity, pageable)) // Pass user to photoService
+    // Day-index browsing for Person (replaces the old flat GET /api/faces/person/{id}/photos) -
+    // see PhotoService.getPersonDailyPhotoCounts/getPersonPhotosForDay.
+    public List<DayBucketDTO> getPersonDays(UUID id) {
+        return personRepository.findById(id).map(photoService::getPersonDailyPhotoCounts)
+                .orElseThrow(() -> new NoSuchElementException("no person found with id " + id));
+    }
+
+    public Page<Photo> getPersonPhotosForDay(UUID id, LocalDate day, Pageable pageable) {
+        return personRepository.findById(id).map(personEntity -> photoService.getPersonPhotosForDay(personEntity, day, pageable))
                 .orElseThrow(() -> new NoSuchElementException("no person found with id " + id));
     }
 

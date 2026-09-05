@@ -9,7 +9,7 @@ import java.time.LocalDateTime;
 import java.util.UUID;
 
 @Entity
-@Table(name = "tasks")
+@Table(name = "tasks", indexes = {@Index(columnList = "status", name = "status_index"), @Index(columnList = "status,task_type", name = "status_task_type_index"), @Index(columnList = "status,photo_id", name = "status_photo_id_index")})
 @Data
 @EqualsAndHashCode(onlyExplicitlyIncluded = true)
 @Builder(toBuilder = true)

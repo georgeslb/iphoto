@@ -9,9 +9,7 @@ import { useEntityById } from '../hooks/useEntityById';
 import { usePersonRename } from '../hooks/usePersonRename';
 
 function PersonDetail({
-  photos,
-  hasMore,
-  setPage,
+  dayIndex,
   selectedIds,
   setSelectedIds,
   handlePhotoClick,
@@ -119,11 +117,11 @@ function PersonDetail({
             )}
             <span className="count">{messages["photosCount"](currentPerson.photoCount || 0)}</span>
           </div>
-          {photos.length > 0 ? (
+          {dayIndex.loadingDays ? (
+              <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>{messages["loadingMorePhotos"]}</div>
+          ) : dayIndex.days.length > 0 ? (
               <PhotoGrid
-                  photos={photos}
-                  hasMore={hasMore}
-                  setPage={setPage}
+                  dayIndex={dayIndex}
                   selectedIds={selectedIds}
                   setSelectedIds={setSelectedIds}
                   setSelectedPhoto={handlePhotoClick}

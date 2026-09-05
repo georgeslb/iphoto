@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Lock } from 'lucide-react';
 import PhotoGrid from './PhotoGrid';
@@ -84,6 +84,32 @@ export default function SharedAlbumView() {
 
   const { photos, hasMore, setPage } = useSharedAlbumPhotos(status === 'ready' ? albumId : null);
 
+  // PhotoGrid only renders day-indexed data now (see hooks/useDayIndexedPhotos.js) - this guest/
+  // share flow deliberately keeps its own flat, page-number-paginated fetch (useSharedAlbumPhotos,
+  // hitting the separate guest-scoped /api/albums/share endpoint, no authenticated user/session to
+  // resolve a day-index from), so it adapts locally instead: bucket the flat photos by their
+  // formatted day (groupDate, present on every Photo DTO) to reproduce the same grouped display,
+  // with the trailing bucket's sentinel driving the existing setPage pagination.
+  const dayIndex = useMemo(() => {
+    const photosByDay = {};
+    const order = [];
+    photos.forEach(p => {
+      const key = p.groupDate || 'photos';
+      if (!photosByDay[key]) { photosByDay[key] = []; order.push(key); }
+      photosByDay[key].push(p);
+    });
+    const lastKey = order[order.length - 1];
+    const dayPageState = {};
+    order.forEach(day => { dayPageState[day] = { isLast: day !== lastKey || !hasMore }; });
+    return {
+      days: order.map(day => ({ day, count: photosByDay[day].length, coverPhotoUrl: '' })),
+      loadingDays: false,
+      photosByDay,
+      dayPageState,
+      loadDayPage: () => setPage(p => p + 1),
+    };
+  }, [photos, hasMore, setPage]);
+
   const handlePhotoOpen = (photo) => navigate(`/share/${userMd5}/${name}/p/${photo.id}`);
   const handleCloseLightbox = () => navigate(`/share/${userMd5}/${name}`);
 
@@ -141,9 +167,7 @@ export default function SharedAlbumView() {
     <>
       {photos.length > 0 ? (
         <PhotoGrid
-          photos={photos}
-          hasMore={hasMore}
-          setPage={setPage}
+          dayIndex={dayIndex}
           selectedIds={[]}
           setSelectedIds={noop}
           setSelectedPhoto={handlePhotoOpen}

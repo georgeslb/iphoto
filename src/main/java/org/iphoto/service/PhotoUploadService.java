@@ -19,7 +19,6 @@ import org.apache.tomcat.util.http.fileupload.FileUploadException;
 import org.bytedeco.javacv.FFmpegFrameGrabber;
 import org.iphoto.entities.*;
 import org.iphoto.exception.NoMatchUserSpaceException;
-import org.iphoto.exception.NoUserFoundException;
 import org.iphoto.exception.SpaceLockingException;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.UploadStatus;
@@ -60,15 +59,13 @@ public class PhotoUploadService {
     private ObjectMapper objectMapper;
     private AlbumService albumService;
     private SpaceService spaceService;
-    private UserService userService;
     private TaskMapper taskMapper;
     private final EntityManager entityManager;
 
 
 
     @Retryable(maxAttempts = 5, retryFor = {SpaceLockingException.class}, backoff = @Backoff(delay = 1000))
-    public UploadStatus processNewAsset(TaskEntity task, Map<String, String> payload, File tempFile, String hash) throws Exception {
-        UserEntity user = userService.findById(UUID.fromString(payload.get("userId"))).orElseThrow(NoUserFoundException::new);
+    public UploadStatus processNewAsset(TaskEntity task, UserEntity user, Map<String, String> payload, File tempFile, String hash) throws Exception {
 
         SpaceEntity space;
         String spaceId = payload.get("spaceId");

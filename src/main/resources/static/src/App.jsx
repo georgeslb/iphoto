@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import 'leaflet/dist/leaflet.css'
 import './App.css'
@@ -7,7 +7,6 @@ import { useLocale } from './LocaleContext.jsx'; // Import useLocale
 /* Removed L, markerIcon, markerShadow imports as they are not directly used in App.jsx */
 import Sidebar from './components/Sidebar'
 import PhotoGrid from './components/PhotoGrid'
-import LibraryTimeline from './components/LibraryTimeline'
 import SharedAlbumView from './components/SharedAlbumView';
 import ShareLinksManagement from './components/ShareLinksManagement';
 import UploadManager from './components/UploadManager';
@@ -29,7 +28,8 @@ import UserManagement from './components/UserManagement'; // Import UserManageme
 import ImmichImportManagement from './components/ImmichImportManagement';
 import SpaceGridDisplay from './components/SpaceGridDisplay'; // Import SpaceGridDisplay
 import SpaceDetail from './components/SpaceDetail'; // Import SpaceDetail
-import { usePhotoData } from './hooks/usePhotoData';
+import { useDayIndexedPhotos } from './hooks/useDayIndexedPhotos';
+import { removeFromPhotosByDay } from './utils/photoListUpdates';
 import { useAlbumManagement } from './hooks/useAlbumManagement';
 import { useShareLinkManagement } from './hooks/useShareLinkManagement';
 import { useDuplicateManagement } from './hooks/useDuplicateManagement';
@@ -42,7 +42,6 @@ import { useMapAssets } from './hooks/useMapAssets';
 import { useAppNavigationAndSelection } from './hooks/useAppNavigationAndSelection';
 import { useInitialDataFetch } from './hooks/useInitialDataFetch';
 import { useMenuSelection } from './hooks/useMenuSelection.js';
-import { useMonthlyTimeline } from './hooks/useMonthlyTimeline';
 import { useAuth } from './hooks/useAuth';
 import { useRouteContext } from './hooks/useRouteContext';
 
@@ -63,7 +62,6 @@ function App() {
     isLightboxOpen,
     currentAlbumId,
     currentSpaceId,
-    currentPersonId,
     fromGarbage,
     selectedMenu,
   } = useRouteContext(location);
@@ -73,10 +71,22 @@ function App() {
   const [selectedIds, setSelectedIds] = useState([]);
   const [selectedAlbumIds, setSelectedAlbumIds] = useState([]);
   const [selectedSpaceIds, setSelectedSpaceIds] = useState([]); // For deleting multiple spaces
-  const { photos, setPhotos, setPage, hasMore, hasNewer, fetchPhotos, jumpToMonth, loadNewer } = usePhotoData(effectivePath, isLightboxOpen);
-  const { months: timelineMonths } = useMonthlyTimeline(selectedMenu === 'library');
+  // Day-index browsing (replaces the old month-timeline/jumpToMonth cursor system, and now the
+  // only technology every photo-listing view - Library/Album/Space/Garbage/Person - uses):
+  // fetches every day up front, then lazily fetches each day's photos as its section scrolls
+  // into view.
+  const dayIndexed = useDayIndexedPhotos(effectivePath);
 
-  const { saveScrollPosition } = useScrollRestoration(mainContentRef, isLightboxOpen, photos);
+  // Flattened "reading order" view of the day-indexed data, in the same shape PhotoGrid.jsx's own
+  // flatSelectionPhotos uses - needed anywhere something wants "the current view's whole photo
+  // collection" (Lightbox prev/next navigation, scroll restoration, direct-asset-URL lookup), as
+  // opposed to PhotoGrid's own rendering, which reads the day-bucketed shape directly.
+  const effectivePhotos = useMemo(
+    () => dayIndexed.days.flatMap(d => dayIndexed.photosByDay[d.day] || []),
+    [dayIndexed.days, dayIndexed.photosByDay]
+  );
+
+  const { saveScrollPosition } = useScrollRestoration(mainContentRef, isLightboxOpen, effectivePhotos);
 
   const {
     duplicatesPage,
@@ -92,7 +102,7 @@ function App() {
     setSelectedPhoto,
     handlePhotoClick,
     handleCloseLightbox,
-  } = useAppNavigationAndSelection(photos, currentDuplicateGroup, backgroundLocation, effectivePath, saveScrollPosition);
+  } = useAppNavigationAndSelection(effectivePhotos, currentDuplicateGroup, backgroundLocation, effectivePath, saveScrollPosition);
 
   let [photoSelection, setPhotoSelection] = useState({
     menuSelection: {
@@ -179,11 +189,9 @@ function App() {
       return;
     }
 
-
-
-    // Use the fetchPhotos from usePhotoData to refresh the current view
-    // This will reset the photos and fetch the first page (page 0)
-    await fetchPhotos(0, true, selectedMenu, currentAlbumId, currentSpaceId, currentPersonId);
+    // Re-fetch the day list/counts and refresh whatever's already loaded in place (see
+    // useDayIndexedPhotos.refreshLoadedDays for the trade-off vs a full reset).
+    await dayIndexed.refreshLoadedDays();
 
     await fetchAlbums(); /* fetchAlbums is now available from useAlbumManagement */
     await fetchSpaces(); // Fetch spaces as well
@@ -198,13 +206,19 @@ function App() {
         }
       });
     }
-  }, [effectivePath, fetchAlbums, fetchSpaces, fetchGarbageSpaces, duplicatesPage, fetchDuplicates, fetchPhotos, mainContentRef]); // Added fetchPhotos to dependencies
+  }, [effectivePath, fetchAlbums, fetchSpaces, fetchGarbageSpaces, duplicatesPage, fetchDuplicates, dayIndexed.refreshLoadedDays, selectedMenu, mainContentRef]);
 
   /* Update the refreshAndMaintainScroll state once the actual function is defined */
   useEffect(() => {
     setRefreshAndMaintainScroll(() => actualRefreshAndMaintainScroll);
   }, [actualRefreshAndMaintainScroll]);
 
+  // handleMoveToGarbage updates whatever's already loaded in place instead of a full refetch (see
+  // usePhotoActions.js). See utils/photoListUpdates.js for the actual removal/duplicate-scrubbing
+  // logic.
+  const removePhotosLocally = useCallback((ids) => {
+    dayIndexed.setPhotosByDay(prev => removeFromPhotosByDay(prev, ids));
+  }, [dayIndexed.setPhotosByDay]);
 
   const {
     handleMoveToGarbage,
@@ -214,7 +228,7 @@ function App() {
     handlePermanentDelete,
     handleUpdateDate,
     handleEditPhoto,
-  } = usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, selectedIds, setSelectedIds, setPhotos, fetchAlbums, fetchSpaces);
+  } = usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, selectedIds, setSelectedIds, removePhotosLocally, fetchAlbums, fetchSpaces);
 
   const {
     handleRestoreSpaces,
@@ -266,33 +280,26 @@ function App() {
     return <div>{messages["loadingAuthentication"]}</div>;
   }
 
+  // Shared by "/" and "/asset/:photoId" (Library) AND "/garbage"'s embedded grid (Garbage) -
+  // /asset/:photoId's effectivePath resolves to whatever backgroundLocation it was opened from
+  // (see useRouteContext).
   const libraryPhotoGrid = (
-    <>
-      {selectedMenu === 'library' && <LibraryTimeline months={timelineMonths} onJump={jumpToMonth} />}
-      <PhotoGrid
-          photos={photos}
-          type={selectedMenu}
-          hasMore={hasMore}
-          setPage={setPage}
-          selectedIds={selectedIds}
-          setSelectedIds={setSelectedIds}
-          setSelectedPhoto={handlePhotoClick}
-          isLightboxOpen={isLightboxOpen}
-          handleMoveToGarbage={handleMoveToGarbage}
-          handleUnlinkDuplicate={handleUnlinkDuplicate}
-          hasNewer={selectedMenu === 'library' ? hasNewer : undefined}
-          onLoadNewer={selectedMenu === 'library' ? loadNewer : undefined}
-          mainContentRef={mainContentRef}
-      />
-    </>
+    <PhotoGrid
+        dayIndex={dayIndexed}
+        type={selectedMenu}
+        selectedIds={selectedIds}
+        setSelectedIds={setSelectedIds}
+        setSelectedPhoto={handlePhotoClick}
+        isLightboxOpen={isLightboxOpen}
+        handleMoveToGarbage={handleMoveToGarbage}
+        handleUnlinkDuplicate={handleUnlinkDuplicate}
+    />
   );
 
   const albumDetailElement = (
     <AlbumDetail
         albums={albums}
-        photos={photos}
-        hasMore={hasMore}
-        setPage={setPage}
+        dayIndex={dayIndexed}
         selectedIds={selectedIds}
         setSelectedIds={setSelectedIds}
         handlePhotoClick={handlePhotoClick}
@@ -303,9 +310,7 @@ function App() {
 
   const personDetailElement = (
     <PersonDetail
-        photos={photos}
-        hasMore={hasMore}
-        setPage={setPage}
+        dayIndex={dayIndexed}
         selectedIds={selectedIds}
         setSelectedIds={setSelectedIds}
         handlePhotoClick={handlePhotoClick}
@@ -430,9 +435,7 @@ function App() {
                   } />
                   <Route path="/spaces/:spaceId" element={
                     <SpaceDetail
-                        photos={photos}
-                        hasMore={hasMore}
-                        setPage={setPage}
+                        dayIndex={dayIndexed}
                         selectedIds={selectedIds}
                         setSelectedIds={setSelectedIds}
                         handlePhotoClick={handlePhotoClick}
@@ -467,7 +470,7 @@ function App() {
             handleMoveToMain={handleMoveToMain}
             handleRestore={handleRestore}
             handlePermanentDelete={handlePermanentDelete}
-            photos={photos}
+            photos={effectivePhotos}
             currentDuplicateGroup={currentDuplicateGroup}
             onNavigate={handlePhotoClick}
             onUpdateDate={handleUpdateDate}

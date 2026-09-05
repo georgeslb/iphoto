@@ -11,7 +11,7 @@ import java.util.Set;
 import java.util.UUID;
 
 @Entity
-@Table(name = "duplicates")
+@Table(name = "duplicates", indexes = {@Index(columnList = "hash", name = "idx_hash_duplicates")})
 @EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true)
 @ToString(onlyExplicitlyIncluded = true)
 @Getter

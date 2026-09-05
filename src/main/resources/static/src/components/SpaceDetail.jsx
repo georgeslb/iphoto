@@ -5,9 +5,7 @@ import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 import { useEntityById } from '../hooks/useEntityById';
 
 function SpaceDetail({
-  photos,
-  hasMore,
-  setPage,
+  dayIndex,
   selectedIds,
   setSelectedIds,
   handlePhotoClick,
@@ -29,11 +27,11 @@ function SpaceDetail({
         <p>{currentSpace.description}</p>
         <span className="count">{messages["photosCount"](currentSpace.photoCount)}</span>
       </div>
-      {photos.length > 0 ? (
+      {dayIndex.loadingDays ? (
+        <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>{messages["loadingMorePhotos"]}</div>
+      ) : dayIndex.days.length > 0 ? (
           <PhotoGrid
-              photos={photos}
-              hasMore={hasMore}
-              setPage={setPage}
+              dayIndex={dayIndex}
               selectedIds={selectedIds}
               setSelectedIds={setSelectedIds}
               setSelectedPhoto={handlePhotoClick}

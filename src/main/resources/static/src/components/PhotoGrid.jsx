@@ -1,27 +1,41 @@
-import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Check, Layers, Unlink2 } from 'lucide-react';
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 import DuplicateClusterModal from './DuplicateClusterModal';
 
+// Clusters a flat list of photos into {primary, members} display items, same rule everywhere
+// duplicates are populated (Library/Space, day-indexed or not): a photo carries its known
+// duplicates via `p.duplicates`; `consumedIds` (shared across every call for one render, so a
+// duplicate discovered while processing one bucket is never later re-rendered as its own
+// top-level item from a different bucket) prevents a duplicate from being double-rendered.
+function clusterIntoItems(photosArray, consumedIds) {
+  const items = [];
+  photosArray.forEach(p => {
+    if (consumedIds.has(p.id)) return;
+    consumedIds.add(p.id);
+    const duplicateMembers = (p.duplicates || []).filter(d => !consumedIds.has(d.id));
+    duplicateMembers.forEach(d => consumedIds.add(d.id));
+    items.push({
+      primary: p,
+      members: duplicateMembers.length > 0 ? [p, ...duplicateMembers] : [p],
+    });
+  });
+  return items;
+}
+
 export default function PhotoGrid({
-  photos,
-  hasMore,
   type,
-  setPage,
   selectedIds,
   setSelectedIds,
   setSelectedPhoto,
   isLightboxOpen, // Accept the new prop
   handleMoveToGarbage,
-  handleUnlinkDuplicate, // Only passed where duplicates are populated (Library) — DuplicateClusterModal's unlink icon
+  handleUnlinkDuplicate, // DuplicateClusterModal's unlink icon
   handleUnlinkPerson, // Only passed from PersonDetail.jsx — unlinks this person from a photo
-  // The three below are only ever passed by the Library route (App.jsx), after a
-  // LibraryTimeline.jsx jump — they enable back-scrolling above the jumped-to point. Left
-  // undefined everywhere else (Album/Space/Person/Garbage/duplicates), which silently disables
-  // the top sentinel/loader below entirely — no behavior change for those views.
-  hasNewer,
-  onLoadNewer,
-  mainContentRef
+  // Day-index browsing (hooks/useDayIndexedPhotos.js) - every photo-listing view (Library/Album/
+  // Space/Garbage/Person) uses this; renders one section per day, fetched lazily as it scrolls
+  // into view.
+  dayIndex,
 }) {
   const { messages } = useLocale(); // Use the useLocale hook
   const [hoveredVideoId, setHoveredVideoId] = useState(null);
@@ -33,28 +47,29 @@ export default function PhotoGrid({
   // reflect that (member disappears) rather than keep showing an already-garbage-collected photo
   // until manually closed.
   const [openDuplicatePrimaryId, setOpenDuplicatePrimaryId] = useState(null);
-  const observerTarget = useRef(null);
-  const topObserverTarget = useRef(null);
+  const gridContainerRef = useRef(null);
   const lastClickedIndexRef = useRef(null);
-  const loadingNewerRef = useRef(false);
-  // Set right before a loadNewer fetch starts, holding the scroll container's height at that
-  // moment; the useLayoutEffect below reads it once the newly-prepended photos have actually
-  // rendered, to shift scrollTop by exactly how much taller the content just got — otherwise
-  // prepending content above the current viewport would visually yank whatever the user was
-  // looking at downward by that same amount.
-  const pendingPrependRef = useRef(null);
+
+  // "Reading order" flat list used for shift-click range selection and the duplicate-cluster
+  // lookup below - every currently-loaded photo across every day section, in server day order.
+  // Memoized off the underlying stable state (not the `dayIndex` wrapper object itself, which is
+  // a fresh object literal every render) so this only recomputes when the actual data changes.
+  const flatSelectionPhotos = useMemo(
+    () => dayIndex.days.flatMap(d => dayIndex.photosByDay[d.day] || []),
+    [dayIndex.days, dayIndex.photosByDay]
+  );
 
   const photoIndexById = useMemo(() => {
     const map = new Map();
-    photos.forEach((p, i) => map.set(p.id, i));
+    flatSelectionPhotos.forEach((p, i) => map.set(p.id, i));
     return map;
-  }, [photos]);
+  }, [flatSelectionPhotos]);
 
   const selectRange = (toIndex) => {
     const fromIndex = lastClickedIndexRef.current;
     const start = Math.min(fromIndex, toIndex);
     const end = Math.max(fromIndex, toIndex);
-    const rangeIds = photos.slice(start, end + 1).map(p => p.id);
+    const rangeIds = flatSelectionPhotos.slice(start, end + 1).map(p => p.id);
     setSelectedIds(v => Array.from(new Set([...v, ...rangeIds])));
   };
 
@@ -85,27 +100,16 @@ export default function PhotoGrid({
     setSelectedIds(v => v.includes(p.id) ? v.filter(i => i !== p.id) : [...v, p.id]);
   };
 
-  // Duplicate photos come back from the API attached to each photo via `p.duplicates`
-  // (empty/absent on endpoints that don't populate it yet). Cluster each photo with its
-  // duplicates into one display item so they render together instead of as separate cards;
-  // `consumedIds` prevents a duplicate from also being rendered as its own top-level item
-  // when the flat `photos` list is later reached for it.
+  // One entry per day from the index (already sorted newest-first by the server), even for a day
+  // with nothing loaded yet - that's what lets its section render as a placeholder/sentinel
+  // immediately instead of only appearing once scrolled to. Buckets are known upfront here (from
+  // the day index), so clusterIntoItems can run once per bucket.
   const groups = {};
+  const groupOrder = [];
   const consumedIds = new Set();
-
-  photos.forEach(p => {
-    if (consumedIds.has(p.id)) return;
-    consumedIds.add(p.id);
-
-    const duplicateMembers = (p.duplicates || []).filter(d => !consumedIds.has(d.id));
-    duplicateMembers.forEach(d => consumedIds.add(d.id));
-
-    const key = p.groupDate || messages["otherGroup"];
-    if (!groups[key]) groups[key] = [];
-    groups[key].push({
-      primary: p,
-      members: duplicateMembers.length > 0 ? [p, ...duplicateMembers] : [p],
-    });
+  dayIndex.days.forEach(({ day }) => {
+    groupOrder.push(day);
+    groups[day] = clusterIntoItems(dayIndex.photosByDay[day] || [], consumedIds);
   });
 
   // Re-derived every render from the live `groups` above (see openDuplicatePrimaryId's own
@@ -132,81 +136,39 @@ export default function PhotoGrid({
     }
   };
 
+  // Day-indexed pagination: ONE shared IntersectionObserver for every day section's sentinel
+  // (a library can easily have hundreds of populated days - a naive per-section observer/effect
+  // pair, the pattern flat mode's bottom sentinel above uses, would not scale to that). Each
+  // sentinel carries its own day as a data attribute; whichever ones are actually in the DOM are
+  // (re-)queried and observed whenever the loaded data changes, since a day's sentinel is only
+  // rendered while that day still has more pages to load (see the JSX below) and so naturally
+  // disappears once a day finishes loading. A generous rootMargin matters more here than in flat
+  // mode: day sections can be short (a handful of photos), so several day boundaries can go by in
+  // one ordinary scroll gesture - a small margin means the "next day" sentinel only enters range
+  // (and its fetch only starts) right as the user reaches it, showing a brief empty/loading
+  // section every time. A larger margin gets that day's first page (and a currently-open day's
+  // next page) loading well before it's actually reached.
   useEffect(() => {
+    if (isLightboxOpen) return undefined;
     const observer = new IntersectionObserver(
       entries => {
-        // Only load more photos if the lightbox is NOT open
-        if (entries[0].isIntersecting && hasMore && !isLightboxOpen) {
-          setPage(p => p + 1);
-        }
+        entries.forEach(entry => {
+          if (!entry.isIntersecting) return;
+          const day = entry.target.getAttribute('data-day-sentinel');
+          if (day) dayIndex.loadDayPage(day);
+        });
       },
-      { threshold: 0.1, rootMargin: '0px 0px 400px 0px' } // Pre-load 400px before reaching the bottom
+      { threshold: 0.1, rootMargin: '0px 0px 1500px 0px' }
     );
 
-    const currentTarget = observerTarget.current;
-    if (currentTarget) {
-      observer.observe(currentTarget);
-    }
-    return () => {
-      if (currentTarget) {
-        observer.unobserve(currentTarget);
-      }
-    };
-  }, [hasMore, setPage, isLightboxOpen]); // Add isLightboxOpen to dependencies
+    const sentinels = gridContainerRef.current?.querySelectorAll('[data-day-sentinel]') || [];
+    sentinels.forEach(el => observer.observe(el));
 
-  // Back-scrolling: loads NEWER photos when the top sentinel comes into view. Only wired up at
-  // all when the caller passed onLoadNewer (Library route, post-jump) — everywhere else hasNewer/
-  // onLoadNewer are undefined and this effect's observer target never renders, so it's a no-op.
-  const handleLoadNewer = () => {
-    if (!onLoadNewer || !hasNewer || loadingNewerRef.current) return;
-    loadingNewerRef.current = true;
-    if (mainContentRef?.current) {
-      pendingPrependRef.current = { scrollHeightBefore: mainContentRef.current.scrollHeight };
-    }
-    Promise.resolve(onLoadNewer()).finally(() => {
-      loadingNewerRef.current = false;
-    });
-  };
-
-  useEffect(() => {
-    if (!onLoadNewer) return undefined;
-
-    const observer = new IntersectionObserver(
-      entries => {
-        if (entries[0].isIntersecting && !isLightboxOpen) {
-          handleLoadNewer();
-        }
-      },
-      { threshold: 0.1, rootMargin: '400px 0px 0px 0px' } // Pre-load 400px before reaching the top
-    );
-
-    const currentTarget = topObserverTarget.current;
-    if (currentTarget) {
-      observer.observe(currentTarget);
-    }
-    return () => {
-      if (currentTarget) {
-        observer.unobserve(currentTarget);
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleLoadNewer intentionally
-    // omitted: it's a plain function (not memoized) recreated every render, and including it
-    // would tear down/recreate the observer on every render for no behavioral difference — the
-    // observer's callback always closes over the latest handleLoadNewer via re-render anyway.
-  }, [hasNewer, onLoadNewer, isLightboxOpen]);
-
-  // Compensates scrollTop after loadNewer prepends photos above the current viewport, so the
-  // content the user was already looking at doesn't visually jump downward. Runs synchronously
-  // after the DOM updates (useLayoutEffect, not useEffect) so there's no visible flash before the
-  // correction is applied.
-  useLayoutEffect(() => {
-    if (pendingPrependRef.current && mainContentRef?.current) {
-      const { scrollHeightBefore } = pendingPrependRef.current;
-      const delta = mainContentRef.current.scrollHeight - scrollHeightBefore;
-      mainContentRef.current.scrollTop += delta;
-      pendingPrependRef.current = null;
-    }
-  }, [photos, mainContentRef]);
+    return () => observer.disconnect();
+    // dayIndex itself deliberately excluded: it's a fresh object every render (see
+    // flatSelectionPhotos above), which would tear down and recreate the observer every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dayIndex.days, dayIndex.photosByDay, dayIndex.dayPageState, isLightboxOpen, dayIndex.loadDayPage]);
 
   const renderPhotoCard = (p, badge, size = 220) => {
     const aspectRatio = (p.width && p.height) ? (p.width / p.height) : 1;
@@ -273,49 +235,48 @@ export default function PhotoGrid({
   };
 
   return (
-    <div className="content-body">
-      {/* Only rendered once there's actually something newer to load (post-jump) — before that,
-          rendering an empty sentinel here would just add a permanent gap above the normal,
-          never-jumped Library grid for no reason. */}
-      {onLoadNewer && hasNewer && (
-        <div
-          ref={topObserverTarget}
-          style={{ height: '20px', margin: '0 0 20px 0', display: 'flex', justifyContent: 'center', alignItems: 'center' }}
-        >
-          <span style={{ color: '#888' }}>{messages["loadingMorePhotos"]}</span>
-        </div>
+    <div className="content-body" ref={gridContainerRef}>
+      {dayIndex.loadingDays && (
+        <div style={{ padding: '40px', textAlign: 'center', color: '#888' }}>{messages["loadingMorePhotos"]}</div>
       )}
-      {Object.keys(groups).map(day => {
+      {!dayIndex.loadingDays && dayIndex.days.length === 0 && (
+        <div style={{ padding: '40px', textAlign: 'center', color: '#888' }}>{messages["noPhotosInView"]}</div>
+      )}
+      {groupOrder.map(day => {
         const dayItems = groups[day];
         const groupIds = dayItems.flatMap(item => item.members.map(m => m.id));
         const allSelected = groupIds.length > 0 && groupIds.every(id => selectedIds.includes(id));
+        const pageState = dayIndex.dayPageState[day];
+        const showDaySentinel = !pageState?.isLast;
 
         return (
           <div key={day} className="day-group">
             <div className="day-header" style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <h3>{day}</h3>
-              <div
-                className={`check-circle day-check ${allSelected ? 'checked' : ''}`}
-                style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '20px', height: '20px', borderRadius: '50%', border: '2px solid #ccc' }}
-                onClick={(e) => handleSelectGroup(dayItems, e)}
-              >
-                {allSelected && <Check size={14} color="white" />}
-              </div>
+              {groupIds.length > 0 && (
+                <div
+                  className={`check-circle day-check ${allSelected ? 'checked' : ''}`}
+                  style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '20px', height: '20px', borderRadius: '50%', border: '2px solid #ccc' }}
+                  onClick={(e) => handleSelectGroup(dayItems, e)}
+                >
+                  {allSelected && <Check size={14} color="white" />}
+                </div>
+              )}
             </div>
             <div className="photo-grid">
               {dayItems.map(item => renderDisplayItem(item))}
             </div>
+            {showDaySentinel && (
+              <div
+                data-day-sentinel={day}
+                style={{ height: '20px', margin: '20px 0', display: 'flex', justifyContent: 'center', alignItems: 'center' }}
+              >
+                <span style={{ color: '#888' }}>{messages["loadingMorePhotos"]}</span>
+              </div>
+            )}
           </div>
         )
       })}
-
-      {/* Intersection Observer Target */}
-      <div
-        ref={observerTarget}
-        style={{ height: '20px', margin: '20px 0', display: 'flex', justifyContent: 'center', alignItems: 'center' }}
-      >
-        {hasMore && <span style={{ color: '#888' }}>{messages["loadingMorePhotos"]}</span>}
-      </div>
 
       <DuplicateClusterModal
         item={openDuplicateItem}

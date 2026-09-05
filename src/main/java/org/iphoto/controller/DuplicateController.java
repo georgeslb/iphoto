@@ -2,16 +2,15 @@ package org.iphoto.controller;
 
 import lombok.AccessLevel;
 import lombok.experimental.FieldDefaults;
-import org.iphoto.model.DuplicateGroupDTO;
 import org.iphoto.model.request.UnlinkPhotoDuplicate;
 import org.iphoto.repository.UserRepository;
 import org.iphoto.service.DuplicationService;
 import org.iphoto.service.SpaceService;
-import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Slice;
-import org.springframework.data.web.PageableDefault;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api/photos/duplicates")
@@ -25,11 +24,6 @@ public class DuplicateController extends AbstractBaseController {
         this.duplicationService = duplicationService;
     }
 
-    @GetMapping
-    @Deprecated
-    public Slice<DuplicateGroupDTO> getDuplicates(@PageableDefault(size = 1) Pageable pageable) {
-        return duplicationService.getDuplicates(pageable);
-    }
 
     @PutMapping("/unlink")
     public ResponseEntity<Void> finishChanges(@RequestBody UnlinkPhotoDuplicate payload) {

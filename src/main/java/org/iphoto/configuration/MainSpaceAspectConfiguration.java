@@ -17,6 +17,8 @@ import org.springframework.stereotype.Component;
 
 import java.util.NoSuchElementException;
 
+import static org.iphoto.configuration.ThreadPoolConfiguration.*;
+
 @Aspect
 @Component
 @RequiredArgsConstructor
@@ -31,7 +33,7 @@ public class MainSpaceAspectConfiguration {
         // Intercepts all execution of Spring Data Repositories before query execution
         @Before("@annotation(org.iphoto.configuration.MainSpaceLimited)")
         public void enableSpaceFilter(JoinPoint jp) {
-            if (!Thread.currentThread().getName().startsWith("lightThread") && !Thread.currentThread().getName().startsWith("heavyThread")) {
+            if (!Thread.currentThread().getName().startsWith(BACKEND_TASK) && !Thread.currentThread().getName().startsWith(HEAVY_TASK)) {
                 String methodName = jp.getSignature().getName();
                 log.debug("Executing method: {}", methodName);
                 Authentication authentication = SecurityContextHolder.getContext().getAuthentication();

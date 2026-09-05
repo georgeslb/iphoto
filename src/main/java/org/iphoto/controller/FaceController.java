@@ -4,6 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.UserEntity;
 import org.iphoto.exception.PersonNameCollisionException;
 import org.iphoto.exception.PersonNameCollisionsException;
+import org.iphoto.model.DayBucketDTO;
 import org.iphoto.model.FaceDTO;
 import org.iphoto.model.PersonDTO;
 import org.iphoto.model.Photo;
@@ -20,6 +21,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.UUID;
@@ -94,11 +96,24 @@ public class FaceController extends AbstractBaseController {
         return ResponseEntity.ok(faceService.getPersonFaces(id, pageable));
     }
 
-    @GetMapping("/person/{id}/photos")
-    public ResponseEntity<Page<Photo>> getPersonPhotos(@PathVariable UUID id, @PageableDefault(size = 50, sort = "dateTaken", direction = Sort.Direction.DESC) Pageable pageable) {
-        UserEntity currentUser = getCurrentUser();
+    // Day-index browsing for Person (replaces the old flat GET /person/{id}/photos) - every day
+    // that has one of this person's photos, fetched up front, then each day's photos lazily as
+    // its section scrolls into view. See PhotoController's Library/Garbage siblings for the same
+    // pattern.
+    @GetMapping("/person/{id}/days")
+    public ResponseEntity<List<DayBucketDTO>> getPersonDays(@PathVariable UUID id) {
         try {
-            Page<Photo> photos = faceService.getPersonPhotos(id, pageable);
+            return ResponseEntity.ok(faceService.getPersonDays(id));
+        } catch (NoSuchElementException e) {
+            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+        }
+    }
+
+    @GetMapping("/person/{id}/photos/day/{day}")
+    public ResponseEntity<Page<Photo>> getPersonPhotosForDay(@PathVariable UUID id, @PathVariable String day,
+                                                              @PageableDefault(size = 100, sort = "dateTaken", direction = Sort.Direction.DESC) Pageable pageable) {
+        try {
+            Page<Photo> photos = faceService.getPersonPhotosForDay(id, LocalDate.parse(day), pageable);
             return ResponseEntity.ok(photos);
         } catch (NoSuchElementException e) {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);

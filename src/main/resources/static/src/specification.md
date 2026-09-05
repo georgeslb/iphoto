@@ -79,11 +79,12 @@ This section describes the application's features. For the corresponding backend
 *   **Inline duplicate grouping:** each `Photo` returned by the photo-listing endpoints can carry a
     `duplicates: Photo[]` field (backend `Photo.java`/`PhotoMapper`, populated via
     `DuplicationService.getDuplicates(PhotoEntity)`) — the other members of its duplicate cluster, if
-    any. **Backend status: only `GET /api/photos` (library) and `GET /api/photos/space/{spaceId}`
-    populate this today; `GET /api/photos/garbage` (`PhotoService.getGarbagePhotos`) and
-    `GET /api/albums/{id}/photos` (`AlbumService.getAlbumPhotos`) do not yet** — not fixed here since
-    this was frontend-only scope; the frontend degrades gracefully (`p.duplicates || []`) wherever
-    it's absent, it just won't show grouping there until the backend adds it.
+    any. **Backend status: only the Library/Space day-index endpoints (`getPhotosForDay`, which
+    every day-index-browsing view routes through `buildDedupedPage`) populate this; Garbage's
+    `getGarbagePhotosForDay`, Person's `getPersonPhotosForDay`, and Album's `getAlbumPhotosForDay`
+    do not** — not fixed here since this was frontend-only scope; the frontend degrades gracefully
+    (`p.duplicates || []`) wherever it's absent, it just won't show grouping there until the backend
+    adds it.
     `components/PhotoGrid.jsx` clusters each photo with its `duplicates` into one display item
     (`consumedIds` prevents a duplicate from also rendering as its own separate top-level card) and
     renders it two ways:
@@ -323,9 +324,12 @@ This section describes the application's features. For the corresponding backend
         exposed list/update/faces-for-person/photos-for-person, no single-person GET, so
         `useEntityById` had nothing to call); `PersonDTO.photoCount` is now a real count
         (`photoService.findByPerson(person, Pageable.ofSize(1)).getTotalElements()`) instead of
-        always `null`. Photos come from the pre-existing `GET /api/faces/person/{id}/photos`,
-        wired into `usePhotoData`'s path-based routing (`/persons/:id` → `type: 'person'`) the same
-        way `/albums/:id` and `/spaces/:id` already were. Opening a photo from here uses the plain
+        always `null`. Photos come from the day-index endpoints `GET /api/faces/person/{id}/days` +
+        `/photos/day/{day}` — every day that has one of this person's photos, fetched up front,
+        each day's actual photos lazily fetched (paginated, 100/page) as its section scrolls into
+        view, same pattern Library/Album/Space/Garbage use (see `hooks/useDayIndexedPhotos.js`) —
+        wired into that hook's path-based routing (`/persons/:id` → `type: 'person'`) the same way
+        `/albums/:id` and `/spaces/:id` already were. Opening a photo from here uses the plain
         `/asset/:photoId` URL (like Space, not Album's `/albums/:id/asset/:photoId`) — no
         per-person asset sub-route was added, since nothing needs a person-scoped deep link today.
         Also fixed in passing: `FaceService.getPersonPhotos` threw a plain `RuntimeException` for a
@@ -603,7 +607,7 @@ Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
 *   **Routing:** `react-router-dom` is used for all navigation and view management.
 *   **State Management:** The application relies heavily on React Hooks (`useState`, `useEffect`, `useCallback`, `useRef`).
 *   **Component-Based Architecture:** The UI is broken down into reusable components (e.g., `PhotoGrid`, `Sidebar`, `HeaderWrapper`).
-*   **Custom Hooks:** Application logic is encapsulated and reused through a rich set of custom hooks (e.g., `usePhotoData`, `useAlbumManagement`, `usePhotoActions`).
+*   **Custom Hooks:** Application logic is encapsulated and reused through a rich set of custom hooks (e.g., `useDayIndexedPhotos`, `useAlbumManagement`, `usePhotoActions`).
 *   **API Communication:** The application communicates with a backend server via a RESTful API.
 *   **Internationalization (i18n):** The use of `useLocale` and `messages` indicates that the application is designed to be translatable into multiple languages. All user-facing strings should go through `messages` (`i18n.js`, en/fr) — no hardcoded UI text.
 *   **Shared presentational components (Album/Space):** Although Albums and Spaces are different
@@ -630,7 +634,7 @@ Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
     derivations from the router `location`: `effectivePath`, `isLightboxOpen`, `currentAlbumId`,
     `currentSpaceId`, `fromGarbage`, `selectedMenu`), `hooks/useAlbumManagement.js` and
     `hooks/useSpaceManagement.js` (mirrored shape, one per domain — see the Album/Space rule
-    above), plus several smaller hooks per feature area (`usePhotoData`, `useDuplicateManagement`,
+    above), plus several smaller hooks per feature area (`useDayIndexedPhotos`, `useDuplicateManagement`,
     `useShareLinkManagement`, etc.). A large amount of individual state (`selectedIds`,
     `selectedAlbumIds`, `selectedSpaceIds`, and their setters) is still passed down as many
     individual props rather than a consolidated object — this is a known, deliberately deferred

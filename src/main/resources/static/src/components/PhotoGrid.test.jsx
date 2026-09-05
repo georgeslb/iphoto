@@ -8,15 +8,26 @@ function makePhotos(n) {
   return Array.from({ length: n }, (_, i) => ({ id: `p${i}`, url: `/photo${i}.jpg` }));
 }
 
+// Every photo-listing view is day-indexed now - wrap the fixture photos into a single day bucket,
+// same shape hooks/useDayIndexedPhotos.js produces, so PhotoGrid renders exactly as it does under
+// App.jsx.
+function makeDayIndex(photos) {
+  return {
+    days: [{ day: 'd1', count: photos.length, coverPhotoUrl: '' }],
+    loadingDays: false,
+    photosByDay: { d1: photos },
+    dayPageState: { d1: { isLast: true } },
+    loadDayPage: () => {},
+  };
+}
+
 // Thin harness holding real React state so PhotoGrid's controlled selectedIds prop
 // behaves exactly as it does under App.jsx, instead of hand-rolling rerenders.
 function Harness({ photos, handleMoveToGarbage, handleUnlinkDuplicate }) {
   const [selectedIds, setSelectedIds] = useState([]);
   return (
     <PhotoGrid
-      photos={photos}
-      hasMore={false}
-      setPage={() => {}}
+      dayIndex={makeDayIndex(photos)}
       selectedIds={selectedIds}
       setSelectedIds={setSelectedIds}
       setSelectedPhoto={() => {}}

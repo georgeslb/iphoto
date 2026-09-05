@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
-export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, selectedIds, setSelectedIds, setPhotos, fetchAlbums, fetchSpaces) { // Added selectedIds, setSelectedIds as props
+export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, selectedIds, setSelectedIds, removePhotosLocally, fetchAlbums, fetchSpaces) { // Added selectedIds, setSelectedIds as props
   const { messages } = useLocale(); // Use the useLocale hook
   // const [selectedIds, setSelectedIds] = useState([]); // Removed internal state
 
@@ -17,25 +17,19 @@ export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, hand
       // position and, when triggered from DuplicateClusterModal (whose visible cluster is
       // derived live from `photos`, see PhotoGrid.jsx), can wipe the open cluster's primary
       // out of the reset list and auto-close the modal even though the cluster itself still
-      // has other members left. Instead, remove exactly the garbage'd ids from the
-      // already-loaded `photos` in place - and scrub them out of every remaining photo's own
-      // `duplicates` list too, since that's what PhotoGrid.jsx's cluster grouping actually
-      // reads members from, not a re-derivation off the top-level array.
-      setPhotos(prev =>
-        prev
-          .filter(p => !ids.includes(p.id))
-          .map(p => (
-            p.duplicates && p.duplicates.some(d => ids.includes(d.id))
-              ? { ...p, duplicates: p.duplicates.filter(d => !ids.includes(d.id)) }
-              : p
-          ))
-      );
+      // has other members left. Instead, remove exactly the garbage'd ids from whatever's
+      // already loaded, in place - App.jsx's removePhotosLocally knows whether the current view
+      // is the flat usePhotoData feed (Garbage/Person) or the day-bucketed one (Library/Album/
+      // Space) and updates the right shape; either way it also scrubs the ids out of every
+      // remaining photo's own `duplicates` list, since that's what PhotoGrid.jsx's cluster
+      // grouping actually reads members from, not a re-derivation off the top-level list.
+      removePhotosLocally(ids);
       await fetchAlbums();
       await fetchSpaces();
     } else {
       alert(messages["failedToMoveToGarbage"](res.status));
     }
-  }, [setPhotos, fetchAlbums, fetchSpaces, setSelectedIds, messages]);
+  }, [removePhotosLocally, fetchAlbums, fetchSpaces, setSelectedIds, messages]);
 
   // Removes one photo from its duplicate cluster without touching the photo itself — distinct
   // from handleMoveToGarbage, which deletes/trashes it. `groupPhotoIds` is every member of that

@@ -17,6 +17,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.UUID;
@@ -106,6 +107,29 @@ public class AlbumController extends AbstractBaseController {
         UserEntity currentUser = getCurrentUser();
         try {
             Page<Photo> photos = albumService.getAlbumPhotos(id, pageable);
+            return ResponseEntity.ok(photos);
+        } catch (NoSuchElementException e) {
+            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+        }
+    }
+
+    // Day-index browsing for Album detail - see PhotoController's /days and /day/{day} (the
+    // Library/Space equivalent) for the overall design. Kept as a plain Page<Photo> envelope
+    // (not PageResponse) to match this controller's existing /{id}/photos above.
+    @GetMapping("/{id}/days")
+    public ResponseEntity<List<DayBucketDTO>> getAlbumDays(@PathVariable UUID id) {
+        try {
+            return ResponseEntity.ok(albumService.getAlbumDailyPhotoCounts(id));
+        } catch (NoSuchElementException e) {
+            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+        }
+    }
+
+    @GetMapping("/{id}/photos/day/{day}")
+    public ResponseEntity<Page<Photo>> getAlbumPhotosForDay(@PathVariable UUID id, @PathVariable String day,
+                                                             @PageableDefault(size = 100, sort = "dateTaken", direction = Sort.Direction.DESC) Pageable pageable) {
+        try {
+            Page<Photo> photos = albumService.getAlbumPhotosForDay(id, LocalDate.parse(day), pageable);
             return ResponseEntity.ok(photos);
         } catch (NoSuchElementException e) {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);

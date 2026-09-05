@@ -12,7 +12,7 @@ import java.util.UUID;
 
 @Entity
 @Table(name = "duplicate_photos", uniqueConstraints = {@UniqueConstraint(name = "photo_album_unique", columnNames = { "photo_id", "duplicate_id"})}
-        , indexes = {@Index(columnList = "photo_id", name = "photo_index"), @Index(columnList = "duplicate_id", name = "duplicate_index")})
+        ,indexes = {@Index(columnList = "photo_id", name = "photo_index"), @Index(columnList = "duplicate_id", name = "duplicate_index")})
 @Getter
 @Setter
 @Builder

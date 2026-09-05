@@ -6,6 +6,7 @@ import org.iphoto.entities.*;
 import org.iphoto.exception.MainSpaceAddToAlbumException;
 import org.iphoto.mappers.PhotoMapper;
 import org.iphoto.model.AlbumDTO;
+import org.iphoto.model.DayBucketDTO;
 import org.iphoto.model.Photo;
 import org.iphoto.model.request.AlbumCreateRequest;
 import org.iphoto.model.request.AlbumUpdateRequest;
@@ -17,6 +18,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
@@ -131,7 +133,31 @@ public class AlbumService {
     @Transactional(readOnly = true)
     public Page<Photo> getAlbumPhotos(UUID albumId, Pageable pageable) {
         AlbumEntity album = getAlbum(albumId);
-        return photoRepository.findByIsGarbageFalseAndAlbums(album, pageable)
+        return photoRepository.findByIsGarbageFalseAndAlbums(Set.of(album), pageable)
+                .map(photoMapper::photoEntityToPhoto);
+    }
+
+    // Day-index browsing for Album detail (see PhotoService.getDailyPhotoCounts, the Library/
+    // Space equivalent) - an album references photos rather than owning them, so this groups
+    // through the album_photos join instead of by space_id. No buildDedupedPage-style
+    // duplicate-clustering here, matching getAlbumPhotos above (Album detail doesn't get that
+    // treatment today either).
+    @Transactional(readOnly = true)
+    public List<DayBucketDTO> getAlbumDailyPhotoCounts(UUID albumId) {
+        AlbumEntity album = getAlbum(albumId);
+        return photoRepository.findDailyPhotoCountsWithCoverByAlbumId(album.getId()).stream()
+                .map(row -> new DayBucketDTO(
+                        row.getDay(),
+                        row.getCount(),
+                        "/api/photos/" + row.getPhotoId() + "/thumbnail"
+                                + (row.getFileHash() != null ? "?v=" + row.getFileHash() : "")))
+                .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public Page<Photo> getAlbumPhotosForDay(UUID albumId, LocalDate day, Pageable pageable) {
+        AlbumEntity album = getAlbum(albumId);
+        return photoRepository.findByIsGarbageFalseAndAlbumsAndGroupedDay(Set.of(album), day, pageable)
                 .map(photoMapper::photoEntityToPhoto);
     }
 
@@ -143,7 +169,7 @@ public class AlbumService {
     @Transactional(readOnly = true)
     public Page<Photo> getAlbumPhotosForShare(UUID albumId, Pageable pageable) {
         AlbumEntity album = getAlbumIgnoringSpace(albumId);
-        return photoRepository.findByIsGarbageFalseAndAlbums(album, pageable)
+        return photoRepository.findByIsGarbageFalseAndAlbums(Set.of(album), pageable)
                 .map(photoMapper::photoEntityToPhoto);
     }
 
@@ -193,10 +219,10 @@ public class AlbumService {
 
 
     private void selectANewPhotoAsCover(AlbumEntity album) { // Added UserEntity parameter
-        long photoInAlbumCount = photoRepository.countByIsGarbageFalseAndAlbums(album); // Filter by user
+        long photoInAlbumCount = photoRepository.countByIsGarbageFalseAndAlbums(Set.of(album)); // Filter by user
         if (photoInAlbumCount > 0) {
             Pageable pageable = PageRequest.of(0, 50);
-            photoRepository.findByIsGarbageFalseAndAlbums(album, pageable) // Filter by user
+            photoRepository.findByIsGarbageFalseAndAlbums(Set.of(album), pageable) // Filter by user
                     .stream().filter(photoEntity -> photoEntity.getContentType().startsWith("image"))
                     .skip(ThreadLocalRandom.current().nextInt((int) Math.min(photoInAlbumCount, 50)))
                     .findAny().ifPresent(album::setCoverPhoto);
@@ -208,7 +234,7 @@ public class AlbumService {
     }
 
     private void setAlbumPhotoCount(AlbumEntity albumEntity) { // Added UserEntity parameter
-        long photoInAlbum = photoRepository.countByIsGarbageFalseAndAlbums(albumEntity); // Filter by user
+        long photoInAlbum = photoRepository.countByIsGarbageFalseAndAlbums(Set.of(albumEntity)); // Filter by user
         albumEntity.setPhotoCount((int) photoInAlbum);
     }
 }

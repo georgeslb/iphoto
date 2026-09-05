@@ -13,7 +13,6 @@ import org.bytedeco.opencv.opencv_img_hash.AverageHash;
 import org.bytedeco.opencv.opencv_img_hash.PHash;
 import org.iphoto.entities.*;
 import org.iphoto.exception.ServiceNotAvailableException;
-import org.iphoto.model.DuplicateGroupDTO;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.repository.DuplicateRepository;
 import org.iphoto.repository.PhotoDuplicateRepository;
@@ -27,7 +26,6 @@ import org.springframework.transaction.annotation.Transactional;
 import java.nio.ByteBuffer;
 import java.time.LocalDateTime;
 import java.util.*;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
@@ -49,9 +47,7 @@ public class DuplicationService {
     private PhotoDuplicateRepository photoDuplicateRepository;
     private DuplicationUniquenessService duplicateUniquenessService;
     private TaskMapper taskMapper;
-    private ReentrantLock mHashLock = new ReentrantLock();
     private ReentrantLock checkDuplicationLock = new ReentrantLock();
-    private CopyOnWriteArrayList<UUID> duplicationInProgress = new CopyOnWriteArrayList<>();
 
     private static final int MAX_SIZE = 1000;
 
@@ -117,39 +113,24 @@ public class DuplicationService {
     }
 
     public void hashImage(TaskEntity task) {
-        if (!mHashLock.tryLock()) {
-            throw new ServiceNotAvailableException("Face detection service is busy with another task");
-        }
-        try {
-            photoRepository
-                    .findById(task.getPhotoId()).ifPresent(photo -> { // Filter by user
-                        try {
-                            if (photo.getContentType().contains("image")) {
-                                log.info("creating Perceptive Hash for photoId: {}", photo.getId());
-                                preprocess(photo);
-                                photoRepository.save(photo);
-                                if (photo.getSpace().getType() == SpaceType.MAIN) {
-                                    taskMapper.updateTasksToAction(TaskMapper.Action.AFTER_PHOTO_HASH, photo.getId());
-                                }
+        photoRepository
+                .findById(task.getPhotoId()).ifPresent(photo -> { // Filter by user
+                    try {
+                        if (photo.getContentType().contains("image")) {
+                            log.info("creating Perceptive Hash for photoId: {}", photo.getId());
+                            preprocess(photo);
+                            photoRepository.save(photo);
+                            if (photo.getSpace().getType() == SpaceType.MAIN) {
+                                taskMapper.updateTasksToAction(TaskMapper.Action.AFTER_PHOTO_HASH, photo.getId());
                             }
-                        } catch (Exception e) {
-                            log.warn(e.getMessage(), e);
-                            throw new RuntimeException(e);
                         }
-                    });
-        } finally {
-            mHashLock.unlock();
-        }
-
+                    } catch (Exception e) {
+                        log.warn(e.getMessage(), e);
+                        throw new RuntimeException(e);
+                    }
+                });
     }
 
-    public void closeDuplicates(String hash) {
-//        List<UUID> photosInDuplicationGroup = duplicateUniquenessService.undoGenerateUniqueHash(hash);
-//        if (duplicationInProgress.stream().anyMatch(photosInDuplicationGroup::contains)) {
-//            throw new DuplicationBatchInProgressException();
-//        }
-//        Set<DuplicateEntity> duplicates = duplicateRepository.findByHash(hash);
-    }
     // ---------------------------------------------------
     // PREPROCESS
     // ---------------------------------------------------
@@ -361,7 +342,6 @@ public class DuplicationService {
         }
         try {
             checkDuplicationLock.lock();
-            duplicationInProgress.add(task.getPhotoId());
             photoRepository
                     .findById(task.getPhotoId()).ifPresent(photo -> {
 
@@ -370,13 +350,12 @@ public class DuplicationService {
                         Set<PhotoEntity> duplicatesPhotos = new HashSet<>();
                         log.info("checkDuplication photo={} spaceId={} dateTaken={}: scanning candidates in [{}, {}]",
                                 photo.getId(), photo.getSpace().getId(), photo.getDateTaken(),
-                                photo.getDateTaken().minusDays(1), photo.getDateTaken().plusDays(1));
+                                photo.getDateTaken().minusHours(2), photo.getDateTaken().plusHours(2));
                         do {
                             photosSlice =
-                                    photoRepository.findBySpaceIdAndDateTakenBetweenAndPhashNotNullAndMhashNotNullAndIsGarbageFalse(photo.getSpace().getId(), photo.getDateTaken().minusDays(1),
-                                            photo.getDateTaken().plusDays(1), pageable);
+                                    photoRepository.findBySpaceIdAndDateTakenBetweenAndPhashNotNullAndMhashNotNullAndIsGarbageFalse(photo.getSpace().getId(), photo.getDateTaken().minusHours(2),
+                                            photo.getDateTaken().plusHours(2), pageable);
                             log.info("checkDuplication photo={}: candidate page with {} photo(s)", photo.getId(), photosSlice.getContent().size());
-                            duplicationInProgress.addAll(photosSlice.getContent().stream().map(PhotoEntity::getId).toList());
                             List<PhotoEntity> duplicatePhotosForIteration = compare(photo, photosSlice.getContent());
                             if (!duplicatePhotosForIteration.isEmpty()) {
                                 duplicatesPhotos.addAll(duplicatePhotosForIteration);
@@ -422,11 +401,12 @@ public class DuplicationService {
                 .filter(targetPhoto -> targetPhoto.getContentType().contains("image"))
                 .filter(targetPhoto -> !targetPhoto.getId().equals(photo.getId()))
                 .map(targetPhoto -> evaluatePair(photo, targetPhoto))
-                .filter(Objects::nonNull)
+                .filter(Optional::isPresent)
+                .map(Optional::get)
                 .toList();
     }
 
-    private PhotoEntity evaluatePair(PhotoEntity photo, PhotoEntity targetPhoto) {
+    private Optional<PhotoEntity> evaluatePair(PhotoEntity photo, PhotoEntity targetPhoto) {
         int pHashDistance = calculateHammingDistance(photo.getPhash(), targetPhoto.getPhash());
         int averageHashDistance = calculateHammingDistance(photo.getMhash(), targetPhoto.getMhash());
         log.debug("evaluatePair photo={} target={}: pHashDistance={} (strong<={}, candidate<={}), mHashDistance={} (strong<={}, candidate<={})",
@@ -436,23 +416,23 @@ public class DuplicationService {
         if (pHashDistance <= STRONG_PHASH_MAX && averageHashDistance <= STRONG_MHASH_MAX) {
             log.debug("DUPLICATE via strong hash match: photo={} target={} pHashDistance={} mHashDistance={}",
                     photo.getId(), targetPhoto.getId(), pHashDistance, averageHashDistance);
-            return targetPhoto;
+            return Optional.of(targetPhoto);
         }
 
         boolean plausibleByHash = pHashDistance <= CANDIDATE_PHASH_MAX || averageHashDistance <= CANDIDATE_MHASH_MAX;
         if (!plausibleByHash) {
             log.debug("NOT duplicate: photo={} target={} outside candidate hash band, skipping feature matching",
                     photo.getId(), targetPhoto.getId());
-            return null;
+            return Optional.empty();
         }
 
         log.debug("candidate hash band: photo={} target={} falling back to ORB feature matching", photo.getId(), targetPhoto.getId());
         if (confirmWithFeatureMatching(photo, targetPhoto)) {
-            log.info("DUPLICATE via feature matching: photo={} target={}", photo.getId(), targetPhoto.getId());
-            return targetPhoto;
+            log.debug("DUPLICATE via feature matching: photo={} target={}", photo.getId(), targetPhoto.getId());
+            return Optional.of(targetPhoto);
         }
         log.debug("NOT duplicate: photo={} target={} feature matching did not confirm", photo.getId(), targetPhoto.getId());
-        return null;
+        return Optional.empty();
     }
 
     // ---------------------------------------------------
@@ -491,7 +471,7 @@ public class DuplicationService {
                 }
             }
 
-            log.info("feature matching photo={} target={}: keypoints1={} keypoints2={} totalMatches={} goodMatches={} (min required {})",
+            log.debug("feature matching photo={} target={}: keypoints1={} keypoints2={} totalMatches={} goodMatches={} (min required {})",
                     photo.getId(), targetPhoto.getId(), descriptors1.rows(), descriptors2.rows(), matches.size(), goodMatches.size(), ORB_MIN_GOOD_MATCHES);
 
             if (goodMatches.size() < ORB_MIN_GOOD_MATCHES) {
@@ -567,30 +547,6 @@ public class DuplicationService {
             }
         }
     }
-
-    public Slice<DuplicateGroupDTO> getDuplicates(Pageable pageable) {
-//        // Pageable is equals to 1, we will see only one DuplicateEntity
-//        Slice<DuplicateEntity> hashesSlice = duplicateRepository.findByStatus(IN_GROUP, pageable);
-//        List<DuplicateEntity> duplicateEntities = hashesSlice.getContent();
-//
-//        if (duplicateEntities.isEmpty()) {
-//            return new SliceImpl<>(Collections.emptyList(), pageable, hashesSlice.hasNext());
-//        }
-//        List<Photo> photos = duplicateEntities.getFirst().getPhotos().stream()
-//                .filter(photoEntity -> !photoEntity.getIsGarbage())
-//                .map(photoMapper::photoEntityToPhoto).toList();
-//
-//        List<DuplicateGroupDTO> result = Collections.emptyList();
-//        if (photos.size() > 1) {
-//            result = duplicateEntities.stream()
-//                    .map(hash -> new DuplicateGroupDTO(duplicateEntities.getFirst().getId().toString(), photos))
-//                    .collect(Collectors.toList());
-//        }
-//
-//        return new SliceImpl<>(result, pageable, hashesSlice.hasNext());
-        return null;
-    }
-
     /**
      * Calculates the Hamming Distance between two 8-byte (64-bit) pHashes.
      *

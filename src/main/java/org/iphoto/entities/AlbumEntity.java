@@ -48,7 +48,8 @@ public final class AlbumEntity extends BaseEntity { // Extends BaseEntity
     @JoinTable(
         name = "album_photos",
         joinColumns = @JoinColumn(name = "album_id"),
-        inverseJoinColumns = @JoinColumn(name = "photo_id")
+        inverseJoinColumns = @JoinColumn(name = "photo_id"),
+        indexes = {@Index(columnList = "photo_id",name =  "idx_photo_id_albums")}
     )
     private Set<PhotoEntity> photos;
 

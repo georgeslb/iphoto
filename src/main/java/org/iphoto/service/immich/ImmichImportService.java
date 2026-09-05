@@ -340,7 +340,7 @@ public class ImmichImportService {
             hash = HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(fis.readAllBytes()));
         }
 
-        if (photoRepository.findByFileHash(hash).isPresent()) {
+        if (photoRepository.findByFileHash(user.getId() + "-" + hash).isPresent()) {
             Files.deleteIfExists(stagedPath);
             log.info("SYNC_FROM_IMMICH task {} done: asset {} is a content-duplicate of an existing photo, skipped", task.getId(), immichAssetId);
             return Optional.of(ImmichAssetImportOutcome.SKIPPED_DUPLICATE_CONTENT);

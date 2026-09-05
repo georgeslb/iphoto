@@ -2082,77 +2082,140 @@ new work is identified or completed, so nothing gets lost between sessions.
       (so removing a member updates it in place, see `PhotoGrid.jsx`'s `openDuplicateItem`
       comment), a page-0 reset could drop the open cluster's primary out of the list entirely,
       auto-closing the modal even though the cluster itself still had other members left.
-      - **Fix**: `handleMoveToGarbage` no longer calls `refreshAndMaintainScroll`. It now updates
-        `photos` in place — `setPhotos` and `fetchAlbums`/`fetchSpaces` (for the count badges)
-        are now threaded into `usePhotoActions`, added as new trailing params. The `setPhotos`
-        updater both filters the garbage'd ids out of the top-level array and scrubs them out of
-        every *remaining* photo's own `duplicates` sub-array (that's what `PhotoGrid.jsx`'s
-        cluster grouping actually reads members from — not a re-derivation off the top-level
-        list), so a cluster's members stay correct even after its displayed "primary" (whichever
-        photo happens to be first-in-array) gets garbage'd out from under it.
+      - **Fix**: `handleMoveToGarbage` no longer calls `refreshAndMaintainScroll`. It now calls a
+        `removePhotosLocally(ids)` callback (`fetchAlbums`/`fetchSpaces`, for the count badges,
+        are still called too) - `removePhotosLocally` and the two are threaded into
+        `usePhotoActions` as new trailing params. `removePhotosLocally` is defined in `App.jsx`
+        (see the day-index entry below this one - after that landed, "update the photo list in
+        place" had to handle two different state shapes depending on the current view, not just
+        one flat array, hence a callback rather than a raw `setPhotos` passed straight through).
+        The actual removal/scrubbing logic lives in `utils/photoListUpdates.js`
+        (`removeFromFlatPhotos`/`removeFromPhotosByDay`) - both filter the garbage'd ids out and
+        scrub them from every *remaining* photo's own `duplicates` sub-array (that's what
+        `PhotoGrid.jsx`'s cluster grouping actually reads members from — not a re-derivation off
+        the top-level list), so a cluster's members stay correct even after its displayed
+        "primary" (whichever photo happens to be first-in-array/first-loaded) gets garbage'd out
+        from under it.
       - **Deliberately not touched**: `handleRestore`/`handleMoveToMain`/`handlePermanentDelete`
         still go through the old `refreshAndMaintainScroll` full-reset path, and have the same
         latent scroll/page-0 issue if triggered from a scrolled-down view - just not what was
         reported. Worth the same treatment later if it comes up.
       - **Tests**: `hooks/usePhotoActions.test.js` updated — asserts `refreshAndMaintainScroll` is
-        NOT called from `handleMoveToGarbage` anymore, and a new regression test drives the
-        `setPhotos` updater directly to confirm both the removal and the cross-photo
-        `duplicates`-scrubbing.
+        NOT called from `handleMoveToGarbage` anymore and that `removePhotosLocally` is called
+        with the right ids; `utils/photoListUpdates.test.js` covers the removal/scrubbing logic
+        itself directly.
 
-- [ ] **Refactor** (user request): fetch photos day-by-day instead of arbitrary fixed-size pages.
-      Not started - design sketch only, grounded in the current mechanism below. **Decided**: if
-      built, this REPLACES the month-timeline/cursor machinery below (`jumpToMonth`/`beforeDate`/
-      `afterDate`, `LibraryTimeline.jsx`) rather than sitting alongside it - not yet started,
-      still gated on the open design questions below (esp. #1, the write-time maintenance
-      burden, and #4, Album detail's scope).
-      - **Current mechanism** (`PhotoController.getPhotos` / `PhotoService` / `usePhotoData.js` /
-        `PhotoGrid.jsx`): fixed `size=20` pages, paged via a `dateTaken` cursor
-        (`beforeDate`/`afterDate`/`jumpToMonth`), with top/bottom `IntersectionObserver` sentinels
-        in `PhotoGrid.jsx` triggering the next page. The existing month-level index
-        (`TimelineMonthDTO`, `GET /api/photos/timeline`) backs Memories/browse-by-month — it's
-        computed live by a native window-function query
-        (`PhotoRepository.findMonthlyPhotoCountsWithCoverBySpaceId`), not a persisted table.
-      - **What the user wants instead**: a real `DayEntity` — `@ManyToOne SpaceEntity space` (same
-        relationship shape `PhotoEntity.space` already has) + `LocalDate day`, unique on
-        `(space_id, day)` — with `PhotoEntity` gaining its own `@ManyToOne DayEntity day`. A "day
-        index" (`GET /api/photos/days` for Library, space-scoped equivalent for Space detail) is
-        fetched *first* and cheaply — every day the space has photos on, most likely count + cover
-        photo per day, same shape `TimelineMonthDTO` already returns for months. The frontend
-        renders every day up front (as a section/placeholder), and only fetches a given day's
-        actual photos (`GET /api/photos/day/{day}` or similar, no pagination cursor needed inside
-        one day) once that day's section scrolls near the viewport — the existing top/bottom
-        `IntersectionObserver` sentinel pattern in `PhotoGrid.jsx`, generalized to one observer per
-        day-section instead of two observers around the whole feed.
-      - **Real design questions to settle before building this** (not implementation details -
-        answers change the shape of the work):
-        1. **Write-time maintenance burden**: unlike today's live-computed month index, a
-           persisted `DayEntity` needs to be kept in sync on every photo create (upload, Immich
-           import), delete/permanent-delete, garbage move, and date edit (including the
-           just-added-to-this-TODO bulk date-edit feature above) - mirroring how
-           `SpaceService.increaseSpacePhotoCount` already keeps `SpaceEntity.photoCount` in sync
-           as the precedent to follow, but now one extra layer (day, not just space) to update
-           everywhere a photo's space or date can change.
-        2. **A day with an outlier photo count** (e.g. 500 photos from one burst-shooting day/
-           event) - does fetching "all assets for this day" in one response stay unpaginated
-           regardless of count (simplest, matches "fetch all assets related to this day" as
-           stated), or does an unusually large day still need its own inner pagination? Affects
-           whether `GET /api/photos/day/{day}` can be a flat list response or needs the same
-           `PageResponse<Photo>` shape everything else uses.
-        3. **Does this replace or sit alongside the existing month-level timeline/jump-to-month
-           machinery** (`TimelineMonthDTO`, `jumpToMonth`/`beforeDate`/`afterDate` cursors,
-           `LibraryTimeline.jsx`)? A day-index likely makes the cursor-based paging machinery
-           obsolete (a month click could just scroll to that month's first day in the day-index
-           instead), which would be a nice simplification, but is a big enough behavior change
-           not to assume - confirm before ripping out working code.
-        4. **Album detail is not naturally day-indexable the same way**: the user's own framing
-           ties `DayEntity` to a Space, same as `PhotoEntity` - which covers Library (Main space)
-           and Space detail directly. But an Album *references* photos rather than owning them
-           (see specification.md's explicit Album-vs-Space distinction) and can reference photos
-           spanning arbitrary dates/spaces-of-origin with no per-album day-grouping concept - so
-           Album detail would need its own query path (e.g. group the album's referenced photo
-           ids by day) rather than reusing a straight space-scoped `DayEntity` lookup. Worth
-           confirming Album detail is even in scope for this change, or if it keeps its current
-           pagination.
+- [x] **Refactor** (user request): fetch photos day-by-day instead of arbitrary fixed-size pages,
+      for Library/Album/Space (Garbage/Person deliberately kept on the old flat pagination -
+      never part of this request). Fully replaces the old month-timeline/cursor machinery
+      (`jumpToMonth`/`beforeDate`/`afterDate`, `TimelineMonthDTO`, `LibraryTimeline.jsx`,
+      `useMonthlyTimeline.js`) - all deleted, not left alongside the new system.
+
+      Settled design, differs from the original sketch below in two ways worth flagging for
+      anyone re-reading this entry: (a) a derived `groupedDay` column on `PhotoEntity` instead of
+      a separate `DayEntity` table - avoids the write-time sync burden entirely (question #1
+      below), since it's just kept current via JPA lifecycle callbacks on the photo row itself;
+      (b) per-day photos ARE paginated (size 100), not a flat unpaginated response (question #2).
+      Questions #3 and #4 resolved as stated in the original sketch (replaces the month-timeline;
+      Album detail groups through `album_photos` instead of `space_id`).
+
+      - **Backend**: `PhotoEntity.groupedDay` (`LocalDate`, `@Column(name = "grouped_day")`),
+        synced via `onCreate`/`onUpdate` (`@PrePersist`/`@PreUpdate`) from `dateTaken` - covers
+        every existing `dateTaken`-setting path (`PhotoUploadService`, `ImmichImportService`,
+        `PhotoService.updatePhotoDate`) with zero extra code at any call site. Composite index
+        `idx_photos_space_grouped_day` on `(space_id, grouped_day)`. One-time backfill for
+        pre-existing rows (`ddl-auto: update` only adds the column, doesn't populate it):
+        `PhotoRepository.backfillGroupedDay()` (idempotent, `IS NULL`-guarded), run from a
+        `CommandLineRunner` bean in `IPhotoApplication.java` (matching `initDatabase`'s existing
+        precedent there, not a new `ApplicationRunner` class).
+        - Day-index queries (day/count/cover, modeled on the old month query's window-function/
+          random-cover technique): `PhotoRepository.findDailyPhotoCountsWithCoverBySpaceId`
+          (Library/Space) and `findDailyPhotoCountsWithCoverByAlbumId` (Album, joins
+          `album_photos`) → `PhotoService.getDailyPhotoCounts`/`AlbumService.
+          getAlbumDailyPhotoCounts` → new `model/DayBucketDTO.java`.
+        - Per-day photo queries: `findBySpaceIdAndIsGarbageFalseAndGroupedDay` /
+          `findByIsGarbageFalseAndAlbumsAndGroupedDay` → `PhotoService.getPhotosForDay` (goes
+          through `buildDedupedPage`, same as the plain feed) / `AlbumService.
+          getAlbumPhotosForDay` (no dedup, matching `getAlbumPhotos`'s existing behavior).
+        - New endpoints: `GET /api/photos/days` + `/api/photos/day/{day}` (Library),
+          `GET /api/photos/space/{spaceId}/days` + `/day/{day}` (Space, `PageResponse` envelope),
+          `GET /api/albums/{id}/days` + `/photos/day/{day}` (Album, raw `Page` envelope matching
+          its existing `/{id}/photos` sibling - a pre-existing envelope inconsistency between
+          controllers, not introduced here).
+        - Removed: `PhotoController.getTimeline`/`getPhotos`'s cursor params, `PhotoService.
+          getTimeline`/`getPhotosAfter`/cursor `getPhotos` overload, `PhotoRepository.
+          findMonthlyPhotoCountsWithCoverBySpaceId` + `findBySpaceIdAndIsGarbageFalseAndDateTaken
+          {LessThan,GreaterThan}`, `model/TimelineMonthDTO.java`. `GET /api/photos` kept as a
+          plain pageable listing (params simplified, endpoint itself not removed).
+      - **Frontend**: new `hooks/useDayIndexedPhotos.js` (`days`/`photosByDay`/`dayPageState`/
+        `loadDayPage`/`refreshDays`/`refreshLoadedDays`), used for Library/Album/Space only;
+        `hooks/usePhotoData.js` simplified back down to just Garbage/Person's flat pagination
+        (the `jumpToMonth`/`loadNewer`/`hasNewer`/cursor-switching logic it carried was Library-
+        only and is now entirely dead). `PhotoGrid.jsx` gained a `dayIndex` prop - when present,
+        renders one section per day with a single shared `IntersectionObserver` across every
+        day's sentinel (not one observer per day - hundreds of populated days is realistic and a
+        per-section observer wouldn't scale); when absent, falls back to the exact original
+        flat-array code path unchanged (Garbage/Person). New `utils/photoListUpdates.js`
+        (`removeFromFlatPhotos`/`removeFromPhotosByDay`) factors out the actual removal/
+        duplicate-scrubbing logic `usePhotoActions.js`'s `handleMoveToGarbage` needs (see the
+        bugfix entry above this one) so it works against either shape via a `removePhotosLocally`
+        callback App.jsx defines. `App.jsx`: `libraryPhotoGrid` now branches on `isDayIndexedView`
+        rather than being a single flat-props block, since `/asset/:photoId`'s `effectivePath` can
+        resolve to either Library or Garbage depending on which backgrounded it; a new
+        `effectivePhotos`/`flatDayIndexedPhotos` pair feeds anything that needs "the current
+        view's whole collection" regardless of data source (Lightbox prev/next, scroll
+        restoration, direct-asset-URL lookup) - easy to miss since `photos` used to just mean one
+        thing everywhere. `AlbumDetail.jsx`/`SpaceDetail.jsx` simplified to take `dayIndex`
+        directly instead of forwarding `photos`/`hasMore`/`setPage`. `LibraryTimeline.jsx`/
+        `useMonthlyTimeline.js` deleted - no replacement "jump to month"/Memories UI built in this
+        pass (all days are visible/scrollable up front now, which covers the core need); worth
+        revisiting only if actually asked for.
+      - **Known, accepted limitations**: duplicate-clustering only works within currently
+        *loaded* photos (same limitation the old flat feed already had, just now per-day-scoped
+        instead of per-loaded-pages-scoped); `refreshAndMaintainScroll` on a day-indexed view
+        (`refreshLoadedDays`) only refreshes each already-loaded day's first page - a day with
+        >100 photos and multiple pages loaded only gets its first page refreshed by the other
+        photo actions (restore/move-to-main/permanent-delete/date-edit/edit-photo/unlink-
+        duplicate), which don't get `handleMoveToGarbage`'s local in-place update treatment.
+      - **Follow-up (user request): extended to Garbage and Person too** ("one view means one
+        technology for all pages") - `usePhotoData.js`/`usePhotoData.test.js` deleted entirely,
+        `PhotoGrid.jsx`'s flat-array fallback code path removed (the `dayIndex` prop is no longer
+        optional - every consumer now builds one). Every photo-listing view in the authenticated
+        app is day-indexed; only the guest/share flow (`SharedAlbumView.jsx`) still uses its own
+        flat, page-number-paginated fetch (`useSharedAlbumPhotos.js`, hitting the separate
+        guest-scoped `/api/albums/share/{albumId}/photos` endpoint - no user session to derive a
+        day-index from, and never part of this request), adapted locally into a `dayIndex`-shaped
+        object (bucketed by `groupDate`) so it can still hand its photos to the now day-index-only
+        `PhotoGrid`.
+        - **Backend - Garbage**: cross-space, same scope the old flat endpoint had (a user's
+          garbage isn't scoped to one space). `PhotoRepository.
+          findDailyPhotoCountsWithCoverBySpaceIdInAndIsGarbageTrue`/
+          `findBySpaceIdInAndIsGarbageTrueAndGroupedDay` → `PhotoService.
+          getGarbageDailyPhotoCounts`/`getGarbagePhotosForDay` → `GET /api/photos/garbage/days` +
+          `/garbage/day/{day}` (replaces the old flat `GET /api/photos/garbage`, removed along
+          with `getGarbagePhotos`/`findBySpaceIdInAndIsGarbageTrue`). No dedup treatment, matching
+          the old endpoint.
+        - **Backend - Person**: joined through `faces` instead of `space_id`/`album_photos`, since
+          a person's photos can span multiple spaces - no existing precedent for this join in
+          `PhotoRepository`, had to write it fresh. `findDailyPhotoCountsWithCoverByPersonId`/
+          `findByFacesPersonAndGroupedDay` (deliberately no `is_garbage` filter, matching
+          `findByFacesPerson`'s existing no-filter semantics) → `PhotoService.
+          getPersonDailyPhotoCounts`/`getPersonPhotosForDay` → `FaceService.getPersonDays`/
+          `getPersonPhotosForDay` → `GET /api/faces/person/{id}/days` + `/photos/day/{day}`
+          (replaces the old flat `GET /api/faces/person/{id}/photos`, removed along with
+          `FaceService.getPersonPhotos`). `findByFacesPerson`/`PhotoService.findByPerson` kept -
+          still used by `FaceService.mapToPerson` purely for the person's total photo count.
+        - **Frontend**: `useDayIndexedPhotos.js`'s `resolveDayIndexTarget`/`daysUrl`/
+          `dayPhotosUrl` gained `garbage`/`person` branches. `PhotoGrid.jsx` lost its flat-mode
+          `groups` construction, its own `IntersectionObserver`/bottom sentinel, and the
+          `photos`/`hasMore`/`setPage`/`type`-for-grouping props - `dayIndex` is the only data
+          source now. `PersonDetail.jsx` restructured like `AlbumDetail.jsx`/`SpaceDetail.jsx`
+          (takes `dayIndex`, gates loading/empty state off `dayIndex.loadingDays`/`days.length`).
+          `App.jsx`: `isDayIndexedView`/`usePhotoData` removed entirely, `effectivePhotos`/
+          `removePhotosLocally`/`actualRefreshAndMaintainScroll` no longer branch on data source.
+        - **Tests**: `useDayIndexedPhotos.test.js` gained garbage/person `resolveDayIndexTarget`
+          and fetch-URL cases; `PhotoGrid.test.jsx`'s harness now wraps its fixture photos into a
+          single-day `dayIndex` object instead of passing a flat `photos` array, same assertions.
 - [ ] **Feature** (user request): two new bulk photo-selection actions, available everywhere a
       multi-select photo grid already exists — Library, Album detail, Space detail (all three
       share `components/Header.jsx`'s bulk-action bar, gated per-button by the capability flags

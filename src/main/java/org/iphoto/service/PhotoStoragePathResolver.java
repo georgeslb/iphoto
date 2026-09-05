@@ -16,8 +16,9 @@ import java.time.LocalDateTime;
 // thumbnails are organized as {storageRoot}/{year}/{month}/... instead of one flat directory per
 // root, so a library doesn't end up with hundreds of thousands of files in one directory.
 //
-// Date-based (not hash/UUID-prefix-based) deliberately: the app is already date/timeline-centric
-// (see TimelineMonthDTO, LibraryTimeline.jsx), so browsing the disk by month is genuinely useful.
+// Date-based (not hash/UUID-prefix-based) deliberately: the app is already date/day-index-centric
+// (see DayBucketDTO, PhotoGrid.jsx's day-sectioned browsing), so browsing the disk by month is
+// genuinely useful.
 // This is safe against a later "edit photo date" action because nothing in this codebase ever
 // reconstructs a photo's path from its date after creation - PhotoEntity.originalPath/
 // thumbnailPath are read back verbatim everywhere (PhotoService, EditPhotoService,

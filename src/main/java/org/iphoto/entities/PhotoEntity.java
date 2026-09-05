@@ -9,11 +9,13 @@ import lombok.experimental.SuperBuilder;
 import org.hibernate.annotations.OnDelete;
 import org.hibernate.annotations.OnDeleteAction;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
 
 @Entity
-@Table(name = "photos", uniqueConstraints = {@UniqueConstraint(name = "hash_user_unique_photos", columnNames = { "file_hash", "user_id"})})
+@Table(name = "photos", uniqueConstraints = {@UniqueConstraint(name = "hash_unique", columnNames = { "file_hash"})}
+, indexes = {@Index(columnList = "space_id", name = "space_index"), @Index(columnList = "space_id,grouped_day", name = "idx_photos_space_grouped_day")})
 @EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true) // Changed callSuper to true
 @ToString(onlyExplicitlyIncluded = true)
 @Getter
@@ -52,6 +54,14 @@ public class PhotoEntity extends BaseEntity  { // Extends BaseEntity
     private String contentType;
     @ToString.Include
     private LocalDateTime dateTaken;
+
+    // Derived from dateTaken (date part only), kept in sync via onCreate/onUpdate below rather
+    // than a separate persisted day-index table - lets day-grouped queries (day-index browsing)
+    // use a plain indexed column instead of grouping by extract(year/month/day from date_taken)
+    // live on every request.
+    @Column(name = "grouped_day")
+    private LocalDate groupedDay;
+
     private LocalDateTime fileSystemCreationDate; // New field for fallback
     private Integer width;
     private Integer height;
@@ -117,6 +127,16 @@ public class PhotoEntity extends BaseEntity  { // Extends BaseEntity
         createdAt = LocalDateTime.now();
         if (isFavorite == null) isFavorite = false;
         if (isGarbage == null) isGarbage = false;
+        syncGroupedDay();
+    }
+
+    @PreUpdate
+    protected void onUpdate() {
+        syncGroupedDay();
+    }
+
+    private void syncGroupedDay() {
+        this.groupedDay = dateTaken != null ? dateTaken.toLocalDate() : null;
     }
 
     public PhotoEntity() {

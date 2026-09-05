@@ -6,14 +6,12 @@ import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.TaskEntity;
 import org.iphoto.exception.ImmichApiException;
-import org.iphoto.exception.PhotoUploadException;
 import org.iphoto.exception.ServiceNotAvailableException;
 import org.iphoto.exception.SpaceLockingException;
 import org.iphoto.model.ImmichAssetImportOutcome;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.TaskType;
 import org.iphoto.model.UploadStatus;
-import org.iphoto.repository.PhotoRepository;
 import org.iphoto.repository.TaskRepository;
 import org.iphoto.service.immich.ImmichImportService;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -25,8 +23,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.io.*;
-import java.nio.file.Files;
-import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -35,19 +31,15 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.iphoto.model.TaskType.*;
-import static org.iphoto.model.UploadStatus.DUPLICATED;
-import static org.iphoto.model.UploadStatus.TRASHED;
 
 @Service
 @Slf4j
 public class TaskWorkerManager {
 
     private final TaskRepository taskRepository;
-    private final PhotoRepository photoRepository;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
     private final DuplicationService duplicationService;
-    private final PhotoUploadService photoUploadService;
     private final PhotoService photoService;
     private final FaceDetectionService faceDetectionService;
     private final FaceRecognitionService faceRecognitionService;
@@ -60,14 +52,12 @@ public class TaskWorkerManager {
     private static final Set<TaskType> LIGHT_TASK_TYPES =
             Stream.of(TaskType.values()).filter(taskType -> !taskType.isHeavy()).collect(Collectors.toSet());
 
-    public TaskWorkerManager(TaskRepository taskRepository, PhotoRepository photoRepository, ObjectMapper objectMapper, TransactionTemplate transactionTemplate, DuplicationService duplicationService, PhotoUploadService photoUploadService, PhotoService photoService, FaceDetectionService faceDetectionService, FaceRecognitionService faceRecognitionService
+    public TaskWorkerManager(TaskRepository taskRepository, ObjectMapper objectMapper, TransactionTemplate transactionTemplate, DuplicationService duplicationService, PhotoService photoService, FaceDetectionService faceDetectionService, FaceRecognitionService faceRecognitionService
             , ImmichImportService immichImportService, @Qualifier("lightThreadPoolExecutor") ThreadPoolTaskExecutor lightThreadPoolExecutor, @Qualifier("heavyThreadPoolExecutor") ThreadPoolTaskExecutor heavyThreadPoolExecutor) {
         this.taskRepository = taskRepository;
-        this.photoRepository = photoRepository;
         this.objectMapper = objectMapper;
         this.transactionTemplate = transactionTemplate;
         this.duplicationService = duplicationService;
-        this.photoUploadService = photoUploadService;
         this.photoService = photoService;
         this.faceDetectionService = faceDetectionService;
         this.faceRecognitionService = faceRecognitionService;
@@ -153,7 +143,7 @@ public class TaskWorkerManager {
         });
     }
 
-    private static int randomRetryDelayMinutes() {
+    private int randomRetryDelayMinutes() {
         return MIN_RETRY_DELAY_MINUTES + ThreadLocalRandom.current().nextInt(MAX_RETRY_DELAY_MINUTES - MIN_RETRY_DELAY_MINUTES + 1);
     }
 
@@ -197,42 +187,17 @@ public class TaskWorkerManager {
             }
             catch (ServiceNotAvailableException | SpaceLockingException e) {
                 task.setStatus(TaskStatus.PENDING);
-                task.setExecuteAt(null);
+                task.setExecuteAt(LocalDateTime.now().plusMinutes(randomRetryDelayMinutes()));
             }
-            // Multiple UPLOAD_FROM_IMMICH tasks for assets in the same space finish in parallel
-            // on different virtual threads, and SpaceService.lockSpace uses a non-blocking
-            // tryLock - one of them losing that race throws this rather than waiting. Treat it the
-            // same as ServiceNotAvailableException (immediate same-process retry on the next
-            // 5-second poll) rather than a real failure - the lock is normally held only briefly.
-            // A transient database problem mid-task (connection blip, pool exhaustion, deadlock,
-            // query timeout...) shouldn't permanently fail the task - it should just be retried
-            // once whatever caused it has had a chance to clear. 5 minutes, not an immediate retry
-            // like the two catches above, since a DB-level problem is more likely to need real
-            // recovery time than momentary lock contention. Spring Data JPA/Hibernate translate
-            // essentially every low-level persistence failure (JDBC SQLException, connection pool
-            // errors, deadlocks...) into a DataAccessException subtype, so catching this one type
-            // covers the DB-error case broadly rather than chasing individual driver exceptions.
-            // Caveat, inherent to the problem: if the database is down badly enough that even the
-            // recovery write below (taskRepository.save(task)) can't complete either, the task is
-            // left exactly as it was (still PROCESSING, picked up again once whatever reclaim
-            // mechanism applies to its task type notices - see ImmichImportService.isReclaimable
-            // for the one that currently exists) - persisting "retry later" itself requires the
-            // database to be reachable, so there's no way around that short of an out-of-band
-            // recovery mechanism.
             catch (DataAccessException e) {
-                log.warn("Task {} hit a database error, retrying in 5 minutes", task.getId(), e);
+                log.warn("Task {} hit a database error", task.getId(), e);
                 task.setStatus(TaskStatus.PENDING);
-                task.setExecuteAt(LocalDateTime.now().plusMinutes(5));
+                task.setExecuteAt(LocalDateTime.now().plusMinutes(randomRetryDelayMinutes()));
             }
-            // Same idea for a network problem talking to an external service - currently just
-            // Immich (see ImmichApiException, the catch-all every ImmichClient method wraps REST
-            // failures in, including plain connectivity/timeout issues). Don't burn the task's one
-            // shot at FAILED just because the user's Immich server or their own network had a
-            // blip; let the poller pick it back up once real time has passed.
             catch (ImmichApiException e) {
-                log.warn("Task {} hit a network error talking to Immich, retrying in 5 minutes", task.getId(), e);
+                log.warn("Task {} hit a network error talking to Immich", task.getId(), e);
                 task.setStatus(TaskStatus.PENDING);
-                task.setExecuteAt(LocalDateTime.now().plusMinutes(5));
+                task.setExecuteAt(LocalDateTime.now().plusMinutes(randomRetryDelayMinutes()));
             }
             catch (Throwable e) {
                 log.error("Task failed", e);
@@ -276,30 +241,7 @@ public class TaskWorkerManager {
 
         if (!tempFile.exists()) throw new RuntimeException("Temp file not found");
 
-        String hash;
-        try (FileInputStream fis = new FileInputStream(tempFile)) {
-            hash = HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(fis.readAllBytes()));
-        }
-
-        return photoRepository.findByFileHash(hash).map(photoEntity -> {
-            try {
-                Files.deleteIfExists(tempFile.toPath());
-                task.setPhotoId(photoEntity.getId());
-                if (photoEntity.getIsGarbage()) {
-                    return TRASHED;
-                }
-                return DUPLICATED;
-            } catch (IOException e) {
-                throw new RuntimeException(e);
-            }
-
-        }).orElseGet(() -> {
-            try {
-                return photoUploadService.processNewAsset(task, payload, tempFile, hash);
-            } catch (Exception e) {
-                throw new PhotoUploadException(e);
-            }
-        });
+        return photoService.uploadAsset(task, payload, tempFile);
     }
 
 
