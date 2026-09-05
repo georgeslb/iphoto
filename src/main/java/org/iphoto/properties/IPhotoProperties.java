@@ -12,6 +12,7 @@ import java.util.List;
 public class IPhotoProperties {
     Storage storage;
     Memories memories = new Memories();
+    HeavyTasks heavyTasks = new HeavyTasks();
 
     @Data
     public static class Storage {
@@ -41,4 +42,33 @@ public class IPhotoProperties {
     // Immich connection info moved to a per-user setting (see UserEntity.immichBaseUrl/
     // immichApiKeyEncrypted, UserService#resolveImmichCredentials) - no more global
     // env-var-configured server here.
+
+    // Each heavy task type (CHECK_DUPLICATION/ISOLATE_FACES/FACE_RECOGNITION) gets its own
+    // dedicated, fixed-size thread pool (see ThreadPoolConfiguration/TaskWorkerManager) instead of
+    // all three sharing one pool whose size was dynamically resized based on light-task load. That
+    // combination used to fight itself: each service also held its own internal lock capping ITS
+    // task type to 1 concurrent run regardless of how many threads the shared pool actually gave
+    // it, so a face-detection burst never got the parallelism the pool size implied, and (a real
+    // bug found while fixing this) DuplicationService's lock was acquired twice but released only
+    // once per call, permanently jamming CHECK_DUPLICATION after its very first run. Splitting into
+    // per-type pools sized exactly to each service's real concurrency ceiling and deleting the
+    // internal locks fixes both at once - the pool itself is now the only concurrency limiter.
+    @Data
+    public static class HeavyTasks {
+        // CHECK_DUPLICATION: kept at 1 - DuplicationService's hash-based consolidation reads and
+        // writes DuplicateEntity rows across the candidate set non-atomically; two photos' checks
+        // running at once could race on the same duplicate group.
+        int duplicationThreads = 1;
+        // ISOLATE_FACES: each call opens its own DJL Predictor per invocation (see
+        // FaceDetectionService#detectAndSaveFaces - detectionModel.newPredictor()/
+        // embeddingModel.newPredictor(), never a shared Predictor instance), which is the
+        // supported way to run DJL inference concurrently - safe to parallelize.
+        int faceDetectionThreads = 3;
+        // FACE_RECOGNITION: kept at 1 - groupFaces() reprocesses/regroups ALL users' ungrouped
+        // faces in one run; two overlapping runs would race on the same PersonEntity clusters.
+        int faceRecognitionThreads = 1;
+        // Shared across all three pools above - how many PENDING tasks of a given heavy type can
+        // be queued waiting for a free thread before pollHeavyTasks stops fetching more.
+        int queueCapacity = 10;
+    }
 }

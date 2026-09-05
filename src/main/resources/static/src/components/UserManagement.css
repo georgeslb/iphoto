@@ -166,6 +166,34 @@
     gap: 20px;
 }
 
+.immich-tabs {
+    display: flex;
+    gap: 4px;
+    border-bottom: 2px solid #dee2e6;
+    margin-bottom: 20px;
+}
+
+.immich-tab-button {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    padding: 8px 16px;
+    font-size: 1rem;
+    cursor: pointer;
+    color: #555;
+}
+
+.immich-tab-button:hover {
+    color: #222;
+}
+
+.immich-tab-button.active {
+    color: #007bff;
+    border-bottom-color: #007bff;
+    font-weight: 600;
+}
+
 @media (max-width: 768px) {
     .user-management-container {
         margin: 12px;

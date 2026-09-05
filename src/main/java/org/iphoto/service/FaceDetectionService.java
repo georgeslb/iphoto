@@ -16,7 +16,6 @@ import org.iphoto.configuration.FaceAligner;
 import org.iphoto.entities.FaceEntity;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.TaskEntity;
-import org.iphoto.exception.ServiceNotAvailableException;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.repository.FaceRepository;
 import org.iphoto.repository.PersonRepository;
@@ -30,7 +29,6 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Paths;
-import java.util.concurrent.locks.ReentrantLock;
 
 @Service
 @Slf4j
@@ -41,7 +39,6 @@ public class FaceDetectionService {
     private final PhotoRepository photoRepository;
     private final ZooModel<Image, DetectedObjects> detectionModel;
     private final ZooModel<Image, float[]> embeddingModel;
-    private final ReentrantLock lock = new ReentrantLock();
     private final PersonRepository personRepository;
     private final PersonRecognitionService personRecognitionService;
 
@@ -77,30 +74,30 @@ public class FaceDetectionService {
         faceRepository.deleteByPhotoId(photo);
     }
 
+    // No longer self-locking - ISOLATE_FACES now runs on its own dedicated pool sized to exactly
+    // the concurrency this is safe for (see TaskWorkerManager/
+    // IPhotoProperties.HeavyTasks#faceDetectionThreads, default 3), instead of a lock that
+    // serialized every call to 1 at a time regardless of how many pool threads were available -
+    // each call already opens its own DJL Predictor below (detectionModel.newPredictor()/
+    // embeddingModel.newPredictor()), which is the supported way to run concurrent DJL inference,
+    // so the lock was only ever holding back real parallelism, not protecting anything unsafe.
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void detectAndSaveFaces(TaskEntity task) {
-        if (!lock.tryLock()) {
-            throw new ServiceNotAvailableException("Face detection service is busy with another task");
-        }
-        try {
-            photoRepository.findById(task.getPhotoId()).ifPresent(photo -> { // Filter by user
-                try {
-                    log.info("Starting face detection for photo: {}", photo.getId());
-                    if (photo.getContentType() != null && photo.getContentType().startsWith("image")) {
-                        this.detectAndSaveFaces(photo); // Pass user to helper method
-                        task.setStatus(TaskStatus.COMPLETED);
-                    } else {
-                        log.warn("Skipping face detection for non-image file: {}", photo.getId());
-                        task.setStatus(TaskStatus.IGNORED);
-                    }
-                } catch (Exception e) {
-                    log.error("Error during face detection for photo: {}", photo.getId(), e);
-                    throw new RuntimeException("Failed to process faces for photo " + photo.getId(), e);
+        photoRepository.findById(task.getPhotoId()).ifPresent(photo -> { // Filter by user
+            try {
+                log.info("Starting face detection for photo: {}", photo.getId());
+                if (photo.getContentType() != null && photo.getContentType().startsWith("image")) {
+                    this.detectAndSaveFaces(photo); // Pass user to helper method
+                    task.setStatus(TaskStatus.COMPLETED);
+                } else {
+                    log.warn("Skipping face detection for non-image file: {}", photo.getId());
+                    task.setStatus(TaskStatus.IGNORED);
                 }
-            });
-        } finally {
-            lock.unlock();
-        }
+            } catch (Exception e) {
+                log.error("Error during face detection for photo: {}", photo.getId(), e);
+                throw new RuntimeException("Failed to process faces for photo " + photo.getId(), e);
+            }
+        });
     }
 
     private void detectAndSaveFaces(PhotoEntity photo) throws IOException { // Added UserEntity parameter

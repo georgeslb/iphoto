@@ -186,12 +186,39 @@ public class ImmichClient {
         });
     }
 
-    public ImmichAlbumDetailDTO getAlbumDetail(ImmichCredentials creds, String albumId) {
-        return throttled(() -> restClient.get()
-                .uri(uri(creds, "/albums/{id}", b -> b, albumId))
-                .header("x-api-key", creds.apiKey())
-                .retrieve()
-                .body(ImmichAlbumDetailDTO.class));
+    // GET /albums/{id} (AlbumResponseDto) does NOT carry an "assets" property on current Immich
+    // server versions - confirmed against a live server, detail.assets() always came back null,
+    // which is why every Immich-imported album ended up with zero linked photos. An album's
+    // assets have to be fetched the same way the day/month sync already does it for a date
+    // range (see getMonthBuckets/getAssetsForMonth), just scoped by albumId instead: first list
+    // the album's time buckets, then pull each bucket's actual asset ids.
+    // timezoneOffset is fixed at UTC here (not threaded through from the caller like
+    // getMonthBuckets/getAssetsForDay) - only used by Immich to decide which month a
+    // near-midnight asset's bucket boundary falls into, and every bucket returned still gets
+    // fully enumerated regardless, so the exact split doesn't affect which assets are found.
+    public List<ImmichTimeBucketDTO> getAlbumTimeBuckets(ImmichCredentials creds, String albumId) {
+        return throttled(() -> {
+            List<ImmichTimeBucketDTO> buckets = restClient.get()
+                    .uri(uri(creds, "/timeline/buckets", b -> b.queryParam("albumId", albumId).queryParam("size", "MONTH")))
+                    .header("x-api-key", creds.apiKey())
+                    .retrieve()
+                    .body(new org.springframework.core.ParameterizedTypeReference<List<ImmichTimeBucketDTO>>() {});
+            return buckets != null ? buckets : List.of();
+        });
+    }
+
+    // GET /timeline/bucket (singular - distinct endpoint from /timeline/buckets above) returns
+    // the actual asset ids belonging to one bucket, in Immich's columnar response shape - see
+    // ImmichTimeBucketAssetsDTO.
+    public List<String> getAlbumBucketAssetIds(ImmichCredentials creds, String albumId, String timeBucket) {
+        return throttled(() -> {
+            ImmichTimeBucketAssetsDTO response = restClient.get()
+                    .uri(uri(creds, "/timeline/bucket", b -> b.queryParam("albumId", albumId).queryParam("timeBucket", timeBucket)))
+                    .header("x-api-key", creds.apiKey())
+                    .retrieve()
+                    .body(ImmichTimeBucketAssetsDTO.class);
+            return response != null && response.id() != null ? response.id() : List.of();
+        });
     }
 
     public List<ImmichSharedLinkDTO> listSharedLinks(ImmichCredentials creds) {

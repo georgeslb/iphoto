@@ -12,7 +12,6 @@ import org.bytedeco.opencv.opencv_features2d.ORB;
 import org.bytedeco.opencv.opencv_img_hash.AverageHash;
 import org.bytedeco.opencv.opencv_img_hash.PHash;
 import org.iphoto.entities.*;
-import org.iphoto.exception.ServiceNotAvailableException;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.repository.DuplicateRepository;
 import org.iphoto.repository.PhotoDuplicateRepository;
@@ -26,7 +25,6 @@ import org.springframework.transaction.annotation.Transactional;
 import java.nio.ByteBuffer;
 import java.time.LocalDateTime;
 import java.util.*;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 import static org.bytedeco.opencv.global.opencv_calib3d.RANSAC;
@@ -47,7 +45,6 @@ public class DuplicationService {
     private PhotoDuplicateRepository photoDuplicateRepository;
     private DuplicationUniquenessService duplicateUniquenessService;
     private TaskMapper taskMapper;
-    private ReentrantLock checkDuplicationLock = new ReentrantLock();
 
     private static final int MAX_SIZE = 1000;
 
@@ -336,18 +333,20 @@ public class DuplicationService {
         return resized;
     }
 
+    // No longer self-locking - CHECK_DUPLICATION now runs on its own dedicated single-thread pool
+    // (see TaskWorkerManager/IPhotoProperties.HeavyTasks#duplicationThreads), which already
+    // guarantees only one call runs at a time. The lock this replaced had a real bug anyway: it
+    // was acquired via tryLock() then lock() again (a redundant re-entrant acquisition) but
+    // released only once in the finally block below, permanently leaving it held after the very
+    // first call - every later call from a different pool thread would find it already held
+    // forever and immediately throw, so CHECK_DUPLICATION never actually ran a second time.
     public void checkDuplication(TaskEntity task) {
-        if (!checkDuplicationLock.tryLock()) {
-            throw new ServiceNotAvailableException("Duplication is busy with another task");
+        if (photoAlreadyDuplicated(task.getPhotoId())) {
+            task.setStatus(TaskStatus.COMPLETED);
+            return;
         }
-        try {
-            checkDuplicationLock.lock();
-            if (photoAlreadyDuplicated(task.getPhotoId())) {
-                task.setStatus(TaskStatus.COMPLETED);
-                return;
-            }
 
-            photoRepository
+        photoRepository
                     .findById(task.getPhotoId()).ifPresent(photo -> {
 
                         Pageable pageable = PageRequest.of(0, 100);
@@ -395,9 +394,6 @@ public class DuplicationService {
                         }
                         task.setStatus(TaskStatus.COMPLETED);
                     });
-        } finally {
-            checkDuplicationLock.unlock();
-        }
     }
 
     private boolean photoAlreadyDuplicated(UUID photoId) {

@@ -1,35 +1,50 @@
 package org.iphoto.service.immich;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.AlbumEntity;
 import org.iphoto.entities.ShareEntity;
+import org.iphoto.entities.TaskEntity;
 import org.iphoto.entities.UserEntity;
 import org.iphoto.exception.ImmichApiException;
-import org.iphoto.model.ImmichAlbumImportSummaryDTO;
-import org.iphoto.model.immich.ImmichAlbumDetailDTO;
+import org.iphoto.model.ImmichAlbumImportStatusDTO;
+import org.iphoto.model.ImmichAlbumImportTriggerResultDTO;
+import org.iphoto.model.TaskStatus;
+import org.iphoto.model.TaskType;
 import org.iphoto.model.immich.ImmichAlbumSummaryDTO;
-import org.iphoto.model.immich.ImmichAssetRefDTO;
 import org.iphoto.model.immich.ImmichSharedLinkDTO;
+import org.iphoto.model.immich.ImmichTimeBucketDTO;
 import org.iphoto.repository.AlbumRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.repository.ShareRepository;
+import org.iphoto.repository.TaskRepository;
 import org.iphoto.service.AlbumService;
 import org.iphoto.service.ShareService;
 import org.iphoto.service.SpaceService;
+import org.iphoto.service.TaskManagerService;
 import org.iphoto.service.UserService;
 import org.iphoto.service.UserService.ImmichCredentials;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
 
+import java.time.LocalDateTime;
 import java.util.*;
 
-// Recreates Immich albums (and their album-level shared links) in iphoto - run once photo import
-// is well underway, since a photo must already exist locally (see PhotoRepository.existsById)
-// before AlbumService.addPhotosToAlbum will accept it. Runs synchronously on the triggering user's
-// own request thread (small scale, unlike per-day asset import) so @MainSpaceLimited repository
-// methods resolve the current space normally via SecurityContextHolder.
+// Recreates Immich albums (and their album-level shared links) in iphoto. Album *creation* and
+// the shared-link pass run synchronously on the triggering request (cheap - local DB only, plus
+// the one listAlbums/listSharedLinks call each), but the actual photo-linking work per album -
+// fetching /timeline/buckets then /timeline/bucket per bucket, potentially many Immich round
+// trips per album, across potentially many albums - is queued as one IMPORT_IMMICH_ALBUM task per
+// album (see TaskWorkerManager) instead of running inline, so a request with many albums doesn't
+// block on however long Immich takes to answer all of them. A photo must already exist locally
+// (see PhotoRepository.existsById) before AlbumService.addPhotosToAlbum will accept it - re-queuing
+// "Import Albums" after more photos have synced is expected and safe (idempotent, see the
+// in-flight check in queueAlbumImport).
 //
 // Each album and each shared link is processed in its own transaction (via TransactionTemplate,
 // not a single @Transactional spanning the whole run) so one broken item can't mark the whole
@@ -43,6 +58,12 @@ public class ImmichAlbumImportService {
 
     private static final String SOURCE = "IMMICH";
 
+    // A task in any of these statuses is either not yet run or actively running - queuing another
+    // one for the same album while one of these is outstanding would just race it. FAILED/
+    // COMPLETED are NOT in this set: re-running "Import Albums" is meant to retry a failure or
+    // pick up photos that synced since the last successful run.
+    private static final Set<TaskStatus> IN_FLIGHT_STATUSES = Set.of(TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.PROCESSING);
+
     private final ImmichClient immichClient;
     private final AlbumRepository albumRepository;
     private final AlbumService albumService;
@@ -51,11 +72,14 @@ public class ImmichAlbumImportService {
     private final PhotoRepository photoRepository;
     private final TransactionTemplate transactionTemplate;
     private final UserService userService;
+    private final TaskManagerService taskManagerService;
+    private final TaskRepository taskRepository;
+    private final ObjectMapper objectMapper;
 
-    public ImmichAlbumImportSummaryDTO triggerAlbumImport(UserEntity user) {
+    public ImmichAlbumImportTriggerResultDTO triggerAlbumImport(UserEntity user) {
         ImmichCredentials creds = userService.requireImmichCredentials(user);
         List<String> warnings = new ArrayList<>();
-        int albumsCreated = 0, albumsUpdated = 0, photosLinked = 0, photosSkippedNotYetImported = 0;
+        int albumsQueued = 0, albumsAlreadyInFlight = 0;
         int sharedLinksCreated = 0, sharedLinksSkipped = 0;
 
         List<ImmichAlbumSummaryDTO> albums;
@@ -66,20 +90,18 @@ public class ImmichAlbumImportService {
         }
 
         // Tracks which Immich album id maps to which iphoto album, for the shared-link pass below.
+        // Populated regardless of whether this album's photo-linking task has run yet - the local
+        // AlbumEntity row always exists after queueAlbumImport, only its photos are still pending.
         Map<String, UUID> importedAlbumIds = new HashMap<>();
 
         for (ImmichAlbumSummaryDTO albumSummary : albums) {
             try {
-                AlbumResult result = transactionTemplate.execute(status -> processOneAlbum(albumSummary, user, creds));
-                if (result != null) {
-                    importedAlbumIds.put(albumSummary.id(), result.albumId());
-                    if (result.wasNew()) albumsCreated++; else albumsUpdated++;
-                    photosLinked += result.photosLinked();
-                    photosSkippedNotYetImported += result.photosSkipped();
-                }
+                QueueResult result = transactionTemplate.execute(status -> queueAlbumImport(albumSummary, user));
+                importedAlbumIds.put(albumSummary.id(), result.albumId());
+                if (result.queued()) albumsQueued++; else albumsAlreadyInFlight++;
             } catch (Exception e) {
                 warnings.add("Album '" + albumSummary.albumName() + "' (immich id " + albumSummary.id() + "): " + e.getMessage());
-                log.warn("Failed to import Immich album {}", albumSummary.id(), e);
+                log.warn("Failed to queue Immich album {} for import", albumSummary.id(), e);
             }
         }
 
@@ -108,11 +130,10 @@ public class ImmichAlbumImportService {
             }
         }
 
-        return new ImmichAlbumImportSummaryDTO(albumsCreated, albumsUpdated, photosLinked, photosSkippedNotYetImported, sharedLinksCreated, sharedLinksSkipped, warnings);
+        return new ImmichAlbumImportTriggerResultDTO(albumsQueued, albumsAlreadyInFlight, sharedLinksCreated, sharedLinksSkipped, warnings);
     }
 
-    private AlbumResult processOneAlbum(ImmichAlbumSummaryDTO albumSummary, UserEntity user, ImmichCredentials creds) {
-        boolean existedBefore = albumRepository.findByExternalSourceAndExternalId(SOURCE, albumSummary.id()).isPresent();
+    private QueueResult queueAlbumImport(ImmichAlbumSummaryDTO albumSummary, UserEntity user) {
         AlbumEntity album = albumRepository.findByExternalSourceAndExternalId(SOURCE, albumSummary.id())
                 .orElseGet(() -> AlbumEntity.builder()
                         .space(spaceService.getDefaultSpaceForUser(user))
@@ -123,27 +144,105 @@ public class ImmichAlbumImportService {
                         .build());
         album = albumRepository.save(album);
 
-        ImmichAlbumDetailDTO detail = immichClient.getAlbumDetail(creds, albumSummary.id());
+        boolean alreadyInFlight = taskRepository.findByPhotoIdAndTaskTypeIn(album.getId(), Set.of(TaskType.IMPORT_IMMICH_ALBUM))
+                .stream().anyMatch(t -> IN_FLIGHT_STATUSES.contains(t.getStatus()));
+        if (alreadyInFlight) {
+            return new QueueResult(album.getId(), false);
+        }
+
+        Map<String, String> payload = new HashMap<>();
+        payload.put("immichAlbumId", albumSummary.id());
+        payload.put("albumName", albumSummary.albumName());
+        try {
+            taskManagerService.createTaskEntity(user, TaskType.IMPORT_IMMICH_ALBUM, album.getId(),
+                    objectMapper.writeValueAsString(payload), LocalDateTime.now());
+        } catch (JsonProcessingException e) {
+            throw new ImmichApiException("Failed to queue album import task for " + albumSummary.id(), e);
+        }
+        return new QueueResult(album.getId(), true);
+    }
+
+    // Called by TaskWorkerManager for each IMPORT_IMMICH_ALBUM task - the actual photo-linking
+    // work deferred out of triggerAlbumImport above. task.getPhotoId() is the local AlbumEntity id
+    // (see TaskType.IMPORT_IMMICH_ALBUM); the Immich-side album id travels in the payload since
+    // it's never persisted on AlbumEntity by that name (externalId is the same value, but reading
+    // it back off the entity would need an extra lookup for no benefit).
+    public void processAlbumImportTask(TaskEntity task) {
+        Map<String, String> payload;
+        try {
+            payload = objectMapper.readValue(task.getPayload(), new TypeReference<>() {});
+        } catch (JsonProcessingException e) {
+            throw new ImmichApiException("Failed to read album import task payload", e);
+        }
+        String immichAlbumId = payload.get("immichAlbumId");
+        String albumName = payload.get("albumName");
+        UUID albumId = task.getPhotoId();
+
+        UserEntity user = userService.findById(task.getUserId())
+                .orElseThrow(() -> new NoSuchElementException("User not found: " + task.getUserId()));
+        ImmichCredentials creds = userService.requireImmichCredentials(user);
+
+        List<ImmichTimeBucketDTO> buckets = immichClient.getAlbumTimeBuckets(creds, immichAlbumId);
+        List<String> assetIds = new ArrayList<>();
+        for (ImmichTimeBucketDTO bucket : buckets) {
+            assetIds.addAll(immichClient.getAlbumBucketAssetIds(creds, immichAlbumId, bucket.timeBucket()));
+        }
+        log.info("Immich album {} ('{}'): {} asset id(s) across {} time bucket(s)",
+                immichAlbumId, albumName, assetIds.size(), buckets.size());
+
         List<UUID> linkable = new ArrayList<>();
         int skipped = 0;
-        if (detail.assets() != null) {
-            for (ImmichAssetRefDTO ref : detail.assets()) {
-                try {
-                    UUID assetId = UUID.fromString(ref.id());
-                    if (photoRepository.existsById(assetId)) {
-                        linkable.add(assetId);
-                    } else {
-                        skipped++;
-                    }
-                } catch (IllegalArgumentException ignored) {
+        for (String rawId : assetIds) {
+            try {
+                UUID assetId = UUID.fromString(rawId);
+                if (photoRepository.existsById(assetId)) {
+                    linkable.add(assetId);
+                } else {
                     skipped++;
                 }
+            } catch (IllegalArgumentException ignored) {
+                log.warn("Immich album {}: asset id '{}' is not a valid UUID, skipping", immichAlbumId, rawId);
+                skipped++;
             }
         }
+        log.info("Immich album {} ('{}'): {} linkable locally, {} skipped (not yet imported or invalid id)",
+                immichAlbumId, albumName, linkable.size(), skipped);
         if (!linkable.isEmpty()) {
-            albumService.addPhotosToAlbum(album.getId(), linkable);
+            albumService.addPhotosToAlbum(albumId, linkable);
+            log.info("Immich album {} ('{}'): addPhotosToAlbum completed for {} photo(s)", immichAlbumId, albumName, linkable.size());
         }
-        return new AlbumResult(album.getId(), !existedBefore, linkable.size(), skipped);
+    }
+
+    // Backs GET /api/immich/albums - the live per-album status list the frontend polls the same
+    // way it already polls per-day import status (see ImmichImportDayDTO/pollDay). One row per
+    // Immich album this user has ever queued a task for, reflecting only the latest task per
+    // album; photoCount is read live off AlbumEntity so it keeps advancing as the task actually
+    // links photos in, without needing the task's own payload/result tracked separately.
+    @Transactional(readOnly = true)
+    public List<ImmichAlbumImportStatusDTO> listAlbumImportStatus(UserEntity user) {
+        List<TaskEntity> tasks = taskRepository.findByUserIdAndTaskType(user.getId(), TaskType.IMPORT_IMMICH_ALBUM);
+        Map<UUID, TaskEntity> latestByAlbum = new HashMap<>();
+        for (TaskEntity task : tasks) {
+            latestByAlbum.merge(task.getPhotoId(), task,
+                    (a, b) -> a.getUpdatedAt().isAfter(b.getUpdatedAt()) ? a : b);
+        }
+
+        List<ImmichAlbumImportStatusDTO> result = new ArrayList<>();
+        for (TaskEntity task : latestByAlbum.values()) {
+            Map<String, String> payload;
+            try {
+                payload = objectMapper.readValue(task.getPayload(), new TypeReference<>() {});
+            } catch (JsonProcessingException e) {
+                log.warn("Skipping unreadable IMPORT_IMMICH_ALBUM task {} payload", task.getId(), e);
+                continue;
+            }
+            Integer photoCount = albumRepository.findById(task.getPhotoId()).map(AlbumEntity::getPhotoCount).orElse(null);
+            result.add(new ImmichAlbumImportStatusDTO(
+                    payload.get("immichAlbumId"), payload.get("albumName"), task.getPhotoId(),
+                    task.getStatus(), photoCount, task.getErrorMessage(), task.getUpdatedAt()));
+        }
+        result.sort(Comparator.comparing(ImmichAlbumImportStatusDTO::albumName, String.CASE_INSENSITIVE_ORDER));
+        return result;
     }
 
     // Returns true if a new ShareEntity was created (false if it already existed, or if the
@@ -212,6 +311,6 @@ public class ImmichAlbumImportService {
         return sanitized.length() > 100 ? sanitized.substring(0, 100) : sanitized;
     }
 
-    private record AlbumResult(UUID albumId, boolean wasNew, int photosLinked, int photosSkipped) {
+    private record QueueResult(UUID albumId, boolean queued) {
     }
 }

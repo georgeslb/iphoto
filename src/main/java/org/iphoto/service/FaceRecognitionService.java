@@ -21,7 +21,6 @@ import java.nio.FloatBuffer;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.*;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -37,7 +36,6 @@ public class FaceRecognitionService {
     private final UserRepository userRepository;
     private final SpaceService spaceService;
     private final FaceLinkExclusionRepository faceLinkExclusionRepository;
-    private final ReentrantLock lock = new ReentrantLock();
 
     // Threshold for Cosine Similarity: A higher value means a stricter match. Kept strict and
     // never loosened for "same person, different age" cases — a face at 5 and the same face at
@@ -69,18 +67,14 @@ public class FaceRecognitionService {
     private static final Duration MAX_NEW_PERSON_CLUSTER_GAP = Duration.ofHours(24);
     private final EntityManager entityManager;
 
+    // No longer self-locking - FACE_RECOGNITION now runs on its own dedicated single-thread pool
+    // (see TaskWorkerManager/IPhotoProperties.HeavyTasks#faceRecognitionThreads), which already
+    // guarantees only one call runs at a time.
     public void groupFaces() { // Added UserEntity parameter
-        lock.lock();
-
-        try {
-            userRepository.findAll().stream().filter(userEntity -> !userEntity.getRole().equals("ADMIN")).forEach(user -> {
-                groupFacesForUser(user);
-                entityManager.flush();
-            });
-        } finally {
-            lock.unlock();
-        }
-
+        userRepository.findAll().stream().filter(userEntity -> !userEntity.getRole().equals("ADMIN")).forEach(user -> {
+            groupFacesForUser(user);
+            entityManager.flush();
+        });
     }
 
     private void groupFacesForUser(UserEntity user) {
@@ -111,7 +105,12 @@ public class FaceRecognitionService {
                         ? persons
                         : persons.stream().filter(person -> !excludedPersonIds.contains(person.getId())).toList();
 
-                Optional<PersonWithScore> bestMatch = findBestMatchForFace(face, eligiblePersons);
+                // Decoded/normalized once per face rather than once per (face, person) pair below -
+                // findBestMatchForFace checks every eligible person, and each check used to re-decode
+                // and re-normalize this SAME face's embedding from scratch, up to
+                // persons.size() * TEMPORAL_NEIGHBOR_WINDOW times over for one face.
+                NormalizedEmbedding faceEmbedding = NormalizedEmbedding.of(byteArrayToFloatArray(face.getEmbedding()));
+                Optional<PersonWithScore> bestMatch = findBestMatchForFace(face, faceEmbedding, eligiblePersons);
                 if (bestMatch.isPresent()) {
                     personRecognitionService.updatePerson(bestMatch.get().getPerson(), face);
                 } else {
@@ -132,18 +131,18 @@ public class FaceRecognitionService {
 
     }
 
-    private Optional<PersonWithScore> findBestMatchForFace(FaceEntity face, List<PersonEntity> persons) {
+    private Optional<PersonWithScore> findBestMatchForFace(FaceEntity face, NormalizedEmbedding faceEmbedding, List<PersonEntity> persons) {
         // Find the person with the highest similarity score, using only each candidate's
         // temporally-nearest faces (see scoreAgainstPerson) — cheap enough to check every person.
         return persons.stream()
-                .flatMap(person -> scoreAgainstPerson(face, person).stream())
+                .flatMap(person -> scoreAgainstPerson(face, faceEmbedding, person).stream())
                 .max(Comparator.comparingDouble(PersonWithScore::getScore))
                 .filter(match -> match.getScore() >= THRESHOLD);
     }
 
-    private Optional<PersonWithScore> scoreAgainstPerson(FaceEntity face, PersonEntity person) {
+    private Optional<PersonWithScore> scoreAgainstPerson(FaceEntity face, NormalizedEmbedding faceEmbedding, PersonEntity person) {
         List<FaceEntity> neighbors = nearestTemporalNeighbors(person, face.getPhoto().getDateTaken());
-        OptionalDouble averageSimilarity = calculateAverageSimilarity(face, neighbors);
+        OptionalDouble averageSimilarity = calculateAverageSimilarity(faceEmbedding, neighbors);
         return averageSimilarity.isPresent()
                 ? Optional.of(PersonWithScore.builder().person(person).score(averageSimilarity.getAsDouble()).build())
                 : Optional.empty();
@@ -168,16 +167,50 @@ public class FaceRecognitionService {
                 .toList();
     }
 
-    private OptionalDouble calculateAverageSimilarity(FaceEntity face, List<FaceEntity> personFaces) {
+    private OptionalDouble calculateAverageSimilarity(NormalizedEmbedding faceEmbedding, List<FaceEntity> personFaces) {
         if (personFaces.isEmpty()) {
             return OptionalDouble.empty();
         }
-        float[] newEmbeddingFloats = byteArrayToFloatArray(face.getEmbedding());
         return personFaces.stream()
                 .map(FaceEntity::getEmbedding)
                 .map(this::byteArrayToFloatArray)
-                .mapToDouble(knownEmbeddingFloats -> this.cosineSimilarity(newEmbeddingFloats, knownEmbeddingFloats))
+                .mapToDouble(knownEmbeddingFloats -> this.cosineSimilarity(faceEmbedding, knownEmbeddingFloats))
                 .average();
+    }
+
+    // A decoded embedding with its vector norm precomputed once - calculateAverageSimilarity above
+    // is called once per (face, person) pair, and re-decoding + re-normalizing the SAME face's
+    // embedding from scratch for every candidate person (up to persons.size() times per face) was
+    // pure wasted CPU work; this vector never changes across those calls within one groupFaces()
+    // run, only the comparison side (personFaces) does.
+    private record NormalizedEmbedding(float[] vector, double norm) {
+        static NormalizedEmbedding of(float[] vector) {
+            double sumSquares = 0.0;
+            for (float v : vector) {
+                sumSquares += (double) v * v;
+            }
+            return new NormalizedEmbedding(vector, Math.sqrt(sumSquares));
+        }
+    }
+
+    /**
+     * Cosine similarity against a pre-normalized vector (see NormalizedEmbedding) - avoids
+     * recomputing that side's norm on every call.
+     */
+    private double cosineSimilarity(NormalizedEmbedding a, float[] vectorB) {
+        if (a.vector().length != vectorB.length) {
+            throw new IllegalArgumentException("Vectors must have the same dimension.");
+        }
+        double dotProduct = 0.0;
+        double normB = 0.0;
+        for (int i = 0; i < vectorB.length; i++) {
+            dotProduct += a.vector()[i] * vectorB[i];
+            normB += (double) vectorB[i] * vectorB[i];
+        }
+        if (a.norm() == 0 || normB == 0) {
+            return 0; // Avoid division by zero
+        }
+        return dotProduct / (a.norm() * Math.sqrt(normB));
     }
 
     /**
@@ -193,8 +226,10 @@ public class FaceRecognitionService {
         double normB = 0.0;
         for (int i = 0; i < vectorA.length; i++) {
             dotProduct += vectorA[i] * vectorB[i];
-            normA += Math.pow(vectorA[i], 2);
-            normB += Math.pow(vectorB[i], 2);
+            // x*x rather than Math.pow(x, 2) - a plain multiply, no transcendental-function
+            // overhead for what's always an integer square here.
+            normA += (double) vectorA[i] * vectorA[i];
+            normB += (double) vectorB[i] * vectorB[i];
         }
         if (normA == 0 || normB == 0) {
             return 0; // Avoid division by zero

@@ -2,7 +2,8 @@ package org.iphoto.controller;
 
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.UserEntity;
-import org.iphoto.model.ImmichAlbumImportSummaryDTO;
+import org.iphoto.model.ImmichAlbumImportStatusDTO;
+import org.iphoto.model.ImmichAlbumImportTriggerResultDTO;
 import org.iphoto.model.ImmichImportDayDTO;
 import org.iphoto.model.ImmichImportOverviewDTO;
 import org.iphoto.model.ImmichSettingsDTO;
@@ -91,8 +92,16 @@ public class ImmichImportController extends AbstractBaseController {
     }
 
     @PostMapping("/albums/import")
-    public ImmichAlbumImportSummaryDTO importAlbums() {
+    public ImmichAlbumImportTriggerResultDTO importAlbums() {
         return immichAlbumImportService.triggerAlbumImport(getCurrentUser());
+    }
+
+    // Polled by the frontend after importAlbums() queues background tasks - one row per Immich
+    // album with its latest IMPORT_IMMICH_ALBUM task's status (see
+    // ImmichAlbumImportService#listAlbumImportStatus), the same polling shape as GET /days/{day}.
+    @GetMapping("/albums")
+    public List<ImmichAlbumImportStatusDTO> getAlbumImportStatus() {
+        return immichAlbumImportService.listAlbumImportStatus(getCurrentUser());
     }
 
     private ImmichSettingsDTO toSettingsDTO(UserEntity user) {

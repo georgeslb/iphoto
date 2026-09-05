@@ -32,12 +32,23 @@ const MAX_BULK_IMPORT_DAYS = 30;
 // clearer to a user than "not imported" for a day that simply hasn't been queued yet.
 const STATUS_FILTER_VALUES = ['ALL', 'NOT_IMPORTED', 'IN_PROGRESS', 'PARTIAL', 'FAILED', 'COMPLETED'];
 
+// TaskStatus values an IMPORT_IMMICH_ALBUM task can be in (see useImmichImport's
+// TERMINAL_ALBUM_TASK_STATUSES) - PENDING/QUEUED/PROCESSING are grouped under one "in progress"
+// label since a user has no reason to distinguish "not yet picked up" from "actively running".
+const ALBUM_TASK_STATUS_MESSAGE_KEYS = {
+  PENDING: 'immichAlbumTaskStatusInProgress',
+  QUEUED: 'immichAlbumTaskStatusInProgress',
+  PROCESSING: 'immichAlbumTaskStatusInProgress',
+  COMPLETED: 'immichAlbumTaskStatusCompleted',
+  FAILED: 'immichAlbumTaskStatusFailed',
+};
+
 export default function ImmichImportManagement() {
   const { messages } = useLocale();
   const {
     settings, settingsLoading, saveSettings, disconnect,
     days, coverage, loading, error, message,
-    albumImportSummary, albumImporting,
+    albums, albumImportResult, albumImporting,
     syncDays, startImport, startBulkImport, importAlbums,
   } = useImmichImport();
 
@@ -45,6 +56,7 @@ export default function ImmichImportManagement() {
   const [apiKey, setApiKey] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [selectedDays, setSelectedDays] = useState(() => new Set());
+  const [activeTab, setActiveTab] = useState('days');
 
   useEffect(() => {
     if (settings) setBaseUrl(settings.baseUrl || '');
@@ -144,117 +156,172 @@ export default function ImmichImportManagement() {
 
       {settings && settings.connected && (
         <>
-          <button type="button" onClick={syncDays}>{messages["immichSyncDaysButton"]}</button>
-          {anyDayImported && (
-            <button type="button" onClick={importAlbums} disabled={albumImporting} style={{ marginLeft: 8 }}>
-              {albumImporting ? messages["immichImportingAlbumsButton"] : messages["immichImportAlbumsButton"]}
+          <div className="immich-tabs">
+            <button
+              type="button"
+              className={`immich-tab-button${activeTab === 'days' ? ' active' : ''}`}
+              onClick={() => setActiveTab('days')}
+            >
+              {messages["immichDaysTabLabel"]}
             </button>
-          )}
-          <label style={{ marginLeft: 8 }}>
-            {messages["immichStatusFilterLabel"]}
-            <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} style={{ marginLeft: 4 }}>
-              {STATUS_FILTER_VALUES.map(status => (
-                <option key={status} value={status}>
-                  {status === 'ALL' ? messages["immichStatusFilterAll"] : messages[STATUS_MESSAGE_KEYS[status]]}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button
-            type="button"
-            onClick={handleImportSelected}
-            disabled={selectedDays.size === 0}
-            style={{ marginLeft: 8 }}
-          >
-            {messages["immichImportSelectedButton"](selectedDays.size, MAX_BULK_IMPORT_DAYS)}
-          </button>
+            <button
+              type="button"
+              className={`immich-tab-button${activeTab === 'albums' ? ' active' : ''}`}
+              onClick={() => setActiveTab('albums')}
+            >
+              {messages["immichAlbumsTabLabel"]}
+            </button>
+          </div>
 
-          {coverage && (
-            <div className={`immich-coverage-banner ${coverage.unaccountedForCount > 0 ? 'warning' : 'ok'}`}>
-              {messages["immichCoverageSummary"](coverage.importedTotal, coverage.immichTotal)}
-              {coverage.unaccountedForCount > 0 && (
-                <> {messages["immichCoverageWarning"](coverage.unaccountedForCount)}</>
-              )}
-            </div>
-          )}
+          {activeTab === 'days' && (
+            <>
+              <button type="button" onClick={syncDays}>{messages["immichSyncDaysButton"]}</button>
+              <label style={{ marginLeft: 8 }}>
+                {messages["immichStatusFilterLabel"]}
+                <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} style={{ marginLeft: 4 }}>
+                  {STATUS_FILTER_VALUES.map(status => (
+                    <option key={status} value={status}>
+                      {status === 'ALL' ? messages["immichStatusFilterAll"] : messages[STATUS_MESSAGE_KEYS[status]]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                onClick={handleImportSelected}
+                disabled={selectedDays.size === 0}
+                style={{ marginLeft: 8 }}
+              >
+                {messages["immichImportSelectedButton"](selectedDays.size, MAX_BULK_IMPORT_DAYS)}
+              </button>
 
-          {albumImportSummary && (
-            <div className="immich-coverage-banner ok">
-              {messages["immichAlbumImportSummary"](
-                albumImportSummary.albumsCreated,
-                albumImportSummary.albumsUpdated,
-                albumImportSummary.photosLinked,
-                albumImportSummary.sharedLinksCreated
+              {coverage && (
+                <div className={`immich-coverage-banner ${coverage.unaccountedForCount > 0 ? 'warning' : 'ok'}`}>
+                  {messages["immichCoverageSummary"](coverage.importedTotal, coverage.immichTotal)}
+                  {coverage.unaccountedForCount > 0 && (
+                    <> {messages["immichCoverageWarning"](coverage.unaccountedForCount)}</>
+                  )}
+                </div>
               )}
-              {albumImportSummary.warnings && albumImportSummary.warnings.length > 0 && (
-                <ul>
-                  {albumImportSummary.warnings.map((w, i) => <li key={i}>{w}</li>)}
-                </ul>
-              )}
-            </div>
-          )}
 
-          {loading ? (
-            <p>{messages["immichLoading"]}</p>
-          ) : days.length === 0 ? (
-            <p>{messages["immichNoDaysYet"]}</p>
-          ) : visibleDays.length === 0 ? (
-            <p>{messages["immichNoDaysMatchFilterMessage"]}</p>
-          ) : (
-            <table className="users-table">
-              <thead>
-                <tr>
-                  <th>
-                    <input
-                      type="checkbox"
-                      aria-label={messages["immichSelectAllLabel"]}
-                      checked={allVisibleSelected}
-                      disabled={importableVisibleDays.length === 0}
-                      onChange={toggleSelectAllVisible}
-                    />
-                  </th>
-                  <th>{messages["immichDayColumn"]}</th>
-                  <th>{messages["immichAssetCountColumn"]}</th>
-                  <th>{messages["tableHeaderStatus"]}</th>
-                  <th>{messages["tableHeaderActions"]}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleDays.map(d => {
-                  const importable = IMPORTABLE_STATUSES.includes(d.status);
-                  const selected = selectedDays.has(d.day);
-                  return (
-                    <tr key={d.day}>
-                      <td>
+              {loading ? (
+                <p>{messages["immichLoading"]}</p>
+              ) : days.length === 0 ? (
+                <p>{messages["immichNoDaysYet"]}</p>
+              ) : visibleDays.length === 0 ? (
+                <p>{messages["immichNoDaysMatchFilterMessage"]}</p>
+              ) : (
+                <table className="users-table">
+                  <thead>
+                    <tr>
+                      <th>
                         <input
                           type="checkbox"
-                          checked={selected}
-                          disabled={!importable || (!selected && selectedDays.size >= MAX_BULK_IMPORT_DAYS)}
-                          onChange={() => toggleDaySelection(d.day)}
+                          aria-label={messages["immichSelectAllLabel"]}
+                          checked={allVisibleSelected}
+                          disabled={importableVisibleDays.length === 0}
+                          onChange={toggleSelectAllVisible}
                         />
-                      </td>
-                      <td>{d.day}</td>
-                      <td>{d.immichAssetCount}</td>
-                      <td>
-                        <span className={`status-text ${d.status}`}>{messages[STATUS_MESSAGE_KEYS[d.status]] || d.status}</span>
-                        <div>{messages["immichDaySummary"](d.importedCount || 0, d.failedCount || 0, d.queuedCount || d.immichAssetCount || 0)}</div>
-                      </td>
-                      <td>
-                        <button
-                          type="button"
-                          disabled={!importable}
-                          onClick={() => startImport(d.day)}
-                        >
-                          {d.status === 'PARTIAL' || d.status === 'FAILED' || d.status === 'IN_PROGRESS' ? messages["immichRetryButton"]
-                              : d.status === 'COMPLETED' ? messages["immichReimportButton"]
-                              : messages["immichImportDayButton"]}
-                        </button>
-                      </td>
+                      </th>
+                      <th>{messages["immichDayColumn"]}</th>
+                      <th>{messages["immichAssetCountColumn"]}</th>
+                      <th>{messages["tableHeaderStatus"]}</th>
+                      <th>{messages["tableHeaderActions"]}</th>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                  </thead>
+                  <tbody>
+                    {visibleDays.map(d => {
+                      const importable = IMPORTABLE_STATUSES.includes(d.status);
+                      const selected = selectedDays.has(d.day);
+                      return (
+                        <tr key={d.day}>
+                          <td>
+                            <input
+                              type="checkbox"
+                              checked={selected}
+                              disabled={!importable || (!selected && selectedDays.size >= MAX_BULK_IMPORT_DAYS)}
+                              onChange={() => toggleDaySelection(d.day)}
+                            />
+                          </td>
+                          <td>{d.day}</td>
+                          <td>{d.immichAssetCount}</td>
+                          <td>
+                            <span className={`status-text ${d.status}`}>{messages[STATUS_MESSAGE_KEYS[d.status]] || d.status}</span>
+                            <div>{messages["immichDaySummary"](d.importedCount || 0, d.failedCount || 0, d.queuedCount || d.immichAssetCount || 0)}</div>
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              disabled={!importable}
+                              onClick={() => startImport(d.day)}
+                            >
+                              {d.status === 'PARTIAL' || d.status === 'FAILED' || d.status === 'IN_PROGRESS' ? messages["immichRetryButton"]
+                                  : d.status === 'COMPLETED' ? messages["immichReimportButton"]
+                                  : messages["immichImportDayButton"]}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </>
+          )}
+
+          {activeTab === 'albums' && (
+            <>
+              {anyDayImported ? (
+                <button type="button" onClick={importAlbums} disabled={albumImporting}>
+                  {albumImporting ? messages["immichImportingAlbumsButton"] : messages["immichImportAlbumsButton"]}
+                </button>
+              ) : (
+                <p>{messages["immichAlbumsNeedDaysFirst"]}</p>
+              )}
+
+              {albumImportResult && (
+                <div className="immich-coverage-banner ok">
+                  {messages["immichAlbumImportTriggerResult"](
+                    albumImportResult.albumsQueued,
+                    albumImportResult.albumsAlreadyInFlight,
+                    albumImportResult.sharedLinksCreated
+                  )}
+                  {albumImportResult.warnings && albumImportResult.warnings.length > 0 && (
+                    <ul>
+                      {albumImportResult.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                    </ul>
+                  )}
+                </div>
+              )}
+
+              {albums.length > 0 ? (
+                <table className="users-table">
+                  <thead>
+                    <tr>
+                      <th>{messages["immichAlbumNameColumn"]}</th>
+                      <th>{messages["immichAlbumPhotosLinkedColumn"]}</th>
+                      <th>{messages["tableHeaderStatus"]}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {albums.map(a => (
+                      <tr key={a.albumId}>
+                        <td>{a.albumName}</td>
+                        <td>{a.photoCount != null ? a.photoCount : '-'}</td>
+                        <td>
+                          <span className={`status-text ${a.status}`}>
+                            {messages[ALBUM_TASK_STATUS_MESSAGE_KEYS[a.status]] || a.status}
+                          </span>
+                          {a.status === 'FAILED' && a.errorMessage && <div>{a.errorMessage}</div>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : anyDayImported && (
+                <p>{messages["immichNoAlbumsYet"]}</p>
+              )}
+            </>
           )}
         </>
       )}

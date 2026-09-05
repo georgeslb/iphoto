@@ -2,6 +2,9 @@ import { useState, useCallback, useEffect } from 'react';
 import { useLocale } from '../LocaleContext.jsx';
 
 const TERMINAL_DAY_STATUSES = ['COMPLETED', 'PARTIAL', 'FAILED'];
+// TaskStatus values an IMPORT_IMMICH_ALBUM task can end up in (see TaskWorkerManager) - PENDING/
+// QUEUED/PROCESSING are all "still in flight" for polling purposes, only these two are terminal.
+const TERMINAL_ALBUM_TASK_STATUSES = ['COMPLETED', 'FAILED'];
 
 // Backs the "Import from Immich" page (components/ImmichImportManagement.jsx) - per-user, not
 // admin-only: each user connects their own Immich server (see /api/immich/settings) and imports
@@ -18,7 +21,8 @@ export function useImmichImport() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [message, setMessage] = useState(null);
-  const [albumImportSummary, setAlbumImportSummary] = useState(null);
+  const [albums, setAlbums] = useState([]);
+  const [albumImportResult, setAlbumImportResult] = useState(null);
   const [albumImporting, setAlbumImporting] = useState(false);
 
   const fetchSettings = useCallback(async () => {
@@ -160,6 +164,42 @@ export function useImmichImport() {
     }
   }, [messages, pollDay]);
 
+  // Album-photo linking itself runs in the background (one IMPORT_IMMICH_ALBUM task per album -
+  // see ImmichAlbumImportService) rather than inline in the POST below, since it can involve many
+  // Immich round trips across many albums. fetchAlbumStatus/pollAlbums mirror fetchOverview/
+  // pollDay above, just polling the whole album list at once (typically dozens, not hundreds, of
+  // rows - one interval for all of them rather than one per album).
+  const fetchAlbumStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/immich/albums');
+      if (!res.ok) throw new Error(messages["failedToFetchImmichAlbums"]);
+      setAlbums(await res.json());
+    } catch (err) {
+      setError(err.message);
+    }
+  }, [messages]);
+
+  useEffect(() => {
+    if (settings && settings.connected) fetchAlbumStatus();
+  }, [settings, fetchAlbumStatus]);
+
+  const pollAlbums = useCallback(() => {
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch('/api/immich/albums');
+        if (!res.ok) throw new Error(messages["serverRespondedWithError"](res.status, res.statusText));
+        const updated = await res.json();
+        setAlbums(updated);
+        if (updated.every(a => TERMINAL_ALBUM_TASK_STATUSES.includes(a.status))) {
+          clearInterval(interval);
+        }
+      } catch (err) {
+        clearInterval(interval);
+        console.error(messages["pollingFailed"](err.message));
+      }
+    }, 3000);
+  }, [messages]);
+
   const importAlbums = useCallback(async () => {
     setError(null);
     setMessage(null);
@@ -167,18 +207,20 @@ export function useImmichImport() {
     try {
       const res = await fetch('/api/immich/albums/import', { method: 'POST' });
       if (!res.ok) throw new Error(messages["failedToImportImmichAlbums"]);
-      setAlbumImportSummary(await res.json());
+      setAlbumImportResult(await res.json());
+      await fetchAlbumStatus();
+      pollAlbums();
     } catch (err) {
       setError(err.message);
     } finally {
       setAlbumImporting(false);
     }
-  }, [messages]);
+  }, [messages, fetchAlbumStatus, pollAlbums]);
 
   return {
     settings, settingsLoading, saveSettings, disconnect,
     days, coverage, loading, error, message,
-    albumImportSummary, albumImporting,
+    albums, albumImportResult, albumImporting,
     syncDays, startImport, startBulkImport, importAlbums,
   };
 }

@@ -35,6 +35,16 @@ public enum TaskType {
     // there uses no REPLACE_EXISTING). Idempotent/resumable: retrying after the DB commit
     // succeeded but the move failed just re-attempts the move, without re-inserting the row.
     UPLOAD_FROM_IMMICH(true, 2, false),
+    // Immich album import, one task per album (see ImmichAlbumImportService#triggerAlbumImport) -
+    // queued synchronously (cheap: only a local find-or-create of the AlbumEntity row, no Immich
+    // API calls beyond the single listAlbums the whole batch already made) so the actual per-album
+    // work - fetching /timeline/buckets then /timeline/bucket per bucket, potentially many Immich
+    // round trips, across potentially many albums - runs on the light task pool instead of
+    // blocking the triggering HTTP request. photoId carries the *local* AlbumEntity id, not a
+    // photo - same generic "subject of this task" reuse of that column as PROCESS_UPLOAD/
+    // HASH_IMAGE etc. do for photos. canBeReplayed=false: not a per-photo task type, replaying it
+    // via AdminService#updateImageTaskToDo would be meaningless.
+    IMPORT_IMMICH_ALBUM(false, 2, false),
     ;
 
     private final boolean canBeReplayed;

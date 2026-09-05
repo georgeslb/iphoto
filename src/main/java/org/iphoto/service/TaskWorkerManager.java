@@ -7,12 +7,12 @@ import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.TaskEntity;
 import org.iphoto.exception.ImmichApiException;
-import org.iphoto.exception.ServiceNotAvailableException;
 import org.iphoto.model.ImmichAssetImportOutcome;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.TaskType;
 import org.iphoto.model.UploadStatus;
 import org.iphoto.repository.TaskRepository;
+import org.iphoto.service.immich.ImmichAlbumImportService;
 import org.iphoto.service.immich.ImmichImportService;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DataAccessException;
@@ -48,12 +48,19 @@ public class TaskWorkerManager {
     private final FaceDetectionService faceDetectionService;
     private final FaceRecognitionService faceRecognitionService;
     private final ImmichImportService immichImportService;
+    private final ImmichAlbumImportService immichAlbumImportService;
     private final AdminService adminService;
     private final ThreadPoolTaskExecutor lightThreadPoolExecutor;
-    private final ThreadPoolTaskExecutor heavyThreadPoolExecutor;
+    // One dedicated, fixed-size pool per heavy task type instead of one shared pool - see
+    // IPhotoProperties.HeavyTasks/ThreadPoolConfiguration for why (each service used to also hold
+    // its own internal lock capping itself to 1 concurrent run no matter how big the shared pool
+    // was, and DuplicationService's lock had a real double-lock/single-unlock bug that permanently
+    // jammed CHECK_DUPLICATION after its first run - both gone now that the pool size itself is
+    // the only concurrency limit, per type).
+    private final ThreadPoolTaskExecutor duplicationThreadPoolExecutor;
+    private final ThreadPoolTaskExecutor faceDetectionThreadPoolExecutor;
+    private final ThreadPoolTaskExecutor faceRecognitionThreadPoolExecutor;
 
-    private static final Set<TaskType> HEAVY_TASK_TYPES =
-            Stream.of(TaskType.values()).filter(TaskType::isHeavy).collect(Collectors.toSet());
     private static final Set<TaskType> LIGHT_TASK_TYPES =
             Stream.of(TaskType.values()).filter(taskType -> !taskType.isHeavy()).collect(Collectors.toSet());
 
@@ -68,7 +75,10 @@ public class TaskWorkerManager {
     private final AtomicInteger lightConcurrencyLimit;
 
     public TaskWorkerManager(TaskRepository taskRepository, ObjectMapper objectMapper, TransactionTemplate transactionTemplate, DuplicationService duplicationService, PhotoService photoService, FaceDetectionService faceDetectionService, FaceRecognitionService faceRecognitionService
-            , ImmichImportService immichImportService, AdminService adminService, @Qualifier("lightThreadPoolExecutor") ThreadPoolTaskExecutor lightThreadPoolExecutor, @Qualifier("heavyThreadPoolExecutor") ThreadPoolTaskExecutor heavyThreadPoolExecutor) {
+            , ImmichImportService immichImportService, ImmichAlbumImportService immichAlbumImportService, AdminService adminService, @Qualifier("lightThreadPoolExecutor") ThreadPoolTaskExecutor lightThreadPoolExecutor,
+              @Qualifier("duplicationThreadPoolExecutor") ThreadPoolTaskExecutor duplicationThreadPoolExecutor,
+              @Qualifier("faceDetectionThreadPoolExecutor") ThreadPoolTaskExecutor faceDetectionThreadPoolExecutor,
+              @Qualifier("faceRecognitionThreadPoolExecutor") ThreadPoolTaskExecutor faceRecognitionThreadPoolExecutor) {
         this.taskRepository = taskRepository;
         this.objectMapper = objectMapper;
         this.transactionTemplate = transactionTemplate;
@@ -77,9 +87,12 @@ public class TaskWorkerManager {
         this.faceDetectionService = faceDetectionService;
         this.faceRecognitionService = faceRecognitionService;
         this.immichImportService = immichImportService;
+        this.immichAlbumImportService = immichAlbumImportService;
         this.adminService = adminService;
         this.lightThreadPoolExecutor = lightThreadPoolExecutor;
-        this.heavyThreadPoolExecutor = heavyThreadPoolExecutor;
+        this.duplicationThreadPoolExecutor = duplicationThreadPoolExecutor;
+        this.faceDetectionThreadPoolExecutor = faceDetectionThreadPoolExecutor;
+        this.faceRecognitionThreadPoolExecutor = faceRecognitionThreadPoolExecutor;
         // Seeded from the executor's own configured queueCapacity (its ceiling - see
         // adjustLightConcurrencyForCpuLoad) rather than a hardcoded number, so it stays correct if
         // that config value ever changes.
@@ -107,7 +120,6 @@ public class TaskWorkerManager {
                     taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), LocalDateTime.now(), LIGHT_TASK_TYPES, Limit.of(limit - lightThreadPoolExecutor.getQueueSize())));
         }
 
-        adjustHeavyPoolSizeForLightLoad(limit);
         markQueued(lightTasks);
         for (TaskEntity task : lightTasks) {
             lightThreadPoolExecutor.submit(() -> processTask(task.getId()));
@@ -160,39 +172,37 @@ public class TaskWorkerManager {
         }
     }
 
-    // Unchanged heuristic, just parameterized on the dynamic limit above instead of the executor's
-    // own (now largely vestigial for this purpose) queueCapacity.
-    private void adjustHeavyPoolSizeForLightLoad(int limit) {
-        if (lightThreadPoolExecutor.getQueueSize() < limit / 2 && heavyThreadPoolExecutor.getMaxPoolSize() != 8) {
-            log.warn("adjusting heavyThreadPoolExecutor MaxPoolSize to 8");
-            heavyThreadPoolExecutor.setMaxPoolSize(8);
-        }
-        if (lightThreadPoolExecutor.getQueueSize() > limit - 10 && heavyThreadPoolExecutor.getMaxPoolSize() != 3) {
-            log.warn("adjusting heavyThreadPoolExecutor MaxPoolSize to 3");
-            heavyThreadPoolExecutor.setMaxPoolSize(3);
-        }
-    }
-
-    // Heavy tasks (HASH_IMAGE/CHECK_DUPLICATION/ISOLATE_FACES/FACE_RECOGNITION/the Immich phases)
-    // are the expensive, resource-intensive half of the pipeline - gated behind an admin on/off
-    // switch (see AdminService#isHeavyTasksActivated/ACTIVATE_HEAVY_TASKS) so a struggling machine
-    // can pause this half entirely without touching light/control tasks. Runs far less often than
-    // the light poller (5 minutes vs 5 seconds) since that's the whole point of isolating it: a
+    // Heavy tasks (CHECK_DUPLICATION/ISOLATE_FACES/FACE_RECOGNITION) are the expensive,
+    // resource-intensive half of the pipeline - gated behind an admin on/off switch (see
+    // AdminService#isHeavyTasksActivated/ACTIVATE_HEAVY_TASKS) so a struggling machine can pause
+    // this half entirely without touching light/control tasks. Runs far less often than the light
+    // poller (5 minutes vs 5 seconds) since that's the whole point of isolating it: a
     // resource-constrained machine only wants to consider starting new heavy work occasionally,
     // not every 5 seconds. No row yet, or its most recent payload says activate=false, means
     // heavy tasks stay paused - opt-in by design, not opt-out.
+    //
+    // Each type is polled and submitted against its OWN dedicated pool (see the fields above) -
+    // not one shared pool for all three - so one type's backlog can never crowd out another's
+    // thread, and each type's real concurrency ceiling (configured via
+    // IPhotoProperties.HeavyTasks) is enforced by the pool itself rather than an internal lock.
     @Scheduled(fixedDelay = 300_000)
     public void pollHeavyTasks() {
         if (!adminService.isHeavyTasksActivated()) return;
 
-        Set<TaskEntity> heavyTasks = new HashSet<>();
-        if (heavyThreadPoolExecutor.getQueueSize() < heavyThreadPoolExecutor.getQueueCapacity()) {
-            heavyTasks = transactionTemplate.execute(status ->
-                    taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), LocalDateTime.now(), HEAVY_TASK_TYPES, Limit.of(heavyThreadPoolExecutor.getQueueCapacity() - heavyThreadPoolExecutor.getQueueSize())));
+        pollHeavyTaskType(TaskType.CHECK_DUPLICATION, duplicationThreadPoolExecutor);
+        pollHeavyTaskType(TaskType.ISOLATE_FACES, faceDetectionThreadPoolExecutor);
+        pollHeavyTaskType(TaskType.FACE_RECOGNITION, faceRecognitionThreadPoolExecutor);
+    }
+
+    private void pollHeavyTaskType(TaskType taskType, ThreadPoolTaskExecutor executor) {
+        Set<TaskEntity> tasks = new HashSet<>();
+        if (executor.getQueueSize() < executor.getQueueCapacity()) {
+            tasks = transactionTemplate.execute(status ->
+                    taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), LocalDateTime.now(), Set.of(taskType), Limit.of(executor.getQueueCapacity() - executor.getQueueSize())));
         }
-        markQueued(heavyTasks);
-        for (TaskEntity task : heavyTasks) {
-            heavyThreadPoolExecutor.submit(() -> processTask(task.getId()));
+        markQueued(tasks);
+        for (TaskEntity task : tasks) {
+            executor.submit(() -> processTask(task.getId()));
         }
     }
 
@@ -290,6 +300,9 @@ public class TaskWorkerManager {
                     ImmichAssetImportOutcome outcome = immichImportService.finalizeUploadFromImmich(task);
                     task.setStatus(TaskStatus.COMPLETED);
                     immichImportService.recordAssetTaskOutcome(task, outcome);
+                } else if (IMPORT_IMMICH_ALBUM.equals(task.getTaskType())) {
+                    immichAlbumImportService.processAlbumImportTask(task);
+                    task.setStatus(TaskStatus.COMPLETED);
                 } else if (ACTIVATE_HEAVY_TASKS.equals(task.getTaskType())) {
                     // Not real work to execute - this row exists purely so pollHeavyTasks can read
                     // the admin's latest activate/deactivate choice (see
@@ -299,10 +312,6 @@ public class TaskWorkerManager {
                     // terminal status here or it would sit stuck in PROCESSING forever.
                     task.setStatus(TaskStatus.COMPLETED);
                 }
-            }
-            catch (ServiceNotAvailableException e) {
-                task.setStatus(TaskStatus.PENDING);
-                task.setExecuteAt(LocalDateTime.now().plusMinutes(randomRetryDelayMinutes()));
             }
             catch (NonTransientDataAccessException e) {
                 log.warn("Task {} hit a Not transient database error", task.getId(), e);
@@ -381,10 +390,12 @@ public class TaskWorkerManager {
 
     @PreDestroy
     public void shutdown() {
-        // Only heavyTaskExecutor is an actual ExecutorService now - light tasks run on
-        // individually-named, unmanaged virtual threads (see pollPendingTasks) rather than a
-        // shared executor, so there's nothing else here to shut down.
-        heavyThreadPoolExecutor.shutdown();
+        // Light tasks run on individually-named, unmanaged virtual threads (see pollPendingTasks)
+        // rather than a shared executor, so lightThreadPoolExecutor itself has nothing in flight
+        // to wait on here - shut down anyway for consistency/symmetry with the heavy pools.
         lightThreadPoolExecutor.shutdown();
+        duplicationThreadPoolExecutor.shutdown();
+        faceDetectionThreadPoolExecutor.shutdown();
+        faceRecognitionThreadPoolExecutor.shutdown();
     }
 }

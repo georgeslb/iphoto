@@ -52,6 +52,16 @@ iphoto:
     # exact (no tolerance), matching prior behavior - add tolerance to individual entries as wanted.
     offsets: [1-1d+1d, 6-3d+3d, 12-7d+7d, 36-20d+20d, 60-40d+40d, 120-40d+40d]
     photos-per-block: 5 # up to this many random photos auto-cycled per offset
+  heavy-tasks:
+    # Each gets its own dedicated pool (see ThreadPoolConfiguration/TaskWorkerManager) - not a
+    # shared heavy pool any more. duplication-threads/face-recognition-threads stay at 1: both
+    # services process a whole overlapping data set per run (candidate duplicate groups / all
+    # users' ungrouped faces) and aren't safe to run concurrently with themselves.
+    # face-detection-threads can go higher since each call uses its own DJL Predictor instance.
+    duplication-threads: 1
+    face-detection-threads: 3
+    face-recognition-threads: 1
+    queue-capacity: 10
 
 server:
   port: 8080

@@ -1,21 +1,13 @@
 package org.iphoto;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.iphoto.model.request.AlbumCreateRequest;
-import org.iphoto.model.request.SpaceCreateRequest;
 import org.iphoto.repository.PhotoRepository;
-import org.iphoto.service.TaskWorkerManager;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.mock.web.MockHttpSession;
-import org.springframework.mock.web.MockMultipartFile;
-import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
-import javax.imageio.ImageIO;
-import java.awt.image.BufferedImage;
-import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -36,12 +28,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 // would actually exercise the app rather than testing each feature in isolation.
 class PhotoLifecycleIntegrationTest extends AbstractIntegrationTest {
 
-    @Autowired
-    private MockMvc mockMvc;
-    @Autowired
-    private ObjectMapper objectMapper;
-    @Autowired
-    private TaskWorkerManager taskWorkerManager;
     @Autowired
     private PhotoRepository photoRepository;
 
@@ -108,25 +94,6 @@ class PhotoLifecycleIntegrationTest extends AbstractIntegrationTest {
         assertThat(Files.exists(originalPath)).isFalse();
     }
 
-    private MockHttpSession loginAsAdmin() throws Exception {
-        MvcResult result = mockMvc.perform(post("/api/login")
-                        .param("username", "admin")
-                        .param("password", "admin"))
-                .andExpect(status().isOk())
-                .andReturn();
-        return (MockHttpSession) result.getRequest().getSession(false);
-    }
-
-    private UUID createSpace(MockHttpSession session, String name) throws Exception {
-        MvcResult result = mockMvc.perform(post("/api/spaces")
-                        .session(session)
-                        .contentType(APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(new SpaceCreateRequest(name))))
-                .andExpect(status().isCreated())
-                .andReturn();
-        return UUID.fromString(objectMapper.readTree(result.getResponse().getContentAsString()).get("id").asText());
-    }
-
     private UUID createAlbum(MockHttpSession session, String name) throws Exception {
         MvcResult result = mockMvc.perform(post("/api/albums")
                         .session(session)
@@ -143,56 +110,5 @@ class PhotoLifecycleIntegrationTest extends AbstractIntegrationTest {
                 .andReturn();
         JsonNode space = objectMapper.readTree(result.getResponse().getContentAsString());
         assertThat(space.get("name").asText()).isEqualTo(expectedSpaceName);
-    }
-
-    // Uploads a single-chunk JPEG straight into targetSpaceId, forces the async PROCESS_UPLOAD
-    // task to run immediately (rather than waiting on TaskWorkerManager's 5s @Scheduled poll -
-    // same code path, just not idling for the timer), and waits for it to complete.
-    private UUID uploadPhoto(MockHttpSession session, UUID targetSpaceId) throws Exception {
-        byte[] jpegBytes = generateTestJpeg();
-        String uploadId = UUID.randomUUID().toString();
-
-        MvcResult uploadResult = mockMvc.perform(multipart("/api/upload/chunk")
-                        .file(new MockMultipartFile("chunk", "test-photo.jpg", "image/jpeg", jpegBytes))
-                        .param("uploadId", uploadId)
-                        .param("fileName", "test-photo.jpg")
-                        .param("fileSize", String.valueOf(jpegBytes.length))
-                        .param("chunkIndex", "0")
-                        .param("totalChunks", "1")
-                        .param("contentType", "image/jpeg")
-                        .param("spaceId", targetSpaceId.toString())
-                        .session(session))
-                .andExpect(status().isOk())
-                .andReturn();
-
-        JsonNode response = objectMapper.readTree(uploadResult.getResponse().getContentAsString());
-        UUID taskId = UUID.fromString(response.get("task").get("id").asText());
-        UUID photoId = UUID.fromString(response.get("task").get("photoId").asText());
-
-        waitForTaskCompletion(session, taskId);
-        return photoId;
-    }
-
-    private void waitForTaskCompletion(MockHttpSession session, UUID taskId) throws Exception {
-        taskWorkerManager.pollPendingTasks(); // dispatch immediately instead of waiting on the timer
-        for (int attempt = 0; attempt < 40; attempt++) {
-            MvcResult result = mockMvc.perform(get("/api/tasks/{id}", taskId).session(session))
-                    .andExpect(status().isOk())
-                    .andReturn();
-            String status = objectMapper.readTree(result.getResponse().getContentAsString()).get("status").asText();
-            if ("COMPLETED".equals(status)) return;
-            if ("FAILED".equals(status)) {
-                throw new AssertionError("Upload task " + taskId + " failed");
-            }
-            Thread.sleep(250);
-        }
-        throw new AssertionError("Upload task " + taskId + " did not complete in time");
-    }
-
-    private static byte[] generateTestJpeg() throws Exception {
-        BufferedImage image = new BufferedImage(64, 64, BufferedImage.TYPE_INT_RGB);
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        ImageIO.write(image, "jpg", out);
-        return out.toByteArray();
     }
 }

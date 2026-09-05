@@ -2051,65 +2051,6 @@ new work is identified or completed, so nothing gets lost between sessions.
 
 ## Open / Not Yet Done
 
-- [ ] **Fix** (user request, intent confirmed): `DuplicateEntity`'s unique key should take `status`
-      into account instead of being on `hash` alone. Not started - recording only, per the user's
-      own "TODO" framing.
-      - **Current state**: `DuplicateEntity.hash` is `@Column(unique = true)` - globally unique
-        across the whole `duplicates` table, `status` (`DuplicateStatus`: `OPEN`/`CLOSED`) plays no
-        part in the constraint.
-      - **Why this is probably a real bug, not just cleanup**: `DuplicationUniquenessService
-        .consolidateDuplicates` computes `hash` deterministically from the *sorted set of member
-        photos' fileHashes* (`generateUniqueHash`) - the same combination of photos always
-        produces the same hash. When a group's membership changes, it inserts a *new*
-        `DuplicateEntity` row (new hash) and marks the old one(s) `CLOSED` - the old, now-`CLOSED`
-        row is deliberately kept, not deleted (`undoGenerateUniqueHash`/`findByHash` still needs to
-        resolve it later). Because the constraint is on `hash` alone, if that same exact photo
-        combination should ever need to become an active `OPEN` group again (e.g., a later merge/
-        split reproduces the same member set), inserting it collides with the old `CLOSED` row's
-        hash - caught by `isUniqueConstraintViolation` and treated as "retry later"
-        (`TaskStatus.PENDING`), which would retry forever without ever succeeding, since a `CLOSED`
-        historical row for that exact hash will always still be there blocking it.
-      - **Confirmed with the user**: the fix is unique on `(hash, status)`, not the literal
-        `(status, id)` originally said (which would've been a no-op, since `id` is already the
-        primary key and trivially unique on its own regardless of `status`). Implementation: drop
-        `@Column(unique = true)` from `DuplicateEntity.hash`, add a table-level
-        `@UniqueConstraint(columnNames = {"hash", "status"})` on `@Table(name = "duplicates")`
-        instead (`ddl-auto: update` picks this up on next boot - no migration needed, same pattern
-        as `AlbumEntity`/`ShareEntity`'s `externalSource`/`externalId` pair constraints). Worth
-        double-checking whether Postgres's default null-handling matters here first - `hash` is
-        presumably always populated by `generateUniqueHash`, so this is likely a non-issue, but
-        confirm before assuming.
-
-- [ ] **Fix** (user report): light-task virtual threads aren't actually showing the
-      `"backend-task" + taskId` name (`TaskWorkerManager.pollPendingTasks`,
-      `Thread.ofVirtual().name("backend-task" + ref.id()).start(...)`) in whatever tool the user is
-      observing them in - instead showing something like `ad-ce09d24e39a9`, no `backend` prefix
-      visible at all. User confirmed this naming *was* visible before this session's later
-      `TaskWorkerManager` changes, which rules out an inherent/unfixable OS-level limitation as the
-      primary theory - if it worked before with the same naming approach, it should be fixable.
-      Not confirmed live yet (no running app instance available when this was last checked):
-      - **Leading theory, given it's already a proven issue in this exact project this session**:
-        the same IntelliJ debug-session HotSwap limitation found earlier with `ImmichImportService`
-        (see the day-2023-12-24 investigation entry above) - HotSwap can update method *bodies* on
-        an already-loaded class but can't add new fields/methods. This session added several new
-        fields/methods to `TaskWorkerManager` across multiple edits (`lightTaskConcurrency`,
-        `heavyTaskExecutor`, `holdBackTask`, `reclaimStuckProcessingTasks`, the naming
-        reintroduction itself...) - a JVM still running from before all of those landed would keep
-        silently executing an older, un-hot-swappable version of the class, quite possibly the
-        intermediate version where naming had already been stripped out but not yet reintroduced.
-        Checked and ruled out as the explanation *for what's on disk*: `target/classes/org/iphoto/
-        service/TaskWorkerManager.class` is compiled after the current source and does contain the
-        current naming code (confirmed via `javap`) - so the fix is correct on disk, the open
-        question is only whether the actually-running JVM has it loaded.
-      - **To confirm**: after a genuine stop-and-restart of the run configuration (not relying on
-        live HotSwap), get a live thread dump (`jcmd <pid> Thread.print` or `jstack <pid>`) and
-        check whether the Java-level thread names show the full `backend-task<uuid>` there. If yes,
-        this was purely the stale-JVM issue and needs no code change - just don't trust HotSwap for
-        structural changes to this class going forward. If the JVM's own thread dump *still* shows
-        a truncated/wrong name even fresh after a real restart, that's the signal to go back to
-        investigating an OS-level native-name-length cap (`pthread_setname_np` is capped at 15
-        visible characters on Linux) as a second theory - not before.
-
 - [x] **Bugfix** (user report): moving a photo to garbage from `DuplicateClusterModal` (the "×N
       similar" popup in `PhotoGrid.jsx`) closed the modal and lost the Library grid's scroll
       position. Root cause: `handleMoveToGarbage` (`usePhotoActions.js`) went through the shared
@@ -3277,3 +3218,235 @@ new work is identified or completed, so nothing gets lost between sessions.
         needs a real restart, and confirming the actual concurrency property (two simultaneous
         uploads into the same space both correctly land on the right final count) requires load
         against a running instance with a real Postgres, which hasn't been done here.
+
+- [x] **Bug fix (backend)**: Immich-imported albums never got any photos linked into them
+      (`album_photos` had zero rows for every one of a user's 87 imported albums, confirmed via a
+      direct DB query, not just the one album/photo originally reported). Root cause, **confirmed
+      by the user against their own live Immich server**: `GET /albums/{id}` (`AlbumResponseDto`)
+      does not carry an `assets` property on current Immich server versions - `ImmichClient
+      .getAlbumDetail`'s `ImmichAlbumDetailDTO.assets()` always came back `null`, so
+      `ImmichAlbumImportService#processOneAlbum`'s `linkable` list was always empty and
+      `albumService.addPhotosToAlbum` was never even called - no exception, no warning, nothing
+      visible to the user. (A same-shaped timing issue was also independently confirmed along the
+      way and is worth knowing about even though it wasn't the actual root cause here: the specific
+      photo the user first reported was imported 3 days *after* their one-time "Import Albums" run,
+      and re-clicking "Import Albums" alone didn't fix it precisely because of the `assets` bug
+      below, not because of timing - re-running "Import Albums" is still the right move any time
+      more photos get synced after an album import, once this fix is in.)
+      - **Fix**: album membership is now fetched the same way day/month asset sync already works
+        for a date range (see `ImmichClient#getMonthBuckets`/`getAssetsForMonth`), just scoped by
+        `albumId` instead of a date range: `ImmichClient#getAlbumTimeBuckets` calls
+        `GET /timeline/buckets?albumId=...&size=MONTH` to list the album's buckets, then
+        `ImmichClient#getAlbumBucketAssetIds` calls `GET /timeline/bucket?albumId=...&timeBucket=...`
+        (singular - a distinct endpoint from the plural one above) per bucket to get the actual
+        asset ids. That endpoint returns Immich's columnar response shape (one array per asset
+        field, e.g. `id: [...]`, all parallel-indexed) rather than an array of asset objects - new
+        `model/immich/ImmichTimeBucketAssetsDTO(List<String> id)` models just the column needed.
+        `timezoneOffset` is fixed at UTC in `getAlbumTimeBuckets` rather than threaded through from
+        the caller (unlike `getMonthBuckets`) - it only affects which month a near-midnight asset's
+        bucket boundary falls into, and every returned bucket still gets fully enumerated either
+        way, so the exact split doesn't change which assets are found.
+      - `ImmichAlbumImportService#processOneAlbum` rewritten to collect asset ids across all of an
+        album's buckets before the existing `existsById`/`linkable`/`skipped` logic (unchanged).
+        Added `log.info`/`log.warn` at each step (buckets found, ids returned, linkable vs. skipped
+        counts, confirmation `addPhotosToAlbum` ran) - added specifically because this bug produced
+        zero visible signal anywhere (no exception, no warning in the returned summary DTO), so
+        anything going wrong in this flow in the future should at least show up in the server log.
+      - Dead code removed: `ImmichClient#getAlbumDetail` and `model/immich/ImmichAlbumDetailDTO`
+        (the only thing `ImmichAlbumDetailDTO` had beyond `ImmichAlbumSummaryDTO` was the always-null
+        `assets` field). `ImmichAssetRefDTO` kept - still used by `ImmichSharedLinkDTO`.
+      - Verified: `javac` compile clean. **Not yet exercised against a live Immich server** - no
+        live Immich access from this environment; needs the user to restart (this touches request
+        bodies mid-loop, not safely HotSwappable) and re-click "Import Albums" against their real
+        server to confirm `/timeline/buckets`/`/timeline/bucket` actually return what's expected
+        here (both endpoints were modeled from documented shape + the user's own report, not a
+        live call from this session).
+
+- [x] **Refactor (backend + frontend)**: Immich album import made asynchronous, one background
+      task per album - the fix above still ran every album's bucket/asset-id fetch inline on the
+      triggering HTTP request, which for a user with dozens/hundreds of albums (many Immich round
+      trips per album) could make "Import Albums" a very slow synchronous click.
+      - New `TaskType.IMPORT_IMMICH_ALBUM(false, 2, false)` - light (not heavy), `canBeReplayed`
+        false (not a per-photo task type, see its own enum comment). Reuses `TaskEntity.photoId`
+        (a plain UUID column, no FK) to carry the *local* `AlbumEntity` id, the same "subject of
+        this task" reuse pattern `PROCESS_UPLOAD`/`HASH_IMAGE` already use for photos - the Immich
+        album id and album name travel in the JSON payload instead (needed for the Immich API
+        calls; not persisted on `AlbumEntity` under that name).
+      - `ImmichAlbumImportService#triggerAlbumImport` split in two: `queueAlbumImport` (still
+        synchronous, called once per Immich album from the same per-album `TransactionTemplate`
+        loop as before) now only finds-or-creates the local `AlbumEntity` row and queues one
+        `IMPORT_IMMICH_ALBUM` task - skipping the queue if one is already `PENDING`/`QUEUED`/
+        `PROCESSING` for that album (`TaskRepository#findByPhotoIdAndTaskTypeIn`, same idempotency
+        guard `SYNC_FROM_IMMICH` already uses) so clicking "Import Albums" twice in a row doesn't
+        race a still-running import; re-running after a task's already `COMPLETED`/`FAILED` is
+        still allowed and expected (picks up new photos synced since, or retries a failure).
+        `processAlbumImportTask` (new, called from `TaskWorkerManager`) is the actual bucket-
+        fetch/link work, unchanged logic-wise from the previous fix, just moved out of the request
+        thread. Shared-link processing is untouched and stays synchronous - it only ever needed
+        the local album id (always available right after `queueAlbumImport`, regardless of whether
+        that album's photo-linking task has run yet), never the linked photos themselves.
+      - `TaskWorkerManager#processTask` gained an `IMPORT_IMMICH_ALBUM` branch calling
+        `immichAlbumImportService.processAlbumImportTask(task)` then marking `COMPLETED` - already
+        picked up by the existing light poller/CPU-based concurrency/stuck-task reclaim machinery,
+        nothing task-type-specific needed there beyond the one new branch.
+      - New `GET /api/immich/albums` (`ImmichAlbumImportService#listAlbumImportStatus`) - one row
+        per Immich album this user has ever queued a task for (latest task per album, by `photoId`,
+        since a retry/re-run creates a new task row rather than reusing the old one), combining
+        that task's live `TaskStatus` with the current `AlbumEntity.photoCount` (read live, not
+        cached in the task - so it keeps advancing as `processAlbumImportTask` actually links
+        photos in, without needing a separate result-tracking mechanism). New
+        `ImmichAlbumImportStatusDTO`/`ImmichAlbumImportTriggerResultDTO` (replaces the old
+        `ImmichAlbumImportSummaryDTO`, deleted - its `photosLinked`/`photosSkippedNotYetImported`
+        counts no longer exist synchronously; `POST /api/immich/albums/import` now only reports
+        `albumsQueued`/`albumsAlreadyInFlight`).
+      - Frontend (`hooks/useImmichImport.js`, `components/ImmichImportManagement.jsx`): mirrors
+        the existing per-day polling shape (`fetchOverview`/`pollDay`) - `importAlbums()` now
+        queues then starts `pollAlbums()`, a single `setInterval` re-fetching the *whole* album
+        list every 3s (not one interval per album - dozens of albums is realistic, one shared
+        poll is enough) until every row reaches `COMPLETED`/`FAILED`. Replaced the old one-shot
+        `albumImportSummary` banner with a live-updating table (album name, linked photo count,
+        status) fed by the new `albums` state, fetched on mount too (so reloading the page while
+        an import is still running shows current progress, not nothing). i18n: removed
+        `immichAlbumImportSummary`, added `immichAlbumImportTriggerResult`/`immichAlbumNameColumn`/
+        `immichAlbumPhotosLinkedColumn`/`immichAlbumTaskStatus{InProgress,Completed,Failed}`/
+        `failedToFetchImmichAlbums` (en+fr).
+      - Verified: `javac` compile clean; `node --check` on the touched hook. No existing test
+        coverage for `useImmichImport.js`/`ImmichImportManagement.jsx` (not in CLAUDE.md's
+        regression-tested list) to run. **Not yet exercised against a live Immich server or a
+        genuine app restart** - same caveat as the fix above, compounded here by also needing to
+        confirm the background task actually gets picked up and completes end-to-end.
+
+- [x] **UI (frontend)**: split `ImmichImportManagement.jsx` into two tabs ("Days"/"Albums",
+      `immichDaysTabLabel`/`immichAlbumsTabLabel`) instead of stacking both sections on one page -
+      the Days section (sync button, status filter, bulk-select, coverage banner, per-day table)
+      and the Albums section (import button, trigger-result banner, per-album status table from
+      the async-album-import work above) now render one at a time based on local `activeTab` state,
+      settings section stays above both tabs since it's a prerequisite for either. Added
+      `immichAlbumsNeedDaysFirst`/`immichNoAlbumsYet` empty-state copy for the Albums tab (no days
+      imported yet / no albums imported yet, respectively). New `.immich-tabs`/`.immich-tab-button`
+      rules in `UserManagement.css` (reused by this page already for its table/container styling) -
+      no existing tab pattern elsewhere in the codebase to reuse instead.
+      - Verified: `npx eslint` clean on both touched files.
+
+- [x] **Test (backend)**: `src/test/java/org/iphoto/ImmichAlbumImportIntegrationTest.java` - a real
+      Spring Boot + MockMvc + Postgres (Testcontainers) integration test for the whole async album-
+      import feature above, same style as the existing `PhotoLifecycleIntegrationTest`. Mocks only
+      `ImmichClient` (`@MockitoBean` - the one thing in this app that actually talks to a real
+      Immich server; nothing in this environment can reach one) with a stubbed album containing one
+      asset that exists locally and one that doesn't. Drives everything else through real HTTP:
+      connect Immich settings, upload a real photo, trigger `/albums/import` (asserts it returns
+      immediately with `albumsQueued=1`, and that an *immediate* second trigger correctly reports
+      `albumsAlreadyInFlight=1, albumsQueued=0` - the in-flight dedup guard), force
+      `taskWorkerManager.pollPendingTasks()` to run the queued `IMPORT_IMMICH_ALBUM` task, then
+      asserts via `GET /api/immich/albums` AND a real `GET /api/albums/{id}/photos` call that
+      exactly the one locally-existing photo got linked (not the never-imported one, not both).
+      - Hoisted `loginAsAdmin`/`createSpace`/`uploadPhoto`/`waitForTaskCompletion`/`generateTestJpeg`
+        out of `PhotoLifecycleIntegrationTest` into `AbstractIntegrationTest` as `protected` helpers
+        (were private, duplicated verbatim) so both tests share them instead of a second copy.
+      - Verified: `javac` compile clean (main + test sources together, `@MockitoBean` confirmed
+        present in the resolved `spring-test-6.2.7.jar`). **Could not actually execute either test**
+        in this sandbox - confirmed by also running the pre-existing, unmodified
+        `PhotoLifecycleIntegrationTest` and hitting the identical failure: this environment's Docker
+        Engine (29.5.3, API 1.54) rejects the old bundled `docker-java`/Testcontainers client's
+        handshake outright ("client version 1.32 is too old, minimum supported is 1.40"), regardless
+        of `DOCKER_API_VERSION`/`DOCKER_HOST` overrides - a Testcontainers-version-vs-Docker-Engine
+        mismatch unrelated to this test's own code. (Found IntelliJ's bundled Maven at
+        `/snap/intellij-idea-community/812/plugins/maven-plugin/lib/maven3/bin/mvn` and used it to
+        confirm this, since no system `mvn`/`mvnw` exists otherwise.) User decided to leave the
+        Testcontainers version as-is and run these tests in their own environment (there's already
+        a GitHub Actions pipeline, per git log) rather than risk bumping a Spring-Boot-BOM-managed
+        dependency version to work around a local sandbox limitation.
+
+- [x] **Reorganize (backend)**: heavy-task concurrency reworked per explicit user request - one
+      dedicated pool per heavy task type instead of one shared `heavyThreadPoolExecutor` (dynamically
+      resized 3-8 threads based on light-pool load) that all three heavy task types competed for.
+      - **Root cause of the "conflict" the user suspected**: each heavy service also held its own
+        internal `ReentrantLock` capping ITSELF to exactly 1 concurrent run, regardless of how many
+        threads the shared pool actually gave it - so increasing the shared pool's size never
+        produced real parallelism for any single type, it just let more *different* types' tasks
+        sit blocked on their own type's lock at once. **Found while fixing this**: `DuplicationService
+        .checkDuplication`'s lock had a genuine bug - acquired via `tryLock()` then `lock()` again
+        (a redundant re-entrant acquisition, hold count 2) but released only once in `finally`
+        (hold count back to 1, never 0) - meaning after the very first successful call, the lock
+        was permanently left held, and every later call (from a different pool thread) would find
+        `tryLock()` false forever and immediately throw `ServiceNotAvailableException` - CHECK_DUPLICATION
+        could never actually run a second time.
+      - **New config** `IPhotoProperties.HeavyTasks` (`iphoto.heavy-tasks.*` in `application.yml`,
+        `@ConfigurationProperties`): `duplication-threads` (default 1 - `DuplicationService` reads/
+        writes overlapping `DuplicateEntity` groups non-atomically, unsafe concurrently with
+        itself), `face-detection-threads` (default 3 - safe: each call opens its own DJL `Predictor`
+        per invocation, `FaceDetectionService#detectAndSaveFaces` never shares one across calls),
+        `face-recognition-threads` (default 1 - `groupFaces()` reprocesses/regroups ALL users'
+        ungrouped faces in one run, unsafe concurrently with itself), `queue-capacity` (default 10,
+        shared by all three).
+      - `ThreadPoolConfiguration`: `heavyThreadPoolExecutor` bean replaced with three -
+        `duplicationThreadPoolExecutor`/`faceDetectionThreadPoolExecutor`/
+        `faceRecognitionThreadPoolExecutor` - each sized from the config above via a shared private
+        `heavyThreadPoolExecutor(namePrefix, poolSize)` builder. All three keep the `HEAVY_TASK`
+        thread-name prefix so `MainSpaceAspectConfiguration`'s thread-name check (which skips
+        binding the per-request Hibernate space filter on background-task threads) still matches.
+      - `TaskWorkerManager`: constructor now takes the three dedicated executors instead of one;
+        `pollHeavyTasks` polls and submits each task type against its own pool via a new
+        `pollHeavyTaskType(TaskType, ThreadPoolTaskExecutor)` helper (reuses the existing
+        `findExecutableTasks(status, now, Set<TaskType>, Limit)` query, `markQueued`, `processTask`
+        unchanged) instead of one shared-pool poll over all three types combined. Removed the now
+        entirely superseded `adjustHeavyPoolSizeForLightLoad`/`HEAVY_TASK_TYPES` (the shared pool's
+        dynamic 3-8 resize heuristic doesn't apply to three separately-sized fixed pools). `shutdown()`
+        now shuts down all three heavy pools instead of one.
+      - Removed the now-redundant `ReentrantLock`s from `DuplicationService`/`FaceDetectionService`/
+        `FaceRecognitionService` entirely - each dedicated pool's fixed size is now the only
+        concurrency limiter, per the user's explicit "remove current lock" instruction (confirmed
+        safe for face detection specifically: DJL's own per-call-Predictor pattern was already
+        being used, the lock was only ever holding back parallelism there, not protecting anything).
+        `ServiceNotAvailableException` (thrown only by these two locks' `tryLock()` failure paths,
+        confirmed via grep) is now unreachable everywhere - deleted the class, and the now-dead
+        `catch (ServiceNotAvailableException e)` branch in `TaskWorkerManager#processTask`.
+      - Verified: whole backend `javac` compile clean (main + test sources). **Not yet exercised
+        against the live app** - needs a real restart (new constructor params/bean names aren't
+        HotSwappable), and confirming the actual concurrency property (3 ISOLATE_FACES tasks
+        genuinely running at once, CHECK_DUPLICATION surviving past its first run) requires
+        watching real task rows against a running instance, which hasn't been done here.
+
+- [x] **Bug fix / optimization (backend)**: "huge CPU consumption" reported right after the
+      heavy-task-pool rework above - root-caused as PyTorch native-thread oversubscription, a
+      regression directly caused by that same change, not a new/separate issue.
+      - **Root cause**: `IPhotoApplication.main` set `ai.djl.pytorch.num_threads=8` unconditionally
+        (PyTorch's CPU backend otherwise defaults to using every core for the tensor math inside a
+        single inference call - see that line's own pre-existing comment, which already explained
+        this). That flat "8" was only ever safe because ISOLATE_FACES could previously only run 1
+        concurrent `Predictor` call at a time (the old lock, since removed). Once
+        `face-detection-threads` (default 3) allowed genuinely concurrent `detectAndSaveFaces`
+        calls, EACH one independently claims 8 native threads - up to 3 * 8 = 24 threads
+        contending for however many cores the machine actually has, which thrashes (more total CPU
+        burned on contention/context-switching, not more real work done) rather than scaling.
+      - **Fix**: `IPhotoApplication.main` now registers an `ApplicationEnvironmentPreparedEvent`
+        listener (fires once `application.yml` is bound into the `Environment` but before any
+        `@Bean` - including `FaceDetectionConfiguration`'s DJL model beans - is created, which is
+        the exact window needed: the property must be read before the PyTorch engine initializes,
+        but reading it requires Spring's environment to already be prepared) that computes
+        `ai.djl.pytorch.num_threads = max(1, availableProcessors / face-detection-threads)` instead
+        of a flat 8 - so the total native thread budget stays proportional to the machine's real
+        core count no matter how `iphoto.heavy-tasks.face-detection-threads` is tuned.
+      - **Also found and fixed while investigating** (`FaceRecognitionService`, the other CPU-heavy
+        path): `findBestMatchForFace`'s per-face loop re-decoded and re-normalized the SAME face's
+        own embedding from a fresh `byteArrayToFloatArray` call for every candidate person (up to
+        `persons.size()` times per face, each also redundantly recomputing that same vector's norm
+        inside `cosineSimilarity`) - pure wasted CPU, since that vector never changes within one
+        face's matching pass. New `NormalizedEmbedding` record (vector + precomputed norm) decoded
+        once per face instead, threaded through `findBestMatchForFace`/`scoreAgainstPerson`/
+        `calculateAverageSimilarity`/a new `cosineSimilarity(NormalizedEmbedding, float[])`
+        overload. Also replaced `Math.pow(x, 2)` with a plain `x * x` in both `cosineSimilarity`
+        overloads (transcendental-function overhead for what's always squaring - a well-known
+        Java micro-optimization, correct regardless of the rest of this fix).
+      - **Investigated and ruled out as a concern**: `DuplicationService`'s comparisons are cheap
+        Hamming distance over `phash`/`mhash` byte hashes computed once at upload time (`HASH_IMAGE`
+        task), not recomputed per comparison - not a CPU hotspot, left untouched.
+      - **Not pursued further, flagged as a possible future follow-up, not done here**: the
+        (face, person) matching loop still issues 2 `faceRepository` queries per pair
+        (`nearestTemporalNeighbors`) - for many faces against many persons this is a large number
+        of small DB round-trips, a separate (I/O-heavier, not CPU-heavy the way the above was)
+        potential cost worth revisiting if face recognition is still slow/heavy after this fix.
+      - Verified: whole backend `javac` compile clean (main + test sources). **Not yet exercised
+        against the live app** - needs a real restart; confirming this actually resolved the CPU
+        usage requires watching real CPU load during a face-detection burst on a running instance
+        with several `ISOLATE_FACES` tasks in flight at once, which hasn't been done here.

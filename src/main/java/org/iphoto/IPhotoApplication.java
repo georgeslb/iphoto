@@ -13,6 +13,7 @@ import org.iphoto.service.UserService;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.event.ApplicationEnvironmentPreparedEvent;
 import org.springframework.context.annotation.Bean;
 import org.springframework.retry.annotation.EnableRetry;
 import org.springframework.scheduling.annotation.EnableScheduling;
@@ -28,13 +29,32 @@ import java.util.Set;
 public class IPhotoApplication {
 
     public static void main(String[] args) {
+        SpringApplication app = new SpringApplication(IPhotoApplication.class);
         // PyTorch's CPU backend defaults to using every available core for the tensor math inside
         // a single inference call (intra-op parallelism), independent of how many Java-level
-        // worker threads are running face-detection tasks - so even one task in flight can peg the
-        // whole machine. Must be set before the DJL PyTorch engine initializes (its first
-        // Criteria.loadModel() call, in FaceDetectionConfiguration), so as early as possible here.
-        System.setProperty("ai.djl.pytorch.num_threads", "8");
-        SpringApplication.run(IPhotoApplication.class, args);
+        // worker threads are running face-detection tasks. This used to be a flat "8" regardless
+        // of concurrency - fine back when ISOLATE_FACES could only ever run 1 at a time (see the
+        // heavy-task-pool rework in TODO.md), but once face-detection-threads > 1 (default 3,
+        // IPhotoProperties.HeavyTasks) that many *concurrent* Predictor calls would each try to
+        // claim 8 native threads - up to faceDetectionThreads * 8 threads fighting over however
+        // many cores the machine actually has, causing exactly the CPU thrashing/huge-usage
+        // reported after that change. Divide the machine's cores across the configured
+        // concurrency instead, so the total native thread budget stays proportional to what's
+        // really available regardless of how face-detection-threads is tuned.
+        //
+        // Must be set before the DJL PyTorch engine initializes (its first Criteria.loadModel()
+        // call, a @Bean in FaceDetectionConfiguration created during context refresh) - an
+        // ApplicationEnvironmentPreparedEvent listener fires after application.yml is bound into
+        // the Environment but before any bean (including that one) is created, which is exactly
+        // the window needed to read the real configured value here.
+        app.addListeners((org.springframework.context.ApplicationListener<ApplicationEnvironmentPreparedEvent>) event -> {
+            int faceDetectionThreads = event.getEnvironment()
+                    .getProperty("iphoto.heavy-tasks.face-detection-threads", Integer.class, 3);
+            int availableProcessors = Runtime.getRuntime().availableProcessors();
+            int pytorchThreads = Math.max(1, availableProcessors / faceDetectionThreads);
+            System.setProperty("ai.djl.pytorch.num_threads", String.valueOf(pytorchThreads));
+        });
+        app.run(args);
     }
 
     @Bean

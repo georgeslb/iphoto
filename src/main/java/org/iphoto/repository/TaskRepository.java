@@ -53,4 +53,10 @@ public interface TaskRepository extends JpaRepository<TaskEntity, UUID> {
     // Bootstrap check (see IPhotoApplication's bootstrapFaceRecognition CommandLineRunner) - was
     // the perpetually-self-rescheduling FACE_RECOGNITION task ever created at all.
     boolean existsByTaskType(TaskType taskType);
+
+    // Backs GET /api/immich/albums (see ImmichAlbumImportService#listAlbumImportStatus) - every
+    // IMPORT_IMMICH_ALBUM task this user has ever queued, so the latest one per album (by photoId,
+    // which carries the local AlbumEntity id for this task type) can be picked out to report that
+    // album's current status.
+    List<TaskEntity> findByUserIdAndTaskType(UUID userId, TaskType taskType);
 }

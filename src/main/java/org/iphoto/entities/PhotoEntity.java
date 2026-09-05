@@ -14,9 +14,9 @@ import java.time.LocalDateTime;
 import java.util.*;
 
 @Entity
-@Table(name = "photos", uniqueConstraints = {@UniqueConstraint(name = "hash_unique", columnNames = { "file_hash"})}
-, indexes = {@Index(columnList = "space_id", name = "space_index"), @Index(columnList = "space_id,grouped_day", name = "idx_photos_space_grouped_day")})
-@EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true) // Changed callSuper to true
+@Table(name = "photos", uniqueConstraints = {@UniqueConstraint(name = "hash_user_unique", columnNames = { "file_hash", "user_id"})}
+, indexes = {@Index(columnList = "space_id", name = "space_index"), @Index(columnList = "space_id,is_garbage", name = "idx_photos_space_is_garbage"), @Index(columnList = "space_id,grouped_day", name = "idx_photos_space_grouped_day")})
+@EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true)
 @ToString(onlyExplicitlyIncluded = true)
 @Getter
 @Setter
