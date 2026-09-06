@@ -11,9 +11,16 @@ import org.iphoto.properties.IPhotoProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
-import org.springframework.util.ResourceUtils;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.core.io.Resource;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 
 // Models: InsightFace's `buffalo_l` pack (SCRFD detector, det_10g.onnx + ArcFace R50 embedding,
 // w600k_r50.onnx) - see src/main/resources/models/ and the migration plan for why these replace
@@ -56,7 +63,7 @@ public class FaceDetectionConfiguration {
 
         Criteria<Image, DetectedObjects> criteria = Criteria.builder()
                 .setTypes(Image.class, DetectedObjects.class)
-                .optModelPath(ResourceUtils.getFile("classpath:models/det_10g.onnx").toPath())
+                .optModelPath(resolveModelPath("models/det_10g.onnx"))
                 .optTranslator(translator)
                 .optProgress(new ProgressBar())
                 .optEngine("OnnxRuntime")
@@ -74,7 +81,7 @@ public class FaceDetectionConfiguration {
         // NDArray arithmetic the ONNX Runtime engine's NDArray implementation doesn't support).
         Criteria<Image, float[]> criteria = Criteria.builder()
                 .setTypes(Image.class, float[].class)
-                .optModelPath(ResourceUtils.getFile("classpath:models/w600k_r50.onnx").toPath())
+                .optModelPath(resolveModelPath("models/w600k_r50.onnx"))
                 .optTranslator(new ArcFaceEmbeddingTranslator())
                 .optProgress(new ProgressBar())
                 .optEngine("OnnxRuntime")
@@ -83,5 +90,30 @@ public class FaceDetectionConfiguration {
                 .build();
         return
                 criteria.loadModel();
+    }
+
+    // ResourceUtils.getFile("classpath:...")/Resource#getFile() only work when the resource
+    // actually resolves to a real filesystem path - true for an exploded classes dir (IDE run,
+    // `mvn spring-boot:run`), but NOT for the packaged executable jar this app actually ships as
+    // (see Dockerfile): there, classpath resources live inside a nested jar
+    // (jar:nested:/app/app.jar/!BOOT-INF/classes/!/models/det_10g.onnx), which Spring can't turn
+    // into a File - getFile() throws FileNotFoundException, and the ONNX Runtime engine needs a
+    // real file path either way (it can't load a model straight out of a jar entry). So: try
+    // getFile() first (cheap, no copy, keeps local dev fast), and only when that fails - i.e. only
+    // when actually running from the packaged jar - fall back to extracting the resource to a
+    // temp file once at startup and pointing Criteria at that instead.
+    private Path resolveModelPath(String classpathLocation) throws IOException {
+        Resource resource = new ClassPathResource(classpathLocation);
+        try {
+            return resource.getFile().toPath();
+        } catch (FileNotFoundException notOnDisk) {
+            String fileName = Paths.get(classpathLocation).getFileName().toString();
+            Path tempFile = Files.createTempFile("iphoto-model-", "-" + fileName);
+            tempFile.toFile().deleteOnExit();
+            try (InputStream in = resource.getInputStream()) {
+                Files.copy(in, tempFile, StandardCopyOption.REPLACE_EXISTING);
+            }
+            return tempFile;
+        }
     }
 }
