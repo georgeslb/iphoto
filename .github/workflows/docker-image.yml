@@ -15,6 +15,14 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
+      # lfs: true deliberately omitted here - src/main/resources/models/*.onnx are git-lfs
+      # tracked (.gitattributes), and without it this checkout gets their ~130-byte pointer files
+      # instead of real ONNX content. That's fine for this job specifically: FaceDetectionConfiguration
+      # (the only thing that loads them) is @Profile("!test") and never created under the "test"
+      # profile AbstractIntegrationTest activates, so the test suite genuinely never touches them
+      # (verified by running it with both files removed entirely - see TODO.md). Skipping the LFS
+      # pull here avoids spending bandwidth against GitHub's small free LFS quota on every push for
+      # files this job doesn't need - build-and-push below is where they actually matter.
       - uses: actions/checkout@v4
 
       # Matches pom.xml's maven-compiler-plugin release (25) - not the project's
@@ -39,7 +47,14 @@ jobs:
       contents: read
       packages: write
     steps:
+      # lfs: true here (unlike the test job above) - the Dockerfile's build stage COPYs this
+      # checkout wholesale and packages whatever's under src/main/resources/models/ straight into
+      # the real, production app image, which DOES need working ONNX models at runtime. Without
+      # this the image would ship with the ~130-byte git-lfs pointer files instead of real models,
+      # and face detection would fail the moment a real request hit it.
       - uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - uses: docker/setup-buildx-action@v3
 
