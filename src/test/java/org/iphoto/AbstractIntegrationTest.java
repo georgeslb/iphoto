@@ -55,7 +55,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 // end-to-end scenario (originally written for PhotoLifecycleIntegrationTest, hoisted here once
 // other scenarios needed the exact same "log in, upload a real photo, force the async task poller
 // instead of waiting on its timer" setup).
+// spring.profiles.active=test activates @Profile("test")/@Profile("!test") switches across the
+// app - currently just FaceDetectionConfiguration/FaceDetectionServiceImpl (excluded - see their
+// own comments on why real ONNX models can't be loaded in CI) plus TestFaceDetectionService (the
+// stand-in that keeps TaskWorkerManagerImpl's FaceDetectionService dependency satisfiable).
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK, properties = {
+        "spring.profiles.active=test",
         "spring.datasource.url=jdbc:h2:mem:iphototest;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE",
         "spring.datasource.driver-class-name=org.h2.Driver",
         "spring.datasource.username=sa",

@@ -21,6 +21,7 @@ import org.iphoto.repository.FaceRepository;
 import org.iphoto.repository.PersonRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.util.EmbeddingCodec;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -32,6 +33,7 @@ import java.nio.file.Paths;
 @Service
 @Slf4j
 @RequiredArgsConstructor
+@Profile("!test")
 public class FaceDetectionServiceImpl implements FaceDetectionService {
 
     private final FaceRepository faceRepository;

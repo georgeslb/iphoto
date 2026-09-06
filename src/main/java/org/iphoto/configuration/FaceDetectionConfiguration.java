@@ -10,6 +10,7 @@ import ai.djl.training.util.ProgressBar;
 import org.iphoto.properties.IPhotoProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
 import org.springframework.util.ResourceUtils;
 
 import java.io.IOException;
@@ -20,7 +21,18 @@ import java.io.IOException;
 // instead of PyTorch). Vendored directly in the repo rather than downloaded at build time - the
 // old models were pulled from an unversioned "test-models" demo bucket with no production
 // guarantee; this is the actual fix for that, not just a different model.
+//
+// @Profile("!test") - these files are checked in via git-lfs (see .gitattributes), and GitHub
+// Actions' actions/checkout doesn't fetch LFS content by default, so in CI they're just ~130-byte
+// pointer text, not real ONNX. Criteria.loadModel() would fail fast trying to parse that. Nothing
+// in the test suite exercises real face detection (see FaceServiceTest's own comment - faces are
+// inserted directly via FaceRepository), so these beans simply aren't created under the "test"
+// profile (see AbstractIntegrationTest) rather than trying to make them work against fake models.
+// FaceDetectionServiceImpl (the only consumer of either bean) carries the same annotation; see
+// TestFaceDetectionService for the test-profile stand-in that keeps TaskWorkerManagerImpl's
+// FaceDetectionService dependency satisfied.
 @Configuration
+@Profile("!test")
 public class FaceDetectionConfiguration {
 
     @Bean

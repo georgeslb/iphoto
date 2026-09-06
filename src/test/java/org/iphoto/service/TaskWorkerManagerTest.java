@@ -53,7 +53,7 @@ class TaskWorkerManagerTest extends AbstractIntegrationTest {
         TaskEntity task = taskRepository.save(TaskEntity.builder()
                 .photoId(UUID.randomUUID()).taskType(TaskType.HASH_IMAGE).status(TaskStatus.PENDING.name()).build());
 
-        taskWorkerManager.pollLightPendingTasks();
+        taskWorkerManager.pollMiddleChargeTasks();
 
         TaskStatus status = TaskStatus.PENDING;
         for (int attempt = 0; attempt < 40 && status != TaskStatus.COMPLETED && status != TaskStatus.FAILED; attempt++) {
