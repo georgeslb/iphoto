@@ -92,7 +92,7 @@ public class FaceController extends AbstractBaseController {
     }
 
     @GetMapping("/person/{id}/faces")
-    public ResponseEntity<Page<FaceDTO>> getPersonFaces(@PathVariable UUID id, @PageableDefault(size = 50, sort = "dateTaken", direction = Sort.Direction.DESC)  Pageable pageable) {
+    public ResponseEntity<Page<FaceDTO>> getPersonFaces(@PathVariable UUID id, @PageableDefault(size = 50, sort = "photo.dateTaken", direction = Sort.Direction.DESC)  Pageable pageable) {
         return ResponseEntity.ok(faceService.getPersonFaces(id, pageable));
     }
 

@@ -20,6 +20,11 @@ public interface SpaceRepository extends JpaRepository<SpaceEntity, UUID> {
 
     Optional<SpaceEntity> findByIdAndUser(UUID id, UserEntity user);
 
+    // Pre-save collision check for SpaceService#createSpace - mirrors AlbumService.createAlbum/
+    // ShareService.createShare's own findByName check, so a duplicate name reports 409 Conflict
+    // instead of falling through to the name_user_unique constraint and 500ing.
+    Optional<SpaceEntity> findByNameAndUser(String name, UserEntity user);
+
     default SpaceEntity findByTypeEqualsMainAndUser(UserEntity user) {
         return user.getSpaces().stream().filter(spaceEntity -> SpaceType.MAIN.equals(spaceEntity.getType())).findFirst().orElseThrow(NoMatchUserSpaceException::new);
     }

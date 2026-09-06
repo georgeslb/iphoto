@@ -3727,3 +3727,113 @@ new work is identified or completed, so nothing gets lost between sessions.
           both models load and run end-to-end, same two real photos as before: detection
           boxes/landmarks came back bit-for-bit identical to the earlier (PyTorch-assisted) run,
           confirming the plain-Java rewrite is a faithful equivalent, not just "no longer crashes".
+
+- [x] **Interface + Impl split for every `service/` class.** Every Spring-managed service bean
+      (30 classes across `service/`, `service/auth/`, `service/immich/`) now has a public interface
+      exposing just its public methods, with the concrete class renamed to `<Name>Impl` implementing
+      it (e.g. `PhotoService`/`PhotoServiceImpl`, `FaceDetectionService`/`FaceDetectionServiceImpl`).
+      `UserDetailsServiceImpl` was left alone - it already implements Spring Security's own
+      `UserDetailsService` interface, so it already followed this exact pattern for a
+      framework-owned interface.
+      - **Why the interface keeps the original class name** (not a `I`-prefixed name, nor the impl
+        keeping the bare name): every existing `@Autowired`/constructor-injected field, controller,
+        and test across the whole codebase types its dependency as e.g. `PhotoService` - keeping
+        that name on the *interface* and moving the implementation to a new `PhotoServiceImpl` name
+        meant zero call sites anywhere else in the app needed to change. Verified up front (grep)
+        that nothing does `new XxxService(...)` directly (all are Spring beans, wired only via
+        autowiring), so this rename is safe everywhere.
+      - **Nested types stay on the interface, not the impl** - `TaskMapper.Action` (enum),
+        `UserService.ImmichCredentials`/`DeviceTokenService.IssuedToken`/
+        `ImmichCredentialCipher.Encrypted` (records) are all referenced externally as
+        `OuterName.NestedType` (e.g. `TaskMapper.Action.ON_CREATE_PHOTO_ACTION` in `PhotoService`,
+        `import org.iphoto.service.UserService.ImmichCredentials` in `ImmichClient`). Since nested
+        types declared directly inside an interface are implicitly `public static`, moving them
+        into the interface (not the impl) keeps every existing qualified reference compiling
+        unchanged.
+      - **`ShareService.computeUserMd5` stays a `static` method on the interface itself** (with a
+        body - interfaces have supported static methods since Java 8), for the same reason: it's
+        called elsewhere as `ShareService.computeUserMd5(...)` (see `ImmichAlbumImportService`), and
+        a static method can't be "implemented" by a bean anyway.
+      - **Package-private helper methods promoted to public on the interface** where another class
+        in the same package called them without qualification - `PersonRecognitionService`'s
+        `recalculateCoverFace`/`addFaceToBucket`/`removeFaceFromBucket` were package-private,
+        callable from `FaceDetectionService`/`FaceService` only because they're in the same
+        package; a Java interface can't declare a package-private method, so these had to become
+        part of the public interface contract.
+      - **`@Transactional`/`@Scheduled`/`@PreDestroy` annotations stayed on the impl classes**, not
+        moved to the interface - Spring Boot defaults `spring.aop.proxy-target-class=true` (no
+        override found in `application.yml`), so AOP proxies are CGLIB subclasses of the concrete
+        class, and method-level annotations are read off the target class either way. This would
+        matter (annotations would need to move to the interface) only under a JDK dynamic proxy,
+        which this app doesn't use.
+      - **No other file changed** - every controller, other service, and the two integration tests
+        (`AbstractIntegrationTest`/`ImmichAlbumImportIntegrationTest`, which `@Autowired protected
+        TaskWorkerManager taskWorkerManager` and call its now-still-public `pollPendingTasks()`)
+        kept compiling with zero edits, confirming the naming choice above actually delivered on
+        "proxy to the final implementation" with no ripple effect elsewhere.
+      - Verified: `mvn compile` and `mvn test-compile` both green.
+
+- [x] **Per-interface test suite added, switched from Testcontainers Postgres to in-memory H2.**
+      Every interface from the split above got its own test class (25 total: `TaskService`,
+      `DayIndexCache`, `RequiresNewTransactionService`, `MenuService`, `PhotoStoragePathResolver`,
+      `PhotoDeletionService`, `TaskMapper`, `ImmichCredentialCipher`, `TaskManagerService`,
+      `DeviceTokenService`, `StorageMigrationService`, `AdminService`, `SpaceService`,
+      `DuplicationUniquenessService`, `ThumbnailService`, `ShareService`, `UserService`,
+      `PersonRecognitionService`, `FaceService`, `AlbumService`, `EditPhotoService`, `PhotoService`,
+      `PhotoUploadService`, `TaskWorkerManager`), covering every public method - except
+      `FaceRecognitionService`/`DuplicationService`/`FaceDetectionService` (excluded per explicit
+      request) and `ImmichClient`/`ImmichAlbumImportService`/`ImmichImportService` (excluded too -
+      the old `ImmichAlbumImportIntegrationTest` was removed outright rather than replaced, per the
+      same request). Mostly driven through real controller endpoints (MockMvc), falling back to
+      directly autowiring the interface only for methods with no HTTP endpoint of their own.
+      - **H2 instead of Testcontainers**: `AbstractIntegrationTest` no longer starts a real Postgres
+        container - `com.h2database:h2` (test-scope) replaces `spring-boot-testcontainers`/
+        `testcontainers-junit-jupiter`/`testcontainers-postgresql` in `pom.xml`, and the datasource
+        is now `jdbc:h2:mem:iphototest;MODE=PostgreSQL;DB_CLOSE_DELAY=-1` with the Hibernate dialect
+        overridden to `H2Dialect` (PostgreSQLDialect assumes a real Postgres server on the wire).
+        MODE=PostgreSQL is what lets the app's own Postgres-flavored native query (`ORDER BY
+        random() LIMIT`, in `PhotoRepository.findRandomPhotosBySpaceIdAndGroupedDayBetween`) and
+        `BYTEA` columnDefinitions keep working unmodified. One known, accepted gap: H2 can't parse
+        the `enum(...)` DDL Hibernate/H2Dialect generates for `ImmichImportDayEntity.status` under
+        this mode (logged as a schema-creation warning, doesn't fail the build) - harmless here
+        since Immich is out of scope for this suite, not chased further.
+      - **Same fixed H2 URL across every test class** means Spring reuses one cached application
+        context (and its H2 database) for the whole run, same as the previous Testcontainers setup
+        already did with a static `@Container` field on the shared base class - test isolation
+        comes from unique per-test names/ids, not a fresh database per class.
+      - **`AbstractIntegrationTest#runAsAdmin`** (new helper): a handful of methods with no HTTP
+        endpoint route through a `@MainSpaceLimited`-annotated repository query anyway (see
+        `MainSpaceAspectConfiguration`), which reads the current user off `SecurityContextHolder` -
+        populated by the security filter chain around a real request, but empty in a bare JUnit
+        thread calling a service directly. `runAsAdmin` pushes a real "admin" `Authentication` for
+        the duration of a `Callable`, then restores whatever was there before.
+      - **`generateTestJpeg()` fixed to embed per-call randomness** (a random fill color) instead of
+        producing byte-identical output every call - `PhotoRepository.findByFileHash` enforces
+        file-hash uniqueness *globally* (a deliberate dedup feature), and with every test class now
+        sharing one database across the whole run, a fixed image made every upload after the first
+        one in the entire suite collide as a content-duplicate (task stuck at IGNORED, never
+        COMPLETED) - reproduced live while writing `AlbumServiceTest`.
+      - **Three real, pre-existing bugs found and fixed** while writing these tests (not worked
+        around):
+        1. `SpaceService.createSpace` had no pre-save name-collision check (unlike
+           `AlbumService.createAlbum`/`ShareService.createShare`, which do) - a duplicate space name
+           fell through to the `name_user_unique` DB constraint and 500'd instead of returning 409.
+           Added `SpaceRepository.findByNameAndUser` and the same pre-check the sibling services use.
+        2. `PersonRecognitionServiceImpl` was class-level `@Transactional(propagation =
+           REQUIRES_NEW)` - fine for `mergePersons`/`mergeInto` (which already explicitly override
+           back to plain `@Transactional`), but wrong for `addFaceToBucket`/`removeFaceFromBucket`/
+           `recalculateCoverFace`/`updatePerson`/`addPerson`: a caller that saves a brand-new
+           `PersonEntity` and then calls one of these in the *same*, not-yet-committed transaction
+           (e.g. `FaceServiceImpl.setFacePerson`'s new-person branch) got a foreign key violation -
+           the suspended, uncommitted `PersonEntity` insert is invisible to the independent
+           REQUIRES_NEW transaction trying to insert a `person_embedding_buckets` row referencing
+           it. Changed the class-level annotation to plain `@Transactional` (REQUIRED).
+        3. `FaceController.getPersonFaces`'s `@PageableDefault` sorted by `"dateTaken"` - a property
+           that doesn't exist on `FaceEntity` at all (only on `PhotoEntity`, via its `photo`
+           association) - so the endpoint 500'd on its own default pagination whenever a caller
+           didn't override the sort. Fixed to `"photo.dateTaken"` (a valid nested property path).
+      - Verified: full suite green, 101 tests, run twice in a row to check for order-dependent
+        flakiness from the shared database (found and fixed one such case: `AdminServiceTest`
+        assumed `ACTIVATE_HEAVY_TASKS` started deactivated, which broke once another test class -
+        `TaskWorkerManagerTest` - had already activated it earlier in the same run; now establishes
+        its own starting state explicitly rather than assuming a global default).

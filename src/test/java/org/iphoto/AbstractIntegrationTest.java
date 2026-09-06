@@ -7,50 +7,63 @@ import org.iphoto.service.TaskWorkerManager;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 import javax.imageio.ImageIO;
+import java.awt.Color;
+import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 // Base for real Spring Boot integration tests: full application context, real Spring Security
-// filter chain (MockMvc, not @WebMvcTest slices), and a real Postgres instance via Testcontainers
-// (@ServiceConnection auto-wires spring.datasource.* from the container - no manual property
-// wiring needed for the datasource itself). H2/an in-memory DB was deliberately not used: this
-// app is Postgres-only in practice (native window-function queries, BYTEA columns, Postgres
-// dialect hardcoded in application.yml) and relies on ddl-auto=update for schema creation (no
-// Flyway/Liquibase in this project), so a real Postgres is both more representative and no more
-// setup than any alternative.
+// filter chain (MockMvc, not @WebMvcTest slices), and an in-memory H2 database instead of a real
+// Postgres (no Testcontainers/Docker dependency for the test suite). Run in PostgreSQL
+// compatibility mode (MODE=PostgreSQL below) since the app's own queries are written against
+// Postgres (a native `ORDER BY random() LIMIT` query, `BYTEA` columnDefinitions) - the Hibernate
+// dialect is still overridden to H2Dialect (not PostgreSQLDialect, which assumes a real Postgres
+// server on the wire). ddl-auto=update (inherited from application.yml) builds the schema the
+// same way the real app does, no separate test-only migration setup needed.
+//
+// DB_CLOSE_DELAY=-1 keeps this in-memory database alive for the life of the JVM regardless of
+// connection pool churn (the pool's own max-lifetime/idle-timeout are tuned short for a real
+// server, see application.yml) - without it, H2 would drop the whole database the moment the
+// last pooled connection closes. The same fixed URL across every subclass means Spring reuses one
+// cached application context (and this one shared database) for the whole test run, rather than
+// starting a new one per test class - test isolation instead comes from each test using its own
+// randomly-generated names/ids, the same assumption the previous Testcontainers-per-JVM setup
+// already relied on (one container, shared and reused across every test class in the same run).
 //
 // Also carries the login/space/upload/task-wait helpers shared by every subclass's flowing
-// end-to-end scenario (originally written for PhotoLifecycleIntegrationTest, hoisted here once a
-// second scenario - ImmichAlbumImportIntegrationTest - needed the exact same "log in, upload a
-// real photo, force the async task poller instead of waiting on its timer" setup).
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK)
+// end-to-end scenario (originally written for PhotoLifecycleIntegrationTest, hoisted here once
+// other scenarios needed the exact same "log in, upload a real photo, force the async task poller
+// instead of waiting on its timer" setup).
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK, properties = {
+        "spring.datasource.url=jdbc:h2:mem:iphototest;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE",
+        "spring.datasource.driver-class-name=org.h2.Driver",
+        "spring.datasource.username=sa",
+        "spring.datasource.password=",
+        "spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.H2Dialect",
+})
 @AutoConfigureMockMvc
-@Testcontainers
 public abstract class AbstractIntegrationTest {
-
-    @Container
-    @ServiceConnection
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17");
 
     @Autowired
     protected MockMvc mockMvc;
@@ -137,8 +150,35 @@ public abstract class AbstractIntegrationTest {
         throw new AssertionError("Task " + taskId + " did not complete in time");
     }
 
+    // A handful of service methods with no HTTP endpoint of their own still route through a
+    // @MainSpaceLimited-annotated repository query (see MainSpaceAspectConfiguration) that reads
+    // the current user off SecurityContextHolder - normally populated by the security filter
+    // chain around a real request, but empty in a bare JUnit test thread calling a service
+    // directly. Pushes a real "admin" Authentication for the duration of `action`, then restores
+    // whatever was there before, mirroring what the filter chain does around a real request.
+    protected <T> T runAsAdmin(Callable<T> action) throws Exception {
+        Authentication previous = SecurityContextHolder.getContext().getAuthentication();
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken("admin", null, List.of()));
+        try {
+            return action.call();
+        } finally {
+            SecurityContextHolder.getContext().setAuthentication(previous);
+        }
+    }
+
+    // A random fill color per call, not a fixed image - PhotoRepository.findByFileHash enforces
+    // file-hash uniqueness GLOBALLY (a deliberate dedup feature, not a bug - see its own comment),
+    // and this whole test suite shares one H2 database across every test class/method (see this
+    // class's own header comment). A byte-identical JPEG on every call would make every upload
+    // after the very first one in the whole run collide as a content-duplicate (uploadAsset
+    // returns DUPLICATED, the task never reaches COMPLETED) - reproduced live while writing
+    // AlbumServiceTest, once enough other tests already calling this existed earlier in the run.
     protected static byte[] generateTestJpeg() throws Exception {
         BufferedImage image = new BufferedImage(64, 64, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = image.createGraphics();
+        g.setColor(new Color(java.util.concurrent.ThreadLocalRandom.current().nextInt(0x1000000)));
+        g.fillRect(0, 0, 64, 64);
+        g.dispose();
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         ImageIO.write(image, "jpg", out);
         return out.toByteArray();

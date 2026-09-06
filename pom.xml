@@ -122,23 +122,15 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
-        <!-- Real Postgres for integration tests (via @ServiceConnection) instead of H2: the app
-             is Postgres-only in practice (BYTEA columns, native window-function queries,
-             @Filter-based space scoping) and ddl-auto=update means these tests get their schema
-             the same way the real app does, no separate test-only migration setup needed. -->
+        <!-- In-memory H2 for integration tests, in place of a real Postgres via Testcontainers -
+             no Docker dependency for the test suite. Run in PostgreSQL compatibility mode
+             (MODE=PostgreSQL, see AbstractIntegrationTest's datasource URL) since the app's own
+             queries/columnDefinitions (native random()-ordered query, BYTEA columns) are written
+             against Postgres; the dialect itself is still overridden to H2Dialect for tests
+             (PostgreSQLDialect assumes a real Postgres server on the wire, not just similar SQL). -->
         <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-testcontainers</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.testcontainers</groupId>
-            <artifactId>junit-jupiter</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.testcontainers</groupId>
-            <artifactId>postgresql</artifactId>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
