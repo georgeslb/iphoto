@@ -12,10 +12,12 @@ import org.iphoto.model.request.CheckHashesRequest;
 import org.iphoto.model.request.PhotoEditRequest;
 import org.iphoto.model.request.PhotoSelectionRequest;
 import org.iphoto.model.request.UpdatePhotoDateRequest;
+import org.apache.commons.io.FilenameUtils;
 import org.iphoto.repository.PhotoMetadataRepository;
 import org.iphoto.repository.UserRepository;
 import org.iphoto.service.PhotoService;
 import org.iphoto.service.SpaceService;
+
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.ResourceRegion;
@@ -26,8 +28,10 @@ import org.springframework.data.web.PageableDefault;
 import org.springframework.http.*;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -36,10 +40,14 @@ import java.nio.file.Paths;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.HashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 @RestController
 @RequestMapping("/api/photos")
@@ -53,7 +61,13 @@ public class PhotoController {
     private final PhotoMetadataMapper photoMetadataMapper;
     private final UserRepository userRepository; // To fetch UserEntity from username
     private final SpaceService spaceService;
-    private final DateTimeFormatter df = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm");
+    // ISO_LOCAL_DATE_TIME (not a fixed minute-only pattern) so this stays backward compatible with
+    // the datetime-local picker's "yyyy-MM-ddTHH:mm" strings (seconds/nanos are optional in this
+    // formatter) while also accepting the second/millisecond-precision strings the drag-to-reorder
+    // feature needs (PhotoGrid.jsx's drag handle, via usePhotoActions.js#handleReorderPhotos) -
+    // that feature stamps moved photos exactly 1 second (or, in a tight gap, 1 millisecond) apart
+    // to preserve their new relative order, which a minute-only formatter couldn't represent at all.
+    private final DateTimeFormatter df = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
 
     private UserEntity getCurrentUser() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
@@ -263,6 +277,90 @@ public class PhotoController {
     @GetMapping("/{id}/original")
     public ResponseEntity<Resource> getOriginal(@PathVariable UUID id) {
         return photoService.findById(id).map(photo -> this.serveFile(photo, false)).orElse(ResponseEntity.notFound().build());
+    }
+
+    // Deliberately a separate route from /original above, not that same endpoint with a header
+    // added - /original is used as an <img src="..."> for in-page rendering all over the frontend
+    // (Lightbox full-res view, UploadPreviewModal, DuplicateClusterModal, SharedLightbox), and a
+    // browser won't render an image inline from a response marked Content-Disposition: attachment.
+    // Single-photo counterpart of downloadMultiple below.
+    @GetMapping("/{id}/download")
+    public ResponseEntity<Resource> download(@PathVariable UUID id) {
+        UserEntity currentUser = getCurrentUser();
+        return photoService.findById(id)
+                .filter(photo -> photo.getSpace().getUser().getId().equals(currentUser.getId()))
+                .map(this::serveAsAttachment)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    private ResponseEntity<Resource> serveAsAttachment(PhotoEntity photo) {
+        String filePath = photo.getOriginalPath();
+        if (filePath == null) return ResponseEntity.notFound().build();
+        Path path = Paths.get(filePath);
+        if (!Files.exists(path)) return ResponseEntity.notFound().build();
+        Resource resource = new FileSystemResource(path);
+        ResponseEntity.BodyBuilder response = ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + attachmentFileName(photo) + "\"");
+        try {
+            return response.contentType(MediaType.parseMediaType(photo.getContentType())).body(resource);
+        } catch (Exception e) {
+            return response.contentType(MediaType.APPLICATION_OCTET_STREAM).body(resource);
+        }
+    }
+
+    // Multiple selected photos download as one zip instead of one file at a time - POST with a
+    // body (not GET+query-string) since a large selection could exceed a comfortable URL length.
+    // findOwnedByIds is the authorization boundary here: silently drops any id the caller doesn't
+    // actually own rather than serving it, so a client can't read another user's files by passing
+    // arbitrary ids. Streams via StreamingResponseBody wrapped around a plain ZipOutputStream,
+    // writing straight to the response - never buffers the whole zip in memory, since a large
+    // selection could be many GB.
+    @PostMapping("/download")
+    public ResponseEntity<StreamingResponseBody> downloadMultiple(@RequestBody List<UUID> photoIds) {
+        UserEntity currentUser = getCurrentUser();
+        List<PhotoEntity> photos = photoService.findOwnedByIds(currentUser, photoIds);
+        if (photos.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        StreamingResponseBody body = outputStream -> {
+            Set<String> usedNames = new HashSet<>();
+            try (ZipOutputStream zip = new ZipOutputStream(outputStream)) {
+                for (PhotoEntity photo : photos) {
+                    if (photo.getOriginalPath() == null) continue;
+                    Path path = Paths.get(photo.getOriginalPath());
+                    if (!Files.exists(path)) continue;
+                    zip.putNextEntry(new ZipEntry(uniqueEntryName(photo, usedNames)));
+                    Files.copy(path, zip);
+                    zip.closeEntry();
+                }
+            }
+        };
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"photos.zip\"")
+                .contentType(MediaType.valueOf("application/zip"))
+                .body(body);
+    }
+
+    private static String attachmentFileName(PhotoEntity photo) {
+        return StringUtils.hasText(photo.getFileName()) ? photo.getFileName() : photo.getId() + ".bin";
+    }
+
+    // De-duplicates zip entry names within one download - two selected photos can legitimately
+    // share a filename (duplicates across spaces/albums, or two differently-cropped copies of the
+    // same original), which would otherwise silently overwrite one entry with the other in the
+    // resulting zip.
+    private static String uniqueEntryName(PhotoEntity photo, Set<String> usedNames) {
+        String fileName = attachmentFileName(photo);
+        if (usedNames.add(fileName)) {
+            return fileName;
+        }
+        String base = FilenameUtils.getBaseName(fileName);
+        String extension = FilenameUtils.getExtension(fileName);
+        String suffix = photo.getId().toString().substring(0, 8);
+        String deduped = StringUtils.hasText(extension) ? base + "-" + suffix + "." + extension : base + "-" + suffix;
+        usedNames.add(deduped);
+        return deduped;
     }
 
     @GetMapping("/{id}/stream")

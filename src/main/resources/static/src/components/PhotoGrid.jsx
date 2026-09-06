@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Check, Layers, Unlink2 } from 'lucide-react';
+import { Check, Layers, Unlink2, Move } from 'lucide-react';
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 import DuplicateClusterModal from './DuplicateClusterModal';
 import TimelineScrubber from './TimelineScrubber';
+import { computeReorderDates } from '../utils/photoReorder';
 
 // Clusters a flat list of photos into {primary, members} display items, same rule everywhere
 // duplicates are populated (Library/Space, day-indexed or not): a photo carries its known
@@ -37,6 +38,11 @@ export default function PhotoGrid({
   // Space/Garbage/Person) uses this; renders one section per day, fetched lazily as it scrolls
   // into view.
   dayIndex,
+  // Drag-to-reorder within a day (usePhotoActions.js#handleReorderPhotos) - optional: only
+  // Library/Album/Space/Person pass this, so the drag handle simply never renders for
+  // SharedAlbumView.jsx's public, unauthenticated grid (same convention handleUnlinkPerson already
+  // uses above - a feature is entirely omitted when its handler prop isn't supplied).
+  handleReorderPhotos,
 }) {
   const { messages } = useLocale(); // Use the useLocale hook
   const [hoveredVideoId, setHoveredVideoId] = useState(null);
@@ -58,6 +64,19 @@ export default function PhotoGrid({
   const [openDuplicateMemberIds, setOpenDuplicateMemberIds] = useState(null);
   const gridContainerRef = useRef(null);
   const lastClickedIndexRef = useRef(null);
+
+  // Drag-to-reorder within a day (see utils/photoReorder.js for the actual date-math, and the
+  // handle's own JSX below for the draggable element). Plain useState (not a ref) since both drive
+  // visible re-renders - dimming every moved card, and highlighting whichever card is currently
+  // being dragged over.
+  // dragState: { movedIds, day } while a drag is in progress, else null.
+  const [dragState, setDragState] = useState(null);
+  // Which "gap" between two photos (or before the first/after the last) is currently under the
+  // cursor - an index into that day's non-moved primaries, in display order (0 = before the very
+  // first one, others.length = after the very last one). See renderDropZone/the per-day render
+  // loop below for how these gaps become actual, generously-sized drop targets rather than
+  // requiring the user to figure out which half of a specific photo to hover.
+  const [dropZoneIndex, setDropZoneIndex] = useState(null);
 
   // "Reading order" flat list used for shift-click range selection and the duplicate-cluster
   // lookup below - every currently-loaded photo across every day section, in server day order.
@@ -146,6 +165,80 @@ export default function PhotoGrid({
     }
   };
 
+  // Drag-to-reorder within a day. Only PRIMARIES participate - both as draggable handles and as
+  // drop targets - a duplicate cluster's non-primary members only ever exist nested inside the
+  // primary's own `duplicates` array (see clusterIntoItems above) and aren't independently
+  // reorderable.
+  const handleDragStart = (p, day, e) => {
+    const dayPrimaryIds = groups[day].map(it => it.primary.id);
+    // Dragging one of several currently-selected photos moves the WHOLE selection together (per
+    // spec), but "limited to the same day" for multi-select means any selected id belonging to a
+    // DIFFERENT day is silently excluded here - filtering dayPrimaryIds down to selectedIds both
+    // enforces that and preserves this day's own current display order (X1..XN, nearest-P-first)
+    // that utils/photoReorder.js's cascade needs.
+    const movedIds = (selectedIds.includes(p.id) && selectedIds.length > 1)
+        ? dayPrimaryIds.filter(id => selectedIds.includes(id))
+        : [p.id];
+    // dataTransfer setup MUST happen before anything that could trigger a React re-render - the
+    // browser is still finalizing this drag session synchronously while this handler runs, and a
+    // re-render that touches the dragged element (even just adding a CSS class) can make the
+    // browser think its drag source changed/vanished, silently cancelling the whole session
+    // (dragend fires immediately, with zero dragover events ever reaching anything - exactly what
+    // was reported here). effectAllowed/setData first, then defer the actual state update itself
+    // to the next tick (setTimeout 0) so this handler returns cleanly to the browser before React
+    // processes it - the standard workaround for HTML5 drag-and-drop plus a React re-render.
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', p.id); // Firefox requires data to be set for drag to start
+    setTimeout(() => setDragState({ movedIds, day }), 0);
+  };
+
+  const handleDragEnd = () => {
+    // Safety net for a cancelled/off-target drop (e.g. Escape, or dropped outside any zone) -
+    // handleZoneDrop already clears both below on a successful drop, this just guarantees it
+    // either way.
+    setDragState(null);
+    setDropZoneIndex(null);
+  };
+
+  // computeReorderDates (utils/photoReorder.js) takes a targetId + before/after position rather
+  // than a plain insertion index - translates a zone index back into that shape without having to
+  // touch that already-tested utility's signature. index === others.length means "insert after
+  // everything" (the day's oldest/last position, no "after" neighbor to anchor a targetId on).
+  const zoneToTargetPosition = (others, index) =>
+      index < others.length
+          ? { targetId: others[index].id, position: 'before' }
+          : { targetId: others[others.length - 1]?.id, position: 'after' };
+
+  // Shared guard for onDragOver/onDrop below: rejects (no visual indicator, no-op drop) a zone in
+  // a day other than the one being dragged (the "limited to the same day" constraint) or no drag
+  // in progress at all.
+  const isValidDropDay = (day) => dragState && dragState.day === day;
+
+  const handleZoneDragOver = (day, zoneIndex, e) => {
+    if (!isValidDropDay(day)) return;
+    e.preventDefault(); // required to allow a drop at all
+    if (dropZoneIndex !== zoneIndex) setDropZoneIndex(zoneIndex);
+  };
+
+  const handleZoneDragLeave = (zoneIndex) => {
+    setDropZoneIndex(prev => (prev === zoneIndex ? null : prev));
+  };
+
+  const handleZoneDrop = (day, zoneIndex, e) => {
+    if (!isValidDropDay(day)) return;
+    e.preventDefault();
+    const others = groups[day]
+        .map(it => it.primary)
+        .filter(pp => !dragState.movedIds.includes(pp.id));
+    const { targetId, position } = zoneToTargetPosition(others, zoneIndex);
+    const updates = targetId ? computeReorderDates(others, dragState.movedIds, targetId, position) : [];
+    if (updates.length > 0) {
+      handleReorderPhotos?.(updates);
+    }
+    setDragState(null);
+    setDropZoneIndex(null);
+  };
+
   // Day-indexed pagination: ONE shared IntersectionObserver for every day section's sentinel
   // (a library can easily have hundreds of populated days - a naive per-section observer/effect
   // pair, the pattern flat mode's bottom sentinel above uses, would not scale to that). Each
@@ -198,13 +291,40 @@ export default function PhotoGrid({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dayIndex.loadDayPage]);
 
-  const renderPhotoCard = (p, badge, size = 220) => {
+  // A drop target sits in the "blank space" BETWEEN two photos (or before the first/after the
+  // last) rather than requiring the user to figure out which half of a specific photo card to
+  // hover - see the per-day render loop below for how these get interleaved with the actual cards,
+  // one per possible insertion point. Idle (not currently hovered), it's a slim but generously
+  // hit-testable strip with a subtle dashed hint so it reads as an interactive gap even before
+  // hovering it. The zone div ITSELF never changes size when hovered (see App.css's .drop-zone
+  // comment for why - resizing it used to break drops on anything but the first zone in a row);
+  // the full preview rectangle (sized off the first moved photo's own aspect ratio - a multi-item
+  // drag can mix aspect ratios, this is a preview, not a pixel-exact one - with a count badge when
+  // more than one photo is moving) is a purely visual absolutely-positioned overlay on top of it.
+  const renderDropZone = (day, zoneIndex, isActive, aspectRatio, count) => (
+    <div
+      key={`zone-${zoneIndex}`}
+      className="drop-zone"
+      onDragOver={(e) => handleZoneDragOver(day, zoneIndex, e)}
+      onDragLeave={() => handleZoneDragLeave(zoneIndex)}
+      onDrop={(e) => handleZoneDrop(day, zoneIndex, e)}
+    >
+      {isActive && (
+        <div className="drop-zone-preview" style={{ width: `${aspectRatio * 220}px` }}>
+          {count > 1 && <span className="drop-placeholder-count">{count}</span>}
+        </div>
+      )}
+    </div>
+  );
+
+  const renderPhotoCard = (p, day, isDropNeighbor, badge, size = 220) => {
     const aspectRatio = (p.width && p.height) ? (p.width / p.height) : 1;
     const isSelected = selectedIds.includes(p.id);
+    const isDragging = dragState?.movedIds.includes(p.id);
     return (
       <div
         key={p.id}
-        className={`photo-card ${isSelected ? 'selected' : ''}`}
+        className={`photo-card ${isSelected ? 'selected' : ''} ${isDragging ? 'dragging' : ''} ${isDropNeighbor ? 'drop-neighbor' : ''}`}
         style={{ flexBasis: `${aspectRatio * size}px`, height: `${size}px` }}
         onClick={(e) => handlePhotoClick(p, e)}
         onMouseEnter={() => p.contentType?.startsWith('video') && setHoveredVideoId(p.id)}
@@ -239,14 +359,31 @@ export default function PhotoGrid({
             <Unlink2 size={14}/>
           </button>
         )}
+        {/* Drag-to-reorder handle - only the handle itself is draggable (not the whole card), so
+            the card's existing click-to-select/open-lightbox behavior above is undisturbed. Only
+            rendered when a reorder handler is actually supplied (see this component's own prop
+            comment - omitted entirely for SharedAlbumView.jsx's public grid). */}
+        {handleReorderPhotos && (
+          <button
+            type="button"
+            className="drag-handle"
+            draggable
+            onDragStart={(e) => handleDragStart(p, day, e)}
+            onDragEnd={handleDragEnd}
+            onClick={(e) => e.stopPropagation()}
+            title={messages["dragToReorder"]}
+          >
+            <Move size={14} />
+          </button>
+        )}
         {badge}
       </div>
     );
   };
 
-  const renderDisplayItem = (item) => {
+  const renderDisplayItem = (item, day, isDropNeighbor) => {
     if (item.members.length === 1) {
-      return renderPhotoCard(item.primary);
+      return renderPhotoCard(item.primary, day, isDropNeighbor);
     }
 
     const badge = (
@@ -259,7 +396,7 @@ export default function PhotoGrid({
         <Layers size={12} /> {messages["similarPhotosBadge"](item.members.length)}
       </button>
     );
-    return renderPhotoCard(item.primary, badge);
+    return renderPhotoCard(item.primary, day, isDropNeighbor, badge);
   };
 
   return (
@@ -278,6 +415,29 @@ export default function PhotoGrid({
         const pageState = dayIndex.dayPageState[day];
         const showDaySentinel = !pageState?.isLast;
 
+        // Drag-to-reorder: while dragging within THIS day, `others` is every non-moved primary in
+        // display order - one drop zone (see renderDropZone) is rendered before each of them, plus
+        // one trailing zone after the last, so every possible insertion point is an explicit,
+        // always-present, generously-sized target the user can see and hover directly, rather than
+        // having to find the right half of a specific photo. null (not dragging this day) means no
+        // zones render at all and the row looks exactly like it does outside a drag.
+        const others = (dragState?.day === day)
+            ? dayItems.map(it => it.primary).filter(p => !dragState.movedIds.includes(p.id))
+            : null;
+        // Whichever zone is currently hovered determines the "make room" preview: its two flanking
+        // photos (the ones that would end up immediately before/after the moved item(s) once
+        // dropped) shrink slightly, and that zone itself expands into a full preview rectangle
+        // (see renderDropZone) instead of its idle slim strip.
+        const neighborBeforeId = (others && dropZoneIndex != null) ? (others[dropZoneIndex - 1]?.id ?? null) : null;
+        const neighborAfterId = (others && dropZoneIndex != null) ? (others[dropZoneIndex]?.id ?? null) : null;
+        let placeholderAspectRatio = 1;
+        if (others && dropZoneIndex != null) {
+          const draggedPrimary = dayItems.find(it => dragState.movedIds.includes(it.primary.id))?.primary;
+          if (draggedPrimary?.width && draggedPrimary?.height) {
+            placeholderAspectRatio = draggedPrimary.width / draggedPrimary.height;
+          }
+        }
+
         return (
           <div key={day} className="day-group" data-day-group={day}>
             <div className="day-header" style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -293,7 +453,33 @@ export default function PhotoGrid({
               )}
             </div>
             <div className="photo-grid">
-              {dayItems.map(item => renderDisplayItem(item))}
+              {(() => {
+                // Interleave: a zone before every non-moved item (tracked via othersIdx, which
+                // only advances past items actually present in `others`) plus one trailing zone
+                // after the last - see the `others`/zone comment above for why this is null (no
+                // zones at all) outside a drag on this day.
+                let othersIdx = 0;
+                const children = dayItems.map(item => {
+                  const isMoved = others ? !others.some(o => o.id === item.primary.id) : true;
+                  const zone = (others && !isMoved)
+                      ? renderDropZone(day, othersIdx, dropZoneIndex === othersIdx, placeholderAspectRatio, dragState.movedIds.length)
+                      : null;
+                  if (others && !isMoved) othersIdx++;
+                  const card = renderDisplayItem(item, day, item.primary.id === neighborBeforeId || item.primary.id === neighborAfterId);
+                  return (
+                    <React.Fragment key={item.primary.id}>
+                      {zone}
+                      {card}
+                    </React.Fragment>
+                  );
+                });
+                return (
+                  <>
+                    {children}
+                    {others && renderDropZone(day, othersIdx, dropZoneIndex === othersIdx, placeholderAspectRatio, dragState.movedIds.length)}
+                  </>
+                );
+              })()}
             </div>
             {showDaySentinel && (
               <div

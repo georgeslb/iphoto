@@ -34,6 +34,8 @@ function HeaderWrapper({
   photoSelection,
   refreshAndMaintainScroll, // Existing prop
   fromGarbage,
+  setShowEditDateModal,
+  handleDownload,
 }) {
   const location = useLocation();
   const effectivePath = backgroundLocation?.pathname || location.pathname;
@@ -72,6 +74,8 @@ function HeaderWrapper({
           photoSelection={photoSelection}
           refreshAndMaintainScroll={refreshAndMaintainScroll} // Pass existing prop
           fromGarbage={fromGarbage}
+          setShowEditDateModal={setShowEditDateModal}
+          handleDownload={handleDownload}
       />
   );
 }

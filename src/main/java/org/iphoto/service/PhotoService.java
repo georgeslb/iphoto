@@ -93,6 +93,11 @@ public interface PhotoService {
 
     Optional<PhotoEntity> findById(UUID id);
 
+    // Authorization boundary for bulk actions that read files directly off disk (bulk download) -
+    // unlike a plain findByIdIn, this silently drops any id the caller doesn't actually own rather
+    // than serving it, so a client can't read another user's files by passing arbitrary ids.
+    List<PhotoEntity> findOwnedByIds(UserEntity user, List<UUID> ids);
+
     void moveAssetsToMain(UserEntity user, List<UUID> ids) throws Exception;
 
     void deletePhotoInSpace(UserEntity userEntity, UUID spaceId);

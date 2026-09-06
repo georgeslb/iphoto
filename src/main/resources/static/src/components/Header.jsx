@@ -1,5 +1,5 @@
 import React, { useCallback } from 'react';
-import { X, Upload, Plus, Trash2, RotateCcw, ImageIcon, ArrowLeft, ChevronLeft, ChevronRight, Link, Home, MinusCircle, FolderX,  ArchiveRestore} from 'lucide-react'; // Added Home icon
+import { X, Upload, Plus, Trash2, RotateCcw, ImageIcon, ArrowLeft, ChevronLeft, ChevronRight, Link, Home, MinusCircle, FolderX,  ArchiveRestore, CalendarClock, Download} from 'lucide-react'; // Added Home icon
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 export default function Header({
@@ -34,6 +34,8 @@ export default function Header({
   photoSelection,
   refreshAndMaintainScroll, // Existing prop
   fromGarbage,
+  setShowEditDateModal,
+  handleDownload,
 }) {
   const { messages } = useLocale(); // Use the useLocale hook
   const selectionMode = selectedIds.length > 0 || selectedSpaceIds.length > 0 || selectedAlbumIds.length > 0;
@@ -107,6 +109,8 @@ export default function Header({
             {menuSelection.canDeleteSpace && <button className="btn" style={{color: '#ff3b30'}} onClick={() => handleDeleteSpaces(selectedSpaceIds)} title={messages["deleteSelectedSpaces"]}><FolderX  size={18}/></button>}
             {photoSelection.canBeMovedToMain && <button className="btn" style={{backgroundColor: '#28a745', color: 'white'}} onClick={handleMoveToMain} title={messages["moveToMain"]}><Home size={18}/></button>}
             {photoSelection.canBeMovedToAlbum && <button className="btn btn-primary" onClick={() => setShowAddToAlbumModal(true)} title={messages["addToAlbum"]}><Plus size={18}/></button>}
+            {photoSelection.canEditDate && <button className="btn" onClick={() => setShowEditDateModal(true)} title={messages["editDate"]}><CalendarClock size={18}/></button>}
+            {photoSelection.canDownload && <button className="btn" onClick={() => handleDownload(selectedIds)} title={messages["download"]}><Download size={18}/></button>}
             {photoSelection.canBeDeleted && <button className="btn" style={{color: '#ff3b30'}} onClick={() => handleMoveToGarbage(selectedIds)} title={messages["moveToGarbage"]}><Trash2 size={18}/></button>}
 
           </>

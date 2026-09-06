@@ -135,7 +135,7 @@ public abstract class AbstractIntegrationTest {
     }
 
     protected void waitForTaskCompletion(MockHttpSession session, UUID taskId) throws Exception {
-        taskWorkerManager.pollPendingTasks(); // dispatch immediately instead of waiting on the timer
+        taskWorkerManager.pollLightPendingTasks(); // dispatch immediately instead of waiting on the timer
         for (int attempt = 0; attempt < 40; attempt++) {
             MvcResult result = mockMvc.perform(get("/api/tasks/{id}", taskId).session(session))
                     .andExpect(status().isOk())

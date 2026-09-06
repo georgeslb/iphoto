@@ -1,9 +1,10 @@
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, selectedIds, setSelectedIds, removePhotosLocally, fetchAlbums, fetchSpaces) { // Added selectedIds, setSelectedIds as props
   const { messages } = useLocale(); // Use the useLocale hook
   // const [selectedIds, setSelectedIds] = useState([]); // Removed internal state
+  const [showEditDateModal, setShowEditDateModal] = useState(false);
 
   const handleMoveToGarbage = useCallback(async (ids) => {
     if (!window.confirm(messages["trashConfirmation"](ids.length))) return;
@@ -99,6 +100,100 @@ export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, hand
     }
   }, [refreshAndMaintainScroll, setSelectedPhoto, messages]);
 
+  // Bulk "Edit Date Taken" (Header.jsx's canEditDate button + EditDateModal.jsx) - applies one
+  // exact timestamp to every selected photo. Deliberately reuses the existing single-photo
+  // PATCH /api/photos/{id}/date endpoint once per id via Promise.all, rather than a new bulk
+  // endpoint - the same pattern useAlbumManagement.js#handleAddPhotosToAlbums already uses for
+  // its own bulk action (one album-add call per target album).
+  const handleBulkUpdateDate = useCallback(async (photoIds, newDateValue) => {
+    if (!photoIds || photoIds.length === 0 || !newDateValue) return;
+
+    const updatePromises = photoIds.map(photoId =>
+        fetch(`/api/photos/${photoId}/date`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ newDate: newDateValue }),
+        })
+    );
+
+    try {
+      const responses = await Promise.all(updatePromises);
+      if (responses.every(res => res.ok)) {
+        setSelectedIds([]);
+        setShowEditDateModal(false);
+        await refreshAndMaintainScroll();
+      } else {
+        throw new Error(messages["failedToUpdateDate"](responses.find(res => !res.ok).status));
+      }
+    } catch (err) {
+      alert(messages["errorUpdatingDate"](err.message));
+    }
+  }, [refreshAndMaintainScroll, setSelectedIds, messages]);
+
+  // Bulk "Download" (Header.jsx's canDownload button) - a single selected photo downloads
+  // directly via the browser (no fetch needed, same as clicking any plain download link);
+  // multiple selected photos download as one zip, streamed back from a POST (see
+  // PhotoController#downloadMultiple - POST, not GET+query-string, since a large selection could
+  // exceed a comfortable URL length).
+  const handleDownload = useCallback(async (photoIds) => {
+    if (!photoIds || photoIds.length === 0) return;
+
+    if (photoIds.length === 1) {
+      window.location.href = `/api/photos/${photoIds[0]}/download`;
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/photos/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(photoIds),
+      });
+      if (!res.ok) throw new Error(messages["failedToDownloadPhotos"](res.status));
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'photos.zip';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(messages["errorDownloadingPhotos"](err.message));
+    }
+  }, [messages]);
+
+  // Drag-to-reorder within a day (PhotoGrid.jsx's drag handle) - `updates` is
+  // [{photoId, newDate}, ...] from utils/photoReorder.js#computeReorderDates, each entry already
+  // carrying its own precomputed timestamp. Same one-PATCH-per-id-via-Promise.all pattern as
+  // handleBulkUpdateDate above, just a per-photo date instead of one shared value. Deliberately
+  // does NOT clear selectedIds on success (unlike handleBulkUpdateDate) - reordering shouldn't drop
+  // the user's active multi-selection.
+  const handleReorderPhotos = useCallback(async (updates) => {
+    if (!updates || updates.length === 0) return;
+
+    const updatePromises = updates.map(({ photoId, newDate }) =>
+        fetch(`/api/photos/${photoId}/date`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ newDate }),
+        })
+    );
+
+    try {
+      const responses = await Promise.all(updatePromises);
+      if (responses.every(res => res.ok)) {
+        await refreshAndMaintainScroll();
+      } else {
+        throw new Error(messages["failedToUpdateDate"](responses.find(res => !res.ok).status));
+      }
+    } catch (err) {
+      alert(messages["errorUpdatingDate"](err.message));
+    }
+  }, [refreshAndMaintainScroll, messages]);
+
   const handleEditPhoto = useCallback(async (photoId, editData) => {
     try {
       const res = await fetch(`/api/photos/${photoId}/edit`, {
@@ -133,5 +228,10 @@ export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, hand
     handlePermanentDelete,
     handleUpdateDate,
     handleEditPhoto,
+    showEditDateModal,
+    setShowEditDateModal,
+    handleBulkUpdateDate,
+    handleDownload,
+    handleReorderPhotos,
   };
 }

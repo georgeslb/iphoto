@@ -15,7 +15,8 @@ function PersonDetail({
   handlePhotoClick,
   isLightboxOpen,
   handleMoveToGarbage,
-  refreshAndMaintainScroll
+  refreshAndMaintainScroll,
+  handleReorderPhotos
 }) {
   const { messages } = useLocale(); // Use the useLocale hook
   const { personId } = useParams();
@@ -128,6 +129,7 @@ function PersonDetail({
                   isLightboxOpen={isLightboxOpen}
                   handleMoveToGarbage={handleMoveToGarbage}
                   handleUnlinkPerson={handleUnlinkPerson}
+                  handleReorderPhotos={handleReorderPhotos}
               />
           ) : <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>{messages["personEmpty"]}</div>}
         </>

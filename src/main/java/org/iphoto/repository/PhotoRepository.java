@@ -119,6 +119,12 @@ public interface PhotoRepository extends JpaRepository<PhotoEntity, UUID> {
 
     Set<PhotoEntity> findByIdIn(List<UUID> photoId);
 
+    // Authorization boundary for bulk actions that read files directly off disk (bulk download,
+    // see PhotoService.findOwnedByIds) - filters at the query level rather than fetching every
+    // matched id then filtering in Java, so a caller passing another user's id never even loads
+    // that row.
+    List<PhotoEntity> findByIdInAndSpaceUserId(List<UUID> photoId, UUID userId);
+
     // Used by the share/guest flow to confirm a photo actually belongs to the album a share
     // link grants access to, before serving it (guest sessions never have space-filtering
     // applied, so this containment check is the real authorization boundary for them).

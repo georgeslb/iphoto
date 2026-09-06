@@ -10,7 +10,8 @@ function SpaceDetail({
   setSelectedIds,
   handlePhotoClick,
   isLightboxOpen,
-  handleMoveToGarbage
+  handleMoveToGarbage,
+  handleReorderPhotos
 }) {
   const { messages } = useLocale(); // Use the useLocale hook
   const { spaceId } = useParams();
@@ -37,6 +38,7 @@ function SpaceDetail({
               setSelectedPhoto={handlePhotoClick}
               isLightboxOpen={isLightboxOpen}
               handleMoveToGarbage={handleMoveToGarbage}
+              handleReorderPhotos={handleReorderPhotos}
           />
       ) : <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>{messages["spaceEmpty"]}</div>}
     </div>

@@ -52,18 +52,15 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
     private final ImmichAlbumImportService immichAlbumImportService;
     private final AdminService adminService;
     private final ThreadPoolTaskExecutor lightThreadPoolExecutor;
-    // One dedicated, fixed-size pool per heavy task type instead of one shared pool - see
-    // IPhotoProperties.HeavyTasks/ThreadPoolConfiguration for why (each service used to also hold
-    // its own internal lock capping itself to 1 concurrent run no matter how big the shared pool
-    // was, and DuplicationService's lock had a real double-lock/single-unlock bug that permanently
-    // jammed CHECK_DUPLICATION after its first run - both gone now that the pool size itself is
-    // the only concurrency limit, per type).
     private final ThreadPoolTaskExecutor duplicationThreadPoolExecutor;
-    private final ThreadPoolTaskExecutor faceDetectionThreadPoolExecutor;
+    private final ThreadPoolTaskExecutor middleThreadPoolExecutor;
     private final ThreadPoolTaskExecutor faceRecognitionThreadPoolExecutor;
 
     private static final Set<TaskType> LIGHT_TASK_TYPES =
-            Stream.of(TaskType.values()).filter(taskType -> !taskType.isHeavy()).collect(Collectors.toSet());
+            Stream.of(TaskType.values()).filter(taskType -> taskType.getTaskTypeCharge() == TaskTypeCharge.LIGHT).collect(Collectors.toSet());
+
+    private static final Set<TaskType> MIDDLE_TASK_TYPES =
+            Stream.of(TaskType.values()).filter(taskType -> taskType.getTaskTypeCharge() == TaskTypeCharge.MIDDLE).collect(Collectors.toSet());
 
     // See adjustLightConcurrencyForCpuLoad below for why this (not corePoolSize/maxPoolSize) is
     // the actual concurrency knob for the light pool.
@@ -78,7 +75,7 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
     public TaskWorkerManagerImpl(TaskRepository taskRepository, ObjectMapper objectMapper, TransactionTemplate transactionTemplate, DuplicationService duplicationService, PhotoService photoService, FaceDetectionService faceDetectionService, FaceRecognitionService faceRecognitionService
             , ImmichImportService immichImportService, ImmichAlbumImportService immichAlbumImportService, AdminService adminService, @Qualifier("lightThreadPoolExecutor") ThreadPoolTaskExecutor lightThreadPoolExecutor,
               @Qualifier("duplicationThreadPoolExecutor") ThreadPoolTaskExecutor duplicationThreadPoolExecutor,
-              @Qualifier("faceDetectionThreadPoolExecutor") ThreadPoolTaskExecutor faceDetectionThreadPoolExecutor,
+              @Qualifier("middleThreadPoolExecutor") ThreadPoolTaskExecutor middleThreadPoolExecutor,
               @Qualifier("faceRecognitionThreadPoolExecutor") ThreadPoolTaskExecutor faceRecognitionThreadPoolExecutor) {
         this.taskRepository = taskRepository;
         this.objectMapper = objectMapper;
@@ -92,7 +89,7 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
         this.adminService = adminService;
         this.lightThreadPoolExecutor = lightThreadPoolExecutor;
         this.duplicationThreadPoolExecutor = duplicationThreadPoolExecutor;
-        this.faceDetectionThreadPoolExecutor = faceDetectionThreadPoolExecutor;
+        this.middleThreadPoolExecutor = middleThreadPoolExecutor;
         this.faceRecognitionThreadPoolExecutor = faceRecognitionThreadPoolExecutor;
         // Seeded from the executor's own configured queueCapacity (its ceiling - see
         // adjustLightConcurrencyForCpuLoad) rather than a hardcoded number, so it stays correct if
@@ -102,7 +99,7 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
 
     @Override
     @Scheduled(fixedDelay = 5000)
-    public void pollPendingTasks() {
+    public void pollLightPendingTasks() {
         adjustLightConcurrencyForCpuLoad();
         int limit = lightConcurrencyLimit.get();
 
@@ -118,6 +115,20 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
         }
     }
 
+    @Scheduled(fixedDelay = 60000)
+    @Override
+    public void pollMiddleChargeTasks() {
+        Set<TaskEntity> middleTasks = new HashSet<>();
+        if (middleThreadPoolExecutor.getQueueSize() < middleThreadPoolExecutor.getQueueCapacity()) {
+            middleTasks = transactionTemplate.execute(status ->
+                    taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), LocalDateTime.now(), MIDDLE_TASK_TYPES, Limit.of(middleThreadPoolExecutor.getQueueCapacity() - middleThreadPoolExecutor.getQueueSize())));
+        }
+
+        markQueued(middleTasks);
+        for (TaskEntity task : middleTasks) {
+            middleThreadPoolExecutor.submit(() -> processTask(task.getId()));
+        }
+    }
     // See pollPendingTasks' own comment for why this has to happen before submit(), not after -
     // one transaction for the whole batch (not one per task) since this always runs synchronously,
     // right here, well before any of these tasks could possibly have already started (they haven't
@@ -174,7 +185,6 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
         if (!adminService.isHeavyTasksActivated()) return;
 
         pollHeavyTaskType(TaskType.CHECK_DUPLICATION, duplicationThreadPoolExecutor);
-        //pollHeavyTaskType(TaskType.ISOLATE_FACES, faceDetectionThreadPoolExecutor);
         pollHeavyTaskType(TaskType.FACE_RECOGNITION, faceRecognitionThreadPoolExecutor);
     }
 
@@ -255,7 +265,6 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
                     faceDetectionService.detectAndSaveFaces(task);
                 } else if (FACE_RECOGNITION.equals(task.getTaskType())) {
                     faceRecognitionService.groupFaces();
-                    // TODO to be updated
                     task.setExecuteAt(LocalDateTime.now().plusSeconds(30));
                     task.setStatus(TaskStatus.PENDING);
                 } else if (SYNC_FROM_IMMICH.equals(task.getTaskType())) {
@@ -367,7 +376,7 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
         // to wait on here - shut down anyway for consistency/symmetry with the heavy pools.
         lightThreadPoolExecutor.shutdown();
         duplicationThreadPoolExecutor.shutdown();
-        faceDetectionThreadPoolExecutor.shutdown();
+        middleThreadPoolExecutor.shutdown();
         faceRecognitionThreadPoolExecutor.shutdown();
     }
 }

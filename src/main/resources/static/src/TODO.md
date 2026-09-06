@@ -1699,49 +1699,49 @@ new work is identified or completed, so nothing gets lost between sessions.
       - Verified: `npm run build` clean. No backend change was needed.
 
 - [x] **Fix/reliability** (user request): isolated heavy task processing (face detection,
-      duplication) onto their own strictly-bounded pool. `TaskWorkerManager` previously ran every
-      task type - `PROCESS_UPLOAD`, `PERMANENT_DELETE`, the Immich import tasks, and also
+  duplication) onto their own strictly-bounded pool. `TaskWorkerManager` previously ran every
+  task type - `PROCESS_UPLOAD`, `PERMANENT_DELETE`, the Immich import tasks, and also
       `HASH_IMAGE`/`CHECK_DUPLICATION`/`ISOLATE_FACES`/`FACE_RECOGNITION` - through the same
       `Executors.newVirtualThreadPerTaskExecutor()`, with no cap on how many could run at once.
-      That's fine for I/O-bound work (uploads, DB writes, Immich HTTP calls - virtual threads park
-      cheaply while waiting), but the four CPU-bound post-upload pipeline stages (image
-      hashing/ORB-descriptor extraction and duplicate matching in `DuplicationService`; face
-      detection/recognition in `FaceDetectionService`/`FaceRecognitionService`) are native/CPU-heavy
-      and don't yield the way virtual threads expect - they pin their carrier thread rather than
-      parking - so a burst of them (e.g. right after importing a big Immich day) could monopolize
-      every carrier thread and starve unrelated tasks (new uploads, Immich sync) of progress.
-      - Added a new `Set<TaskType> HEAVY_TASK_TYPES` (`HASH_IMAGE`, `CHECK_DUPLICATION`,
+  That's fine for I/O-bound work (uploads, DB writes, Immich HTTP calls - virtual threads park
+  cheaply while waiting), but the four CPU-bound post-upload pipeline stages (image
+  hashing/ORB-descriptor extraction and duplicate matching in `DuplicationService`; face
+  detection/recognition in `FaceDetectionService`/`FaceRecognitionService`) are native/CPU-heavy
+  and don't yield the way virtual threads expect - they pin their carrier thread rather than
+  parking - so a burst of them (e.g. right after importing a big Immich day) could monopolize
+  every carrier thread and starve unrelated tasks (new uploads, Immich sync) of progress.
+  - Added a new `Set<TaskType> HEAVY_TASK_TYPES` (`HASH_IMAGE`, `CHECK_DUPLICATION`,
         `ISOLATE_FACES`, `FACE_RECOGNITION`) and a second, isolated `ExecutorService` -
         `Executors.newFixedThreadPool(3, ...)`, named platform threads (`heavy-task-N`) rather than
-        virtual ones, since the whole point is a hard cap on real parallelism, which virtual
-        threads don't reliably give for non-yielding work. `pollPendingTasks` now routes each task
-        to `heavyTaskExecutor` or the existing `executorService` based on its type - at most 3 heavy
-        tasks run at once, however many are queued; everything else is unaffected.
-      - `pollPendingTasks` had to start carrying task type, not just id, to make that routing
-        decision - added a small local `TaskRef(UUID id, TaskType type)` record.
-      - **Found and fixed a real pre-existing bug while touching this method**: the old dispatch
-        (`executorService.submit(() -> { Thread t = Thread.ofVirtual()...start(...); t.start(); })`)
+  virtual ones, since the whole point is a hard cap on real parallelism, which virtual
+  threads don't reliably give for non-yielding work. `pollLightPendingTasks` now routes each task
+  to `heavyTaskExecutor` or the existing `executorService` based on its type - at most 3 heavy
+  tasks run at once, however many are queued; everything else is unaffected.
+  - `pollLightPendingTasks` had to start carrying task type, not just id, to make that routing
+  decision - added a small local `TaskRef(UUID id, TaskType type)` record.
+  - **Found and fixed a real pre-existing bug while touching this method**: the old dispatch
+  (`executorService.submit(() -> { Thread t = Thread.ofVirtual()...start(...); t.start(); })`)
         called `Thread.start()` *twice* on the same virtual thread - `.start(runnable)` already
-        starts it, then the code called `.start()` again, which throws `IllegalThreadStateException`
+  starts it, then the code called `.start()` again, which throws `IllegalThreadStateException`
         every time (silently swallowed since the `Future` from the outer `submit()` was never
-        checked). The task still ran fine because the first `start()` had already kicked it off
-        independently - but the outer virtual thread was pure waste, spawned only to immediately
-        throw. Simplified both dispatch paths to a plain `executor.submit(() -> processTask(id))`,
-        which is already correct.
-      - `@PreDestroy shutdown()` now shuts down both executors.
-      - **Follow-up (user request)**: that simplification had dropped the per-task thread naming
-        (`"backend-task" + taskId`) the old buggy dispatch was trying to give each light task -
-        useful for identifying which task a given virtual thread is running from a thread dump.
-        Reintroduced it, still without the double-`start()` bug: light tasks (everything not in
+  checked). The task still ran fine because the first `start()` had already kicked it off
+  independently - but the outer virtual thread was pure waste, spawned only to immediately
+  throw. Simplified both dispatch paths to a plain `executor.submit(() -> processTask(id))`,
+  which is already correct.
+  - `@PreDestroy shutdown()` now shuts down both executors.
+  - **Follow-up (user request)**: that simplification had dropped the per-task thread naming
+  (`"backend-task" + taskId`) the old buggy dispatch was trying to give each light task -
+  useful for identifying which task a given virtual thread is running from a thread dump.
+  Reintroduced it, still without the double-`start()` bug: light tasks (everything not in
         `HEAVY_TASK_TYPES`) now get `Thread.ofVirtual().name("backend-task" + ref.id()).start(...)`
         directly - one named virtual thread per task, `start()` called exactly once - rather than
-        going through a shared `Executors.newVirtualThreadPerTaskExecutor()` (removed, since a
+  going through a shared `Executors.newVirtualThreadPerTaskExecutor()` (removed, since a
         `ThreadFactory`-based executor can only name threads with an auto-incrementing counter, not
-        the actual per-task id needed here; heavy tasks still go through `heavyTaskExecutor.submit`
+  the actual per-task id needed here; heavy tasks still go through `heavyTaskExecutor.submit`
         since that pool's own `heavy-task-N` naming is enough and it needs the bounded queue).
         `shutdown()` updated accordingly - only `heavyTaskExecutor` is an actual `ExecutorService`
         now.
-      - Verified: whole backend `javac` compile clean (main + test sources).
+  - Verified: whole backend `javac` compile clean (main + test sources).
 
 - [x] **Feature** (user request): bulk-import up to 30 Immich days at once, plus a button to hide
       already-completed days from the table.
@@ -1772,35 +1772,35 @@ new work is identified or completed, so nothing gets lost between sessions.
         clean; full `npm test -- --run` 86/86 pass. Not yet run against a live Immich server.
 
 - [x] **Fix** (user request): unstick a day permanently stuck at `IN_PROGRESS`, plus a
-      show/hide toggle for in-progress days.
-      - **Root cause**: `TaskWorkerManager.pollPendingTasks` only ever picks up `PENDING` tasks
-        (`taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), ...)`). If the app
-        restarts (or a virtual thread otherwise dies) while a `SYNC_FROM_IMMICH`/
+  show/hide toggle for in-progress days.
+  - **Root cause**: `TaskWorkerManager.pollPendingTasks` only ever picks up `PENDING` tasks
+  (`taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), ...)`). If the app
+  restarts (or a virtual thread otherwise dies) while a `SYNC_FROM_IMMICH`/
         `UPLOAD_FROM_IMMICH` task is `PROCESSING`, nothing ever picks it back up - the task, and
-        the day it belongs to, is orphaned at `IN_PROGRESS` forever. `triggerDayImportInternal`'s
-        per-asset loop only ever reclaimed a task that was `FAILED`, so re-triggering that day
-        (even once the frontend allowed it) wouldn't actually do anything for an orphaned one.
-      - **Fix**: new `ImmichImportService#isReclaimable(TaskEntity)` - true for a `FAILED` task
-        (unchanged) or a `PROCESSING` one whose `updatedAt` is older than `STUCK_TASK_THRESHOLD`
+  the day it belongs to, is orphaned at `IN_PROGRESS` forever. `triggerDayImportInternal`'s
+  per-asset loop only ever reclaimed a task that was `FAILED`, so re-triggering that day
+  (even once the frontend allowed it) wouldn't actually do anything for an orphaned one.
+  - **Fix**: new `ImmichImportService#isReclaimable(TaskEntity)` - true for a `FAILED` task
+  (unchanged) or a `PROCESSING` one whose `updatedAt` is older than `STUCK_TASK_THRESHOLD`
         (15 minutes - comfortably longer than even a slow face-detection run or large video
-        download, chosen since `TaskEntity`'s `@PreUpdate` bumps `updatedAt` right when
-        `pollPendingTasks` first flips a task to `PROCESSING`, so it doubly serves as "when
-        processing started"). The per-asset loop now reclaims (deletes + requeues) a stale
+  download, chosen since `TaskEntity`'s `@PreUpdate` bumps `updatedAt` right when
+        `pollLightPendingTasks` first flips a task to `PROCESSING`, so it doubly serves as "when
+  processing started"). The per-asset loop now reclaims (deletes + requeues) a stale
         `UPLOAD_FROM_IMMICH` the same way it already did for a failed one (reuse the staged file,
-        no need to re-hit Immich), and for anything else reclaimable (stale/failed
+  no need to re-hit Immich), and for anything else reclaimable (stale/failed
         `SYNC_FROM_IMMICH`) deletes it and restarts that asset from step 1 - safe, since
         `SYNC_FROM_IMMICH` re-downloads deterministically to the same `immich-temp` path and
         `finalizeUploadFromImmich` is already idempotent/resumable.
-      - **Frontend**: `IMPORTABLE_STATUSES` now includes `IN_PROGRESS` (button label falls back to
+  - **Frontend**: `IMPORTABLE_STATUSES` now includes `IN_PROGRESS` (button label falls back to
         "Retry", same as `PARTIAL`/`FAILED`) - retriggering a *genuinely* still-running day is a
-        harmless no-op server-side (nothing reclaimable yet), so there's no real downside to always
-        allowing the click. Also added a "Hide in-progress days"/"Show in-progress days" toggle
-        button (`hideInProgress` local state), mirroring the existing "Hide completed days" one -
-        both filters now compose together on `visibleDays`.
-      - Verified: whole backend `javac` compile clean (main + test sources); `npm run build`
+  harmless no-op server-side (nothing reclaimable yet), so there's no real downside to always
+  allowing the click. Also added a "Hide in-progress days"/"Show in-progress days" toggle
+  button (`hideInProgress` local state), mirroring the existing "Hide completed days" one -
+  both filters now compose together on `visibleDays`.
+  - Verified: whole backend `javac` compile clean (main + test sources); `npm run build`
         clean; full `npm test -- --run` 86/86 pass. Not yet exercised against the user's actual
-        stuck day - should confirm clicking "Retry" on it actually reclaims the orphaned task and
-        the day eventually reaches a terminal status.
+  stuck day - should confirm clicking "Retry" on it actually reclaims the orphaned task and
+  the day eventually reaches a terminal status.
 
 - [x] **Reliability** (user request): a database error or a network error (talking to Immich)
       mid-task no longer permanently fails the task - it's retried 5 minutes later instead.
@@ -1901,36 +1901,36 @@ new work is identified or completed, so nothing gets lost between sessions.
 
 - [x] **Reliability** (user request): general hourly sweep to reclaim tasks orphaned in
       `PROCESSING`, across every task type - closes the gap flagged in the two entries just above
-      (both scoped to Immich specifically: `isReclaimable`'s per-day-retry reclaim, and the
-      DataAccessException/ImmichApiException retry-with-delay catch). `pollPendingTasks` only ever
-      looks at `PENDING` tasks, so a task left `PROCESSING` when its worker thread dies mid-task
-      (app restart, JVM crash - a real instance of exactly this was found and root-caused in this
-      session's live investigation) is otherwise never picked up again, for any task type, unless a
-      human happens to notice and manually retry through a feature-specific button.
-      - New `TaskRepository#findByStatusAndUpdatedAtBefore(status, before)` - `updatedAt` is used
-        as "when processing started", since `TaskEntity`'s own `@PreUpdate` bumps it the moment
-        `pollPendingTasks` first flips a task to `PROCESSING` (same reasoning `isReclaimable`
+  (both scoped to Immich specifically: `isReclaimable`'s per-day-retry reclaim, and the
+  DataAccessException/ImmichApiException retry-with-delay catch). `pollLightPendingTasks` only ever
+  looks at `PENDING` tasks, so a task left `PROCESSING` when its worker thread dies mid-task
+  (app restart, JVM crash - a real instance of exactly this was found and root-caused in this
+  session's live investigation) is otherwise never picked up again, for any task type, unless a
+  human happens to notice and manually retry through a feature-specific button.
+  - New `TaskRepository#findByStatusAndUpdatedAtBefore(status, before)` - `updatedAt` is used
+  as "when processing started", since `TaskEntity`'s own `@PreUpdate` bumps it the moment
+        `pollLightPendingTasks` first flips a task to `PROCESSING` (same reasoning `isReclaimable`
         already relies on).
-      - New `TaskWorkerManager#reclaimStuckProcessingTasks`, `@Scheduled(fixedDelay = 1 hour)`:
+  - New `TaskWorkerManager#reclaimStuckProcessingTasks`, `@Scheduled(fixedDelay = 1 hour)`:
         finds every task `PROCESSING` for over `STUCK_TASK_AGE` (1 hour) and resets it to
         `PENDING` with `executeAt` set to a **randomized** 1-15 minute delay
-        (`MIN_RETRY_DELAY_MINUTES`/`MAX_RETRY_DELAY_MINUTES`, `ThreadLocalRandom`) rather than one
-        fixed offset - spreads reclaimed tasks out so a sweep that reclaims many at once doesn't
-        make them all executable at the exact same instant and recreate the very pile-up that
-        likely orphaned some of them in the first place.
-      - Deliberately independent of the existing Immich-specific `isReclaimable` mechanism, not a
-        replacement for it - that one still runs on-demand (import-day click) and knows how to
-        reuse a stuck `UPLOAD_FROM_IMMICH`'s payload without re-hitting Immich; this one is a
-        blunter, fully-automatic, all-task-types safety net that needs no user action at all.
-        Reprocessing after being swept is safe for every task type verified: `PROCESS_UPLOAD`
+  (`MIN_RETRY_DELAY_MINUTES`/`MAX_RETRY_DELAY_MINUTES`, `ThreadLocalRandom`) rather than one
+  fixed offset - spreads reclaimed tasks out so a sweep that reclaims many at once doesn't
+  make them all executable at the exact same instant and recreate the very pile-up that
+  likely orphaned some of them in the first place.
+  - Deliberately independent of the existing Immich-specific `isReclaimable` mechanism, not a
+  replacement for it - that one still runs on-demand (import-day click) and knows how to
+  reuse a stuck `UPLOAD_FROM_IMMICH`'s payload without re-hitting Immich; this one is a
+  blunter, fully-automatic, all-task-types safety net that needs no user action at all.
+  Reprocessing after being swept is safe for every task type verified: `PROCESS_UPLOAD`
         (hash-dedup on the temp file), `SYNC_FROM_IMMICH`/`UPLOAD_FROM_IMMICH` (idempotent/resumable
-        by design), `HASH_IMAGE`/`CHECK_DUPLICATION`/`ISOLATE_FACES`/`FACE_RECOGNITION` (recompute
-        in place, harmless to redo) - `PERMANENT_DELETE`'s idempotency on a second run wasn't
-        independently verified here (not touched by this change either way; worst case if it
-        somehow isn't is a task ending FAILED instead of stuck forever, still strictly better than
-        today).
-      - Verified: whole backend `javac` compile clean (main + test sources). Not yet observed
-        firing against a real stuck task in the live app.
+  by design), `HASH_IMAGE`/`CHECK_DUPLICATION`/`ISOLATE_FACES`/`FACE_RECOGNITION` (recompute
+  in place, harmless to redo) - `PERMANENT_DELETE`'s idempotency on a second run wasn't
+  independently verified here (not touched by this change either way; worst case if it
+  somehow isn't is a task ending FAILED instead of stuck forever, still strictly better than
+  today).
+  - Verified: whole backend `javac` compile clean (main + test sources). Not yet observed
+  firing against a real stuck task in the live app.
 
 - [x] **Bug fix** (user report: "import of immich on 2026-08-01 result is more imported photo
       count than expected, meanwhile number of photo imported is good, only count in immich
@@ -2005,49 +2005,49 @@ new work is identified or completed, so nothing gets lost between sessions.
         later, not preemptively.
 
 - [x] **Reliability** (user request): capped light-task virtual thread concurrency at 40 - closes
-      a real DB-connection-exhaustion risk that the reintroduced per-task named virtual threads
-      (previous entry) had no protection against. `pollPendingTasks`'s light-task path (everything
-      not in `HEAVY_TASK_TYPES`: `PROCESS_UPLOAD`, `PERMANENT_DELETE`, `SYNC_FROM_IMMICH`,
+  a real DB-connection-exhaustion risk that the reintroduced per-task named virtual threads
+  (previous entry) had no protection against. `pollLightPendingTasks`'s light-task path (everything
+  not in `HEAVY_TASK_TYPES`: `PROCESS_UPLOAD`, `PERMANENT_DELETE`, `SYNC_FROM_IMMICH`,
       `UPLOAD_FROM_IMMICH`) spawned one fresh, unbounded virtual thread per executable task -
-      each one holds a DB connection/transaction for its duration (`processTask`'s
+  each one holds a DB connection/transaction for its duration (`processTask`'s
       `transactionTemplate`), so a burst of simultaneously-executable tasks (a big Immich day
-      queuing hundreds of `SYNC_FROM_IMMICH` tasks at once, say) could each grab a connection at
-      the same instant against `application.yml`'s finite `hikari.maximum-pool-size` (100) - the
-      same kind of exhaustion this session's live investigation of day 2023-12-24 saw play out
-      (there triggered by a JVM crash instead, but the underlying risk is identical).
-      - New `Semaphore lightTaskConcurrency` (`MAX_CONCURRENT_LIGHT_TASKS = 40`, comfortably under
-        the pool's max, leaving headroom for `heavyTaskExecutor` (3) and everything else - web
-        requests included - sharing the same pool). `pollPendingTasks` now calls
+  queuing hundreds of `SYNC_FROM_IMMICH` tasks at once, say) could each grab a connection at
+  the same instant against `application.yml`'s finite `hikari.maximum-pool-size` (100) - the
+  same kind of exhaustion this session's live investigation of day 2023-12-24 saw play out
+  (there triggered by a JVM crash instead, but the underlying risk is identical).
+  - New `Semaphore lightTaskConcurrency` (`MAX_CONCURRENT_LIGHT_TASKS = 40`, comfortably under
+  the pool's max, leaving headroom for `heavyTaskExecutor` (3) and everything else - web
+  requests included - sharing the same pool). `pollLightPendingTasks` now calls
         `lightTaskConcurrency.acquireUninterruptibly()` before starting each light task's named
-        virtual thread, `release()`d in a `finally` around `processTask`.
-      - Deliberately blocks the *scheduled-poller invocation itself* when at capacity, not any
-        individual task - same idea as a bounded thread pool's `submit()` blocking when full. Safe
-        here specifically because `@Scheduled(fixedDelay = ...)` only starts the next tick after
-        the current one returns, so a burst just delays the next 5-second poll rather than piling
-        up concurrent `pollPendingTasks` invocations.
-      - Heavy tasks are unaffected (already capped at 3 via their own separate, non-virtual pool);
-        worst-case total concurrent DB-connection users across both paths is ~43, still well under
-        the pool's 100 max.
-      - Verified: whole backend `javac` compile clean (main + test sources). Not yet observed
-        under a real high-concurrency burst in the live app.
+  virtual thread, `release()`d in a `finally` around `processTask`.
+  - Deliberately blocks the *scheduled-poller invocation itself* when at capacity, not any
+  individual task - same idea as a bounded thread pool's `submit()` blocking when full. Safe
+  here specifically because `@Scheduled(fixedDelay = ...)` only starts the next tick after
+  the current one returns, so a burst just delays the next 5-second poll rather than piling
+  up concurrent `pollLightPendingTasks` invocations.
+  - Heavy tasks are unaffected (already capped at 3 via their own separate, non-virtual pool);
+  worst-case total concurrent DB-connection users across both paths is ~43, still well under
+  the pool's 100 max.
+  - Verified: whole backend `javac` compile clean (main + test sources). Not yet observed
+  under a real high-concurrency burst in the live app.
 
 - [x] **Follow-up** (user request): heavy tasks now hold back while light-task load is at
-      capacity, rather than being dispatched on top of it. `pollPendingTasks` now checks
+  capacity, rather than being dispatched on top of it. `pollLightPendingTasks` now checks
       `lightTaskConcurrency.availablePermits() == 0` before submitting a heavy task to
       `heavyTaskExecutor` - since the semaphore can never actually hold more than
       `MAX_CONCURRENT_LIGHT_TASKS` (40) permits out, `== 0` is exactly "light-task demand is
-      at/over capacity". Heavy tasks hold a DB connection for their duration too, so piling them on
-      top of an already-saturated light-task load would add further pressure on the same finite
-      connection pool for no benefit. When held back, the task is reverted to `PENDING`
+  at/over capacity". Heavy tasks hold a DB connection for their duration too, so piling them on
+  top of an already-saturated light-task load would add further pressure on the same finite
+  connection pool for no benefit. When held back, the task is reverted to `PENDING`
       (`executeAt` cleared, undoing the `PROCESSING` flip from earlier in the same
-      `pollPendingTasks` call) via a new `holdBackTask` helper - same "immediate retry on the very
-      next 5-second poll" shape `processTask`'s `ServiceNotAvailableException`/
+      `pollLightPendingTasks` call) via a new `holdBackTask` helper - same "immediate retry on the very
+  next 5-second poll" shape `processTask`'s `ServiceNotAvailableException`/
       `SpaceLockingException` catches already use, just invoked before the task ever started
-      running rather than after a failure. Deliberately doesn't wait for the much coarser 1-hour
-      stuck-task sweep to notice - it'll just get reconsidered on the next poll once light-task
-      load eases.
-      - Verified: whole backend `javac` compile clean (main + test sources). Not yet observed
-        under a real high-concurrency burst in the live app.
+  running rather than after a failure. Deliberately doesn't wait for the much coarser 1-hour
+  stuck-task sweep to notice - it'll just get reconsidered on the next poll once light-task
+  load eases.
+  - Verified: whole backend `javac` compile clean (main + test sources). Not yet observed
+  under a real high-concurrency burst in the live app.
 
 ## Open / Not Yet Done
 
@@ -2366,48 +2366,82 @@ new work is identified or completed, so nothing gets lost between sessions.
         `querySelector` above works for any day), so scrolling UP after a jump landed on
         previously-unloaded sentinels with no prefetch margin above them at all, only loading once
         a section was already fully on screen. Changed to `'1500px 0px 1500px 0px'` (symmetric).
-- [ ] **Feature** (user request): two new bulk photo-selection actions, available everywhere a
+- [x] **Feature** (user request): two new bulk photo-selection actions, available everywhere a
       multi-select photo grid already exists — Library, Album detail, Space detail (all three
       share `components/Header.jsx`'s bulk-action bar, gated per-button by the capability flags
       `PhotoService.getSelection`/`PhotoSelectionDTO` returns from `POST /api/photos/selected` —
       see specification.md's note on this contract, and how e.g. `canBeDeleted`/
       `canBeMovedToAlbum` already drive `handleMoveToGarbage`/`setShowAddToAlbumModal` there).
-      Not started - no backend or frontend code written yet, this is a design sketch only.
-      1. **Bulk "Edit Date Taken"**: change `dateTaken` for every selected photo at once.
-         - New `PhotoSelectionDTO` flag, e.g. `canEditDate` — true whenever the selection is
-           non-empty (mirror `canBeDeleted`'s `!isGarbageMenu` gating, or allow it even in
-           garbage — no strong reason to forbid it there). New `Header.jsx` button opens a new
-           `EditDateModal.jsx` (date/time picker + "Apply to N photos"), following
-           `AddToAlbumModal.jsx`'s shape as the closest existing multi-select modal.
-         - New backend: `PUT /api/photos/date` (or similar) in `PhotoController`, body
-           `{photoIds: [...], dateTaken: "..."}`, delegating to a new
-           `PhotoService.updateDateTakenForPhotos(ids, dateTaken, user)`. **No file move needed**:
-           `PhotoStoragePathResolver`'s whole design point (see its class comment) is that
-           `originalPath`/`thumbnailPath` are stored per-row and read back verbatim, never
-           reconstructed from `dateTaken` — confirmed by the same reasoning that already lets
-           `EditPhotoService` change a photo's date without moving its file. Just update the
-           column; Library/Album/Space's date-sorted queries pick up the new value on their next
-           fetch, nothing to invalidate.
-         - Open question: bulk-apply one exact timestamp to every selected photo, or shift each
-           photo's existing `dateTaken` by a relative offset (e.g. "photos are 2 hours off,
-           correct them all")? The user only said "update date for a set of photos" - worth
-           confirming which before building the modal, since the UI differs (a single date/time
-           picker vs. a "+/- N hours/days" delta picker).
-      2. **Bulk "Download"**: a single photo downloads directly; multiple selected photos download
-         as one zip.
-         - New `PhotoSelectionDTO` flag, e.g. `canDownload` — true whenever selection is
-           non-empty, no real restriction (garbage photos still have real files on disk).
-         - Single selected photo: reuse the existing `GET /api/photos/{id}/original` endpoint
-           directly (confirm it sends `Content-Disposition: attachment` — if not, that's a small
-           fix needed so the browser downloads rather than tries to render it inline).
-         - Multiple selected: new endpoint, e.g. `POST /api/photos/download` with
-           `{photoIds: [...]}` in the body (POST, not GET+query-string, since a large selection
-           could exceed a comfortable URL length) — streams a zip built from each photo's
-           `originalPath` via `ZipOutputStream` wrapped around a Spring `StreamingResponseBody`
-           (don't buffer the whole zip in memory - a large selection could be many GB). Use each
-           `PhotoEntity.fileName` as the zip entry name, with a de-duplication fallback (e.g.
-           append a short id suffix) for the real edge case of two selected photos sharing a
-           filename (duplicates across spaces/albums, or two differently-cropped copies).
+      User confirmed the open design question below: bulk-apply one exact timestamp to every
+      selected photo (not a relative offset).
+      1. **Bulk "Edit Date Taken"**: `canEditDate` flag on `PhotoSelectionDTO` (true whenever the
+         selection is non-empty, no garbage restriction). **No new backend endpoint** — reuses the
+         existing `PATCH /api/photos/{id}/date` once per selected photo via `Promise.all`
+         (`usePhotoActions.js#handleBulkUpdateDate`), the same pattern
+         `useAlbumManagement.js#handleAddPhotosToAlbums` already uses for its own bulk action. New
+         `components/EditDateModal.jsx` (date/time picker + "Apply to N photos"), modeled on
+         `AddToAlbumModal.jsx`. New `Header.jsx` button (calendar/clock icon) opens it.
+      2. **Bulk "Download"**: `canDownload` flag on `PhotoSelectionDTO` (same non-empty-selection
+         gating). Turned out `GET /api/photos/{id}/original` could **not** be reused directly as
+         originally sketched — it's used as an `<img src="...">` for in-page rendering all over the
+         frontend (Lightbox full-res view, `UploadPreviewModal`, `DuplicateClusterModal`,
+         `SharedLightbox`), and a browser won't render an image inline from a response marked
+         `Content-Disposition: attachment`. Built a genuinely new `GET /api/photos/{id}/download`
+         endpoint instead for the single-photo case (`PhotoController#download`/`serveAsAttachment`).
+         Multiple selected photos: new `POST /api/photos/download` (body = list of ids, not
+         GET+query-string — a large selection could exceed a comfortable URL length), streaming a
+         zip via `StreamingResponseBody` wrapped around a plain `ZipOutputStream`
+         (`PhotoController#downloadMultiple`) — never buffers the whole zip in memory. New
+         `PhotoService.findOwnedByIds(user, ids)` is the authorization boundary here (mirrors the
+         ownership check `deleteAssets` already does for bulk delete) — silently drops any id the
+         caller doesn't own rather than serving it, so a client can't read another user's files by
+         passing arbitrary ids. Zip entry name = `PhotoEntity.fileName`, de-duplicated with an
+         id-suffix fallback (`PhotoController#uniqueEntryName`) for the real edge case of two
+         selected photos sharing a filename (duplicates across spaces/albums, or two
+         differently-cropped copies). Frontend (`usePhotoActions.js#handleDownload`): a single id
+         sets `window.location.href` directly (no fetch, browser handles it); multiple ids fetch the
+         zip as a blob, then click a temporary `<a download>` pointed at an object URL.
+         `Header.jsx` new button (`Download` icon) calls it directly, no modal.
+      Backend: `PhotoServiceTest` covers `findOwnedByIds` ownership filtering and both new
+      `Content-Disposition`/zip-entry behaviors (12/12 pass); full suite 103/103 pass. Frontend:
+      `usePhotoActions.test.js` covers `handleBulkUpdateDate` (success/partial-failure) and
+      `handleDownload` (single vs. multi-id branch); full suite 112/112 pass; `npm run build`
+      succeeds. Not yet manually clicked through in the running app.
+- [x] **Feature** (user request): drag-to-reorder photos within a day. Hovering a `PhotoGrid.jsx`
+      card (Library/Album/Space/Person — not `SharedAlbumView.jsx`'s public grid) shows a
+      translucent circular drag handle (`lucide-react`'s `Move` icon); dragging it before/after
+      another card in the SAME day re-stamps its `dateTaken` so the grid's existing newest-first
+      sort reflects the new position. Dragging one of several currently-selected cards moves the
+      whole selection together (dimmed while dragging), preserving their relative order; any
+      selected id from a *different* day is silently excluded (the same-day constraint).
+      - Confirmed math via a worked example (grid is newest-first): dropping X between P (ends up
+        displayed just before X, newer) and Q (ends up displayed just after X, older) sets
+        `X.dateTaken = Q.dateTaken + 1s` — the anchor is the neighbor that ends up **after** the
+        moved item(s), not before. Multi-item drags cascade seconds outward from that anchor,
+        preserving original relative order; a tight gap (would collide with/exceed the far
+        neighbor) falls back to a millisecond cascade instead. A day-boundary clamp guards against
+        spilling into a different calendar day. All pure, exhaustively unit-tested in new
+        `utils/photoReorder.js#computeReorderDates` (9/9 tests) — kept out of `PhotoGrid.jsx`
+        itself since jsdom's native HTML5 drag-and-drop simulation is poor.
+      - Backend discovery: `PhotoController`'s `df` formatter for `PATCH /api/photos/{id}/date`
+        was `DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm")` — **minute precision only**, unable
+        to represent the second/millisecond deltas this feature needs. Widened to
+        `DateTimeFormatter.ISO_LOCAL_DATE_TIME` (backward compatible — seconds/nanos are optional
+        in that formatter, so the `datetime-local`-driven single/bulk edit-date flows keep parsing
+        identically). This meant **no new backend endpoint** was needed at all — the reorder
+        feature reuses the same existing PATCH endpoint, one call per moved photo via
+        `Promise.all` (`usePhotoActions.js#handleReorderPhotos`), exactly like the bulk
+        "Edit Date Taken" feature above reuses it. Unlike that sibling handler, this one
+        deliberately does NOT clear the active selection on success.
+      - Only a drag handle (not the whole card) is draggable, so existing click-to-select/
+        open-lightbox behavior is untouched. Only PRIMARY photos participate (both as handles and
+        drop targets) — a duplicate cluster's non-primary members aren't independently
+        reorderable. Desktop-only (no touch-device polyfill added).
+      - Backend: extended `PhotoServiceTest`'s existing date-update test with a full-precision-
+        string case (regression case for the old minute-only format kept alongside it); full suite
+        103/103 pass. Frontend: new `photoReorder.test.js` (9/9) plus 4 new
+        `usePhotoActions.test.js` cases for `handleReorderPhotos`; full suite 125/125 pass;
+        `npm run build` succeeds. Not yet manually clicked through in the running app.
 - [ ] **Feature**: detect blurry faces. Confirmed feasible, not yet implemented — no design
       decision made yet on what to DO with the signal (see below), just logging the "can this be
       done" question the user asked.
@@ -2968,122 +3002,122 @@ new work is identified or completed, so nothing gets lost between sessions.
       confused as unrelated/accidental changes when reviewing the diff.
 
 - [x] **Feature** (user request): admin on/off switch for heavy task processing, replacing the old
-      one-shot "Activate Face Recognition" admin button; heavy tasks isolated into their own,
-      much-less-frequent scheduler. User added `TaskType.ACTIVATE_HEAVY_TASKS` themselves before
-      this request - a control record, not real work, `heavy=false` so it still flows through the
-      light poller/thread pool.
-      - **Backend - the switch itself**: exactly ONE `ACTIVATE_HEAVY_TASKS` `TaskEntity` ever
-        exists (confirmed with the user after an initial pass that instead created a new row per
-        toggle) - `AdminService.activateHeavyTasks(boolean)` finds it
-        (`TaskRepository.findFirstByTaskTypeOrderByCreatedAtDesc` - tolerant of more than one row
-        existing, e.g. from the earlier per-toggle-row design if this ever ran against a live DB
-        with history) and updates its `payload` (`{"activate": "true"|"false"}`) in place,
-        resetting `status`/`executeAt` so the light poller still picks it up and marks it
+  one-shot "Activate Face Recognition" admin button; heavy tasks isolated into their own,
+  much-less-frequent scheduler. User added `TaskType.ACTIVATE_HEAVY_TASKS` themselves before
+  this request - a control record, not real work, `heavy=false` so it still flows through the
+  light poller/thread pool.
+  - **Backend - the switch itself**: exactly ONE `ACTIVATE_HEAVY_TASKS` `TaskEntity` ever
+  exists (confirmed with the user after an initial pass that instead created a new row per
+  toggle) - `AdminService.activateHeavyTasks(boolean)` finds it
+  (`TaskRepository.findFirstByTaskTypeOrderByCreatedAtDesc` - tolerant of more than one row
+  existing, e.g. from the earlier per-toggle-row design if this ever ran against a live DB
+  with history) and updates its `payload` (`{"activate": "true"|"false"}`) in place,
+  resetting `status`/`executeAt` so the light poller still picks it up and marks it
         `COMPLETED` again like any task's normal lifecycle; only creates a new row via
         `taskManagerService.createTaskEntity` the very first time, when none exists yet.
         `AdminService.isHeavyTasksActivated()` reads that row and parses its `activate` field
-        (Jackson's `JsonNode.asBoolean()` handles both a real boolean and a `"true"/"false"` string
-        transparently); no row yet defaults to `false` - opt-in, not opt-out. `TaskType.
+  (Jackson's `JsonNode.asBoolean()` handles both a real boolean and a `"true"/"false"` string
+  transparently); no row yet defaults to `false` - opt-in, not opt-out. `TaskType.
         ACTIVATE_HEAVY_TASKS` is `canBeReplayed=false` (a global control record, `photoId` always
         `null`, isn't a per-photo task type `AdminService.updateImageTaskToDo` should ever touch -
-        see that enum constant's own comment). New `GET`/`POST /api/admin/heavyTasks`
+  see that enum constant's own comment). New `GET`/`POST /api/admin/heavyTasks`
         (`AdminController`) replace the old `GET /activateFaceRecognition`.
         `TaskWorkerManager.processTask` gained a trivial `ACTIVATE_HEAVY_TASKS` branch
-        (`task.setStatus(COMPLETED)`, no real work) - required because this task type is still
+  (`task.setStatus(COMPLETED)`, no real work) - required because this task type is still
         `heavy=false`, so the light poller picks it up and dispatches it like any other task;
-        without a branch it would sit stuck in `PROCESSING` forever (no case in the switch ever
-        moves it to a terminal status).
-      - **Backend - isolated heavy scheduler**: `TaskWorkerManager.pollHeavyTasks`, new
+  without a branch it would sit stuck in `PROCESSING` forever (no case in the switch ever
+  moves it to a terminal status).
+  - **Backend - isolated heavy scheduler**: `TaskWorkerManager.pollHeavyTasks`, new
         `@Scheduled(fixedDelay = 300_000)` (5 minutes, vs the light poller's unchanged 5 seconds) -
-        checks `adminService.isHeavyTasksActivated()` first; if not activated, returns immediately
-        with no query/dispatch at all. If activated, same fetch-and-submit logic
-        `pollPendingTasks` used to do for heavy tasks, moved here verbatim. The heavy-pool
+  checks `adminService.isHeavyTasksActivated()` first; if not activated, returns immediately
+  with no query/dispatch at all. If activated, same fetch-and-submit logic
+        `pollLightPendingTasks` used to do for heavy tasks, moved here verbatim. The heavy-pool
         `MaxPoolSize` 3⇄8 adjustment heuristic (reacting to light-queue pressure) stayed in the
-        *light* poller (`adjustHeavyPoolSizeForLightLoad`) since it needs to react at the light
-        poller's 5-second cadence, not the heavy poller's new 5-minute one.
-      - **Bootstrap gap this created, and its fix**: the old admin button was the ONLY place that
-        ever created the first `FACE_RECOGNITION` task (which perpetually reschedules itself 30s
-        after each run once started - see `TaskWorkerManager#processTask`'s `FACE_RECOGNITION`
+  *light* poller (`adjustHeavyPoolSizeForLightLoad`) since it needs to react at the light
+  poller's 5-second cadence, not the heavy poller's new 5-minute one.
+  - **Bootstrap gap this created, and its fix**: the old admin button was the ONLY place that
+  ever created the first `FACE_RECOGNITION` task (which perpetually reschedules itself 30s
+  after each run once started - see `TaskWorkerManager#processTask`'s `FACE_RECOGNITION`
         branch). Removing that button without another trigger would have silently stopped face
-        grouping from ever running again. Fixed with a new `IPhotoApplication#bootstrapFaceRecognition`
+  grouping from ever running again. Fixed with a new `IPhotoApplication#bootstrapFaceRecognition`
         `CommandLineRunner` (idempotent, guarded by new `TaskRepository#existsByTaskType`),
-        mirroring the existing `initDatabase`/`backfillGroupedDay` bean precedent there.
-      - **Bug found in passing, superseded by the single-row correction above**: initially caught
-        that `AdminService.updateImageTaskToDo()` (the other admin button, unrelated to this
-        request but touched by it) replays every `canBeReplayed` task type *for every photo*
+  mirroring the existing `initDatabase`/`backfillGroupedDay` bean precedent there.
+  - **Bug found in passing, superseded by the single-row correction above**: initially caught
+  that `AdminService.updateImageTaskToDo()` (the other admin button, unrelated to this
+  request but touched by it) replays every `canBeReplayed` task type *for every photo*
         missing one, and would have created one spurious, payload-less `ACTIVATE_HEAVY_TASKS` row
-        per photo had the enum stayed `canBeReplayed=true` - patched with a one-line exclusion
-        filter at the time. Once the user settled on `canBeReplayed=false` for the enum constant
-        itself (the single-row design's natural consequence, not an independent fix), that filter
-        became redundant and was removed again in favor of the simpler, single root cause.
-      - **Frontend**: `UserManagement.jsx`'s old "Activate Face Recognition" button replaced with a
-        checkbox (`heavyTasksActivated` state, fetched on mount from `GET /api/admin/heavyTasks`,
+  per photo had the enum stayed `canBeReplayed=true` - patched with a one-line exclusion
+  filter at the time. Once the user settled on `canBeReplayed=false` for the enum constant
+  itself (the single-row design's natural consequence, not an independent fix), that filter
+  became redundant and was removed again in favor of the simpler, single root cause.
+  - **Frontend**: `UserManagement.jsx`'s old "Activate Face Recognition" button replaced with a
+  checkbox (`heavyTasksActivated` state, fetched on mount from `GET /api/admin/heavyTasks`,
         `POST`s on change) - i18n keys `activateFaceRecognition`/`faceRecognitionActivatedSuccessfully`/
-        etc. replaced with `heavyTasksActivationLabel`/`heavyTasksActivationUpdated`/etc. (en/fr).
-      - **CPU-based light-pool concurrency** (user question: "is this even possible?"): yes, but
-        not via `corePoolSize`/`maxPoolSize` the way the existing heavy-pool adjustment works -
+  etc. replaced with `heavyTasksActivationLabel`/`heavyTasksActivationUpdated`/etc. (en/fr).
+  - **CPU-based light-pool concurrency** (user question: "is this even possible?"): yes, but
+  not via `corePoolSize`/`maxPoolSize` the way the existing heavy-pool adjustment works -
         `lightThreadPoolExecutor` runs on virtual threads (`setVirtualThreads(true)`), which don't
-        pool in the traditional sense, so those fields are essentially inert for it; and
+  pool in the traditional sense, so those fields are essentially inert for it; and
         `queueCapacity` can't be resized after the executor's own initialization (Spring only reads
-        it once, to size the underlying queue, at `afterPropertiesSet` time - confirmed, not just
-        assumed). The real lever is how many new tasks `pollPendingTasks` pulls from the database
-        each tick - new `TaskWorkerManager#lightConcurrencyLimit` (`AtomicInteger`, seeded from the
-        executor's own `queueCapacity` as its ceiling), stepped ±10 each tick by
+  it once, to size the underlying queue, at `afterPropertiesSet` time - confirmed, not just
+  assumed). The real lever is how many new tasks `pollLightPendingTasks` pulls from the database
+  each tick - new `TaskWorkerManager#lightConcurrencyLimit` (`AtomicInteger`, seeded from the
+  executor's own `queueCapacity` as its ceiling), stepped ±10 each tick by
         `adjustLightConcurrencyForCpuLoad` based on `com.sun.management.OperatingSystemMXBean#
         getCpuLoad()` (0.0-1.0 recent system-wide load; despite the `com.sun` package name, this
-        has been a stable, standard part of every HotSpot-derived JVM - Oracle, OpenJDK, Temurin -
-        for years; returns `-1` only on its very first call or if genuinely unsupported, treated as
-        a no-op). Below 50% load, steps the limit up (capped at `queueCapacity`); above 85%, steps
-        it down (floored at 10); in between, leaves it alone to avoid thrashing on noisy samples.
-      - Verified: whole backend `javac` compile clean (main + test sources), frontend
+  has been a stable, standard part of every HotSpot-derived JVM - Oracle, OpenJDK, Temurin -
+  for years; returns `-1` only on its very first call or if genuinely unsupported, treated as
+  a no-op). Below 50% load, steps the limit up (capped at `queueCapacity`); above 85%, steps
+  it down (floored at 10); in between, leaves it alone to avoid thrashing on noisy samples.
+  - Verified: whole backend `javac` compile clean (main + test sources), frontend
         `npm test -- --run` 101/101, `npm run build` clean, lint unchanged from its pre-existing
-        baseline. **Not yet exercised against the live app** - needs a real restart (not IntelliJ
-        HotSwap) like every other backend change this session, and the CPU-based scaling in
-        particular has had no chance to be observed reacting to real machine load.
+  baseline. **Not yet exercised against the live app** - needs a real restart (not IntelliJ
+  HotSwap) like every other backend change this session, and the CPU-based scaling in
+  particular has had no chance to be observed reacting to real machine load.
 
 - [x] **Bug fix** (user report: "tasks are scheduled to run multiple times"). Root-caused by
-      inspection, not guessed: `pollPendingTasks`/`pollHeavyTasks` query for `status = PENDING`
+  inspection, not guessed: `pollLightPendingTasks`/`pollHeavyTasks` query for `status = PENDING`
       then `submit()` to an executor - but a task's status only flips to `PROCESSING` once
       `processTask` actually *starts running* on a worker thread (`markProcessing`), which lags
-      behind submission whenever the executor is backed up (easy for the 3-thread heavy pool).
-      In that window the row still looks `PENDING` in the DB, so the next poll tick's query
-      matched it again and submitted it a SECOND time before the first submission had even run -
-      the same task executing concurrently more than once.
-      - **Fix**: new `TaskStatus.QUEUED` - both pollers now mark every fetched batch `QUEUED`
+  behind submission whenever the executor is backed up (easy for the 3-thread heavy pool).
+  In that window the row still looks `PENDING` in the DB, so the next poll tick's query
+  matched it again and submitted it a SECOND time before the first submission had even run -
+  the same task executing concurrently more than once.
+  - **Fix**: new `TaskStatus.QUEUED` - both pollers now mark every fetched batch `QUEUED`
         (new `TaskWorkerManager#markQueued`, one transaction for the whole batch) BEFORE calling
         `submit()`, not after. `findExecutableTasks` still only matches `PENDING`, so a `QUEUED`
         row can never be re-selected while it's sitting in the executor's queue.
         `markProcessing` transitions `QUEUED → PROCESSING` exactly as before once the runnable
-        actually starts - no change needed there.
-      - **Two complementary recovery mechanisms, discussed with the user** (confirmed neither
-        alone was enough): the existing hourly `reclaimStuckProcessingTasks` sweep widened to also
-        reclaim stale `QUEUED` rows (new `TaskRepository#findByStatusInAndUpdatedAtBefore`,
-        replacing the single-status version) - this stays the ongoing safety net for a task
-        orphaned *without* a restart (e.g. `submit()` itself throwing after the DB was already
-        flipped to `QUEUED`), where "stuck for over an hour" is the only available signal. New
+  actually starts - no change needed there.
+  - **Two complementary recovery mechanisms, discussed with the user** (confirmed neither
+  alone was enough): the existing hourly `reclaimStuckProcessingTasks` sweep widened to also
+  reclaim stale `QUEUED` rows (new `TaskRepository#findByStatusInAndUpdatedAtBefore`,
+  replacing the single-status version) - this stays the ongoing safety net for a task
+  orphaned *without* a restart (e.g. `submit()` itself throwing after the DB was already
+  flipped to `QUEUED`), where "stuck for over an hour" is the only available signal. New
         `IPhotoApplication#resetOrphanedTasksOnStartup` `CommandLineRunner` (new
         `TaskRepository#findByStatusIn`) unconditionally resets ANY `QUEUED`/`PROCESSING` row at
-        boot, no staleness check needed - a fresh JVM means nothing in-memory survived the
-        restart, so there's no "might still genuinely be running" ambiguity to wait out the way
-        the hourly sweep has to. Without this second piece, every restart would leave whatever was
-        in flight at that exact moment dead for up to an hour before the sweep's threshold caught
-        up to it - a real (if minor) regression in restart recovery time, not just for this new
+  boot, no staleness check needed - a fresh JVM means nothing in-memory survived the
+  restart, so there's no "might still genuinely be running" ambiguity to wait out the way
+  the hourly sweep has to. Without this second piece, every restart would leave whatever was
+  in flight at that exact moment dead for up to an hour before the sweep's threshold caught
+  up to it - a real (if minor) regression in restart recovery time, not just for this new
         `QUEUED` status but also, it turns out, for pre-existing `PROCESSING` orphaning that the
-        hourly sweep alone already had this same gap for.
-      - **Found and fixed in passing while auditing every other `TaskStatus` comparison in the
+  hourly sweep alone already had this same gap for.
+  - **Found and fixed in passing while auditing every other `TaskStatus` comparison in the
         codebase for `QUEUED`-awareness**: `ImmichImportService#isReclaimable` (the Immich-specific,
-        15-minute-threshold reclaim used when a user manually retries a day's import) only checked
+  15-minute-threshold reclaim used when a user manually retries a day's import) only checked
         `PROCESSING`, not `QUEUED` - `SYNC_FROM_IMMICH`/`UPLOAD_FROM_IMMICH` are light tasks too, so
-        they can now land in `QUEUED` the same way. Widened to check both. Checked every other
+  they can now land in `QUEUED` the same way. Widened to check both. Checked every other
         `TaskStatus` reference in the codebase: `UploadManager.jsx`'s upload-progress poller
-        already treats any non-terminal, non-`PENDING` status as "leave the optimistically-set
+  already treats any non-terminal, non-`PENDING` status as "leave the optimistically-set
         `PROCESSING` label alone" (it never special-cased `PROCESSING` explicitly either) - `QUEUED`
         falls into that same existing bucket for free, no frontend change needed.
-      - Verified: whole backend `javac` compile clean (main + test sources), frontend
+  - Verified: whole backend `javac` compile clean (main + test sources), frontend
         `npm test -- --run` 101/101 (backend-only change, but confirmed nothing broke). **Not yet
         exercised against the live app** - needs a real restart, and the actual "does this stop
-        duplicate execution" claim can only be confirmed by observing the heavy pool under a real
-        backlog, which hasn't been done here.
+  duplicate execution" claim can only be confirmed by observing the heavy pool under a real
+  backlog, which hasn't been done here.
 
 - [x] **Bug fix** (user report: "if user move to garbage the suggested keep in duplicates, the
       duplicate popup disappear it should not"). Root cause was worse than the reported symptom -

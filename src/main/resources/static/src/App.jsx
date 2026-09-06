@@ -12,6 +12,7 @@ import ShareLinksManagement from './components/ShareLinksManagement';
 import UploadManager from './components/UploadManager';
 import HeaderWrapper from './components/HeaderWrapper';
 import AddToAlbumModal from './components/AddToAlbumModal';
+import EditDateModal from './components/EditDateModal';
 import CreateShareLinkModal from './components/CreateShareLinkModal';
 import CreateAlbumModal from './components/CreateAlbumModal';
 import CreateSpaceModal from './components/CreateSpaceModal';
@@ -240,6 +241,11 @@ function App() {
     handlePermanentDelete,
     handleUpdateDate,
     handleEditPhoto,
+    showEditDateModal,
+    setShowEditDateModal,
+    handleBulkUpdateDate,
+    handleDownload,
+    handleReorderPhotos,
   } = usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, selectedIds, setSelectedIds, removePhotosLocally, fetchAlbums, fetchSpaces);
 
   const {
@@ -308,6 +314,7 @@ function App() {
           isLightboxOpen={isLightboxOpen}
           handleMoveToGarbage={handleMoveToGarbage}
           handleUnlinkDuplicate={handleUnlinkDuplicate}
+          handleReorderPhotos={handleReorderPhotos}
       />
     </>
   );
@@ -321,6 +328,7 @@ function App() {
         handlePhotoClick={handlePhotoClick}
         isLightboxOpen={isLightboxOpen}
         handleMoveToGarbage={handleMoveToGarbage}
+        handleReorderPhotos={handleReorderPhotos}
     />
   );
 
@@ -333,6 +341,7 @@ function App() {
         isLightboxOpen={isLightboxOpen}
         handleMoveToGarbage={handleMoveToGarbage}
         refreshAndMaintainScroll={refreshAndMaintainScroll}
+        handleReorderPhotos={handleReorderPhotos}
     />
   );
 
@@ -384,6 +393,8 @@ function App() {
                       fileInputRef={fileInputRef}
                       fromGarbage={fromGarbage}
                       refreshAndMaintainScroll={refreshAndMaintainScroll}
+                      setShowEditDateModal={setShowEditDateModal}
+                      handleDownload={handleDownload}
                   />
               )}
             </UploadManager>
@@ -457,6 +468,7 @@ function App() {
                         handlePhotoClick={handlePhotoClick}
                         isLightboxOpen={isLightboxOpen}
                         handleMoveToGarbage={handleMoveToGarbage}
+                        handleReorderPhotos={handleReorderPhotos}
                     />
                   } />
                   <Route path="/share-links" element={<ShareLinksManagement />} />
@@ -528,6 +540,13 @@ function App() {
           setTargetAlbumIds={setTargetAlbumIds}
           initialTargetAlbumIds={initialTargetAlbumIds}
           handleAddPhotosToAlbums={handleAddPhotosToAlbums}
+        />
+
+        <EditDateModal
+          show={showEditDateModal}
+          onClose={() => setShowEditDateModal(false)}
+          selectedIds={selectedIds}
+          handleBulkUpdateDate={handleBulkUpdateDate}
         />
 
         <RemoveFromAlbumModal /* New modal */

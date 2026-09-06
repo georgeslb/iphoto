@@ -31,12 +31,15 @@ public class FaceDetectionConfiguration {
         int inputSize = 640; // SCRFD's own reference det_size, see ScrfdDetectionTranslator
         ScrfdDetectionTranslator translator = new ScrfdDetectionTranslator(confThresh, nmsThresh, inputSize);
 
-        // See IPhotoProperties.HeavyTasks#faceDetectionThreads - this many detection calls can run
-        // concurrently (TaskWorkerManager's dedicated pool), so ONNX Runtime's own intra-op thread
-        // count is divided down the same way IPhotoApplication used to do for PyTorch, just as a
-        // plain per-model Criteria option now instead of a JVM-wide system property that had to be
-        // set before Spring context refresh.
-        int faceDetectionThreads = Math.max(1, properties.getHeavyTasks().getFaceDetectionThreads());
+        // See IPhotoProperties.HeavyTasks#middleTaskThreads - at most this many detection calls can
+        // run concurrently (TaskWorkerManager's shared middle pool, also used by HASH_IMAGE), so
+        // ONNX Runtime's own intra-op thread count is divided down the same way IPhotoApplication
+        // used to do for PyTorch, just as a plain per-model Criteria option now instead of a
+        // JVM-wide system property that had to be set before Spring context refresh. Using the
+        // pool's full size as the divisor even though HASH_IMAGE tasks can also occupy some of its
+        // threads is a conservative but always-safe upper bound - worst case (the whole pool
+        // running ISOLATE_FACES at once) is exactly what this guards against.
+        int faceDetectionThreads = Math.max(1, properties.getHeavyTasks().getMiddleTaskThreads());
         int intraOpThreads = Math.max(1, Runtime.getRuntime().availableProcessors() / faceDetectionThreads);
 
         Criteria<Image, DetectedObjects> criteria = Criteria.builder()

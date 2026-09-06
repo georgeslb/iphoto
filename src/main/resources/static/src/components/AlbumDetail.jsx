@@ -10,7 +10,8 @@ function AlbumDetail({
   setSelectedIds,
   handlePhotoClick,
   isLightboxOpen,
-  handleMoveToGarbage
+  handleMoveToGarbage,
+  handleReorderPhotos
 }) {
   const { messages } = useLocale(); // Use the useLocale hook
   const { albumId } = useParams();
@@ -37,6 +38,7 @@ function AlbumDetail({
               setSelectedPhoto={handlePhotoClick}
               isLightboxOpen={isLightboxOpen}
               handleMoveToGarbage={handleMoveToGarbage}
+              handleReorderPhotos={handleReorderPhotos}
           />
       ) : <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>{messages["albumEmpty"]}</div>}
     </div>

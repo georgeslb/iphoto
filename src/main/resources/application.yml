@@ -59,7 +59,7 @@ iphoto:
     # users' ungrouped faces) and aren't safe to run concurrently with themselves.
     # face-detection-threads can go higher since each call uses its own DJL Predictor instance.
     duplication-threads: 1
-    face-detection-threads: 10
+    middleTaskThreads: 10
     face-recognition-threads: 1
     queue-capacity: 30
 

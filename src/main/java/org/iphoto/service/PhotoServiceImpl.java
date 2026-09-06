@@ -297,6 +297,11 @@ public class PhotoServiceImpl implements PhotoService {
     }
 
     @Override
+    public List<PhotoEntity> findOwnedByIds(UserEntity user, List<UUID> ids) {
+        return photoRepository.findByIdInAndSpaceUserId(ids, user.getId());
+    }
+
+    @Override
     @Transactional
     public void moveAssetsToMain(UserEntity user, List<UUID> ids) throws Exception {
         SpaceEntity mainUserSpace = spaceService.getDefaultSpaceForUser(user);
@@ -338,8 +343,13 @@ public class PhotoServiceImpl implements PhotoService {
                 canBeSetAsCover = false, canBeRestored = false;
         Set<PhotoEntity> selectedPhotos = photoRepository.findByIdIn(photoSelectionRequest.photosId());
         if (selectedPhotos.isEmpty()) {
-            return new PhotoSelectionDTO(menuService.getSelection(photoSelectionRequest.menuSelectionRequest()), false, false, false, false, false, false, false, false);
+            return new PhotoSelectionDTO(menuService.getSelection(photoSelectionRequest.menuSelectionRequest()), false, false, false, false, false, false, false, false, false, false);
         } else {
+            // Bulk "Edit Date Taken"/"Download" - no menu/garbage restriction (a garbage photo
+            // still has a real dateTaken and a real file on disk), true for any non-empty
+            // selection.
+            boolean canEditDate = true;
+            boolean canDownload = true;
             Set<SpaceEntity> spaces = new HashSet<>();
             boolean isGarbageMenu = photoSelectionRequest.menuSelectionRequest().menu().contains("garbage");
             if (CollectionUtils.isNotEmpty(photoSelectionRequest.menuSelectionRequest().spaceIds())) {
@@ -384,7 +394,7 @@ public class PhotoServiceImpl implements PhotoService {
                     && isAlbumSelected(photoSelectionRequest)) {
                 canBeSetAsCover = true;
             }
-            return new PhotoSelectionDTO(menuService.getSelection(photoSelectionRequest.menuSelectionRequest()), canBeDeleted, canBePermanentlyDeleted, canBeMovedToMain, canBeMovedToAlbum, canBeRemovedFromAlbum, canBeModified, canBeSetAsCover, canBeRestored);
+            return new PhotoSelectionDTO(menuService.getSelection(photoSelectionRequest.menuSelectionRequest()), canBeDeleted, canBePermanentlyDeleted, canBeMovedToMain, canBeMovedToAlbum, canBeRemovedFromAlbum, canBeModified, canBeSetAsCover, canBeRestored, canEditDate, canDownload);
         }
     }
 

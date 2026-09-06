@@ -137,6 +137,7 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   background: #f2f2f7;
   cursor: pointer;
   overflow: hidden;
+  transition: transform 0.15s ease;
 }
 
 .photo-card img, .card-video {
@@ -156,6 +157,75 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 
 .check-circle { width: 22px; height: 22px; border-radius: 50%; border: 2px solid white; background: rgba(0,0,0,0.2); display: flex; align-items: center; justify-content: center; color: white; }
 .check-circle.checked { background: var(--primary-color); border-color: var(--primary-color); }
+
+/* Drag-to-reorder handle (PhotoGrid.jsx) - centered rather than top-left so it doesn't collide
+   with .select-overlay's check-circle above; mirrors its hover-opacity toggle. */
+.photo-card .drag-handle {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 5;
+  width: 36px; height: 36px; border-radius: 50%; border: none;
+  background: rgba(0,0,0,0.35); color: white;
+  display: flex; align-items: center; justify-content: center;
+  cursor: grab; opacity: 0; transition: opacity 0.2s ease;
+}
+.photo-card:hover .drag-handle { opacity: 1; }
+.photo-card .drag-handle:active { cursor: grabbing; }
+/* Every card currently part of a multi-item drag (not just the one actually grabbed). */
+.photo-card.dragging { opacity: 0.4; }
+/* The two cards flanking the currently-hovered drop zone below - shrunk slightly to visually
+   "make room" for it (see PhotoGrid.jsx's neighborBeforeId/neighborAfterId). transition lives on
+   the base .photo-card rule above so this animates smoothly whether the class is being added or
+   removed. */
+.photo-card.drop-neighbor { transform: scale(0.9); }
+/* A drop target for drag-to-reorder, sitting in the actual "blank space" between two photos (or
+   before the first/after the last) - see PhotoGrid.jsx's renderDropZone. Confirmed via real
+   getBoundingClientRect() measurements that every zone (not just the first) lays out correctly,
+   at the right size and position, wrapping properly across rows - the earlier "only the first one
+   works" reports were the zone being genuinely too subtle/thin (was 28px, a faint left-border
+   line only) to reliably notice or land the cursor on for anything other than the very first one,
+   which sits right where the user's mouse already is when grabbing that photo's own handle. Wider
+   and filled now so the whole box, not just an edge line, reads as an obvious drop target anywhere
+   in the row.
+   Deliberately a FIXED size, never resized on hover - growing it used to change the row's total
+   width and could push flex-wrap to reflow everything after it mid-hover, kicking the cursor out
+   from under the just-resized element. The expanded preview below is a child overlay instead -
+   purely visual, positioned on top of this same fixed-size box, so hovering never reflows the row. */
+.drop-zone {
+  position: relative;
+  flex: 0 0 56px;
+  height: 220px;
+  align-self: stretch;
+  background: rgba(0,0,0,0.04);
+  border-left: 2px dashed rgba(0,0,0,0.25);
+  border-right: 2px dashed rgba(0,0,0,0.25);
+  border-radius: 6px;
+  margin: 0 2px;
+  transition: background 0.15s ease;
+}
+.drop-zone:hover {
+  background: rgba(0,0,0,0.08);
+}
+.drop-zone-preview {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  height: 220px;
+  border: 2px dashed var(--primary-color);
+  border-radius: 8px;
+  background: rgba(0,0,0,0.03);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Purely a visual overlay - the .drop-zone div underneath (unchanged size) is what actually
+     keeps receiving the drag events throughout, so this must never intercept them itself. */
+  pointer-events: none;
+  z-index: 6; /* above photo-card's own overlays (.select-overlay/.drag-handle etc.), all z-index: 5 */
+}
+.drop-placeholder-count {
+  color: var(--primary-color);
+  font-weight: 600;
+  font-size: 14px;
+}
 
 .video-badge { position: absolute; bottom: 10px; right: 10px; background: rgba(0,0,0,0.5); color: white; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; }
 

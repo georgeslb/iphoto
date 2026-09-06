@@ -11,6 +11,7 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 public class ThreadPoolConfiguration {
 
     public static final String BACKEND_TASK = "backend-task";
+    public static final String MIDDLE_TASK = "middle-task";
     public static final String HEAVY_TASK = "heavy-task";
 
     private final IPhotoProperties iPhotoProperties;
@@ -27,23 +28,28 @@ public class ThreadPoolConfiguration {
         return taskExecutor;
     }
 
-    // One dedicated, fixed-size pool per heavy task type (see IPhotoProperties.HeavyTasks for why
-    // this replaced a single shared heavy pool) - each still named with the HEAVY_TASK prefix so
-    // MainSpaceAspectConfiguration's thread-name check (which skips binding the per-request space
-    // filter on background-task threads) keeps working unchanged for all three.
-    @Bean("duplicationThreadPoolExecutor")
-    ThreadPoolTaskExecutor duplicationThreadPoolExecutor() {
-        return heavyThreadPoolExecutor("duplication-", iPhotoProperties.getHeavyTasks().getDuplicationThreads());
+    @Bean("middleThreadPoolExecutor")
+    ThreadPoolTaskExecutor middleThreadPoolExecutor () {
+        ThreadPoolTaskExecutor taskExecutor = new ThreadPoolTaskExecutor();
+        taskExecutor.setCorePoolSize(iPhotoProperties.getHeavyTasks().getMiddleTaskThreads());
+        taskExecutor.setMaxPoolSize(iPhotoProperties.getHeavyTasks().getMiddleTaskThreads());
+        taskExecutor.setQueueCapacity(100);
+        taskExecutor.setVirtualThreads(false);
+        taskExecutor.setThreadGroupName(MIDDLE_TASK);
+        taskExecutor.setThreadNamePrefix(MIDDLE_TASK);
+        return taskExecutor;
     }
 
-    @Bean("faceDetectionThreadPoolExecutor")
-    ThreadPoolTaskExecutor faceDetectionThreadPoolExecutor() {
-        return heavyThreadPoolExecutor("face-detection-", iPhotoProperties.getHeavyTasks().getFaceDetectionThreads());
-    }
+
 
     @Bean("faceRecognitionThreadPoolExecutor")
     ThreadPoolTaskExecutor faceRecognitionThreadPoolExecutor() {
-        return heavyThreadPoolExecutor("face-recognition-", iPhotoProperties.getHeavyTasks().getFaceRecognitionThreads());
+        return heavyThreadPoolExecutor("recognition-", iPhotoProperties.getHeavyTasks().getFaceRecognitionThreads());
+    }
+
+    @Bean("duplicationThreadPoolExecutor")
+    ThreadPoolTaskExecutor duplicationThreadPoolExecutor() {
+        return heavyThreadPoolExecutor("duplication-", iPhotoProperties.getHeavyTasks().getDuplicationThreads());
     }
 
     private ThreadPoolTaskExecutor heavyThreadPoolExecutor(String threadNameSuffix, int poolSize) {

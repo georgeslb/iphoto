@@ -18,15 +18,20 @@ import org.springframework.mock.web.MockHttpSession;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MvcResult;
 
+import java.io.ByteArrayInputStream;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.containsString;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 // Driven mostly through PhotoController's real endpoints - a couple of methods with no endpoint
@@ -168,7 +173,7 @@ class PhotoServiceTest extends AbstractIntegrationTest {
 
         // Not waitForTaskCompletion - its terminal state here is IGNORED (a content-duplicate),
         // never COMPLETED, so that helper would just spin until its own timeout.
-        taskWorkerManager.pollPendingTasks();
+        taskWorkerManager.pollLightPendingTasks();
         String status = "PENDING";
         for (int attempt = 0; attempt < 40; attempt++) {
             MvcResult taskResult = mockMvc.perform(get("/api/tasks/{id}", secondTaskId).session(session))
@@ -193,6 +198,15 @@ class PhotoServiceTest extends AbstractIntegrationTest {
         // The Photo DTO only carries human-formatted date strings (date/fullDateTime/groupDate,
         // see model.Photo), not a raw dateTaken field - check the actual persisted value instead.
         assertThat(photoRepository.findById(photoId).orElseThrow().getDateTaken()).isEqualTo(LocalDateTime.parse("2022-05-01T00:00"));
+
+        // Regression: PhotoController's `df` was widened from a fixed "yyyy-MM-dd'T'HH:mm" pattern
+        // to DateTimeFormatter.ISO_LOCAL_DATE_TIME so the drag-to-reorder feature can send
+        // second/millisecond-precision timestamps through this same endpoint - confirm that still
+        // parses correctly (and didn't just start silently truncating back to the minute again).
+        mockMvc.perform(patch("/api/photos/{id}/date", photoId).session(session).contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new UpdatePhotoDateRequest("2022-05-01T00:00:10.500"))))
+                .andExpect(status().isOk());
+        assertThat(photoRepository.findById(photoId).orElseThrow().getDateTaken()).isEqualTo(LocalDateTime.parse("2022-05-01T00:00:10.500"));
 
         byte[] newBytes = generateTestJpeg();
         mockMvc.perform(multipart("/api/photos/{id}/edit", photoId)
@@ -225,7 +239,10 @@ class PhotoServiceTest extends AbstractIntegrationTest {
                         .content(objectMapper.writeValueAsString(new PhotoSelectionRequest(new MenuSelectionRequest("lightbox", List.of(), List.of()), List.of(photoId)))))
                 .andExpect(status().isOk())
                 .andReturn();
-        assertThat(objectMapper.readTree(selectionResult.getResponse().getContentAsString()).get("canBeModified").asBoolean()).isTrue();
+        JsonNode selection = objectMapper.readTree(selectionResult.getResponse().getContentAsString());
+        assertThat(selection.get("canBeModified").asBoolean()).isTrue();
+        assertThat(selection.get("canEditDate").asBoolean()).isTrue();
+        assertThat(selection.get("canDownload").asBoolean()).isTrue();
 
         String hash = photoRepository.findById(photoId).orElseThrow().getFileHash();
         MvcResult hashesResult = mockMvc.perform(post("/api/photos/check-hashes").session(session).contentType(APPLICATION_JSON)
@@ -301,6 +318,62 @@ class PhotoServiceTest extends AbstractIntegrationTest {
         photoService.deletePhotoInSpace(admin, spaceId);
 
         assertThat(photoRepository.findById(photoId)).isEmpty();
+    }
+
+    @Test
+    void downloadSingleAndMultiplePhotosSetContentDispositionAndZipEntries() throws Exception {
+        MockHttpSession session = loginAsAdmin();
+        UUID spaceId = createSpace(session, "Download-" + UUID.randomUUID());
+        UUID firstPhotoId = uploadPhoto(session, spaceId);
+        UUID secondPhotoId = uploadPhoto(session, spaceId);
+
+        // Single download - a separate route from /original (see PhotoController's own note on
+        // why), so this must carry Content-Disposition: attachment while /original still doesn't.
+        MvcResult singleResult = mockMvc.perform(get("/api/photos/{id}/download", firstPhotoId).session(session))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Disposition", containsString("attachment")))
+                .andReturn();
+        assertThat(singleResult.getResponse().getContentAsByteArray().length).isGreaterThan(0);
+
+        mockMvc.perform(get("/api/photos/{id}/original", firstPhotoId).session(session))
+                .andExpect(status().isOk())
+                .andExpect(header().doesNotExist("Content-Disposition"));
+
+        // Multiple - a zip containing one entry per (owned) selected photo.
+        MvcResult zipResult = mockMvc.perform(post("/api/photos/download").session(session).contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(List.of(firstPhotoId, secondPhotoId))))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Disposition", containsString("attachment")))
+                .andReturn();
+
+        List<String> entryNames = new ArrayList<>();
+        try (ZipInputStream zip = new ZipInputStream(
+                new ByteArrayInputStream(zipResult.getResponse().getContentAsByteArray()))) {
+            ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) {
+                entryNames.add(entry.getName());
+            }
+        }
+        assertThat(entryNames).hasSize(2);
+    }
+
+    @Test
+    void findOwnedByIdsIsTheAuthorizationBoundaryBehindBulkDownload() throws Exception {
+        MockHttpSession session = loginAsAdmin();
+        UUID spaceId = createSpace(session, "DownloadAuthz-" + UUID.randomUUID());
+        UUID photoId = uploadPhoto(session, spaceId);
+        UserEntity otherUser = userRepository.save(UserEntity.builder()
+                .username("download-other-" + UUID.randomUUID()).password("x").role("USER").build());
+
+        // The actual authorization boundary bulk download relies on (PhotoController#
+        // downloadMultiple) - a caller must never be able to read another user's files just by
+        // passing their photo ids.
+        assertThat(photoService.findOwnedByIds(otherUser, List.of(photoId))).isEmpty();
+        assertThat(photoService.findOwnedByIds(userRepository.findByUsername("admin").orElseThrow(), List.of(photoId)))
+                .hasSize(1);
+
+        mockMvc.perform(get("/api/photos/{id}/download", UUID.randomUUID()).session(session))
+                .andExpect(status().isNotFound());
     }
 
     private UUID createAlbum(MockHttpSession session) throws Exception {

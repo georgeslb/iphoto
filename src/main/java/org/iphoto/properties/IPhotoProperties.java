@@ -59,16 +59,27 @@ public class IPhotoProperties {
         // writes DuplicateEntity rows across the candidate set non-atomically; two photos' checks
         // running at once could race on the same duplicate group.
         int duplicationThreads = 1;
-        // ISOLATE_FACES: each call opens its own DJL Predictor per invocation (see
-        // FaceDetectionService#detectAndSaveFaces - detectionModel.newPredictor()/
-        // embeddingModel.newPredictor(), never a shared Predictor instance), which is the
-        // supported way to run DJL inference concurrently - safe to parallelize.
-        int faceDetectionThreads = 3;
         // FACE_RECOGNITION: kept at 1 - groupFaces() reprocesses/regroups ALL users' ungrouped
         // faces in one run; two overlapping runs would race on the same PersonEntity clusters.
         int faceRecognitionThreads = 1;
-        // Shared across all three pools above - how many PENDING tasks of a given heavy type can
-        // be queued waiting for a free thread before pollHeavyTasks stops fetching more.
+        // HASH_IMAGE (perceptual-hashing prep for duplicate detection) and ISOLATE_FACES (face
+        // detection) share ONE dedicated "middle" pool (TaskWorkerManager#pollMiddleTasks,
+        // ThreadPoolConfiguration#middleThreadPoolExecutor) - unlike duplicationThreads/
+        // faceRecognitionThreads above, this isn't gated by the admin heavy-tasks toggle and polls
+        // on the same always-on cadence as the light pool, since both task types are routine
+        // per-upload processing (needed promptly after every upload), not an optional maintenance
+        // pass. They used to run ON the light pool itself, but each call takes ~20s of real
+        // CPU/native-model work (OpenCV hashing, ONNX Runtime face detection - see
+        // FaceDetectionConfiguration), so a burst of uploads could stack up dozens of these
+        // concurrently on the light pool's much higher virtual-thread concurrency ceiling and
+        // starve the CPU; this dedicated, fixed-size pool caps that regardless of upload burst
+        // size. ISOLATE_FACES's own DJL/ONNX Predictor is safe to call concurrently (each
+        // invocation opens its own Predictor - FaceDetectionService#detectAndSaveFaces - never a
+        // shared instance), so sharing this one pool with HASH_IMAGE is fine.
+        int middleTaskThreads = 5;
+        // Shared across every dedicated pool above (including the middle one) - how many PENDING
+        // tasks of a given type/pool can be queued waiting for a free thread before its poll method
+        // stops fetching more.
         int queueCapacity = 10;
     }
 }

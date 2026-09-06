@@ -1,11 +1,16 @@
 package org.iphoto.service;
 
+import org.springframework.scheduling.annotation.Scheduled;
+
 public interface TaskWorkerManager {
 
     // @Scheduled(fixedDelay=...) guarantees the next tick only starts once this method returns -
     // one poller invocation runs start-to-finish on a single thread, never overlapping itself.
     // Heavy tasks have their own, much less frequent poller - see pollHeavyTasks.
-    void pollPendingTasks();
+    void pollLightPendingTasks();
+
+    @Scheduled(fixedDelay = 5000)
+    void pollMiddleChargeTasks();
 
     // Heavy tasks (CHECK_DUPLICATION/ISOLATE_FACES/FACE_RECOGNITION) are the expensive,
     // resource-intensive half of the pipeline - gated behind an admin on/off switch (see

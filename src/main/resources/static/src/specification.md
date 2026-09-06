@@ -68,7 +68,7 @@ This document outlines the functionality and behavior of the IPHOTO web applicat
 The application is a Single Page Application (SPA) with a consistent layout:
 
 *   **Sidebar:** A persistent navigation sidebar on the left, providing access to the main sections of the application (Library, Albums, Spaces, Map, etc.) and the logout button. **Responsive:** on screens ≤768px it becomes a collapsible drawer (`components/Sidebar.jsx` owns its own open/closed state) with a fixed hamburger toggle button, closing automatically on navigation.
-*   **Header:** A context-aware header that appears above the main content. It displays actions relevant to the current view and selection (e.g., "Delete", "Add to Album", "Upload"). **Button visibility is backend-driven, not computed client-side**: the frontend POSTs the current menu context (`menu`, `spaceIds`, `albumIds` — no separate `lightbox` flag; when the Lightbox is open, `menu` is simply `"lightbox"`, overriding whatever the underlying page's menu would otherwise be) and selected photo IDs to `/api/photos/selected`, and the backend returns capability flags (e.g. `canBeRestored`, `canBeDeleted`, `canBeMovedToMain`, `canBeMovedToAlbum`, `canBeRemovedFromAlbum`, `canBeSetAsCover`, `canBePermanentlyDeleted`) plus a nested `menuSelection` object with menu-level flags (`canUpload`, `canCreateAlbum`, `canDeleteAlbum`, `canCreateSpace`, `canDeleteSpace`, `canRestoreSpace`, `canPermanentlyDeleteSpace`, `canAddAAShareLinkToAlbum`). `Header.jsx` renders buttons purely by reading these flags — it does not decide on its own whether an action is allowed for a given menu/selection combination.
+*   **Header:** A context-aware header that appears above the main content. It displays actions relevant to the current view and selection (e.g., "Delete", "Add to Album", "Upload"). **Button visibility is backend-driven, not computed client-side**: the frontend POSTs the current menu context (`menu`, `spaceIds`, `albumIds` — no separate `lightbox` flag; when the Lightbox is open, `menu` is simply `"lightbox"`, overriding whatever the underlying page's menu would otherwise be) and selected photo IDs to `/api/photos/selected`, and the backend returns capability flags (e.g. `canBeRestored`, `canBeDeleted`, `canBeMovedToMain`, `canBeMovedToAlbum`, `canBeRemovedFromAlbum`, `canBeSetAsCover`, `canBePermanentlyDeleted`, `canEditDate`, `canDownload`) plus a nested `menuSelection` object with menu-level flags (`canUpload`, `canCreateAlbum`, `canDeleteAlbum`, `canCreateSpace`, `canDeleteSpace`, `canRestoreSpace`, `canPermanentlyDeleteSpace`, `canAddAAShareLinkToAlbum`). `Header.jsx` renders buttons purely by reading these flags — it does not decide on its own whether an action is allowed for a given menu/selection combination.
 *   **Main Content Area:** The central part of the screen that displays the primary content, such as photo grids, album details, or maps.
 *   **Lightbox:** A full-screen modal view for inspecting a single photo in detail. It provides navigation to the previous/next photo and access to actions for that specific photo. **Responsive:** the photo and the metadata sidebar sit side-by-side on desktop, but stack vertically on screens ≤768px (metadata panel becomes a scrollable panel below the photo, capped at 45vh).
 *   **Responsive design:** the app targets full phone support (breakpoints at 768px and 480px),
@@ -135,6 +135,37 @@ This section describes the application's features. For the corresponding backend
     uniformly to every menu that uses it (Library, Garbage, Album detail, Space detail). The
     Duplicates comparison view (`DuplicatePhotoGrid.jsx`) has its own separate, simpler selection
     UI and does not use this range-select behavior.
+*   **Drag-to-reorder within a day:** hovering a photo card (`PhotoGrid.jsx`, everywhere it's used
+    with a `handleReorderPhotos` prop — Library/Album detail/Space detail/Person detail; never on
+    `SharedAlbumView.jsx`'s public grid) shows a translucent circular drag handle. Dropping it
+    before/after another card **in the same day** re-stamps the moved photo's `dateTaken` so the
+    grid's existing newest-first sort reflects the new position; dragging one of several
+    currently-selected cards moves the whole selection together (any selected id from a *different*
+    day is silently excluded — the same-day constraint applies per-item to a multi-drag too). The
+    date math (`utils/photoReorder.js#computeReorderDates`) anchors off the neighbor that ends up
+    displayed just *after* the moved item(s) (the older one) plus 1 second, cascading further
+    seconds outward for a multi-item drag (falling back to a millisecond cascade in a tight gap) —
+    reuses the existing `PATCH /api/photos/{id}/date` endpoint once per moved photo, no dedicated
+    endpoint. Only primaries participate (a duplicate cluster's non-primary members aren't
+    independently reorderable); desktop-only (no touch polyfill).
+*   **Actions:** Every action below is gated by its own `photoSelection` capability flag from
+    `POST /api/photos/selected` (Section 3) and, where noted, is available both as a Header
+    bulk-action (multi-select) and from a single photo's own context (Lightbox).
+    *   **Move to Garbage:** Soft-deletes selected photos (`canBeDeleted`).
+    *   **Move to Main Space:** Moves selected photos from their current space to the default
+        "Main" space (`canBeMovedToMain`).
+    *   **Restore:** Restores photos from the Garbage back to their original space
+        (`canBeRestored`).
+    *   **Permanent Delete:** Permanently removes photos from the system — available for photos in
+        the Garbage (`canBePermanentlyDeleted`).
+    *   **Edit Date Taken:** Users can modify a photo's `dateTaken`, singly (Lightbox) or in bulk
+        (`canEditDate`, `EditDateModal.jsx` + `usePhotoActions.js#handleBulkUpdateDate` — applies
+        one exact timestamp to every selected photo, no relative offset). The drag-to-reorder
+        feature above is a different way a photo's date can change, driven by position instead of
+        a picked value.
+    *   **Download:** A single selected photo downloads directly; multiple selected photos download
+        together as one zip (`canDownload`, `usePhotoActions.js#handleDownload` — see Section 5.2
+        for the single-vs-bulk endpoint split).
 *   **Upload:** Users can upload new photos. A progress manager (`components/UploadManager.jsx`)
     shows the status of ongoing uploads, chunk-by-chunk; the completion response of
     `POST /api/upload/chunk` includes a `task` object (`{id, status, photoId}` — `unlinkedPhotoId` is
@@ -151,12 +182,6 @@ This section describes the application's features. For the corresponding backend
     picked up the task yet — during that `PROCESSING` window the link is clickable per spec, but
     the photo row may not exist yet server-side, so the popup can transiently show its loading
     state until `GET /api/photos/{id}` succeeds.
-*   **Actions:**
-    *   **Move to Garbage:** Soft-deletes selected photos.
-    *   **Move to Main Space:** Moves a photo from its current space to the default "Main" space.
-    *   **Restore:** Restores photos from the Garbage back to their original space.
-    *   **Permanent Delete:** Permanently removes photos from the system. This action is available for photos in the Garbage.
-    *   **Edit Metadata:** Users can modify photo details, such as the date.
 *   **Lightbox View:**
     *   Displays a high-resolution version of the photo.
     *   Shows extended metadata (camera, lens, etc.).
@@ -559,9 +584,29 @@ This section lists the primary API endpoints the frontend application calls to i
 *   `POST /api/photos/garbage/restore`: Restores a list of photos from the garbage.
 *   `DELETE /api/photos/garbage/permanent`: Permanently deletes a list of photos.
 *   `POST /api/photos/main`: Moves a list of selected photos to the Main Space.
-*   `PATCH /api/photos/{id}/date`: Updates the date for a single photo.
+*   `PATCH /api/photos/{id}/date`: Updates the date for a single photo. Bulk "Edit Date Taken"
+    (`canEditDate`) has no dedicated bulk endpoint — the frontend calls this once per selected
+    photo via `Promise.all` instead (same pattern the bulk add-to-album action uses). Drag-to-
+    reorder-within-a-day does the same, once per moved photo. Parses `newDate` via
+    `DateTimeFormatter.ISO_LOCAL_DATE_TIME` (not a fixed minute-only pattern) specifically so it can
+    carry the second/millisecond precision drag-to-reorder needs, while staying backward compatible
+    with the `datetime-local` picker's minute-only strings (seconds/nanos are optional in that
+    formatter).
 *   `POST /api/photos/{id}/edit`: Edits a photo.
 *   `GET /api/photos/{id}/metadata`: Fetches extended metadata for a single photo.
+*   `GET /api/photos/{id}/download`: Downloads a single photo as an attachment
+    (`Content-Disposition: attachment`). Deliberately a separate route from
+    `GET /api/photos/{id}/original` — that endpoint is used as an `<img src="...">` for in-page
+    rendering all over the frontend (Lightbox full-res view, upload preview, duplicate-cluster
+    modal, shared lightbox), and a browser won't render an image inline from a response marked as
+    an attachment.
+*   `POST /api/photos/download`: Bulk "Download" (`canDownload`) for multiple selected photos —
+    body is a JSON list of photo IDs (POST, not GET+query-string, since a large selection could
+    exceed a comfortable URL length). Streams back a zip (`StreamingResponseBody` wrapping a plain
+    `ZipOutputStream`, never buffering the whole zip in memory) containing only photos the caller
+    actually owns (`PhotoService.findOwnedByIds` silently drops any other id — the authorization
+    boundary here, mirroring the ownership check bulk-delete already does), with filename
+    collisions within one zip de-duplicated by appending a suffix from the photo's own id.
 *   `GET /api/map-assets?path={effectivePath}`: Fetches assets to be displayed on the map view.
 *   `POST /api/photos/selected`: Given the current menu context (`menu`, `spaceIds`, `albumIds`)
     and a list of selected photo IDs, returns which actions/buttons should be shown (see Section 3,
