@@ -3076,7 +3076,7 @@ new work is identified or completed, so nothing gets lost between sessions.
   particular has had no chance to be observed reacting to real machine load.
 
 - [x] **Bug fix** (user report: "tasks are scheduled to run multiple times"). Root-caused by
-  inspection, not guessed: `pollLightPendingTasks`/`pollHeavyTasks` query for `status = PENDING`
+  inspection, not guessed: `pollLightPendingTasks`/`pollFaceRecognitionTask` query for `status = PENDING`
       then `submit()` to an executor - but a task's status only flips to `PROCESSING` once
       `processTask` actually *starts running* on a worker thread (`markProcessing`), which lags
   behind submission whenever the executor is backed up (easy for the 3-thread heavy pool).
@@ -3392,54 +3392,54 @@ new work is identified or completed, so nothing gets lost between sessions.
         dependency version to work around a local sandbox limitation.
 
 - [x] **Reorganize (backend)**: heavy-task concurrency reworked per explicit user request - one
-      dedicated pool per heavy task type instead of one shared `heavyThreadPoolExecutor` (dynamically
-      resized 3-8 threads based on light-pool load) that all three heavy task types competed for.
-      - **Root cause of the "conflict" the user suspected**: each heavy service also held its own
-        internal `ReentrantLock` capping ITSELF to exactly 1 concurrent run, regardless of how many
-        threads the shared pool actually gave it - so increasing the shared pool's size never
-        produced real parallelism for any single type, it just let more *different* types' tasks
-        sit blocked on their own type's lock at once. **Found while fixing this**: `DuplicationService
+  dedicated pool per heavy task type instead of one shared `heavyThreadPoolExecutor` (dynamically
+  resized 3-8 threads based on light-pool load) that all three heavy task types competed for.
+  - **Root cause of the "conflict" the user suspected**: each heavy service also held its own
+  internal `ReentrantLock` capping ITSELF to exactly 1 concurrent run, regardless of how many
+  threads the shared pool actually gave it - so increasing the shared pool's size never
+  produced real parallelism for any single type, it just let more *different* types' tasks
+  sit blocked on their own type's lock at once. **Found while fixing this**: `DuplicationService
         .checkDuplication`'s lock had a genuine bug - acquired via `tryLock()` then `lock()` again
-        (a redundant re-entrant acquisition, hold count 2) but released only once in `finally`
+  (a redundant re-entrant acquisition, hold count 2) but released only once in `finally`
         (hold count back to 1, never 0) - meaning after the very first successful call, the lock
-        was permanently left held, and every later call (from a different pool thread) would find
+  was permanently left held, and every later call (from a different pool thread) would find
         `tryLock()` false forever and immediately throw `ServiceNotAvailableException` - CHECK_DUPLICATION
-        could never actually run a second time.
-      - **New config** `IPhotoProperties.HeavyTasks` (`iphoto.heavy-tasks.*` in `application.yml`,
+  could never actually run a second time.
+  - **New config** `IPhotoProperties.HeavyTasks` (`iphoto.heavy-tasks.*` in `application.yml`,
         `@ConfigurationProperties`): `duplication-threads` (default 1 - `DuplicationService` reads/
-        writes overlapping `DuplicateEntity` groups non-atomically, unsafe concurrently with
-        itself), `face-detection-threads` (default 3 - safe: each call opens its own DJL `Predictor`
+  writes overlapping `DuplicateEntity` groups non-atomically, unsafe concurrently with
+  itself), `face-detection-threads` (default 3 - safe: each call opens its own DJL `Predictor`
         per invocation, `FaceDetectionService#detectAndSaveFaces` never shares one across calls),
         `face-recognition-threads` (default 1 - `groupFaces()` reprocesses/regroups ALL users'
-        ungrouped faces in one run, unsafe concurrently with itself), `queue-capacity` (default 10,
-        shared by all three).
-      - `ThreadPoolConfiguration`: `heavyThreadPoolExecutor` bean replaced with three -
+  ungrouped faces in one run, unsafe concurrently with itself), `queue-capacity` (default 10,
+  shared by all three).
+  - `ThreadPoolConfiguration`: `heavyThreadPoolExecutor` bean replaced with three -
         `duplicationThreadPoolExecutor`/`faceDetectionThreadPoolExecutor`/
         `faceRecognitionThreadPoolExecutor` - each sized from the config above via a shared private
         `heavyThreadPoolExecutor(namePrefix, poolSize)` builder. All three keep the `HEAVY_TASK`
         thread-name prefix so `MainSpaceAspectConfiguration`'s thread-name check (which skips
-        binding the per-request Hibernate space filter on background-task threads) still matches.
-      - `TaskWorkerManager`: constructor now takes the three dedicated executors instead of one;
-        `pollHeavyTasks` polls and submits each task type against its own pool via a new
+  binding the per-request Hibernate space filter on background-task threads) still matches.
+  - `TaskWorkerManager`: constructor now takes the three dedicated executors instead of one;
+        `pollFaceRecognitionTask` polls and submits each task type against its own pool via a new
         `pollHeavyTaskType(TaskType, ThreadPoolTaskExecutor)` helper (reuses the existing
         `findExecutableTasks(status, now, Set<TaskType>, Limit)` query, `markQueued`, `processTask`
         unchanged) instead of one shared-pool poll over all three types combined. Removed the now
-        entirely superseded `adjustHeavyPoolSizeForLightLoad`/`HEAVY_TASK_TYPES` (the shared pool's
-        dynamic 3-8 resize heuristic doesn't apply to three separately-sized fixed pools). `shutdown()`
+  entirely superseded `adjustHeavyPoolSizeForLightLoad`/`HEAVY_TASK_TYPES` (the shared pool's
+  dynamic 3-8 resize heuristic doesn't apply to three separately-sized fixed pools). `shutdown()`
         now shuts down all three heavy pools instead of one.
-      - Removed the now-redundant `ReentrantLock`s from `DuplicationService`/`FaceDetectionService`/
+  - Removed the now-redundant `ReentrantLock`s from `DuplicationService`/`FaceDetectionService`/
         `FaceRecognitionService` entirely - each dedicated pool's fixed size is now the only
-        concurrency limiter, per the user's explicit "remove current lock" instruction (confirmed
-        safe for face detection specifically: DJL's own per-call-Predictor pattern was already
-        being used, the lock was only ever holding back parallelism there, not protecting anything).
+  concurrency limiter, per the user's explicit "remove current lock" instruction (confirmed
+  safe for face detection specifically: DJL's own per-call-Predictor pattern was already
+  being used, the lock was only ever holding back parallelism there, not protecting anything).
         `ServiceNotAvailableException` (thrown only by these two locks' `tryLock()` failure paths,
-        confirmed via grep) is now unreachable everywhere - deleted the class, and the now-dead
+  confirmed via grep) is now unreachable everywhere - deleted the class, and the now-dead
         `catch (ServiceNotAvailableException e)` branch in `TaskWorkerManager#processTask`.
-      - Verified: whole backend `javac` compile clean (main + test sources). **Not yet exercised
+  - Verified: whole backend `javac` compile clean (main + test sources). **Not yet exercised
         against the live app** - needs a real restart (new constructor params/bean names aren't
-        HotSwappable), and confirming the actual concurrency property (3 ISOLATE_FACES tasks
-        genuinely running at once, CHECK_DUPLICATION surviving past its first run) requires
-        watching real task rows against a running instance, which hasn't been done here.
+  HotSwappable), and confirming the actual concurrency property (3 ISOLATE_FACES tasks
+  genuinely running at once, CHECK_DUPLICATION surviving past its first run) requires
+  watching real task rows against a running instance, which hasn't been done here.
 
 - [x] **Bug fix / optimization (backend)**: "huge CPU consumption" reported right after the
       heavy-task-pool rework above - root-caused as PyTorch native-thread oversubscription, a

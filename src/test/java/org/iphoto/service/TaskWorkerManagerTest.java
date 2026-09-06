@@ -69,7 +69,7 @@ class TaskWorkerManagerTest extends AbstractIntegrationTest {
 
     @Test
     @Order(2)
-    void pollHeavyTasksOnlyDispatchesOnceHeavyTasksAreActivated() throws Exception {
+    void pollFaceRecognitionTasksOnlyDispatchesOnceHeavyTasksAreActivated() throws Exception {
         MockHttpSession session = loginAsAdmin();
         // Not assuming a starting value - ACTIVATE_HEAVY_TASKS is one global row, updated in
         // place (see AdminServiceTest's own comment on the same issue), so another test class
@@ -77,18 +77,18 @@ class TaskWorkerManagerTest extends AbstractIntegrationTest {
         mockMvc.perform(post("/api/admin/heavyTasks").session(session).contentType(APPLICATION_JSON).content("{\"activate\":false}"))
                 .andExpect(status().isOk());
         TaskEntity task = taskRepository.save(TaskEntity.builder()
-                .photoId(UUID.randomUUID()).taskType(TaskType.CHECK_DUPLICATION).status(TaskStatus.PENDING.name()).build());
+                .photoId(UUID.randomUUID()).taskType(TaskType.FACE_RECOGNITION).status(TaskStatus.PENDING.name()).build());
 
-        taskWorkerManager.pollHeavyTasks();
+        taskWorkerManager.pollFaceRecognitionTask();
         Thread.sleep(300);
         assertThat(taskRepository.findById(task.getId()).orElseThrow().getStatus()).isEqualTo(TaskStatus.PENDING);
 
         mockMvc.perform(post("/api/admin/heavyTasks").session(session).contentType(APPLICATION_JSON).content("{\"activate\":true}"))
                 .andExpect(status().isOk());
-        taskWorkerManager.pollHeavyTasks();
+        taskWorkerManager.pollFaceRecognitionTask();
 
         TaskStatus finalStatus = TaskStatus.PENDING;
-        for (int attempt = 0; attempt < 40 && finalStatus == TaskStatus.PENDING; attempt++) {
+        for (int attempt = 0; attempt < 40; attempt++) {
             finalStatus = taskRepository.findById(task.getId()).orElseThrow().getStatus();
             if (finalStatus != TaskStatus.PENDING) break;
             Thread.sleep(250);
@@ -115,6 +115,36 @@ class TaskWorkerManagerTest extends AbstractIntegrationTest {
 
     @Test
     @Order(4)
+    void pollHeavyTasksOnlyDispatchesOnceHeavyTasksAreActivated() throws Exception {
+        MockHttpSession session = loginAsAdmin();
+        // Not assuming a starting value - ACTIVATE_HEAVY_TASKS is one global row, updated in
+        // place (see AdminServiceTest's own comment on the same issue), so another test class
+        // sharing this suite's database may have already activated it before this one runs.
+        mockMvc.perform(post("/api/admin/heavyTasks").session(session).contentType(APPLICATION_JSON).content("{\"activate\":false}"))
+                .andExpect(status().isOk());
+        TaskEntity task = taskRepository.save(TaskEntity.builder()
+                .photoId(UUID.randomUUID()).taskType(TaskType.CHECK_DUPLICATION).status(TaskStatus.PENDING.name()).build());
+
+        taskWorkerManager.pollDuplicationTask();
+        Thread.sleep(300);
+        assertThat(taskRepository.findById(task.getId()).orElseThrow().getStatus()).isEqualTo(TaskStatus.PENDING);
+
+        mockMvc.perform(post("/api/admin/heavyTasks").session(session).contentType(APPLICATION_JSON).content("{\"activate\":true}"))
+                .andExpect(status().isOk());
+        taskWorkerManager.pollDuplicationTask();
+
+        TaskStatus finalStatus = TaskStatus.PENDING;
+        for (int attempt = 0; attempt < 40; attempt++) {
+            finalStatus = taskRepository.findById(task.getId()).orElseThrow().getStatus();
+            if (finalStatus != TaskStatus.PENDING) break;
+            Thread.sleep(250);
+        }
+        assertThat(finalStatus).isNotEqualTo(TaskStatus.PENDING);
+    }
+
+
+    @Test
+    @Order(5)
     void shutdownStopsTheDedicatedThreadPools() {
         taskWorkerManager.shutdown();
 

@@ -181,12 +181,21 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
     // IPhotoProperties.HeavyTasks) is enforced by the pool itself rather than an internal lock.
     @Override
     @Scheduled(fixedDelay = 300_000)
-    public void pollHeavyTasks() {
+    public void pollFaceRecognitionTask() {
+        if (!adminService.isHeavyTasksActivated()) return;
+
+        pollHeavyTaskType(TaskType.FACE_RECOGNITION, faceRecognitionThreadPoolExecutor);
+    }
+
+    @Scheduled(fixedDelay = 30000)
+    @Override
+    public void pollDuplicationTask() {
         if (!adminService.isHeavyTasksActivated()) return;
 
         pollHeavyTaskType(TaskType.CHECK_DUPLICATION, duplicationThreadPoolExecutor);
-        pollHeavyTaskType(TaskType.FACE_RECOGNITION, faceRecognitionThreadPoolExecutor);
     }
+
+
 
     private void pollHeavyTaskType(TaskType taskType, ThreadPoolTaskExecutor executor) {
         Set<TaskEntity> tasks = new HashSet<>();
