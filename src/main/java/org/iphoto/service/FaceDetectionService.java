@@ -20,14 +20,13 @@ import org.iphoto.model.TaskStatus;
 import org.iphoto.repository.FaceRepository;
 import org.iphoto.repository.PersonRepository;
 import org.iphoto.repository.PhotoRepository;
+import org.iphoto.util.EmbeddingCodec;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.file.Paths;
 
 @Service
@@ -58,19 +57,22 @@ public class FaceDetectionService {
 
 
     public void deleteFaces(PhotoEntity photo) {
-        photo.getFaces().forEach(faceEntity ->
-                personRepository.findByCoverFace(faceEntity).forEach(personEntity -> {
-                    personEntity.setCoverFace(null);
-                    // Remove it from the in-memory collection too, not just the cover-face
-                    // pointer — recalculateCoverFace picks the most-recent face from this same
-                    // collection, and the face row hasn't actually been deleted from the DB yet
-                    // at this point (that happens below), so without this it would just pick the
-                    // same about-to-be-deleted face right back.
-                    personEntity.getFaces().remove(faceEntity);
-                    personRecognitionService.recalculateCoverFace(personEntity);
-                    personRepository.save(personEntity);
-                })
-        );
+        photo.getFaces().forEach(faceEntity -> {
+            if (faceEntity.getPerson() != null) {
+                personRecognitionService.removeFaceFromBucket(faceEntity.getPerson(), faceEntity);
+            }
+            personRepository.findByCoverFace(faceEntity).forEach(personEntity -> {
+                personEntity.setCoverFace(null);
+                // Remove it from the in-memory collection too, not just the cover-face
+                // pointer — recalculateCoverFace picks the most-recent face from this same
+                // collection, and the face row hasn't actually been deleted from the DB yet
+                // at this point (that happens below), so without this it would just pick the
+                // same about-to-be-deleted face right back.
+                personEntity.getFaces().remove(faceEntity);
+                personRecognitionService.recalculateCoverFace(personEntity);
+                personRepository.save(personEntity);
+            });
+        });
         faceRepository.deleteByPhotoId(photo);
     }
 
@@ -159,7 +161,7 @@ public class FaceDetectionService {
                         float[] embedding =
                                 embedder.predict(embeddingInput);
 
-                        byte[] embeddingBytes = toByteArray(embedding);
+                        byte[] embeddingBytes = EmbeddingCodec.toBytes(embedding);
 
                         // Generate JPEG thumbnail for UI from the original crop
                         ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -182,13 +184,4 @@ public class FaceDetectionService {
         }
     }
 
-    private byte[] toByteArray(float[] floatArray) {
-        ByteBuffer buffer = ByteBuffer.allocate(4 * floatArray.length);
-        // Set to BIG_ENDIAN to match the reader service
-        buffer.order(ByteOrder.BIG_ENDIAN);
-        for (float v : floatArray) {
-            buffer.putFloat(v);
-        }
-        return buffer.array();
-    }
 }

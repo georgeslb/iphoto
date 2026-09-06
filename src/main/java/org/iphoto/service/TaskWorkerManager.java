@@ -16,7 +16,6 @@ import org.iphoto.service.immich.ImmichAlbumImportService;
 import org.iphoto.service.immich.ImmichImportService;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DataAccessException;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.NonTransientDataAccessException;
 import org.springframework.data.domain.Limit;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -24,7 +23,9 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.io.*;
+import java.io.File;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.lang.management.ManagementFactory;
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -190,7 +191,7 @@ public class TaskWorkerManager {
         if (!adminService.isHeavyTasksActivated()) return;
 
         pollHeavyTaskType(TaskType.CHECK_DUPLICATION, duplicationThreadPoolExecutor);
-        pollHeavyTaskType(TaskType.ISOLATE_FACES, faceDetectionThreadPoolExecutor);
+        //pollHeavyTaskType(TaskType.ISOLATE_FACES, faceDetectionThreadPoolExecutor);
         pollHeavyTaskType(TaskType.FACE_RECOGNITION, faceRecognitionThreadPoolExecutor);
     }
 

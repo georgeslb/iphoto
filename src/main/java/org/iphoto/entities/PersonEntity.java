@@ -37,6 +37,18 @@ public class PersonEntity extends BaseEntity { // Extends BaseEntity
     )
     private List<FaceEntity> faces;
 
+    // Precomputed per-year running-average embeddings (see PersonEmbeddingBucketEntity/
+    // PersonRecognitionService#addFaceToBucket) - pure derived cache data, nothing else
+    // references it, so unlike `faces` above it's fine (correct, even) to cascade-delete these
+    // along with the person instead of nulling out a reference.
+    @OneToMany(
+        mappedBy = "person",
+        fetch = FetchType.LAZY,
+        cascade = CascadeType.ALL,
+        orphanRemoval = true
+    )
+    private List<PersonEmbeddingBucketEntity> embeddingBuckets;
+
     // The face that represents this person in the UI (their "profile picture").
     @OneToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "cover_face_id")

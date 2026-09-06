@@ -13,7 +13,6 @@ import org.iphoto.service.UserService;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.boot.context.event.ApplicationEnvironmentPreparedEvent;
 import org.springframework.context.annotation.Bean;
 import org.springframework.retry.annotation.EnableRetry;
 import org.springframework.scheduling.annotation.EnableScheduling;
@@ -29,31 +28,29 @@ import java.util.Set;
 public class IPhotoApplication {
 
     public static void main(String[] args) {
+        // OpenCV's own internal parallel_for_ backend (used by DuplicationService's ORB/BFMatcher/
+        // phash calls) defaults to spinning up its own worker-thread pool sized to
+        // hardware_concurrency - and, on the pthread-only backend this prebuilt javacpp binary
+        // uses (no TBB), each distinct OpenCV subsystem (ORB, BFMatcher, img_hash) turned out to
+        // lazily create its OWN such pool rather than sharing one process-wide pool: confirmed
+        // live via a thread dump showing ~46 OS-level "heavy-task-dupl..." threads sharing the
+        // name of the single dedicated CHECK_DUPLICATION pool thread, several times more than
+        // this machine's core count, despite that pool only ever running one task at a time.
+        // CHECK_DUPLICATION's own concurrency is already fully governed by its dedicated
+        // single-thread pool (see IPhotoProperties.HeavyTasks#duplicationThreads) - a single
+        // photo-sized image comparison doesn't need OpenCV's own internal multi-threading on top
+        // of that, so disable it outright rather than trying to size multiple per-subsystem pools
+        // correctly. Must be set before any org.bytedeco.opencv class is used (its native library
+        // loads on first reference), so as early as possible here.
+        org.bytedeco.opencv.global.opencv_core.setNumThreads(1);
+
         SpringApplication app = new SpringApplication(IPhotoApplication.class);
-        // PyTorch's CPU backend defaults to using every available core for the tensor math inside
-        // a single inference call (intra-op parallelism), independent of how many Java-level
-        // worker threads are running face-detection tasks. This used to be a flat "8" regardless
-        // of concurrency - fine back when ISOLATE_FACES could only ever run 1 at a time (see the
-        // heavy-task-pool rework in TODO.md), but once face-detection-threads > 1 (default 3,
-        // IPhotoProperties.HeavyTasks) that many *concurrent* Predictor calls would each try to
-        // claim 8 native threads - up to faceDetectionThreads * 8 threads fighting over however
-        // many cores the machine actually has, causing exactly the CPU thrashing/huge-usage
-        // reported after that change. Divide the machine's cores across the configured
-        // concurrency instead, so the total native thread budget stays proportional to what's
-        // really available regardless of how face-detection-threads is tuned.
-        //
-        // Must be set before the DJL PyTorch engine initializes (its first Criteria.loadModel()
-        // call, a @Bean in FaceDetectionConfiguration created during context refresh) - an
-        // ApplicationEnvironmentPreparedEvent listener fires after application.yml is bound into
-        // the Environment but before any bean (including that one) is created, which is exactly
-        // the window needed to read the real configured value here.
-        app.addListeners((org.springframework.context.ApplicationListener<ApplicationEnvironmentPreparedEvent>) event -> {
-            int faceDetectionThreads = event.getEnvironment()
-                    .getProperty("iphoto.heavy-tasks.face-detection-threads", Integer.class, 3);
-            int availableProcessors = Runtime.getRuntime().availableProcessors();
-            int pytorchThreads = Math.max(1, availableProcessors / faceDetectionThreads);
-            System.setProperty("ai.djl.pytorch.num_threads", String.valueOf(pytorchThreads));
-        });
+        // Face detection/embedding's own CPU-thread tuning (equivalent in spirit to the OpenCV
+        // call above) now lives in FaceDetectionConfiguration itself, as plain per-model Criteria
+        // options (optOption("interOpNumThreads"/"intraOpNumThreads", ...)) - the ONNX Runtime
+        // engine that replaced PyTorch here (see the buffalo_l model swap) takes these per-model at
+        // load time, unlike PyTorch's engine-wide JVM system properties which had to be set this
+        // early, before the engine initialized. Nothing needs setting here anymore for that.
         app.run(args);
     }
 

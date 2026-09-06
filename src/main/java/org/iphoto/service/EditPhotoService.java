@@ -53,6 +53,7 @@ public class EditPhotoService {
     private FaceRepository faceRepository;
     private DuplicationService duplicationService;
     private TaskMapper taskMapper;
+    private PersonRecognitionService personRecognitionService;
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public PhotoEntity editImage(
@@ -150,6 +151,14 @@ public class EditPhotoService {
                 originalPhoto.setFileSize(Files.size(Path.of(originalPhoto.getOriginalPath())));
                 originalPhoto.setWidth(workingImage.getWidth());
                 originalPhoto.setHeight(workingImage.getHeight());
+                // Must happen before the deleteAll below - removeFaceFromBucket still needs each
+                // face's own embedding to subtract it back out of its person's bucket (see
+                // FaceService.deleteFace, same requirement, same fix).
+                originalPhoto.getFaces().forEach(face -> {
+                    if (face.getPerson() != null) {
+                        personRecognitionService.removeFaceFromBucket(face.getPerson(), face);
+                    }
+                });
                 faceRepository.deleteAll(originalPhoto.getFaces());
                 duplicationService.deleteDuplicatesForPhoto(originalPhoto);
                 taskMapper.updateTasksToAction(TaskMapper.Action.ON_EDIT_PHOTO_ACTION, originalPhoto.getId());

@@ -55,6 +55,18 @@ COPY --from=build /workspace/target/iphoto-*.jar app.jar
 ENV IPHOTO_STORAGE_BASE=/data/iphoto
 VOLUME ["/data/iphoto"]
 
+# Caps glibc malloc's per-thread arena count. Without this, glibc gives each thread that calls
+# malloc its own arena (up to 8x core count on 64-bit), and each arena grows in large chunks that
+# are rarely returned to the OS even after the memory inside them is freed - a well-documented
+# source of native RSS/swap bloat in multithreaded JVM + native/JNI workloads (RocksDB, Netty
+# native transport, TensorFlow, and here: OpenCV/JavaCV + PyTorch-via-DJL, all called from
+# multiple heavy-task threads, see IPhotoProperties.HeavyTasks). Confirmed live: JVM heap+metaspace
+# accounted for only ~3.2GB while the process's actual RSS+swap was ~7.5GB - the ~4GB gap matched
+# a cluster of ~64MB anonymous native mappings outside the heap, the signature of this issue.
+# Must be set in the process's own environment before the JVM/glibc start - glibc reads it once at
+# init via getenv(), so this can't be applied later via System.setProperty from Java code.
+ENV MALLOC_ARENA_MAX=2
+
 # Not set here on purpose - application.yml's spring.datasource.* defaults to
 # localhost:5432/postgres/password, which is only reachable if you run with host networking; a
 # normal container deployment MUST override these (SPRING_DATASOURCE_URL/_USERNAME/_PASSWORD,

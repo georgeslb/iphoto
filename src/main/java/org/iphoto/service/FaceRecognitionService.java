@@ -8,21 +8,19 @@ import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.*;
 import org.iphoto.repository.FaceLinkExclusionRepository;
 import org.iphoto.repository.FaceRepository;
+import org.iphoto.repository.PersonEmbeddingBucketRepository;
 import org.iphoto.repository.PersonRepository;
 import org.iphoto.repository.UserRepository;
+import org.iphoto.util.EmbeddingCodec;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.FloatBuffer;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 @Service
 @Slf4j
@@ -36,6 +34,7 @@ public class FaceRecognitionService {
     private final UserRepository userRepository;
     private final SpaceService spaceService;
     private final FaceLinkExclusionRepository faceLinkExclusionRepository;
+    private final PersonEmbeddingBucketRepository personEmbeddingBucketRepository;
 
     // Threshold for Cosine Similarity: A higher value means a stricter match. Kept strict and
     // never loosened for "same person, different age" cases — a face at 5 and the same face at
@@ -44,11 +43,10 @@ public class FaceRecognitionService {
     // drift is handled by transitivity, not by weakening the per-pair confidence bar.
     private static final double THRESHOLD = 0.60;
 
-    // How many of a candidate's faces closest in time (both before AND after the face being
-    // matched) are considered per comparison, instead of comparing against a person's whole
-    // history (which dilutes the score across eras) or only ever looking at earlier photos (the
-    // previous behavior). Bounds cost to O(faces * persons * window) instead of O(faces *
-    // total_faces_across_all_persons), and keeps each comparison set temporally coherent.
+    // No longer used for matching against EXISTING persons (see PersonEmbeddingBucketEntity/
+    // NEAREST_BUCKET_COUNT below for that, now precomputed per-year buckets instead of live
+    // per-face queries) - kept only as the base unit for clusterByTemporalProximity's
+    // maxCandidatesPerFace safety cap, for NEW-person clustering.
     private static final int TEMPORAL_NEIGHBOR_WINDOW = 10;
 
     // Cap on ungrouped faces processed in a single run. groupFaces() reruns every ~30s
@@ -71,10 +69,34 @@ public class FaceRecognitionService {
     // (see TaskWorkerManager/IPhotoProperties.HeavyTasks#faceRecognitionThreads), which already
     // guarantees only one call runs at a time.
     public void groupFaces() { // Added UserEntity parameter
-        userRepository.findAll().stream().filter(userEntity -> !userEntity.getRole().equals("ADMIN")).forEach(user -> {
-            groupFacesForUser(user);
-            entityManager.flush();
-        });
+        // Ids only, not the entities themselves - each user is re-fetched fresh inside the loop
+        // below (see the entityManager.clear() comment there for why: this whole method runs in
+        // one Hibernate session, and clear() detaches every entity that session currently holds,
+        // including any not-yet-processed UserEntity still sitting in a pre-fetched list - looking
+        // each one up fresh right before it's needed sidesteps that entirely).
+        List<UUID> nonAdminUserIds = userRepository.findAll().stream()
+                .filter(userEntity -> !userEntity.getRole().equals("ADMIN"))
+                .map(UserEntity::getId)
+                .toList();
+        for (UUID userId : nonAdminUserIds) {
+            userRepository.findById(userId).ifPresent(user -> {
+                groupFacesForUser(user);
+                // clear(), not just flush() - every PersonEntity/FaceEntity/PhotoEntity/
+                // PersonEmbeddingBucketEntity touched while processing this user (up to
+                // MAX_UNGROUPED_FACES_PER_RUN faces, every existing person, all their embedding
+                // buckets, and - via person.getFaces() inside recalculateCoverFace - every face
+                // already linked to any person just matched) otherwise stays pinned in the
+                // persistence context for the rest of the run, even though flush() alone already
+                // durably wrote it out. Confirmed live (jcmd GC.class_histogram) that FaceEntity/
+                // PersonEmbeddingBucket byte[] payloads (embeddings/thumbnails) were the single
+                // largest heap consumer during a real run - not an unreachable-object leak (a
+                // forced full GC reclaimed most of it fine), but there's no reason to keep a
+                // whole user's worth of this pinned live once it's already committed, especially
+                // with multiple users or back-to-back ~30s reruns.
+                entityManager.flush();
+                entityManager.clear();
+            });
+        }
     }
 
     private void groupFacesForUser(UserEntity user) {
@@ -98,6 +120,16 @@ public class FaceRecognitionService {
                             Collectors.mapping(exclusion -> exclusion.getExcludedPerson().getId(), Collectors.toSet())
                     ));
 
+            // Precomputed per-person, per-year embedding buckets (see PersonEmbeddingBucketEntity),
+            // batch-loaded once for every candidate person in this whole run - matching a face
+            // against a person is now a pure in-memory comparison against this small precomputed
+            // set instead of a fresh DB query (nearestTemporalNeighbors, since removed) per
+            // (face, person) pair.
+            Map<UUID, List<PersonEmbeddingBucketEntity>> bucketsByPerson = personEmbeddingBucketRepository
+                    .findByPersonIdIn(persons.stream().map(PersonEntity::getId).toList())
+                    .stream()
+                    .collect(Collectors.groupingBy(bucket -> bucket.getPerson().getId()));
+
             List<FaceEntity> stillUnmatched = new ArrayList<>();
             for (FaceEntity face : ungroupedFaces) {
                 Set<UUID> excludedPersonIds = excludedPersonIdsByFace.getOrDefault(face.getId(), Set.of());
@@ -107,10 +139,10 @@ public class FaceRecognitionService {
 
                 // Decoded/normalized once per face rather than once per (face, person) pair below -
                 // findBestMatchForFace checks every eligible person, and each check used to re-decode
-                // and re-normalize this SAME face's embedding from scratch, up to
-                // persons.size() * TEMPORAL_NEIGHBOR_WINDOW times over for one face.
-                NormalizedEmbedding faceEmbedding = NormalizedEmbedding.of(byteArrayToFloatArray(face.getEmbedding()));
-                Optional<PersonWithScore> bestMatch = findBestMatchForFace(face, faceEmbedding, eligiblePersons);
+                // and re-normalize this SAME face's embedding from scratch.
+                NormalizedEmbedding faceEmbedding = NormalizedEmbedding.of(EmbeddingCodec.toFloats(face.getEmbedding()));
+                int targetYear = PersonEmbeddingBucketEntity.bucketYearFor(face);
+                Optional<PersonWithScore> bestMatch = findBestMatchForFace(faceEmbedding, targetYear, eligiblePersons, bucketsByPerson);
                 if (bestMatch.isPresent()) {
                     personRecognitionService.updatePerson(bestMatch.get().getPerson(), face);
                 } else {
@@ -131,58 +163,54 @@ public class FaceRecognitionService {
 
     }
 
-    private Optional<PersonWithScore> findBestMatchForFace(FaceEntity face, NormalizedEmbedding faceEmbedding, List<PersonEntity> persons) {
+    private Optional<PersonWithScore> findBestMatchForFace(NormalizedEmbedding faceEmbedding, int targetYear, List<PersonEntity> persons,
+                                                            Map<UUID, List<PersonEmbeddingBucketEntity>> bucketsByPerson) {
         // Find the person with the highest similarity score, using only each candidate's
-        // temporally-nearest faces (see scoreAgainstPerson) — cheap enough to check every person.
+        // temporally-nearest buckets (see scoreAgainstPerson) — cheap enough to check every person.
         return persons.stream()
-                .flatMap(person -> scoreAgainstPerson(face, faceEmbedding, person).stream())
+                .flatMap(person -> scoreAgainstPerson(faceEmbedding, targetYear, person, bucketsByPerson.getOrDefault(person.getId(), List.of())).stream())
                 .max(Comparator.comparingDouble(PersonWithScore::getScore))
                 .filter(match -> match.getScore() >= THRESHOLD);
     }
 
-    private Optional<PersonWithScore> scoreAgainstPerson(FaceEntity face, NormalizedEmbedding faceEmbedding, PersonEntity person) {
-        List<FaceEntity> neighbors = nearestTemporalNeighbors(person, face.getPhoto().getDateTaken());
-        OptionalDouble averageSimilarity = calculateAverageSimilarity(faceEmbedding, neighbors);
-        return averageSimilarity.isPresent()
-                ? Optional.of(PersonWithScore.builder().person(person).score(averageSimilarity.getAsDouble()).build())
-                : Optional.empty();
-    }
+    // How many of a person's nearest-year embedding buckets are considered per comparison - the
+    // bucket-based equivalent of the old before/after face-level TEMPORAL_NEIGHBOR_WINDOW, just at
+    // year granularity: 2 lets a face right at a year boundary still weigh in the adjacent year's
+    // bucket rather than only ever the exact same year's.
+    private static final int NEAREST_BUCKET_COUNT = 2;
 
-    // The person's TEMPORAL_NEIGHBOR_WINDOW faces closest in time to targetDate, looking both
-    // before and after it — a same-person match should be strongest against nearby-in-time
-    // photos, not a photo from decades apart, so this keeps the comparison set coherent to one
-    // era instead of averaging across the person's entire (possibly age-spanning) history.
-    private List<FaceEntity> nearestTemporalNeighbors(PersonEntity person, LocalDateTime targetDate) {
-        List<FaceEntity> before = faceRepository
-                .findByPersonAndPhotoDateTakenBeforeOrderByPhotoDateTakenDesc(person, targetDate, Pageable.ofSize(TEMPORAL_NEIGHBOR_WINDOW))
-                .stream().toList();
-        List<FaceEntity> after = faceRepository
-                .findByPersonAndPhotoDateTakenAfterOrderByPhotoDateTakenAsc(person, targetDate, Pageable.ofSize(TEMPORAL_NEIGHBOR_WINDOW))
-                .stream().toList();
-
-        return Stream.concat(before.stream(), after.stream())
-                .sorted(Comparator.comparingLong(candidate ->
-                        Math.abs(Duration.between(targetDate, candidate.getPhoto().getDateTaken()).toMillis())))
-                .limit(TEMPORAL_NEIGHBOR_WINDOW)
-                .toList();
-    }
-
-    private OptionalDouble calculateAverageSimilarity(NormalizedEmbedding faceEmbedding, List<FaceEntity> personFaces) {
-        if (personFaces.isEmpty()) {
-            return OptionalDouble.empty();
+    // Compares against the person's precomputed per-year embedding buckets (see
+    // PersonEmbeddingBucketEntity) nearest to the face's own year, weighted by how many faces are
+    // actually behind each bucket so a thin bucket can't outweigh a well-populated one. No DB
+    // query here at all - bucketsByPerson was already batch-loaded once for the whole run.
+    private Optional<PersonWithScore> scoreAgainstPerson(NormalizedEmbedding faceEmbedding, int targetYear, PersonEntity person,
+                                                          List<PersonEmbeddingBucketEntity> personBuckets) {
+        if (personBuckets.isEmpty()) {
+            return Optional.empty();
         }
-        return personFaces.stream()
-                .map(FaceEntity::getEmbedding)
-                .map(this::byteArrayToFloatArray)
-                .mapToDouble(knownEmbeddingFloats -> this.cosineSimilarity(faceEmbedding, knownEmbeddingFloats))
-                .average();
+        List<PersonEmbeddingBucketEntity> nearest = personBuckets.stream()
+                .sorted(Comparator.comparingInt(bucket -> Math.abs(bucket.getBucketYear() - targetYear)))
+                .limit(NEAREST_BUCKET_COUNT)
+                .toList();
+
+        double weightedSimilaritySum = 0;
+        int totalWeight = 0;
+        for (PersonEmbeddingBucketEntity bucket : nearest) {
+            double similarity = cosineSimilarity(faceEmbedding, EmbeddingCodec.toFloats(bucket.getEmbedding()));
+            weightedSimilaritySum += similarity * bucket.getFaceCount();
+            totalWeight += bucket.getFaceCount();
+        }
+        if (totalWeight == 0) {
+            return Optional.empty();
+        }
+        return Optional.of(PersonWithScore.builder().person(person).score(weightedSimilaritySum / totalWeight).build());
     }
 
-    // A decoded embedding with its vector norm precomputed once - calculateAverageSimilarity above
-    // is called once per (face, person) pair, and re-decoding + re-normalizing the SAME face's
+    // A decoded embedding with its vector norm precomputed once - scoreAgainstPerson above is
+    // called once per (face, person) pair, and re-decoding + re-normalizing the SAME face's
     // embedding from scratch for every candidate person (up to persons.size() times per face) was
     // pure wasted CPU work; this vector never changes across those calls within one groupFaces()
-    // run, only the comparison side (personFaces) does.
+    // run, only the comparison side (the candidate person's buckets) does.
     private record NormalizedEmbedding(float[] vector, double norm) {
         static NormalizedEmbedding of(float[] vector) {
             double sumSquares = 0.0;
@@ -237,17 +265,6 @@ public class FaceRecognitionService {
         return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
     }
 
-    private float[] byteArrayToFloatArray(byte[] bytes) {
-        if (bytes == null) return new float[0];
-        ByteBuffer buffer = ByteBuffer.wrap(bytes);
-        // **FIX**: Set the byte order to LITTLE_ENDIAN to match the default writing order.
-        buffer.order(ByteOrder.BIG_ENDIAN);
-        FloatBuffer floatBuffer = buffer.asFloatBuffer();
-        float[] floatArray = new float[floatBuffer.remaining()];
-        floatBuffer.get(floatArray);
-        return floatArray;
-    }
-
     // Clusters faces with no existing-person match into brand-new people. Faces are sorted by
     // photo date, then each face is compared against the faces that follow it, bounded primarily
     // by MAX_NEW_PERSON_CLUSTER_GAP (real elapsed time) rather than by position in the sorted
@@ -290,7 +307,7 @@ public class FaceRecognitionService {
 
         float[][] embeddings = new float[n][];
         for (int i = 0; i < n; i++) {
-            embeddings[i] = byteArrayToFloatArray(sorted.get(i).getEmbedding());
+            embeddings[i] = EmbeddingCodec.toFloats(sorted.get(i).getEmbedding());
         }
 
         // Hard cap on candidates compared per face, on top of the time gap below — a dense event

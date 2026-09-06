@@ -132,6 +132,19 @@ public class DuplicationService {
     // PREPROCESS
     // ---------------------------------------------------
 
+    // NOTE: every Mat here wraps native (off-heap) memory - OpenCV's own Mat.release() is what
+    // actually frees the underlying pixel buffer (a JVM GC cycle alone does NOT reclaim it; the
+    // small Java-side Pointer wrapper is heap-tiny regardless of how large the native buffer
+    // behind it is, so the JVM heap never sees the pressure that would normally trigger a GC).
+    // This whole body used to release `image` only on the final, un-thrown line at the very
+    // bottom - any exception thrown by pHash/averageHash/computeAndStoreOrbFeatures below (a
+    // malformed/unusual real-world photo hitting some OpenCV edge case, entirely plausible across
+    // a large diverse library) skipped that cleanup entirely and leaked that photo's full
+    // (post-resize) pixel buffer permanently, every single time it happened - a real, confirmed
+    // native-memory leak (found live: this process's swap usage climbed to several GB while
+    // heap/GC looked completely normal, exactly this class of off-heap leak). Now wrapped in
+    // try/finally so `image` (by the end, whichever Mat is actually the live one - see the
+    // reassignment comment below) always gets released, exception or not.
     private void preprocess(PhotoEntity photo) {
 
         String imagePath = photo.getOriginalPath();
@@ -139,56 +152,61 @@ public class DuplicationService {
         Mat image = imread(imagePath);
 
         if (image.empty()) {
+            image.release();
             return;
         }
 
-        // 1. auto rotate from metadata
-        Mat rotatedImage = autoRotate(imagePath, image);
-        if (rotatedImage != image) {
+        try {
+            // 1. auto rotate from metadata
+            Mat rotatedImage = autoRotate(imagePath, image);
+            if (rotatedImage != image) {
+                image.release();
+                image = rotatedImage;
+            }
+
+            // 2. resize huge images
+            Mat resizedImage = resizeIfNeeded(image);
+            if (resizedImage != image) {
+                image.release();
+                image = resizedImage;
+            }
+
+            try (PHash pHash = PHash.create()) {
+                Mat hash = new Mat();
+
+                pHash.compute(image, hash);
+
+                byte[] hashBytes = new byte[(int) hash.total()];
+
+                hash.data().get(hashBytes);
+
+                photo.setPhash(hashBytes);
+
+                hash.release();
+            }
+
+            try (AverageHash averageHash = AverageHash.create()) {
+                Mat hash = new Mat();
+
+                averageHash.compute(image, hash);
+
+                byte[] hashBytes = new byte[(int) hash.total()];
+
+                hash.data().get(hashBytes);
+
+                photo.setMhash(hashBytes);
+
+                hash.release();
+            }
+
+            computeAndStoreOrbFeatures(photo, image);
+        } finally {
+            // Every reassignment above (`image = rotatedImage`/`image = resizedImage`) already
+            // released the Mat it replaced at that exact moment - by the time we get here, `image`
+            // is the only Mat in the chain that could still be un-released, whether 0, 1, or 2
+            // reassignments happened above.
             image.release();
-            image = rotatedImage;
         }
-
-        // 2. resize huge images
-        Mat resizedImage = resizeIfNeeded(image);
-        if (resizedImage != image) {
-            image.release();
-            image = resizedImage;
-        }
-
-        try (PHash pHash = PHash.create()) {
-            Mat hash = new Mat();
-
-            pHash.compute(image, hash);
-
-            byte[] hashBytes = new byte[(int) hash.total()];
-
-            hash.data().get(hashBytes);
-
-            photo.setPhash(hashBytes);
-
-            hash.release();
-        }
-
-        try (AverageHash averageHash = AverageHash.create()) {
-            Mat hash = new Mat();
-
-            averageHash.compute(image, hash);
-
-            byte[] hashBytes = new byte[(int) hash.total()];
-
-            hash.data().get(hashBytes);
-
-            photo.setMhash(hashBytes);
-
-            hash.release();
-        }
-
-        computeAndStoreOrbFeatures(photo, image);
-
-        rotatedImage.release();
-        resizedImage.release();
-        image.release();
     }
 
     // ---------------------------------------------------
@@ -198,17 +216,22 @@ public class DuplicationService {
     private void computeAndStoreOrbFeatures(PhotoEntity photo, Mat image) {
         Mat gray = new Mat();
         cvtColor(image, gray, COLOR_BGR2GRAY);
+        Mat mask = new Mat();
         try (ORB orb = ORB.create(ORB_MAX_FEATURES, 1.2f, 8, 31, 0, 2, ORB.HARRIS_SCORE, 31, 20)) {
             KeyPointVector keypoints = new KeyPointVector();
             Mat descriptors = new Mat();
-            orb.detectAndCompute(gray, new Mat(), keypoints, descriptors);
+            try {
+                orb.detectAndCompute(gray, mask, keypoints, descriptors);
 
-            if (!descriptors.empty()) {
-                photo.setOrbDescriptors(matToBytes(descriptors));
-                photo.setOrbKeypoints(keypointsToBytes(keypoints));
+                if (!descriptors.empty()) {
+                    photo.setOrbDescriptors(matToBytes(descriptors));
+                    photo.setOrbKeypoints(keypointsToBytes(keypoints));
+                }
+            } finally {
+                descriptors.release();
             }
-            descriptors.release();
         } finally {
+            mask.release();
             gray.release();
         }
     }

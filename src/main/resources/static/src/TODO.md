@@ -3450,3 +3450,280 @@ new work is identified or completed, so nothing gets lost between sessions.
         against the live app** - needs a real restart; confirming this actually resolved the CPU
         usage requires watching real CPU load during a face-detection burst on a running instance
         with several `ISOLATE_FACES` tasks in flight at once, which hasn't been done here.
+
+- [x] **Optimization (backend)**: face recognition matching moved to a precomputed/persisted
+      structure, per the user's explicit request - the same "prepare data and store in the
+      database at write time, cheap read at match time" pattern `DuplicationService` already uses
+      for `phash`/`mhash`, applied here to the (face, person) matching loop flagged as a follow-up
+      in the previous optimization entry (2 `faceRepository` queries per pair).
+      - New `PersonEmbeddingBucketEntity` (`person_embedding_buckets` table, unique on
+        `(person_id, bucket_year)`): a running-average embedding per person, per calendar year of
+        their photos. Bucketed by year (not one average across a person's whole history)
+        specifically to preserve the property the old per-comparison temporal-neighbor window
+        existed for - a person's appearance can change a lot across years, so blending every era
+        into one global average would dilute the match signal (see `FaceRecognitionService`'s
+        `THRESHOLD` comment). Pure derived/cache data - cascades away entirely
+        (`cascade=ALL, orphanRemoval=true` on new `PersonEntity#embeddingBuckets`, plus
+        `@OnDelete(CASCADE)` at the DB level, same double pattern `FaceLinkExclusionEntity` already
+        uses) when its person is deleted, unlike `FaceEntity` which deliberately survives with its
+        person reference just nulled.
+      - `PersonRecognitionService` gained `addFaceToBucket`/`removeFaceFromBucket` (incremental
+        weighted-average add/remove of one face's embedding into/out of its person's matching-year
+        bucket) and `mergeBuckets` (folds a merge's source buckets into the target's matching-year
+        buckets directly, bucket-by-bucket, instead of re-decoding every individual face's
+        embedding again). Wired into **every** point a face is attached to or detached from a
+        person, audited across the whole codebase: `updatePerson`/`addPerson` (auto-recognition
+        match / new-person clustering), `mergeFacesIntoTarget` (the `/persons/merge` and rename-
+        collision-merge flows), and `FaceService`'s `attachFaceToPerson`/`detachFaceFromPerson`
+        (rename/unlink/set-face-person flows) and `deleteFace`. Also wired into
+        `FaceDetectionService#deleteFaces` for consistency, even though that method turned out to
+        be dead code already (confirmed via grep - no caller anywhere; permanent photo deletion
+        actually goes through `PhotoEntity.faces`' own JPA cascade instead, `PhotoDeletionService`
+        never calls this method) - **not fixed here**, out of scope, but flagged: permanently
+        deleting a photo with a recognized face today updates neither cover-face state (a
+        pre-existing gap) nor these new buckets, since nothing hooks into that cascade path.
+      - `FaceRecognitionService#groupFacesForUser` batch-loads every candidate person's buckets
+        once per run (`personEmbeddingBucketRepository.findByPersonIdIn`, one query total) instead
+        of any per-(face,person)-pair query. `scoreAgainstPerson` compares a face against a
+        person's `NEAREST_BUCKET_COUNT` (2) nearest-by-year buckets, weighted by each bucket's
+        `faceCount` so a thin bucket can't outweigh a well-populated one - the year-bucket
+        equivalent of the old before/after face-level `TEMPORAL_NEIGHBOR_WINDOW` (kept, but now
+        only used as `clusterByTemporalProximity`'s NEW-person-clustering cost cap - unrelated to
+        this change). Removed `nearestTemporalNeighbors`/the old per-person-faces
+        `calculateAverageSimilarity` overload entirely, along with the two now-fully-unused
+        `FaceRepository` derived queries they were the only caller of
+        (`findByPersonAndPhotoDateTakenBeforeOrderByPhotoDateTakenDesc`/`...AfterOrderBy...Asc`).
+      - New shared `util/EmbeddingCodec` (`toBytes`/`toFloats`, BIG_ENDIAN float32) - extracted
+        since `PersonRecognitionService` now also needs to encode/decode embeddings for bucket
+        maintenance; previously duplicated separately in `FaceDetectionService` (encode-only) and
+        `FaceRecognitionService` (decode-only).
+      - **Known, accepted limitation, not addressed here**: incremental running-average
+        add/remove accumulates floating-point drift over many cycles (same tradeoff any streaming-
+        average algorithm accepts) - not expected to matter at realistic per-bucket face counts for
+        a personal photo library, no periodic reconciliation job built.
+      - Verified: whole backend `javac` compile clean (main + test sources). **Not yet exercised
+        against the live app** - needs a real restart (new table via `ddl-auto: update`, new
+        constructor deps); confirming this actually reduced face-recognition run time/DB load, and
+        that matching quality wasn't degraded by the year-bucket granularity, requires watching a
+        real `groupFaces()` run against a real, populated `people` table, which hasn't been done
+        here.
+
+- [x] **Bug fix (backend)**: CPU usage was still "really high" after the PyTorch `num_threads`
+      fix above - root-caused live, not guessed, by inspecting the actual running process in this
+      sandbox (found via `ps aux`, PID discoverable since the app happens to run in the same
+      environment this session has shell access to): `jcmd <pid> Thread.print` confirmed the
+      Java-level heavy-task pools were correctly sized (3 face-detection + 1 face-recognition + 1
+      duplication, exactly as configured, and `jcmd <pid> VM.system_properties` confirmed
+      `ai.djl.pytorch.num_threads=5`, the expected `16 cores / 3` from the previous fix) - so the
+      *Java* thread story was already correct. The actual problem was one level lower: comparing
+      `jcmd`'s thread list against a raw `/proc/<pid>/task` OS-thread listing showed **far more**
+      OS-level threads sharing each pool thread's name (truncated to 15 chars, e.g.
+      `heavy-task-dupl`) than Java threads existed - 46 OS threads under the single
+      `heavy-task-duplication-1` thread's name (should be 1), 16 under the 4 face-detection/
+      recognition threads (should be 4). Held steady over a 20s re-check (not an active leak, a
+      one-time-oversized allocation) - narrowed to OpenCV's own internal `parallel_for_` backend
+      (`DuplicationService`'s `ORB`/`BFMatcher`/`AverageHash`/`PHash` calls, via
+      `org.bytedeco.opencv`): the pthread-only backend this prebuilt javacpp binary uses (no TBB)
+      defaults each distinct OpenCV subsystem to lazily spinning up its own hardware-concurrency-
+      sized worker pool rather than sharing one process-wide pool - three subsystems (ORB,
+      BFMatcher, img_hash) × ~16 cores ≈ the observed 46.
+      - **Fix**: `IPhotoApplication.main` now calls `org.bytedeco.opencv.global.opencv_core
+        .setNumThreads(1)` before Spring even starts (native library loads on first reference, so
+        as early as possible, same reasoning as the PyTorch property) - `CHECK_DUPLICATION`'s
+        concurrency is already fully governed by its dedicated single-thread pool
+        (`IPhotoProperties.HeavyTasks#duplicationThreads`), a single photo-sized image comparison
+        doesn't need OpenCV's own internal multi-threading on top of that, so disabling it
+        outright is simpler and safer than trying to correctly size three separate per-subsystem
+        pools.
+      - **Also set defensively** (found extra native threads under the face-detection/recognition
+        pool threads too, beyond what `num_threads` alone accounts for):
+        `ai.djl.pytorch.num_interop_threads=1` - a separate PyTorch pool from `num_threads`
+        (intra-op), otherwise left at whatever LibTorch defaults to. Each detect/embed call here is
+        one sequential single-image inference, no multi-graph work that would need inter-op
+        parallelism.
+      - Verified: `javac` compile clean; `org.bytedeco.opencv.global.opencv_core.setNumThreads`
+        confirmed present via `javap` against the resolved jar. **Not yet re-verified against the
+        live process** - the live thread-dump investigation above was against the OLD build (pre-
+        this-fix); needs a genuine restart and a fresh `/proc/<pid>/task` count to confirm the
+        OS-level thread count actually drops to match the Java-level pool sizes now.
+
+      **Follow-up, confirmed live after restart**: the `opencv_core.setNumThreads(1)` fix worked -
+      duplication's OS thread count dropped from 46 to exactly 1. The `num_interop_threads=1` fix
+      for the face side did NOT eliminate its extra native threads (still ~16 OS threads under the
+      4 real Java heavy-task-face threads, stable, not growing) - but those extras carry real CPU
+      load roughly matching the "real" threads', and 3 concurrent detections * num_threads=5 ≈ 15,
+      close to this machine's 16 cores - closer to correctly-saturated parallelism than
+      oversubscription now, not clearly a bug. Left as a tunable via
+      `iphoto.heavy-tasks.face-detection-threads` (lower it if the machine needs to stay
+      responsive for other things while a face-detection backlog runs) rather than chased further.
+
+- [x] **Bug fix (backend) - real native memory leak, found live**: user reported CPU still high
+      after the fixes above AND suspected "GC failing to free memory" - confirmed via the live
+      process: `VmRSS` 1.96GB but `VmSwap` 4.39GB (most of this process's actual memory footprint
+      was sitting in swap, not resident), while JVM heap (`jcmd GC.heap_info`) looked completely
+      normal (3.6/4GB, unremarkable for an active app). This is the classic JavaCPP/OpenCV
+      off-heap-leak signature: a `Mat`'s native pixel buffer is invisible to heap-occupancy-based
+      GC pressure (the Java-side wrapper object is tiny regardless of how large the buffer behind
+      it is), so the JVM has no reason to collect eagerly no matter how much native memory piles
+      up - only an explicit `Mat.release()` reliably frees it promptly.
+      - **Root cause**: `DuplicationService#preprocess` (runs once per uploaded photo, the
+        HASH_IMAGE task) held `image`/`rotatedImage`/`resizedImage` - by far the largest Mat in
+        this whole file, a full (or MAX_SIZE-resized) decoded photo - and only released it on the
+        very last, un-thrown line of the method. Any exception thrown by `pHash.compute`/
+        `averageHash.compute`/`computeAndStoreOrbFeatures` (entirely plausible across a large,
+        diverse real photo library - unusual color spaces, corrupt files, formats OpenCV handles
+        oddly) skipped that cleanup entirely, permanently leaking that photo's full pixel buffer -
+        every time it happened, with no crash, no visible symptom besides slowly climbing native/
+        swap memory. `image.empty()`'s early-return path had the same gap (leaked on every
+        unreadable file). The rest of the file (`confirmWithFeatureMatching`/
+        `countHomographyInliers`, the ORB-verification path) was already correctly wrapped in
+        try/finally - `preprocess` was the one significant gap, and also the hottest/highest-
+        volume path (every photo, not just duplicate-candidate comparisons).
+      - **Fix**: wrapped `preprocess`'s body in try/finally releasing `image` (the reassignment
+        chain already released each Mat it replaced at the moment of reassignment, so by the time
+        the finally runs, `image` is the only one that could still be outstanding, regardless of
+        how many rotate/resize reassignments happened) - exception or not, the buffer is now
+        always freed. Also fixed the `image.empty()` early-return leak, and tightened
+        `computeAndStoreOrbFeatures`'s `descriptors`/`mask` Mats into their own inner try/finally
+        (a smaller, secondary gap - post-resize descriptor buffers are much smaller than the full
+        image, found while already in this method for the main fix).
+      - Verified: `javac` compile clean. **Not yet re-verified against the live app** - needs a
+        restart, then watching `VmRSS`/`VmSwap` (or overall swap usage) over a real processing
+        backlog to confirm memory actually stays bounded now instead of climbing.
+
+      **Follow-up, investigated live after user reported the leak still felt present**: audited
+      every other `org.bytedeco`/OpenCV usage site in the codebase (`ThumbnailService`,
+      `PhotoUploadService`) - both already correctly wrap `FFmpegFrameGrabber`/`Java2DFrameConverter`
+      in try-with-resources, no gap found there; `DuplicationService#preprocess` above was the one
+      real off-heap gap. Re-checked the live process (restarted, ~11 minutes of real usage):
+      `jcmd GC.heap_info` showed heap at 96% of the 4GB max, `jcmd GC.class_histogram` showed
+      `byte[]` (140,000 instances, ~1.38GB) overwhelmingly dominant - almost certainly
+      `FaceEntity.embedding`/`faceThumbnail` and `PersonEmbeddingBucketEntity.embedding` payloads.
+      **Forced a full GC (`jcmd GC.run`) and heap usage dropped from 3.5GB to 1.57GB** - this is
+      the key distinguishing test: a true unreachable-object leak would NOT shrink after a forced
+      full collection, so this is not one. Root cause instead: `FaceRecognitionService.groupFaces`/
+      `groupFacesForUser` run in one Hibernate session (class-level `@Transactional`), and every
+      `PersonEntity`/`FaceEntity`/`PhotoEntity`/`PersonEmbeddingBucketEntity` touched while
+      processing a user - up to `MAX_UNGROUPED_FACES_PER_RUN` faces, every existing person, all
+      their buckets, and (via `person.getFaces()` inside `recalculateCoverFace`) every face already
+      linked to any person just matched - stays pinned in that one persistence context for the
+      whole run, even after `entityManager.flush()` (flush only writes changes out, it doesn't
+      detach anything). Reruns every ~30s, so with a large real library this legitimately built up
+      a big momentary working set faster than G1 felt pressured to collect on its own.
+      - **Fix**: `groupFaces` now calls `entityManager.clear()` (not just `flush()`) after each
+        user finishes, detaching everything accumulated for that user once it's durably committed.
+        Restructured to fetch user **ids** only up front and re-look-up each `UserEntity` fresh
+        inside the loop, specifically so `clear()` mid-loop can't detach a not-yet-processed user
+        still sitting in a pre-fetched list (a real, easy-to-miss gotcha with this exact "clear()
+        inside a loop over an eagerly-fetched list" pattern - detaching an entity you haven't used
+        yet risks a `LazyInitializationException` the moment anything touches an uninitialized lazy
+        field on it later).
+      - **Also, system-wide context worth being honest about**: this sandbox runs the app
+        (`-Xmx4G`), a full IntelliJ + attached debugger, and Postgres all on one ~7.8GB-RAM box -
+        `free -h` showed the system itself under real memory pressure (6.4GB swap in use)
+        independent of any one process's behavior. Not something a code fix addresses; worth
+        keeping in mind before attributing every high-memory reading here to app-level bugs.
+      - Verified: `javac` compile clean. **Not yet re-verified against the live app** - needs a
+        restart; confirming this actually reduces peak heap during a real `groupFaces()` run
+        requires watching `jcmd GC.heap_info`/class histogram again afterward, which hasn't been
+        done against this specific change yet.
+      - **Follow-up, confirmed live**: after adding `MALLOC_ARENA_MAX=2` to the process
+        environment (see `Dockerfile`, `ENV MALLOC_ARENA_MAX=2`), the JVM-heap-vs-OS-process gap
+        that was the real remaining "big memory pressure" culprit shrank from ~4.3GB unaccounted
+        native memory down to ~1.3GB, confirmed via the same `smaps_rollup`/`GC.heap_info` method:
+        before, `pmap -x` showed ~36 anonymous mappings sized almost exactly 64MB each (~2.3GB) -
+        the textbook signature of glibc giving each native-calling thread (face detection/
+        recognition/duplication, all doing JNI calls) its own malloc arena, growing in large
+        chunks rarely returned to the OS even after the memory inside them is freed. After the fix,
+        that 64MB-mapping bucket disappeared entirely from the histogram. Must be set in the
+        process's own environment before the JVM/glibc start (glibc reads it once via `getenv()`
+        at init) - can't be applied from Java code, hence the Dockerfile `ENV` and (for local/
+        IntelliJ runs) the run configuration's own environment variables.
+- [x] **Model swap**: replaced RetinaFace (detection) + a generic `face_feature` model (embedding) -
+      both pulled at build time from an unversioned DJL "test-models" demo bucket with no real
+      production distribution guarantee - with InsightFace's `buffalo_l` pack: **SCRFD**
+      (`det_10g.onnx`) for detection, **ArcFace R50** (`w600k_r50.onnx`) for embedding, the same
+      pack Immich uses for the same self-hosted-photo-app use case. Both ship ONNX-only, so this is
+      an engine swap too (PyTorch -> ONNX Runtime, `ai.djl.onnxruntime:onnxruntime-engine`), not
+      just a model file swap; the two `.onnx` files are vendored directly under
+      `src/main/resources/models/` (committed, not downloaded at build time) - the actual fix for
+      the "no production guarantee" problem, not just a different download URL.
+      1. New `configuration/ScrfdDetectionTranslator.java` replaces `FaceDetectionTranslator`
+         (deleted) - SCRFD's decode is genuinely different math from RetinaFace's variance-scaled
+         prior-box offsets (distance-based per-anchor box/landmark decode instead), ported from
+         InsightFace's own reference implementation. Preserves the exact output contract
+         `FaceDetectionService`/`FaceAligner` depend on: a `Rectangle` normalized to [0,1] fractions
+         of the original image, but `Landmark` keypoints in ABSOLUTE pixel coordinates (an
+         easy-to-miss asymmetry in the existing contract - `FaceDetectionService` multiplies bounds
+         by width/height, `FaceAligner` uses landmark points directly with no further scaling) and
+         the same 5-point ordering (left eye, right eye, nose, left mouth, right mouth) RetinaFace
+         used - `FaceAligner` needed zero changes.
+      2. **Real bug caught before it ever ran against production data**: DJL's default
+         `Batchifier` assumes a model's output tensors carry a leading batch dimension and tries to
+         split it accordingly on unbatch; `det_10g.onnx`'s outputs don't (flat per-anchor tensors,
+         no batch axis) - this threw immediately on a real prediction ("split_size can only be 0 if
+         dimension size is 0, but got dimension size of 3200", 3200 being one stride's anchor
+         count, not a batch size). Fixed by disabling batching entirely
+         (`getBatchifier() { return null; }`, matching this translator only ever handling one image
+         per call anyway) and adding the batch dimension manually in `processInput`
+         (`array.expandDims(0)`) since the model's INPUT still needs one even though its outputs
+         don't.
+      3. **Verified empirically against real photos** (per the migration plan's explicit call for
+         this, since there's no unit test for this decode math, same as was true of RetinaFace's):
+         ran detection + alignment + embedding end-to-end against two real multi-face photos from
+         this account's own library, annotated boxes/landmarks onto the image and visually
+         inspected them. All correctly-oriented faces (6/8 and 4/5 respectively - the misses in
+         both cases were people upside-down/sideways, e.g. a handstand, which RetinaFace couldn't
+         detect either, not a regression) got tight boxes with landmark points landing precisely on
+         eyes/nose/mouth, across varying scale, angle, glasses, and partial occlusion. Embeddings
+         came back 512-dim as expected for ArcFace R50.
+      4. `FaceDetectionConfiguration`: both `Criteria` beans repointed at the vendored `.onnx`
+         files, `.optEngine("OnnxRuntime")`. ONNX Runtime's own thread tuning
+         (`optOption("interOpNumThreads"/"intraOpNumThreads", ...)`) now lives here as plain
+         per-model options, replacing the old PyTorch-only `ApplicationListener` hack in
+         `IPhotoApplication` (had to run before Spring context refresh, since PyTorch's thread
+         config was JVM-wide system properties read at native-engine-init time) - removed, along
+         with the `ai.djl.pytorch:*` Maven dependencies (confirmed via grep nothing else in the
+         codebase used the PyTorch engine).
+      5. **No data migration** (per explicit direction: existing `faces`/`people`/
+         `person_embedding_buckets` rows are meaningless against the new embedding space anyway, so
+         they're simply truncated rather than migrated) - **still to do before this is live**:
+         truncate those tables, re-enqueue `ISOLATE_FACES` for every existing photo, and re-tune
+         `FaceRecognitionService.THRESHOLD` (currently still 0.60, tuned for the OLD model) against
+         real match/no-match examples once faces are re-detected/re-grouped on the new model -
+         ArcFace's cosine-similarity distribution commonly sits differently and this was never
+         re-validated.
+      - Verified: `mvn clean compile` green with PyTorch fully removed from the classpath; model
+        loading and detection/embedding inference manually smoke-tested end-to-end as described
+        above. **Not yet wired into a live end-to-end run of the actual app** (table truncation +
+        re-enqueue + threshold re-tuning above still pending).
+      - **Follow-up, real bug caught by the user hitting it live**: the smoke-testing above had a
+        gap - it ran while `ai.djl.pytorch:*` was still on the classpath (removed in a later
+        cleanup step), and DJL silently used PyTorch's fully-featured NDArray implementation for
+        `ctx.getNDManager()`'s general arithmetic (transpose/flip/sub/div/expandDims) even though
+        `.optEngine("OnnxRuntime")` only controls which engine runs the model itself. Once PyTorch
+        was actually removed and the app run for real,
+        `ScrfdDetectionTranslator.processInput` threw `UnsupportedOperationException: This NDArray
+        implementation does not currently support this operation` immediately - ONNX Runtime's own
+        NDArray (`OrtNDArray`) only implements basic tensor creation/read, not general arithmetic.
+        DJL's built-in `ImageFeatureExtractorFactory` (used for the embedding model) does its
+        ToTensor/Normalize preprocessing via the exact same kind of NDArray ops, so it was equally
+        broken, just not yet reached (detection throws first).
+        - **Fix**: rewrote both translators to build their input tensor via plain Java pixel loops
+          (`BufferedImage.getRGB` bulk read into a `float[]`, manual CHW/channel-order/normalize
+          math) with only a single `NDManager.create(float[], Shape)` call at the end - a basic
+          construction op every DJL engine must support - instead of any NDArray arithmetic.
+          `processOutput` already only used `.toFloatArray()` (a basic read op), so it needed no
+          change. New `configuration/ArcFaceEmbeddingTranslator.java` replaces
+          `ImageFeatureExtractorFactory` for the embedding model for the same reason.
+        - **Bonus catch, not just a fix**: `ImageFeatureExtractorFactory`'s `ToTensor` never swaps
+          channel order (stays RGB), so the embedding model had actually been fed RGB when
+          InsightFace's own reference `arcface_onnx.py` preprocessing (like SCRFD's) uses BGR
+          (`swapRB=True`) - the hand-written replacement uses the correct BGR order, so this also
+          fixes a real, would-have-shipped channel-order mismatch, not merely restoring the
+          previous (already slightly wrong) behavior.
+        - **Re-verified against the TRUE classpath** (rebuilt via `mvn dependency:build-classpath`
+          after the PyTorch removal, confirmed zero `pytorch` jars, zero `PtEngine` log lines) -
+          both models load and run end-to-end, same two real photos as before: detection
+          boxes/landmarks came back bit-for-bit identical to the earlier (PyTorch-assisted) run,
+          confirming the plain-Java rewrite is a faithful equivalent, not just "no longer crashes".

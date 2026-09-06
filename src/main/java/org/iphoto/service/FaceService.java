@@ -183,6 +183,12 @@ public class FaceService {
             personRepository.save(personEntity);
         });
 
+        // Must happen before the face row is actually deleted below - removeFaceFromBucket still
+        // needs to read this face's own embedding to subtract it back out of its person's bucket.
+        if (face.getPerson() != null) {
+            personRecognitionService.removeFaceFromBucket(face.getPerson(), face);
+        }
+
         faceRepository.delete(face);
     }
 
@@ -295,6 +301,7 @@ public class FaceService {
 
         boolean wasCoverFace = person.getCoverFace() != null && person.getCoverFace().getId().equals(face.getId());
         person.getFaces().remove(face);
+        personRecognitionService.removeFaceFromBucket(person, face);
         face.setPerson(null);
         if (wasCoverFace) {
             person.setCoverFace(null);
@@ -308,6 +315,7 @@ public class FaceService {
     private void attachFaceToPerson(FaceEntity face, PersonEntity person) {
         face.setPerson(person);
         person.getFaces().add(face);
+        personRecognitionService.addFaceToBucket(person, face);
         faceLinkExclusionRepository.deleteByFaceIdAndExcludedPersonId(face.getId(), person.getId());
         personRecognitionService.recalculateCoverFace(person);
     }

@@ -163,14 +163,15 @@
             <groupId>ai.djl</groupId>
             <artifactId>api</artifactId>
         </dependency>
-        <!-- Pytorch -->
+        <!-- ONNX Runtime engine - InsightFace's buffalo_l pack (SCRFD detector + ArcFace R50
+        embedding, see src/main/resources/models/ and configuration/FaceDetectionConfiguration.java)
+        ships ONNX-only. Replaces the PyTorch engine (ai.djl.pytorch:pytorch-model-zoo/
+        ai.djl:model-zoo) previously used for RetinaFace/face_feature - nothing else in this
+        codebase used the PyTorch engine, verified via a full grep before removing it, so no other
+        model/service is affected. Version comes from the ai.djl:bom import above. -->
         <dependency>
-            <groupId>ai.djl.pytorch</groupId>
-            <artifactId>pytorch-model-zoo</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>ai.djl</groupId>
-            <artifactId>model-zoo</artifactId>
+            <groupId>ai.djl.onnxruntime</groupId>
+            <artifactId>onnxruntime-engine</artifactId>
         </dependency>
     </dependencies>
 
@@ -254,48 +255,6 @@
                                     <filtering>false</filtering>
                                 </resource>
                             </resources>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-antrun-plugin</artifactId>
-                <executions>
-                    <execution>
-                        <phase>generate-resources</phase>
-                        <goals>
-                            <goal>run</goal>
-                        </goals>
-                        <id>retinaface.zip</id>
-                        <configuration>
-                            <target>
-                                <mkdir dir="${project.build.outputDirectory}"/>
-
-                                <get
-                                        src="https://resources.djl.ai/test-models/pytorch/retinaface.zip"
-                                        dest="${project.build.outputDirectory}/retinaface.zip"
-                                        verbose="true"
-                                        skipexisting="true"/>
-                            </target>
-                        </configuration>
-                    </execution>
-                    <execution>
-                        <phase>generate-resources</phase>
-                        <goals>
-                            <goal>run</goal>
-                        </goals>
-                        <id>face_feature.zip</id>
-                        <configuration>
-                            <target>
-                                <mkdir dir="${project.build.outputDirectory}"/>
-
-                                <get
-                                        src="https://resources.djl.ai/test-models/pytorch/face_feature.zip"
-                                        dest="${project.build.outputDirectory}/face_feature.zip"
-                                        verbose="true"
-                                        skipexisting="true"/>
-                            </target>
                         </configuration>
                     </execution>
                 </executions>

@@ -14,7 +14,7 @@ public enum TaskType {
     // that method's own comment) for a single global row with photoId always null.
     ACTIVATE_HEAVY_TASKS(false, 3, false),
     CHECK_DUPLICATION(true, 2, true),
-    ISOLATE_FACES(true, 1, true),
+    ISOLATE_FACES(true, 1, false),
     FACE_RECOGNITION (false, 2, true),
     // Immich asset import is split into two chained phases (see ImmichImportService), one task
     // type per phase - so a phase-2-only failure (a DB/disk problem local to this app) never has
