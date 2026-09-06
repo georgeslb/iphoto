@@ -53,3 +53,7 @@ android/captures/
 /src/main/resources/static/.idea/.gitignore
 /src/main/resources/static/.idea/modules.xml
 /src/main/resources/static/.idea/vcs.xml
+
+### Docker Compose deployment ###
+# Real credentials for docker-compose.yml - see .env.example for the template that IS committed.
+.env

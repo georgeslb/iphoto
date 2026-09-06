@@ -1,0 +1,83 @@
+# iphoto - production deployment
+#
+# Pulls the app image built/pushed by .github/workflows/docker-image.yml
+# (ghcr.io/georgeslb/iphoto) and a real Postgres server (not the H2 used by the test suite - see
+# AbstractIntegrationTest for that side). Copy .env.example to .env and fill it in before running
+# this; every credential below is read from there, nothing is hardcoded.
+#
+# Usage:
+#   cp .env.example .env        # edit passwords/domain first
+#   docker compose pull
+#   docker compose up -d
+#
+# The ghcr.io/georgeslb/iphoto package is private (see docker-image.yml's own comment) - on a
+# fresh host, `docker login ghcr.io` with a GitHub PAT that has `read:packages` scope before
+# `docker compose pull` will otherwise fail with "unauthorized".
+#
+# Immich migration credentials (specification.md) are NOT here - they're a per-user setting stored
+# in the database (UserEntity.immichBaseUrl/immichApiKeyEncrypted), configured from within the app
+# itself, not deployment-time config.
+
+services:
+  iphoto-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: iphoto
+      POSTGRES_USER: iphoto
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - iphoto-db-data:/var/lib/postgresql/data
+    # Not published to the host on purpose - only iphoto-app talks to this, over the
+    # compose-internal network. Uncomment to reach it directly (e.g. psql/pgAdmin from the host).
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U iphoto -d iphoto"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    shm_size: 256mb # Postgres uses shared memory for parallel query workers/large sorts - the
+    # Docker default (64MB) is a common source of "could not resize shared memory segment" errors
+    # under real load; harmless to raise even if this app never hits it.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  iphoto-app:
+    image: ghcr.io/georgeslb/iphoto:${IPHOTO_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      iphoto-db:
+        condition: service_healthy
+    environment:
+      # Spring Boot's relaxed env-var binding (SPRING_DATASOURCE_URL -> spring.datasource.url,
+      # etc.) - see application.yml for the property names/defaults these override.
+      SPRING_DATASOURCE_URL: jdbc:postgresql://iphoto-db:5432/iphoto
+      SPRING_DATASOURCE_USERNAME: iphoto
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      IPHOTO_STORAGE_BASE: /data/iphoto
+      IPHOTO_ADMIN_USERNAME: ${IPHOTO_ADMIN_USERNAME:-admin}
+      IPHOTO_ADMIN_PASSWORD: ${IPHOTO_ADMIN_PASSWORD:?set IPHOTO_ADMIN_PASSWORD in .env}
+    volumes:
+      - iphoto-storage:/data/iphoto
+    ports:
+      - "${IPHOTO_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  iphoto-db-data:
+  iphoto-storage:

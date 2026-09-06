@@ -3871,3 +3871,29 @@ new work is identified or completed, so nothing gets lost between sessions.
         assumed `ACTIVATE_HEAVY_TASKS` started deactivated, which broke once another test class -
         `TaskWorkerManagerTest` - had already activated it earlier in the same run; now establishes
         its own starting state explicitly rather than assuming a global default).
+
+- [x] **Fix: backend tests couldn't run in CI against the real face-detection ONNX models.**
+      `src/main/resources/models/{det_10g,w600k_r50}.onnx` are git-lfs tracked (`.gitattributes`),
+      but `.github/workflows/docker-image.yml`'s `actions/checkout@v4` doesn't fetch LFS content by
+      default - in CI those two files are just ~130-byte pointer text, not real ONNX, so
+      `FaceDetectionConfiguration`'s `Criteria.loadModel()` calls (which run eagerly at context
+      startup as plain `@Bean` methods, autowired or not) failed fast the moment `mvn test` spun up
+      any `@SpringBootTest`. Fetching real LFS content in CI wasn't a good fix either (167MB pulled
+      on every run against GitHub's small free LFS bandwidth quota) - and unnecessary, since no test
+      in the suite exercises real face detection anyway (faces are inserted directly via
+      `FaceRepository`, see `FaceServiceTest`'s own comment).
+      - `FaceDetectionConfiguration` (both `@Bean` methods) and `FaceDetectionServiceImpl` (the only
+        consumer of either `ZooModel` bean) gained `@Profile("!test")` - `FaceDetectionServiceImpl`
+        already had it from an earlier, incomplete pass, but nothing ever activated the "test"
+        profile, so it was a no-op; `FaceDetectionConfiguration` itself had no annotation at all, so
+        the actual model-loading beans were still created regardless.
+      - `AbstractIntegrationTest`'s `@SpringBootTest` now sets `spring.profiles.active=test`.
+      - New `TestFaceDetectionService` (`src/test/java/org/iphoto/service/`, `@Profile("test")`) - a
+        no-op stand-in, needed because `TaskWorkerManagerImpl` has a mandatory constructor
+        dependency on `FaceDetectionService` regardless of whether anything in the test suite
+        actually calls it. Its `detectAndSaveFaces` still sets `TaskStatus.COMPLETED` itself,
+        matching the real impl's contract - `TaskWorkerManagerImpl.processTask`'s `ISOLATE_FACES`
+        branch relies on the callee for that (unlike most other task types), so leaving it unset
+        would strand a task in `PROCESSING` forever if one ever gets dispatched against this stub.
+      - Verified: full suite green (103 tests) with the two `.onnx` files temporarily moved out of
+        `src/main/resources/models/` entirely, simulating exactly what CI actually sees today.
