@@ -301,16 +301,20 @@ export default function PhotoGrid({
   // the full preview rectangle (sized off the first moved photo's own aspect ratio - a multi-item
   // drag can mix aspect ratios, this is a preview, not a pixel-exact one - with a count badge when
   // more than one photo is moving) is a purely visual absolutely-positioned overlay on top of it.
-  const renderDropZone = (day, zoneIndex, isActive, aspectRatio, count) => (
+  // `size` matches whatever every card in this day is currently rendered at (see the per-day render
+  // loop's `cardSize` - shrunk while dragging, see its own comment) so the zone/preview's own height
+  // lines up with its flanking cards rather than a hardcoded value going stale the moment cards shrink.
+  const renderDropZone = (day, zoneIndex, isActive, aspectRatio, count, size) => (
     <div
       key={`zone-${zoneIndex}`}
       className="drop-zone"
+      style={{ height: `${size}px` }}
       onDragOver={(e) => handleZoneDragOver(day, zoneIndex, e)}
       onDragLeave={() => handleZoneDragLeave(zoneIndex)}
       onDrop={(e) => handleZoneDrop(day, zoneIndex, e)}
     >
       {isActive && (
-        <div className="drop-zone-preview" style={{ width: `${aspectRatio * 220}px` }}>
+        <div className="drop-zone-preview" style={{ width: `${aspectRatio * size}px`, height: `${size}px` }}>
           {count > 1 && <span className="drop-placeholder-count">{count}</span>}
         </div>
       )}
@@ -381,9 +385,9 @@ export default function PhotoGrid({
     );
   };
 
-  const renderDisplayItem = (item, day, isDropNeighbor) => {
+  const renderDisplayItem = (item, day, isDropNeighbor, size = 220) => {
     if (item.members.length === 1) {
-      return renderPhotoCard(item.primary, day, isDropNeighbor);
+      return renderPhotoCard(item.primary, day, isDropNeighbor, undefined, size);
     }
 
     const badge = (
@@ -396,7 +400,7 @@ export default function PhotoGrid({
         <Layers size={12} /> {messages["similarPhotosBadge"](item.members.length)}
       </button>
     );
-    return renderPhotoCard(item.primary, day, isDropNeighbor, badge);
+    return renderPhotoCard(item.primary, day, isDropNeighbor, badge, size);
   };
 
   return (
@@ -430,6 +434,15 @@ export default function PhotoGrid({
         // (see renderDropZone) instead of its idle slim strip.
         const neighborBeforeId = (others && dropZoneIndex != null) ? (others[dropZoneIndex - 1]?.id ?? null) : null;
         const neighborAfterId = (others && dropZoneIndex != null) ? (others[dropZoneIndex]?.id ?? null) : null;
+        // Shrinking every card in this day (not just the two immediate neighbors above, which only
+        // get a cosmetic transform - see .drop-neighbor) by a real, layout-affecting amount while a
+        // drag is active here is what actually keeps everything else from reflowing to a different
+        // row/position: the drop zones inserted below take up real flex-basis width of their own
+        // (see .drop-zone), and on a fairly full row that extra width alone can push flex-wrap to
+        // wrap differently than before the drag started. Shrinking every card back down reclaims
+        // roughly that much width across the row, so wrap points stay close to where they already
+        // were rather than the whole day visibly reshuffling the moment a drag begins.
+        const cardSize = (others) ? 200 : 220;
         let placeholderAspectRatio = 1;
         if (others && dropZoneIndex != null) {
           const draggedPrimary = dayItems.find(it => dragState.movedIds.includes(it.primary.id))?.primary;
@@ -462,10 +475,10 @@ export default function PhotoGrid({
                 const children = dayItems.map(item => {
                   const isMoved = others ? !others.some(o => o.id === item.primary.id) : true;
                   const zone = (others && !isMoved)
-                      ? renderDropZone(day, othersIdx, dropZoneIndex === othersIdx, placeholderAspectRatio, dragState.movedIds.length)
+                      ? renderDropZone(day, othersIdx, dropZoneIndex === othersIdx, placeholderAspectRatio, dragState.movedIds.length, cardSize)
                       : null;
                   if (others && !isMoved) othersIdx++;
-                  const card = renderDisplayItem(item, day, item.primary.id === neighborBeforeId || item.primary.id === neighborAfterId);
+                  const card = renderDisplayItem(item, day, item.primary.id === neighborBeforeId || item.primary.id === neighborAfterId, cardSize);
                   return (
                     <React.Fragment key={item.primary.id}>
                       {zone}
@@ -476,7 +489,7 @@ export default function PhotoGrid({
                 return (
                   <>
                     {children}
-                    {others && renderDropZone(day, othersIdx, dropZoneIndex === othersIdx, placeholderAspectRatio, dragState.movedIds.length)}
+                    {others && renderDropZone(day, othersIdx, dropZoneIndex === othersIdx, placeholderAspectRatio, dragState.movedIds.length, cardSize)}
                   </>
                 );
               })()}

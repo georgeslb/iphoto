@@ -299,6 +299,18 @@ This section describes the application's features. For the corresponding backend
         (required the existing group to be both a subset of, and larger than, the newly-detected set)
         and was therefore unreachable — every detected duplicate used to spawn its own overlapping
         group instead of joining/merging with existing ones.
+    *   **Async scheduling** (`TaskWorkerManager`): `CHECK_DUPLICATION` is polled on its own
+        `pollDuplicationTask` scheduler tick (`fixedDelay=30_000` — every 30s), independent from
+        `FACE_RECOGNITION`'s `pollFaceRecognitionTask` (`fixedDelay=300_000` — every 5 min). Both
+        used to be bundled under one shared `pollHeavyTasks()` tick running every 5 minutes; split
+        apart since duplicate detection is comparatively fast and something a user is actively
+        waiting on right after an upload, unlike face-recognition's full re-cluster-everyone pass.
+        Each still runs against its own dedicated, fixed-size `ThreadPoolTaskExecutor`
+        (`duplicationThreadPoolExecutor`/`faceRecognitionThreadPoolExecutor`, sized from
+        `iphoto.heavy-tasks.duplication-threads`/`face-recognition-threads` — both default 1, since
+        each service processes a whole overlapping data set per run and isn't safe to run
+        concurrently with itself), and both remain gated behind the same admin
+        `AdminService#isHeavyTasksActivated`/`ACTIVATE_HEAVY_TASKS` on/off switch.
 *   **Map View:**
     *   A world map (`/map`) displays photos based on their embedded geolocation data.
 *   **Persons View:**

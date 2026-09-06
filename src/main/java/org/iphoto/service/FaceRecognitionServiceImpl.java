@@ -130,6 +130,7 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
 
             List<FaceEntity> stillUnmatched = new ArrayList<>();
             for (FaceEntity face : ungroupedFaces) {
+                log.info("Working on face in photo {}", face.getPhoto().getId());
                 Set<UUID> excludedPersonIds = excludedPersonIdsByFace.getOrDefault(face.getId(), Set.of());
                 List<PersonEntity> eligiblePersons = excludedPersonIds.isEmpty()
                         ? persons

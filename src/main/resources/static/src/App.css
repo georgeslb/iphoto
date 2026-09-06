@@ -137,7 +137,11 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   background: #f2f2f7;
   cursor: pointer;
   overflow: hidden;
-  transition: transform 0.15s ease;
+  /* flex-basis/height animate too, not just transform - PhotoGrid.jsx sets both inline, shrunk a
+     little for every card in a day while a drag is active there (see its own cardSize comment), so
+     this transitions smoothly instead of every card snapping to its new size the instant a drag
+     starts/ends. */
+  transition: transform 0.15s ease, flex-basis 0.15s ease, height 0.15s ease;
 }
 
 .photo-card img, .card-video {
@@ -183,15 +187,23 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
    works" reports were the zone being genuinely too subtle/thin (was 28px, a faint left-border
    line only) to reliably notice or land the cursor on for anything other than the very first one,
    which sits right where the user's mouse already is when grabbing that photo's own handle. Wider
-   and filled now so the whole box, not just an edge line, reads as an obvious drop target anywhere
-   in the row.
+   and filled than that original 28px line, but still deliberately narrow (36px, down from an
+   earlier 56px) - one of these renders before EVERY non-moved photo in the day the moment a drag
+   starts, and their combined width competes directly with the photos themselves for the row's
+   available space; narrower zones plus PhotoGrid.jsx's own per-day `cardSize` shrink (every photo
+   in this day sized down a little for the same reason, real layout size not just this file) is
+   what keeps the rest of the day from visibly reflowing to different rows/positions the instant a
+   drag begins, rather than only reflowing later, mid-hover.
    Deliberately a FIXED size, never resized on hover - growing it used to change the row's total
    width and could push flex-wrap to reflow everything after it mid-hover, kicking the cursor out
    from under the just-resized element. The expanded preview below is a child overlay instead -
-   purely visual, positioned on top of this same fixed-size box, so hovering never reflows the row. */
+   purely visual, positioned on top of this same fixed-size box, so hovering never reflows the row.
+   height is set inline (PhotoGrid.jsx) to match whatever size its flanking cards are currently
+   rendered at - the 220px here is only a fallback for the (currently unreachable) case of no size
+   being passed in. */
 .drop-zone {
   position: relative;
-  flex: 0 0 56px;
+  flex: 0 0 36px;
   height: 220px;
   align-self: stretch;
   background: rgba(0,0,0,0.04);
@@ -209,7 +221,7 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   top: 0;
   left: 50%;
   transform: translateX(-50%);
-  height: 220px;
+  height: 220px; /* fallback - see .drop-zone's own comment, overridden inline alongside its width */
   border: 2px dashed var(--primary-color);
   border-radius: 8px;
   background: rgba(0,0,0,0.03);

@@ -3897,3 +3897,36 @@ new work is identified or completed, so nothing gets lost between sessions.
         would strand a task in `PROCESSING` forever if one ever gets dispatched against this stub.
       - Verified: full suite green (103 tests) with the two `.onnx` files temporarily moved out of
         `src/main/resources/models/` entirely, simulating exactly what CI actually sees today.
+
+- [x] **Fix: `FaceDetectionConfiguration` couldn't load its ONNX models from the packaged jar.**
+      `ResourceUtils.getFile("classpath:models/...")` only resolves when the classpath resource
+      lives on a real filesystem path (an exploded classes dir - IDE run, `mvn spring-boot:run`),
+      not when running the actual packaged executable jar this app ships as (see `Dockerfile`) -
+      there the resource is a nested-jar entry
+      (`jar:nested:/app/app.jar/!BOOT-INF/classes/!/models/det_10g.onnx`), which Spring can't turn
+      into a `File`, and getFile() throws `FileNotFoundException` before `Criteria.loadModel()`
+      ever runs. New `resolveModelPath` helper tries `Resource#getFile()` first (cheap, no copy,
+      keeps local dev fast) and only on that specific failure - i.e. only when actually running
+      from the packaged jar - extracts the resource to a temp file once at startup and points
+      `Criteria` at that instead. Verified against the real thing, not just compiled: built the
+      actual fat jar (`mvn package`), confirmed both `.onnx` files are bundled at full size under
+      `BOOT-INF/classes/models/` (not git-lfs pointer stubs), then ran that exact jar standalone -
+      it hit the fallback path for real and logged a clean `Started IPhotoApplication` with no
+      resolution error.
+
+- [x] **Reorganize (backend)**: split `CHECK_DUPLICATION` off of the shared `pollHeavyTasks()`
+      scheduler tick into its own `pollDuplicationTask` (`fixedDelay=30_000` - every 30s), leaving
+      `FACE_RECOGNITION` on its own renamed `pollFaceRecognitionTask` (`fixedDelay=300_000` -
+      unchanged, still every 5 min). Both were previously polled together on one 5-minute tick;
+      duplicate detection is comparatively fast and something a user is actively waiting on right
+      after an upload, so tying it to face-recognition's much slower full-relabel-everyone cadence
+      was needlessly delaying it. Each still runs against its own already-dedicated, fixed-size
+      pool (`duplicationThreadPoolExecutor`/`faceRecognitionThreadPoolExecutor` - unchanged, see the
+      earlier one-pool-per-heavy-type entry above) and both remain gated behind the same admin
+      `ACTIVATE_HEAVY_TASKS` switch - this is a scheduling-cadence split only, not a new pool.
+      `TaskWorkerManager`'s single `pollHeavyTasks()` method was replaced with the two on the
+      interface; `TaskWorkerManagerTest` split its one combined test into
+      `pollFaceRecognitionTasksOnlyDispatchesOnceHeavyTasksAreActivated`/
+      `pollHeavyTasksOnlyDispatchesOnceHeavyTasksAreActivated` (one per method) accordingly.
+      Documented in `specification.md`'s Duplicate Detection section (new "Async scheduling"
+      bullet) since it's backend-driven behavior not obvious from the frontend.
