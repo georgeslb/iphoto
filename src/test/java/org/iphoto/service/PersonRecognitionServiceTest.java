@@ -93,6 +93,48 @@ class PersonRecognitionServiceTest extends AbstractIntegrationTest {
         assertThat(buckets.getFirst().getFaceCount()).isEqualTo(1);
     }
 
+    // Regression test for FaceRecognitionServiceImpl.groupFacesForUser's transaction-boundary
+    // rework: that method used to run the ENTIRE per-user pass (every ungrouped face, every
+    // existing person, the whole new-person clustering step) inside ONE big transaction/Hibernate
+    // session - a long-held DB transaction, and one uncaught exception anywhere rolling back every
+    // user already processed earlier in the same run. It's now unwrapped entirely, so each
+    // updatePerson call (one per matched face) runs in its OWN independent transaction - meaning
+    // the `person`/`face` it receives are genuinely DETACHED, loaded minutes earlier in a
+    // transaction that's already closed. Unlike this test class's other fixtures (built directly
+    // in memory via PersonEntity.builder().faces(new ArrayList<>())...), re-fetching by id here
+    // forces Hibernate to hand back a REAL, uninitialized lazy proxy for `faces` - exactly what
+    // person.getFaces().add(face) inside updatePerson would have thrown
+    // LazyInitializationException on, had its own re-fetch-by-id fix not been in place.
+    @Test
+    void updatePersonStillWorksWhenGivenAGenuinelyDetachedPersonAndFace() {
+        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
+        PhotoEntity existingPhoto = savePhoto(space, admin, LocalDateTime.of(2023, 1, 1, 0, 0));
+        FaceEntity existingFace = saveFace(existingPhoto, 7.0f);
+        PersonEntity person = personRepository.save(
+                PersonEntity.builder().space(space).faces(new ArrayList<>(List.of(existingFace))).build());
+        existingFace.setPerson(person);
+        faceRepository.save(existingFace);
+        personRecognitionService.addFaceToBucket(person, existingFace);
+
+        PhotoEntity newPhoto = savePhoto(space, admin, LocalDateTime.of(2023, 6, 1, 0, 0));
+        FaceEntity newFace = saveFace(newPhoto, 7.1f);
+
+        // Fresh loads, not the objects just built above - `faces` on this specific instance is a
+        // real Hibernate-managed lazy proxy, not yet initialized.
+        PersonEntity detachedPerson = personRepository.findById(person.getId()).orElseThrow();
+        FaceEntity detachedFace = faceRepository.findById(newFace.getId()).orElseThrow();
+
+        personRecognitionService.updatePerson(detachedPerson, detachedFace);
+
+        FaceEntity reloadedNewFace = faceRepository.findById(newFace.getId()).orElseThrow();
+        assertThat(reloadedNewFace.getPerson()).isNotNull();
+        assertThat(reloadedNewFace.getPerson().getId()).isEqualTo(person.getId());
+        List<PersonEmbeddingBucketEntity> buckets = personEmbeddingBucketRepository.findByPersonId(person.getId());
+        assertThat(buckets).hasSize(1);
+        assertThat(buckets.getFirst().getFaceCount()).isEqualTo(2); // existingFace + newFace
+    }
+
     @Test
     void addPersonCreatesABrandNewPersonOwningEveryGivenFace() {
         UserEntity admin = userRepository.findByUsername("admin").orElseThrow();

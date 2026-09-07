@@ -1,6 +1,5 @@
 package org.iphoto.service;
 
-import jakarta.persistence.EntityManager;
 import lombok.Builder;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
@@ -14,7 +13,6 @@ import org.iphoto.repository.UserRepository;
 import org.iphoto.util.EmbeddingCodec;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
 
 import java.time.Duration;
@@ -22,10 +20,20 @@ import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
+// Deliberately NOT class-level @Transactional (unlike most services here) - see groupFaces' own
+// comment for why: wrapping this whole method (every non-admin user, up to
+// MAX_UNGROUPED_FACES_PER_RUN faces each) in one transaction meant one huge, long-held DB
+// transaction per run - a lock/connection held for however long the whole thing took, and a
+// failure anywhere rolling back every user (even ones already fully, correctly processed earlier
+// in the same run). Every actual write below now goes through personRecognitionService, whose own
+// methods are plain @Transactional (REQUIRED) - with no ambient transaction here to join, each one
+// simply starts and commits its own, small and independent: one per matched face, one per
+// brand-new person cluster, one per user's worth of work overall. See PersonRecognitionServiceImpl.
+// updatePerson's own comment for the other half of this (re-fetching fresh, attached entities
+// rather than trusting whatever's passed in, since callers here now hand it detached ones).
 @Service
 @Slf4j
 @RequiredArgsConstructor
-@Transactional
 public class FaceRecognitionServiceImpl implements FaceRecognitionService {
 
     private final FaceRepository faceRepository;
@@ -63,37 +71,27 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
     // there now — TEMPORAL_NEIGHBOR_WINDOW is kept only as a cost safety cap, see that method's
     // comment for why a pure position-based window was wrong.
     private static final Duration MAX_NEW_PERSON_CLUSTER_GAP = Duration.ofHours(24);
-    private final EntityManager entityManager;
 
     @Override
     public void groupFaces() { // Added UserEntity parameter
-        // Ids only, not the entities themselves - each user is re-fetched fresh inside the loop
-        // below (see the entityManager.clear() comment there for why: this whole method runs in
-        // one Hibernate session, and clear() detaches every entity that session currently holds,
-        // including any not-yet-processed UserEntity still sitting in a pre-fetched list - looking
-        // each one up fresh right before it's needed sidesteps that entirely).
+        // Ids only, not the entities themselves - findById below re-fetches each fresh right
+        // before it's needed rather than holding a big pre-fetched list of UserEntity around for
+        // the whole loop (harmless either way now that nothing here shares one long transaction/
+        // session across users, but keeps this loop's own memory footprint minimal too).
+        //
+        // No transaction wraps this loop (see class comment) - groupFacesForUser below reads
+        // (persons/ungrouped faces/buckets) each get their own short, Spring-Data-managed
+        // transaction, and every actual write goes through personRecognitionService, whose plain
+        // @Transactional methods each start and commit independently with no ambient transaction
+        // here to join. So a failure partway through one user - or even partway through one user's
+        // own faces - can no longer roll back anything already committed before it, for this user
+        // or any other; previously it was one all-or-nothing transaction for the entire run.
         List<UUID> nonAdminUserIds = userRepository.findAll().stream()
                 .filter(userEntity -> !userEntity.getRole().equals("ADMIN"))
                 .map(UserEntity::getId)
                 .toList();
         for (UUID userId : nonAdminUserIds) {
-            userRepository.findById(userId).ifPresent(user -> {
-                groupFacesForUser(user);
-                // clear(), not just flush() - every PersonEntity/FaceEntity/PhotoEntity/
-                // PersonEmbeddingBucketEntity touched while processing this user (up to
-                // MAX_UNGROUPED_FACES_PER_RUN faces, every existing person, all their embedding
-                // buckets, and - via person.getFaces() inside recalculateCoverFace - every face
-                // already linked to any person just matched) otherwise stays pinned in the
-                // persistence context for the rest of the run, even though flush() alone already
-                // durably wrote it out. Confirmed live (jcmd GC.class_histogram) that FaceEntity/
-                // PersonEmbeddingBucket byte[] payloads (embeddings/thumbnails) were the single
-                // largest heap consumer during a real run - not an unreachable-object leak (a
-                // forced full GC reclaimed most of it fine), but there's no reason to keep a
-                // whole user's worth of this pinned live once it's already committed, especially
-                // with multiple users or back-to-back ~30s reruns.
-                entityManager.flush();
-                entityManager.clear();
-            });
+            userRepository.findById(userId).ifPresent(this::groupFacesForUser);
         }
     }
 
@@ -101,8 +99,13 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
         try {
             log.info("starting person grouping for user {}", user.getUsername());
             List<PersonEntity> persons = personRepository.findAll();
+            // FetchPhoto: this list outlives the short transaction that loaded it (see class
+            // comment - each face's own match/cluster write is now its own separate transaction),
+            // and both the logging line below and clusterByTemporalProximity read face.getPhoto()
+            // well after that point - needs to already be loaded, not a lazy proxy with no session
+            // left to resolve it on demand.
             List<FaceEntity> ungroupedFaces = faceRepository
-                    .findByPersonIsNull(Pageable.ofSize(MAX_UNGROUPED_FACES_PER_RUN))
+                    .findByPersonIsNullFetchPhoto(Pageable.ofSize(MAX_UNGROUPED_FACES_PER_RUN))
                     .stream().toList();
 
             // A face manually unlinked from a person (FaceService.unlinkFaceFromPerson /
@@ -143,7 +146,16 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
                 int targetYear = PersonEmbeddingBucketEntity.bucketYearFor(face);
                 Optional<PersonWithScore> bestMatch = findBestMatchForFace(faceEmbedding, targetYear, eligiblePersons, bucketsByPerson);
                 if (bestMatch.isPresent()) {
-                    personRecognitionService.updatePerson(bestMatch.get().getPerson(), face);
+                    // Each match is now its own independent transaction (see class comment) - a
+                    // failure on one face must not stop the rest of this user's faces (or the
+                    // new-person clustering below) from being attempted in this same run, the way
+                    // it used to when this whole method shared one transaction and one uncaught
+                    // exception aborted everything after it.
+                    try {
+                        personRecognitionService.updatePerson(bestMatch.get().getPerson(), face);
+                    } catch (Exception e) {
+                        log.error("could not update person {} for face {}", bestMatch.get().getPerson().getId(), face.getId(), e);
+                    }
                 } else {
                     stillUnmatched.add(face);
                 }
@@ -153,8 +165,16 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
             // people. Processing the FULL leftover set here (rather than a separately re-paginated
             // sample, as before) avoids splitting one real person's faces into multiple PersonEntity
             // rows purely because they landed in different pagination batches.
-            clusterByTemporalProximity(stillUnmatched)
-                    .forEach(cluster -> personRecognitionService.addPerson(user, cluster));
+            clusterByTemporalProximity(stillUnmatched).forEach(cluster -> {
+                // Same reasoning as the per-face try/catch above - one bad cluster (each its own
+                // independent transaction) shouldn't stop the rest of this user's new-person
+                // clusters from being created in this run.
+                try {
+                    personRecognitionService.addPerson(user, cluster);
+                } catch (Exception e) {
+                    log.error("could not create a new person for user {} from a cluster of {} face(s)", user.getId(), cluster.size(), e);
+                }
+            });
             log.info("finishing person grouping for user {}", user.getUsername());
         } catch (Exception e) {
             log.error("cant process face recognition for user {}", user.getId(), e);

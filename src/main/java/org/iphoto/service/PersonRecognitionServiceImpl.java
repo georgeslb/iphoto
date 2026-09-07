@@ -38,12 +38,25 @@ public class PersonRecognitionServiceImpl implements PersonRecognitionService {
 
     @Override
     public void updatePerson(PersonEntity person, FaceEntity face) { // Added UserEntity parameter
-        face.setPerson(person);
-        faceRepository.save(face);
-        person.getFaces().add(face);
-        recalculateCoverFace(person);
-        personRepository.save(person);
-        addFaceToBucket(person, face);
+        // Re-fetch both fresh by id rather than trusting the instances handed in: this method is
+        // now plain @Transactional (REQUIRED) with, in its main caller (FaceRecognitionServiceImpl.
+        // groupFacesForUser), no ambient transaction to join - so it starts its own, and `person`/
+        // `face` as passed in are DETACHED (loaded minutes earlier, in that caller's own
+        // already-closed read transaction). person.getFaces() below is a lazy collection - calling
+        // it on a detached instance throws LazyInitializationException immediately, not silently
+        // misbehaves. Re-fetching by id (a cheap first-level-cache hit for callers already running
+        // inside a wider transaction that loaded the exact same row, and a fresh, correctly-managed
+        // instance for callers that aren't) makes this safe either way.
+        PersonEntity managedPerson = personRepository.findById(person.getId())
+                .orElseThrow(() -> new NoSuchElementException("no person found with id " + person.getId()));
+        FaceEntity managedFace = faceRepository.findById(face.getId())
+                .orElseThrow(() -> new NoSuchElementException("no face found with id " + face.getId()));
+        managedFace.setPerson(managedPerson);
+        faceRepository.save(managedFace);
+        managedPerson.getFaces().add(managedFace);
+        recalculateCoverFace(managedPerson);
+        personRepository.save(managedPerson);
+        addFaceToBucket(managedPerson, managedFace);
     }
 
     @Override

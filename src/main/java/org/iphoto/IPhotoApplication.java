@@ -2,6 +2,7 @@ package org.iphoto;
 
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.TaskEntity;
+import org.iphoto.entities.UserEntity;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.TaskType;
 import org.iphoto.properties.AdminProperties; // Import AdminProperties
@@ -16,9 +17,11 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
 import org.springframework.retry.annotation.EnableRetry;
 import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.security.crypto.password.PasswordEncoder;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 @Slf4j
@@ -54,10 +57,19 @@ public class IPhotoApplication {
         app.run(args);
     }
 
+    // Reconciles the admin password on every boot, not just the very first one (production report:
+    // changing IPHOTO_ADMIN_PASSWORD and restarting the container was silently ignored once the
+    // admin row already existed from an earlier boot - e.g. the container's first-ever start, before
+    // that env var was set to its real value, already created it with the old/default password, and
+    // every later "if not exists" check just saw the row was there and skipped). Comparing via
+    // passwordEncoder.matches (never the raw stored hash) avoids re-encoding/re-saving on every
+    // single boot when nothing actually changed.
     @Bean
-    CommandLineRunner initDatabase(UserRepository userRepository, UserService userService, AdminProperties adminProperties) {
+    CommandLineRunner initDatabase(UserRepository userRepository, UserService userService,
+                                    AdminProperties adminProperties, PasswordEncoder passwordEncoder) {
         return args -> {
-            if (userRepository.findByUsername(adminProperties.getUsername()).isEmpty()) {
+            Optional<UserEntity> existingAdmin = userRepository.findByUsername(adminProperties.getUsername());
+            if (existingAdmin.isEmpty()) {
                 // Routed through UserService.createUser (not a raw UserEntity save) so the
                 // bootstrapped admin gets a default MAIN space too, exactly like any user created
                 // via the admin-facing "create user" API — a fresh install used to leave the
@@ -66,6 +78,12 @@ public class IPhotoApplication {
                 // was created some other way. Found while writing integration tests against a
                 // genuinely fresh database, where this had never been exercised before.
                 userService.createUser(adminProperties.getUsername(), adminProperties.getPassword(), adminProperties.getRole());
+            } else if (!passwordEncoder.matches(adminProperties.getPassword(), existingAdmin.get().getPassword())) {
+                log.info("Configured admin password no longer matches the stored one - resetting it to match");
+                // Routed through UserService.resetPassword (not a raw save here either) - it also
+                // re-encrypts the user's stored Immich API key, which is derived from the password
+                // hash and would otherwise become permanently undecryptable the moment it changes.
+                userService.resetPassword(existingAdmin.get().getId(), adminProperties.getPassword());
             }
         };
     }

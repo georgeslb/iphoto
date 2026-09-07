@@ -3930,3 +3930,63 @@ new work is identified or completed, so nothing gets lost between sessions.
       `pollHeavyTasksOnlyDispatchesOnceHeavyTasksAreActivated` (one per method) accordingly.
       Documented in `specification.md`'s Duplicate Detection section (new "Async scheduling"
       bullet) since it's backend-driven behavior not obvious from the frontend.
+
+- [x] **Reorganize (backend)**: `FaceRecognitionServiceImpl.groupFaces()` no longer runs as one
+      giant transaction per run (user request: "can't we improve face recognition to do small
+      transactions" - the actual complaint was that a single user's own share of the work was
+      already a big transaction, not just that every user shared one). Removed the class-level
+      `@Transactional` entirely - every real write already goes through
+      `personRecognitionService.updatePerson`/`addPerson`, whose own plain `@Transactional`
+      (REQUIRED, unchanged) now has no ambient transaction to join, so each call simply starts and
+      commits its own: one per matched face, one per brand-new person cluster, rather than one
+      transaction spanning every non-admin user and up to `MAX_UNGROUPED_FACES_PER_RUN` (2000)
+      faces each. A failure anywhere can no longer roll back work already committed earlier in the
+      same run, for this user or any other - previously a `flush()` failure partway through, say,
+      user 5 of 8 would have silently undone users 1-4's already-"complete" work too. Added a
+      per-face and per-cluster `try/catch` in the loop itself for the same reason - one bad match/
+      cluster (each its own independent transaction) no longer aborts the rest of that user's own
+      run either.
+      - **The actual blocker, not just an annotation flip**: `updatePerson`'s `person.getFaces()`/
+        `recalculateCoverFace`'s face-by-face iteration are LAZY associations
+        (`FaceEntity.photo`/`PersonEntity.faces`/`coverFace`, all `FetchType.LAZY`) - safe under the
+        old design because the whole user's run shared one long-lived Hibernate session, but the
+        `person`/`face` handed to `updatePerson` are now DETACHED (loaded in `groupFacesForUser`'s
+        own, already-closed read). Fixed by having `updatePerson` re-fetch both fresh by id at its
+        own top before touching anything - a cheap first-level-cache hit for any OTHER caller still
+        running inside a wider transaction that loaded the exact same row (none currently exist -
+        `updatePerson`/`addPerson` are only ever called from this one place, confirmed via grep -
+        but harmless either way), and a genuinely fresh, correctly-attached instance for this one.
+      - `FaceRepository.findByPersonIsNull` replaced with `findByPersonIsNullFetchPhoto` (`JOIN
+        FETCH f.photo`, explicit `countQuery` since Spring Data's own count-query derivation for a
+        JOIN FETCH isn't reliable across versions) - the returned faces outlive their own loading
+        transaction now too, and both the logging line and `clusterByTemporalProximity` read
+        `face.getPhoto()` well after that point.
+      - Dropped the per-user `entityManager.flush()/clear()` in `groupFaces()` - it existed to stop
+        a whole user's worth of entities pinning heap in one long-lived session (a real, previously
+        confirmed issue - see that comment's own `jcmd GC.class_histogram` note); with no more
+        long-lived session to begin with (each small transaction gets and releases its own), it's
+        no longer needed, and would in fact throw with no active transaction to flush against.
+      - Verified: full suite green (105 tests, run twice for order-dependent flakiness - none
+        found) plus a new `PersonRecognitionServiceTest` case
+        (`updatePersonStillWorksWhenGivenAGenuinelyDetachedPersonAndFace`) that specifically
+        re-fetches a person/face by id before calling `updatePerson`, forcing a genuine
+        uninitialized lazy proxy the way `groupFacesForUser` now actually hands them over - this is
+        exactly what would have thrown `LazyInitializationException` before the re-fetch fix.
+      - **Not done, considered and rejected for now**: a true end-to-end test driving the real
+        `groupFaces()` entry point directly (rather than `updatePerson` in isolation). Attempted
+        first, but `PersonRepository.findAll()`/`FaceRepository.findByPersonIsNullFetchPhoto` are
+        `@MainSpaceLimited`, and `MainSpaceAspectConfiguration` only skips that filter on a thread
+        actually named `backend-task*`/`heavy-task*` (TaskWorkerManager's own executors) - a plain
+        JUnit thread either needs a fake logged-in user pushed onto `SecurityContextHolder` (which
+        then incorrectly scopes matching to ONE user's space, unlike production's genuinely global/
+        unfiltered pooling across every user - see the Persons section's own "known limitation")
+        or a thread renamed to match, at which point matching becomes truly global across this
+        whole shared-database test suite and collided with unrelated leftover people from other
+        test classes (the `{v,v,v}`-shaped test embeddings used all over this suite are all
+        cosine-parallel to each other regardless of the literal value, since cosine similarity is
+        scale-invariant - every one of them "matches" every other one; using a distinct-direction
+        vector avoided that specific collision, but the run still wasn't reliably deterministic
+        against a live, shared-mutable database with no isolation for this global-pooling path -
+        not worth fighting here for what's really a pre-existing, unrelated design limitation, not
+        a consequence of this rework). The `updatePerson`-level test above covers the actual risk
+        this rework introduced without any of that.

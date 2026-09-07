@@ -5,6 +5,7 @@ import org.iphoto.exception.ImmichApiException;
 import org.iphoto.model.immich.*;
 import org.iphoto.service.UserService.ImmichCredentials;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
@@ -13,6 +14,7 @@ import org.springframework.web.util.UriComponentsBuilder;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
+import java.net.http.HttpClient;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -42,7 +44,22 @@ public class ImmichClientImpl implements ImmichClient {
     private static final int MAX_SEARCH_PAGES = 40;
     private static final int SEARCH_PAGE_SIZE = 250;
 
-    private final RestClient restClient = RestClient.create();
+    // No HTTP client library (Apache HttpClient5/Jetty/Reactor) is on the classpath, so plain
+    // RestClient.create() falls back to wrapping the JDK's own java.net.http.HttpClient. That
+    // client's default version preference is HTTP_2 - and per its own javadoc, even for a plain
+    // http:// (non-TLS) target it still sends the first request as HTTP/1.1 with an "Upgrade: h2c"
+    // header, hoping the server accepts an upgrade to HTTP/2 cleartext. Immich's backend (a Node/
+    // NestJS server) doesn't handle that upgrade attempt gracefully - instead of ignoring the
+    // Upgrade header like a normal HTTP/1.1 server should, it aborts the connection mid-response,
+    // which the JDK client surfaces as "EOFException: EOF reached while reading" (production
+    // report - curl against the exact same URL/port works fine, since curl never attempts an h2c
+    // upgrade for plain HTTP; only java.net.http's opportunistic upgrade attempt triggers this).
+    // Pinning the client to HTTP/1.1 removes the upgrade attempt entirely.
+    private final RestClient restClient = RestClient.builder()
+            .requestFactory(new JdkClientHttpRequestFactory(HttpClient.newBuilder()
+                    .version(HttpClient.Version.HTTP_1_1)
+                    .build()))
+            .build();
     private final Semaphore throttle = new Semaphore(MAX_CONCURRENT_CALLS);
 
     @Override

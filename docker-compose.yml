@@ -53,6 +53,15 @@ services:
     depends_on:
       iphoto-db:
         condition: service_healthy
+    # `default` (this project's own compose-internal network, auto-created - needed to reach
+    # iphoto-db) plus `nginx` (an existing EXTERNAL network, shared with whatever else already
+    # runs on it - e.g. Immich, a reverse proxy - so iphoto-app can reach those by container/
+    # service name too). Listing `default` explicitly here is required, not just for clarity -
+    # once a service declares ANY `networks:` of its own, Compose stops auto-attaching it to
+    # `default`; without this line iphoto-app would lose its connection to iphoto-db entirely.
+    networks:
+      - default
+      - nginx
     environment:
       # Spring Boot's relaxed env-var binding (SPRING_DATASOURCE_URL -> spring.datasource.url,
       # etc.) - see application.yml for the property names/defaults these override.
@@ -60,7 +69,10 @@ services:
       SPRING_DATASOURCE_USERNAME: iphoto
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       IPHOTO_STORAGE_BASE: /data/iphoto
-      IPHOTO_ADMIN_USERNAME: ${IPHOTO_ADMIN_USERNAME:-admin}
+      # No IPHOTO_ADMIN_USERNAME here on purpose - the admin username is fixed ("admin", see
+      # application.yml's admin.username) and not meant to be changed post-deployment; only the
+      # password is deployment config (IPhotoApplication#initDatabase reconciles it on every boot,
+      # not just the account's first-ever creation).
       IPHOTO_ADMIN_PASSWORD: ${IPHOTO_ADMIN_PASSWORD:?set IPHOTO_ADMIN_PASSWORD in .env}
     volumes:
       - iphoto-storage:/data/iphoto
@@ -81,3 +93,13 @@ services:
 volumes:
   iphoto-db-data:
   iphoto-storage:
+
+networks:
+  # Pre-existing network, not owned by this compose file - shared with whatever else already runs
+  # on it (reverse proxy, Immich, ...) so containers can reach each other by name for things like
+  # the per-user Immich import feature (see UserEntity.immichBaseUrl/specification.md). `external:
+  # true` means "attach to this, don't try to create it"; omit/misname it and `docker compose up`
+  # fails fast with "network nginx declared as external, but could not be found" rather than
+  # silently creating a same-named one of its own.
+  nginx:
+    external: true
