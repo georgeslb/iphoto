@@ -1,5 +1,20 @@
 import React from 'react';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
+import L from 'leaflet';
+import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
+import markerIcon from 'leaflet/dist/images/marker-icon.png';
+import markerShadow from 'leaflet/dist/images/marker-shadow.png';
+
+// leaflet's default marker icon references marker-icon.png/marker-icon-2x.png/marker-shadow.png
+// via relative URLs baked into its own bundled CSS/JS, which break once bundled through Vite (a
+// well-documented react-leaflet + Vite issue) - markers render as broken-image icons instead.
+// Re-pointing L.Icon.Default at the bundler-resolved URLs fixes it for every <Marker> app-wide.
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: markerIcon2x,
+  iconUrl: markerIcon,
+  shadowUrl: markerShadow,
+});
 
 function MapView({ mapAssets, handlePhotoClick }) {
   return (
