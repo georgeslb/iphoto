@@ -1611,8 +1611,30 @@ button.upload-item-name.upload-item-name-link:hover {
     max-width: 100%;
   }
 
+  /* Android/Google Photos-style dense square grid on mobile: the desktop layout above is a
+     flex-wrap "masonry" of variable-width rows (each row justified to fill the container width,
+     see .photo-grid's own comment) - that reads fine on a wide desktop window but produces
+     inconsistent, oddly-cropped row heights on a narrow phone screen. Standard Android/iOS Photos
+     apps instead use a uniform grid of square thumbnails, so we switch to that here rather than
+     just shrinking the same masonry layout. */
+  .photo-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+    gap: 2px;
+  }
+  .photo-grid::after {
+    content: none; /* the flex last-row spacer trick above doesn't apply to grid, and would render as a stray empty cell */
+  }
   .photo-card {
-    height: 130px;
+    height: auto !important; /* overrides PhotoGrid.jsx's inline per-photo row height (desktop masonry sizing) */
+    flex-basis: auto !important; /* overrides PhotoGrid.jsx's inline aspect-ratio flex-basis, meaningless once .photo-grid is a CSS grid */
+    aspect-ratio: 1 / 1;
+    width: 100%;
+  }
+  /* Drag-to-reorder is desktop-only (no touch polyfill, see specification.md) - showing a handle
+     that can't actually be dragged on a touch device is just confusing, so hide it here. */
+  .photo-card .drag-handle {
+    display: none;
   }
 
   .album-grid {
@@ -1646,6 +1668,31 @@ button.upload-item-name.upload-item-name-link:hover {
     height: 40px;
   }
 
+  /* Standard Android Photos app lightbox actions are a row of plain icon buttons (edit/share/
+     delete/...) below the photo, not a stack of full-width labeled buttons - .lightbox-action-btn
+     otherwise keeps its desktop text label (see the unqualified rule above), this only applies on
+     mobile. */
+  .lightbox-actions {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  .lightbox-actions .lightbox-action-btn {
+    width: 44px;
+    height: 44px;
+    flex: 0 0 auto;
+    padding: 0;
+    margin-bottom: 0;
+    border-radius: 50%;
+    justify-content: center;
+  }
+  .lightbox-actions .lightbox-action-label {
+    display: none;
+  }
+
   .upload-queue {
     left: 12px;
     right: 12px;
@@ -1655,8 +1702,9 @@ button.upload-item-name.upload-item-name-link:hover {
 }
 
 @media (max-width: 480px) {
-  .photo-card {
-    height: 100px;
+  .photo-grid {
+    grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+    gap: 2px;
   }
 
   .album-grid {
