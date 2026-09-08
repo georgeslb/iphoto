@@ -76,8 +76,15 @@ services:
       # password is deployment config (IPhotoApplication#initDatabase reconciles it on every boot,
       # not just the account's first-ever creation).
       IPHOTO_ADMIN_PASSWORD: ${IPHOTO_ADMIN_PASSWORD:?set IPHOTO_ADMIN_PASSWORD in .env}
+      # Overrides application.yml's local-dev-relative "logs/" default (see its own comment) - a
+      # path under the dedicated iphoto-logs volume below instead, so rotated log files survive a
+      # container recreate/redeploy. A separate volume from iphoto-storage on purpose: logs are
+      # pruned by application.yml's own rolling policy (30 days / 500MB total), a very different
+      # retention need than photo originals, which this app never deletes on its own.
+      LOGGING_FILE_NAME: /data/iphoto-logs/iphoto.log
     volumes:
       - iphoto-storage:/data/iphoto
+      - iphoto-logs:/data/iphoto-logs
     ports:
       - "${IPHOTO_PORT:-8080}:8080"
     healthcheck:
@@ -95,6 +102,7 @@ services:
 volumes:
   iphoto-db-data:
   iphoto-storage:
+  iphoto-logs:
 
 networks:
   # Pre-existing network, not owned by this compose file - shared with whatever else already runs

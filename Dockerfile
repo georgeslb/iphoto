@@ -92,6 +92,14 @@ COPY --from=build /workspace/target/iphoto-*.jar app.jar
 ENV IPHOTO_STORAGE_BASE=/data/iphoto
 VOLUME ["/data/iphoto"]
 
+# Same idea for logs (see application.yml's logging.* block): a separate volume from
+# /data/iphoto above, since rotated log files get pruned by application.yml's own rolling policy
+# (30 days/500MB total) - a very different retention need from photo originals, which this app
+# never deletes on its own. LOGGING_FILE_NAME is Spring Boot's own relaxed-binding property name
+# for logging.file.name, same mechanism as IPHOTO_STORAGE_BASE above.
+ENV LOGGING_FILE_NAME=/data/iphoto-logs/iphoto.log
+VOLUME ["/data/iphoto-logs"]
+
 # Caps glibc malloc's per-thread arena count. Without this, glibc gives each thread that calls
 # malloc its own arena (up to 8x core count on 64-bit), and each arena grows in large chunks that
 # are rarely returned to the OS even after the memory inside them is freed - a well-documented

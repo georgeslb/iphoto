@@ -38,6 +38,32 @@ spring:
     favicon:
       enabled: false
 
+# File logging with rotation, alongside the console output Spring Boot already gives you for
+# free (setting logging.file.name doesn't replace the console appender, it adds a file one next
+# to it - both stay active). Local-dev default is a relative "logs/" dir (gitignored) so this
+# works out of the box with zero setup; docker-compose.yml overrides LOGGING_FILE_NAME to a path
+# under a dedicated mounted volume, so container logs survive a redeploy/recreate instead of being
+# lost with the container (Docker's own json-file driver, still configured in docker-compose.yml
+# too, only ever captured stdout for `docker compose logs` - nothing was ever written to disk in a
+# way that outlived the container itself).
+logging:
+  file:
+    name: logs/iphoto.log
+  logback:
+    rollingpolicy:
+      # Rotates on WHICHEVER of size/day comes first (Spring Boot's default SizeAndTimeBasedRollingPolicy
+      # behavior once both are set) - a busy day doesn't have to wait for midnight to roll over.
+      max-file-size: 10MB
+      # Days of rotated files to keep, not a raw file count - a quiet day's single small file and a
+      # busy day's several 10MB ones both just count as "one day" here.
+      max-history: 30
+      # Hard ceiling regardless of max-history, in case max-history alone would let disk usage grow
+      # unbounded on an unusually heavy stretch - oldest rotated files are pruned first once hit.
+      total-size-cap: 500MB
+      # Rotated files are already gzip-compressed by Spring Boot's default file-name-pattern
+      # (iphoto.log.<date>.<index>.gz) - no separate compression setting needed.
+      clean-history-on-start: true
+
 iphoto:
   storage:
     base: /home/georges/data/iphoto/storage
