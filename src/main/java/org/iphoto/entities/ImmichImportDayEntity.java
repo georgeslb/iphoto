@@ -15,7 +15,9 @@ import java.util.UUID;
 // user connects their own Immich server (see UserEntity.immichBaseUrl/immichApiKeyEncrypted), so
 // this indexes per-user, not a single shared external server configuration.
 @Entity
-@Table(name = "immich_import_days", uniqueConstraints = @UniqueConstraint(name = "uk_immich_import_days_day_user", columnNames = {"day", "user_id"}))
+@Table(name = "immich_import_days",
+        uniqueConstraints = @UniqueConstraint(name = "uk_immich_import_days_day_user_id", columnNames = {"day", "user_id"}),
+        indexes = @Index(columnList = "user_id,day", name = "idx_immich_import_days_user_id_day"))
 @Data
 @EqualsAndHashCode(callSuper = false)
 @Builder(toBuilder = true)

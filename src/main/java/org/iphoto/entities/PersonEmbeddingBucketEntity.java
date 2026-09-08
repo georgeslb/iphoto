@@ -29,7 +29,7 @@ import java.util.UUID;
 // person's deletion with its person reference just nulled out.
 @Entity
 @Table(name = "person_embedding_buckets", uniqueConstraints = {
-        @UniqueConstraint(name = "person_bucket_year_unique", columnNames = {"person_id", "bucket_year"})
+        @UniqueConstraint(name = "uk_person_embedding_buckets_person_id_bucket_year", columnNames = {"person_id", "bucket_year"})
 })
 @Getter
 @Setter

@@ -14,8 +14,12 @@ import java.util.UUID;
 
 @Entity
 @Table(name = "shares", uniqueConstraints = {
-        @UniqueConstraint(name = "name_space_unique_shares", columnNames = { "name", "space_id"}),
-        @UniqueConstraint(name = "uk_shares_external", columnNames = { "external_source", "external_id" })
+        @UniqueConstraint(name = "uk_shares_name_space_id", columnNames = { "name", "space_id"}),
+        @UniqueConstraint(name = "uk_shares_external_source_external_id", columnNames = { "external_source", "external_id" })
+}, indexes = {
+        @Index(columnList = "space_id", name = "idx_shares_space_id"),
+        @Index(columnList = "album_id", name = "idx_shares_album_id"),
+        @Index(columnList = "user_md5,name", name = "idx_shares_user_md5_name")
 })
 @EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true) // Changed callSuper to true
 @Getter

@@ -4037,26 +4037,25 @@ new work is identified or completed, so nothing gets lost between sessions.
         MockMvc/`AbstractIntegrationTest`'s in-memory-H2 harness instead, which needed neither the
         ONNX models nor a real Postgres).
 
-- [ ] **Not done (qualif-server item 2): entity index/constraint name cleanup — no ground truth to
-      work from.** As briefed, this item asked to rewrite every entity's `@Table(indexes = ...)`/
-      `@UniqueConstraint(name = ...)` annotations to mirror a Flyway baseline migration
-      (`src/main/resources/db/migration/V1__baseline_schema.sql`) as "ground truth". That file does
-      not exist, this repo has no Flyway dependency in `pom.xml`, and there is no Flyway anywhere in
-      git history on any branch. The entities *do* still carry the old Hibernate-auto-generated
-      names described (`space_index`, `hash_user_unique`, `photo_index`, `status_index`, etc. — all
-      confirmed present via a grep of `src/main/java/org/iphoto/entities/`), so that part of the
-      premise was accurate; it's specifically the "authoritative V1 migration to mirror" part that
-      doesn't exist. Since `ddl-auto: update` means these names have never been reconciled against
-      any hand-written migration, there is no ground truth in this repo to rewrite them against —
-      inventing one (or introducing Flyway) is a real architectural decision, not a same-session
-      judgment call, so left undone rather than guessed at. **What's actually needed before this can
-      be done**: either (a) someone confirms this repo was always meant to move to Flyway and
-      provides/commits the real baseline migration first, and this cleanup follows on top of that, or
-      (b) the task is re-scoped to just "pick sane, consistent `uk_*`/`idx_*`/`fk_*`/`ck_*` names per
-      entity with no external ground truth to match" (a much smaller, purely cosmetic rename with no
-      correctness risk either way, same as the original premise claimed) — worth a quick clarifying
-      question rather than a guess, since which of these two it actually is changes the size of the
-      work a lot.
+- [x] **Qualif-server item 2: entity index/constraint name cleanup.** The overnight session above
+      correctly found that `V1__baseline_schema.sql` didn't exist in the repo it was given (it was
+      never pushed before that run started - a mistake on the human side, not a bad premise) and
+      rightly refused to invent a "ground truth" rather than guess. The migration was pushed the
+      next morning (`git log`: `7e57ee1 add flyway`), and this cleanup was then done for real
+      against it: every entity in `src/main/java/org/iphoto/entities/` now has its
+      `@Table(indexes = ...)`/`@UniqueConstraint(name = ...)` mirroring V1 exactly -
+      `uk_<table>_<cols>`/`idx_<table>_<cols>`/`ck_<table>_<col>` throughout, including the ones that
+      had no Java-side annotation at all before (`FaceEntity` had none whatsoever; `PersonEntity`/
+      `people` likewise, its `cover_face_id` uniqueness was previously only implicit from `@OneToOne`;
+      `UserEntity.username` now has an explicit `uk_users_username`, matching V1's genuinely new
+      constraint there). Two spots needed a bit more than a rename: `DuplicateEntity.hash` and
+      `DeviceTokenEntity.tokenHash` were `@Column(unique = true)` (an unnamed constraint) rather than
+      a named `@UniqueConstraint` - switched both to match `uk_duplicates_hash`/
+      `uk_device_tokens_token_hash`. `PhotoDuplicateEntity`'s old `photo_index` (on `photo_id`) was
+      dropped rather than renamed, matching V1's own reasoning: `photo_id` is already the leading
+      column of `uk_duplicate_photos_photo_id_duplicate_id`, so a standalone index on it is redundant.
+      Purely an annotation change (`ddl-auto: validate` doesn't check index/constraint names, only
+      that tables/columns exist) - verified with a full `mvn test` run, 107/107 green.
 
 - [x] **Bugfix (qualif-server item 3): Map view showed broken-image icons instead of markers** —
       confirmed: `MapView.jsx`'s `<Marker>` (react-leaflet) had no custom icon configured at all.
@@ -4367,85 +4366,3 @@ new work is identified or completed, so nothing gets lost between sessions.
          whether/when to tackle separately, since it means `persons`/`bucketsByPerson`'s memory
          footprint will keep growing with total system-wide person count regardless of anything in
          this plan.
-
-- [ ] **Bugfix** (qualif server report): refreshing any page other than Library gives a blank page
-      showing the literal text `forward:/index.html`. Root cause found, not yet fixed:
-      `RootController` (`src/main/java/org/iphoto/controller/RootController.java`) is annotated
-      `@RestController`, so its SPA-fallback `forward()` method - which matches every non-`/api`
-      path via `@RequestMapping({"/{path:[^\\.]*}", ...})` and is meant to return Spring MVC's
-      `"forward:/index.html"` view-name directive - has `@ResponseBody` implicitly applied to it
-      too (that's what `@RestController` = `@Controller` + `@ResponseBody` on every handler
-      means), so the literal string is serialized straight into the response body instead of ever
-      being resolved as a forward. Library still works on refresh because it's served at the
-      exact root path `/`, which Spring Boot's own `WelcomePageHandlerMapping` handles separately
-      (`static/index.html`) - every OTHER route (`/albums/xyz`, `/spaces/xyz`, ...) hits this
-      broken method. **Fix**: split into `@Controller` (for `forward()`, so `"forward:..."` is
-      resolved as a real view name) + keep `@GetMapping("/api/user/me")` as JSON by adding an
-      explicit `@ResponseBody` on just that one method - not a class-level `@RestController`
-      covering both.
-
-- [ ] **Cleanup**: update every entity's `@Table(indexes = ...)`/`@UniqueConstraint(name = ...)`
-      to the new names from `db/migration/V1__baseline_schema.sql` (see today's Flyway migration
-      work) - they still say the OLD Hibernate-generated names (`space_index`,
-      `hash_user_unique`, `photo_index`, `status_index`, the unreadable `fkXXXXXXXXXXXXXXXXXXXXXXX`
-      hashes, etc.), which is now flat-out wrong: Flyway builds the real schema, these annotations
-      are inert once `ddl-auto=validate` stopped deriving DDL from them, and having two
-      "sources of truth" that disagree is exactly the kind of drift that bites later. Go through
-      every entity in `src/main/java/org/iphoto/entities/` and make the annotations mirror V1
-      exactly (including the NEW indexes that never had a Java-side annotation at all before -
-      `faces` had none whatsoever, `photos.user_id`, `shares.user_md5+name`, etc. - and
-      `uk_users_username`, added in V1 but `UserEntity` currently declares no unique constraint on
-      `username` at all). Purely documentation/consistency at this point (Hibernate's schema
-      validator doesn't check index/constraint names), but worth doing right rather than leaving
-      the entities as a stale, misleading "proof of truth" now that Flyway is the real one.
-
-- [ ] **Bugfix** (qualif server report): Map view shows broken-image icons instead of markers.
-      Likely cause, not yet confirmed: `MapView.jsx` uses `react-leaflet`'s `<Marker>` with no
-      custom icon set up at all (`import { MapContainer, TileLayer, Marker, Popup } from
-      'react-leaflet'`) - leaflet's DEFAULT marker icon references `marker-icon.png`/
-      `marker-icon-2x.png`/`marker-shadow.png` via relative URLs baked into its own bundled
-      CSS/JS, which almost universally break once bundled through Vite (the images never get
-      copied/resolved the way leaflet's own webpack-less setup expects) - this is a very common,
-      well-documented `react-leaflet` + Vite issue, not something specific to how little this app
-      has built out the map feature so far. **Fix**: explicitly import the three marker images and
-      reset `L.Icon.Default.mergeOptions({...})` with the bundler-resolved URLs (the standard ~10
-      line snippet for this exact problem) once, e.g. in `MapView.jsx` itself or a shared setup
-      module.
-
-- [ ] **CI**: `build-and-push` (`.github/workflows/docker-image.yml`) takes ~15 minutes on GitHub
-      Actions - investigate tomorrow, not yet root-caused. `cache-from`/`cache-to: type=gha` is
-      already enabled for the Docker layer cache, but a few likely contributors found by reading
-      the Dockerfile/workflow, not yet confirmed against a real run's actual cache-hit breakdown:
-        - The Dockerfile already splits `COPY pom.xml .` + `mvn dependency:go-offline` into its own
-          layer (cached, keyed only on pom.xml) before `COPY . .` - but does the SAME thing for
-          the frontend: `npm install` only runs as part of the single `COPY . .` + `mvn package`
-          layer, keyed on the WHOLE source tree, so it re-runs on every single source change even
-          when `package.json`/`package-lock.json` didn't change. Splitting a
-          `COPY frontend/package*.json` + `npm install` layer out first (mirroring the Maven one)
-          would let that layer stay cached across most commits.
-        - The `test` job (bare runner, `setup-java`'s `cache: maven`) and `build-and-push` job
-          (isolated Docker build context) each independently resolve the FULL Maven dependency
-          tree - meaning javacv/opencv-platform/ffmpeg-platform/DJL (large native-binary
-          dependencies) potentially get downloaded twice per workflow run, once per job, since
-          the runner's local `~/.m2` cache and the Docker build's own cache don't share.
-        - GHA's `type=gha` cache backend has a 10GB-per-repo cap - worth checking whether this
-          project's layer cache (native-binary-heavy) is anywhere near that and getting evicted
-          often, which would explain cold, from-scratch rebuilds despite caching being configured.
-
-- [ ] **Face recognition**: still throwing `java.lang.OutOfMemoryError: Java heap space` in
-      production despite the per-face/per-cluster transaction-boundary rework (see the entry
-      above this section) - that fixed the long-held-transaction/connection-pool problem, not the
-      memory footprint of `groupFacesForUser`'s clustering pass itself
-      (`FaceRecognitionServiceImpl`/`clusterByTemporalProximity`), which is the next thing to
-      change. User's proposed approach for tomorrow (pragmatism over completeness): fetch faces
-      with no linked person, start clustering, but only ever keep a SAMPLE of up to 3
-      representative faces per candidate cluster (promoting a cluster to a real person once it
-      has support from more than 3 mutually-matching faces) rather than holding/comparing the
-      full candidate set the way `clusterByTemporalProximity`'s current `maxCandidatesPerFace`
-      pairwise-window approach does; then make a second pass over the REMAINING
-      still-personless faces (in slices, not all at once) and try to match each one against the
-      already-selected small set of representative faces per cluster, instead of against every
-      other unmatched face. Needs a real design pass tomorrow (how "more than 3 common faces"
-      cleanly maps onto a similarity threshold/voting rule, how cluster representatives get
-      chosen/replaced as more faces join, how this interacts with `MAX_UNGROUPED_FACES_PER_RUN`'s
-      existing per-run slicing) before touching code.

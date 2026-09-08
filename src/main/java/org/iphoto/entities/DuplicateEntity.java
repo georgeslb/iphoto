@@ -11,7 +11,9 @@ import java.util.Set;
 import java.util.UUID;
 
 @Entity
-@Table(name = "duplicates", indexes = {@Index(columnList = "hash", name = "idx_hash_duplicates")})
+@Table(name = "duplicates",
+        uniqueConstraints = {@UniqueConstraint(name = "uk_duplicates_hash", columnNames = "hash")},
+        indexes = {@Index(columnList = "space_id", name = "idx_duplicates_space_id")})
 @EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true)
 @ToString(onlyExplicitlyIncluded = true)
 @Getter
@@ -27,7 +29,9 @@ public class DuplicateEntity extends BaseEntity {
     @OneToMany(fetch = FetchType.LAZY, mappedBy = "duplicate", cascade = {CascadeType.ALL})
     private Set<PhotoDuplicateEntity> photoDuplicates;
 
-    @Column(unique = true)
+    // Uniqueness enforced by uk_duplicates_hash above (named explicitly, matching V1's
+    // convention) rather than @Column(unique = true), which would leave Hibernate to pick its
+    // own unnamed constraint name.
     private String hash;
 
     public DuplicateEntity() {

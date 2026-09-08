@@ -19,7 +19,9 @@ import java.util.UUID;
 // unassigned face with the same embedding and relink it to the same person right away.
 @Entity
 @Table(name = "face_link_exclusions", uniqueConstraints = {
-        @UniqueConstraint(name = "face_excluded_person_unique", columnNames = {"face_id", "excluded_person_id"})
+        @UniqueConstraint(name = "uk_face_link_exclusions_face_id_excluded_person_id", columnNames = {"face_id", "excluded_person_id"})
+}, indexes = {
+        @Index(columnList = "excluded_person_id", name = "idx_face_link_exclusions_excluded_person_id")
 })
 @Getter
 @Setter

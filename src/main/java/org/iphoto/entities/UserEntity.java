@@ -8,7 +8,7 @@ import java.util.Set;
 import java.util.UUID;
 
 @Entity
-@Table(name = "users")
+@Table(name = "users", uniqueConstraints = @UniqueConstraint(name = "uk_users_username", columnNames = "username"))
 @Data
 @EqualsAndHashCode(callSuper = false)
 @Builder(toBuilder = true)

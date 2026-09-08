@@ -8,7 +8,10 @@ import java.util.UUID;
 
 @EqualsAndHashCode(onlyExplicitlyIncluded = true)
 @Entity
-@Table(name = "faces")
+@Table(name = "faces", indexes = {
+        @Index(columnList = "photo_id", name = "idx_faces_photo_id"),
+        @Index(columnList = "person_id", name = "idx_faces_person_id")
+})
 @Getter
 @Setter
 @SuperBuilder

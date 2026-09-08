@@ -13,8 +13,11 @@ import java.util.UUID;
 
 @Entity
 @Table(name = "albums", uniqueConstraints = {
-        @UniqueConstraint(name = "name_space_unique_albums", columnNames = { "name", "space_id"}),
-        @UniqueConstraint(name = "uk_albums_external", columnNames = { "external_source", "external_id" })
+        @UniqueConstraint(name = "uk_albums_name_space_id", columnNames = { "name", "space_id"}),
+        @UniqueConstraint(name = "uk_albums_external_source_external_id", columnNames = { "external_source", "external_id" })
+}, indexes = {
+        @Index(columnList = "space_id", name = "idx_albums_space_id"),
+        @Index(columnList = "cover_photo_id", name = "idx_albums_cover_photo_id")
 })
 @EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true) // Changed callSuper to true
 @SuperBuilder
@@ -49,7 +52,7 @@ public final class AlbumEntity extends BaseEntity { // Extends BaseEntity
         name = "album_photos",
         joinColumns = @JoinColumn(name = "album_id"),
         inverseJoinColumns = @JoinColumn(name = "photo_id"),
-        indexes = {@Index(columnList = "photo_id",name =  "idx_photo_id_albums")}
+        indexes = {@Index(columnList = "photo_id", name = "idx_album_photos_photo_id")}
     )
     private Set<PhotoEntity> photos;
 

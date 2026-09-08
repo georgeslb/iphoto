@@ -11,8 +11,10 @@ import java.util.Objects;
 import java.util.UUID;
 
 @Entity
-@Table(name = "duplicate_photos", uniqueConstraints = {@UniqueConstraint(name = "photo_album_unique", columnNames = { "photo_id", "duplicate_id"})}
-        ,indexes = {@Index(columnList = "photo_id", name = "photo_index"), @Index(columnList = "duplicate_id", name = "duplicate_index")})
+@Table(name = "duplicate_photos", uniqueConstraints = {@UniqueConstraint(name = "uk_duplicate_photos_photo_id_duplicate_id", columnNames = { "photo_id", "duplicate_id"})}
+        // photo_id has no standalone index - it's already the leading column of the unique
+        // constraint above (see V1__baseline_schema.sql's own comment on this table).
+        ,indexes = {@Index(columnList = "duplicate_id", name = "idx_duplicate_photos_duplicate_id")})
 @Getter
 @Setter
 @Builder

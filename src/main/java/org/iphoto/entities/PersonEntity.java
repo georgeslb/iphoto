@@ -11,7 +11,11 @@ import java.util.UUID;
 
 @EqualsAndHashCode(callSuper = true)
 @Entity
-@Table(name = "people")
+// uk_people_cover_face_id matches this @OneToOne cover_face_id's implicit uniqueness (V1's
+// ground truth - see V1__baseline_schema.sql) rather than leaving it unnamed.
+@Table(name = "people",
+        uniqueConstraints = {@UniqueConstraint(name = "uk_people_cover_face_id", columnNames = "cover_face_id")},
+        indexes = {@Index(columnList = "space_id", name = "idx_people_space_id")})
 @Getter
 @Setter
 @SuperBuilder

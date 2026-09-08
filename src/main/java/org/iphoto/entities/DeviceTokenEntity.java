@@ -12,7 +12,9 @@ import java.util.UUID;
 // never persisted or logged. revokedAt null = active; soft-revoke (not delete) so a device's
 // history stays visible in "manage devices" rather than just disappearing.
 @Entity
-@Table(name = "device_tokens")
+@Table(name = "device_tokens",
+        uniqueConstraints = {@UniqueConstraint(name = "uk_device_tokens_token_hash", columnNames = "token_hash")},
+        indexes = {@Index(columnList = "user_id,created_at", name = "idx_device_tokens_user_id_created_at")})
 @Data
 @EqualsAndHashCode(callSuper = false)
 @Builder(toBuilder = true)
@@ -34,7 +36,9 @@ public class DeviceTokenEntity implements Persistable<UUID> {
     @JoinColumn(name = "user_id", nullable = false)
     private UserEntity user;
 
-    @Column(nullable = false, unique = true)
+    // Uniqueness enforced by uk_device_tokens_token_hash above (named explicitly), rather than
+    // @Column(unique = true) leaving Hibernate to pick its own unnamed constraint.
+    @Column(nullable = false)
     private String tokenHash;
 
     @ToString.Include

@@ -17,7 +17,8 @@ import java.util.UUID;
 import static jakarta.persistence.EnumType.STRING;
 
 @Entity
-@Table(name = "spaces", uniqueConstraints = {@UniqueConstraint(name = "name_user_unique", columnNames = { "name", "user_id"})})
+@Table(name = "spaces", uniqueConstraints = {@UniqueConstraint(name = "uk_spaces_name_user_id", columnNames = { "name", "user_id"})},
+        indexes = {@Index(columnList = "user_id", name = "idx_spaces_user_id")})
 @EqualsAndHashCode(onlyExplicitlyIncluded = true) // Changed callSuper to true
 @SuperBuilder
 @Getter

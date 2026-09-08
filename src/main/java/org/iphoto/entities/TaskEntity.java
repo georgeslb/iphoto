@@ -9,7 +9,14 @@ import java.time.LocalDateTime;
 import java.util.UUID;
 
 @Entity
-@Table(name = "tasks", indexes = {@Index(columnList = "status", name = "status_index"), @Index(columnList = "status,task_type", name = "status_task_type_index"), @Index(columnList = "status,photo_id", name = "status_photo_id_index")})
+@Table(name = "tasks", indexes = {
+        @Index(columnList = "status", name = "idx_tasks_status"),
+        @Index(columnList = "status,task_type", name = "idx_tasks_status_task_type"),
+        @Index(columnList = "status,photo_id", name = "idx_tasks_status_photo_id"),
+        @Index(columnList = "task_type,created_at", name = "idx_tasks_task_type_created_at"),
+        @Index(columnList = "user_id,task_type", name = "idx_tasks_user_id_task_type"),
+        @Index(columnList = "photo_id,task_type", name = "idx_tasks_photo_id_task_type")
+})
 @Data
 @EqualsAndHashCode(onlyExplicitlyIncluded = true)
 @Builder(toBuilder = true)
