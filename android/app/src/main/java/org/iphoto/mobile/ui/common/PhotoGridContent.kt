@@ -62,7 +62,7 @@ fun PhotoGridContent(
                 // newest-first-by-day without needing to re-sort anything.
                 val dayGroups = remember(state.photos) { state.photos.groupBy { it.groupDate } }
                 LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = 100.dp),
+                    columns = GridCells.Fixed(4),
                     contentPadding = PaddingValues(2.dp),
                     horizontalArrangement = Arrangement.spacedBy(2.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),

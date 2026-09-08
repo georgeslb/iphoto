@@ -1619,7 +1619,7 @@ button.upload-item-name.upload-item-name-link:hover {
      just shrinking the same masonry layout. */
   .photo-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+    grid-template-columns: repeat(4, 1fr);
     gap: 2px;
   }
   .photo-grid::after {
@@ -1703,7 +1703,7 @@ button.upload-item-name.upload-item-name-link:hover {
 
 @media (max-width: 480px) {
   .photo-grid {
-    grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+    grid-template-columns: repeat(4, 1fr);
     gap: 2px;
   }
 
