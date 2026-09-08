@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Check, User } from 'lucide-react';
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
@@ -9,7 +9,24 @@ import PersonMergePrompt from './PersonMergePrompt';
 export default function Persons() {
   const { messages } = useLocale(); // Use the useLocale hook
   const navigate = useNavigate();
-  const { persons, fetchPersons } = usePersons();
+  const { persons, fetchPersons, hasMore, loadMore } = usePersons();
+  const sentinelRef = useRef(null);
+
+  // Infinite-scroll load-more, same IntersectionObserver idiom PhotoGrid.jsx's day-indexed
+  // sentinels use: the sentinel div only renders while there's another page to fetch (see the JSX
+  // below), so it naturally disappears once the list is exhausted.
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return undefined;
+    const observer = new IntersectionObserver(
+      entries => {
+        if (entries[0]?.isIntersecting) loadMore();
+      },
+      { rootMargin: '400px' }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [loadMore]);
   const [editingId, setEditingId] = useState(null);
   const [newName, setNewName] = useState('');
   const [selectedIds, setSelectedIds] = useState([]);
@@ -152,6 +169,7 @@ export default function Persons() {
           );
         })}
       </div>
+      {hasMore && <div ref={sentinelRef} style={{ height: 1 }} />}
       {collisionCandidates && (
         <PersonMergePrompt
           name={pendingName}
