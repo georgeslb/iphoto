@@ -2481,7 +2481,7 @@ new work is identified or completed, so nothing gets lost between sessions.
         103/103 pass. Frontend: new `photoReorder.test.js` (9/9) plus 4 new
         `usePhotoActions.test.js` cases for `handleReorderPhotos`; full suite 125/125 pass;
         `npm run build` succeeds. Not yet manually clicked through in the running app.
-- [ ] **Feature**: detect blurry faces and reject them at detection time (option (e) below,
+- [x] **Feature**: detect blurry faces and reject them at detection time (option (e) below,
       confirmed 2026-09-09 — see the Design decision note for why/scope).
       - **Technique**: variance of the Laplacian (Pech-Pacheco et al.) — grayscale the face crop,
         run a Laplacian edge filter, take the variance of the result. Sharp faces have lots of
@@ -2529,6 +2529,23 @@ new work is identified or completed, so nothing gets lost between sessions.
         (d) deprioritizing blurry faces in `FaceRecognitionService`'s similarity matching — highest
         risk/complexity of the four, and irrelevant if (e) means blurry faces never reach matching
         at all.
+      **Done** (2026-09-09, overnight run): new `BlurDetector.laplacianVariance(BufferedImage)`
+      (`org.iphoto.configuration`) - grayscale via `Java2DFrameConverter` +
+      `OpenCVFrameConverter.ToMat` (this app's existing `org.bytedeco:opencv`/`javacv` dependency,
+      no new one added), `opencv_imgproc.Laplacian` + `opencv_core.meanStdDev`. Hooked into
+      `FaceDetectionServiceImpl.detectAndSaveFaces` right after `subImage` (the raw crop) is taken,
+      before `FaceAligner.align`/resizing - a crop scoring below `BLUR_VARIANCE_THRESHOLD` (100.0)
+      is `continue`d past, same as the existing `MIN_FACE_SIZE`/`SMALL_FACE_MIN_CONFIDENCE` checks,
+      never becoming a `FaceEntity`. **Threshold caveat, stated plainly rather than overclaimed**:
+      100.0 is the literature default (Pech-Pacheco et al.), NOT independently verified against this
+      app's real photos - this environment has no real photo library to tune it against. What IS
+      verified (`BlurDetectorTest`, synthetic images): a sharp checkerboard scores >10x higher than
+      a genuinely box-blurred version of itself, a flat/solid-color image scores near zero, and the
+      checkerboard clears 100 by a wide margin. Whoever has access to this app's real photo library
+      should sample some genuinely blurry vs. sharp face crops and confirm 100 actually separates
+      them well before trusting it long-term. No existing `FaceEntity`/`PersonEntity` row touched -
+      exactly as scoped. `mvn test`: full suite green, 120 tests (117 + 3 new), run twice
+      back-to-back.
 - [x] **Feature**: whole-person rename now merges on a name collision, and the Person page title
       became editable. User's spec: renaming a person to a name that doesn't exist yet just
       renames it; renaming to a name that already belongs to one or more OTHER people prompts a
@@ -4513,7 +4530,7 @@ new work is identified or completed, so nothing gets lost between sessions.
       - The `@MainSpaceLimited`/heavy-task-thread global-pooling factor (open question 4 above)
         remains untouched and out of scope, exactly as directed.
 
-- [ ] **Bug** (user report, 2026-09-09): `GET /api/faces/persons` is a real `Page<PersonDTO>`
+- [x] **Bug** (user report, 2026-09-09): `GET /api/faces/persons` is a real `Page<PersonDTO>`
       (`FaceController#getPersons`, `@PageableDefault(size = 50, ...)`), but `hooks/usePersons.js`
       calls `fetch('/api/faces/persons')` with no `page`/`size` params and no load-more mechanism
       at all — it just takes `data.content` and stops, so anyone with more than 50 people (or,
@@ -4526,8 +4543,14 @@ new work is identified or completed, so nothing gets lost between sessions.
       the shape `useDayIndexedPhotos.js`/`useSharedAlbumPhotos.js` already use for the
       `{content, page: {size, number, totalElements, totalPages}}` VIA_DTO envelope (see
       `JsonConfiguration`'s `@EnableSpringDataWebSupport(pageSerializationMode = VIA_DTO)`).
+      **Done** (2026-09-09, overnight run): `usePersons.js` now tracks `page`/`hasMore` state -
+      `fetchPersons()` resets to page 0 and replaces, `loadMore()` appends the next page.
+      `Persons.jsx` wires an `IntersectionObserver` bottom sentinel to `loadMore()`, same idiom
+      `PhotoGrid.jsx`'s day-indexed pagination uses. Added `usePersons.test.js` (4 tests: initial
+      fetch + `hasMore`, `loadMore` appending, `loadMore` no-op once exhausted, `fetchPersons`
+      resetting to page 0). `npm test`: 129/129 pass.
 
-- [ ] **Feature** (user request, 2026-09-09): Persons should sort named people before unnamed
+- [x] **Feature** (user request, 2026-09-09): Persons should sort named people before unnamed
       ones, then by photo count descending — i.e. `ORDER BY (name IS NULL OR name = ''), photoCount
       DESC` in spirit. `FaceController#getPersons`'s current `@PageableDefault(sort = "name",
       direction = DESC)` can't express this (plain property sort has no "empty/null last" concept,
@@ -4544,8 +4567,27 @@ new work is identified or completed, so nothing gets lost between sessions.
       rather than computed per-request) — do not fake the sort with client-side re-ordering of one
       already-paginated page, since that would only sort within each page, not across the whole
       list.
+      **Done** (2026-09-09, overnight run): confirmed the real blocker - `PersonEntity` had NO
+      `photoCount` column at all; `mapToPerson` computed it per-request via
+      `photoService.findByPerson(...).getTotalElements()` (an N+1 query per person on every Persons
+      page load). Added `PersonEntity.photoCount` as a persisted, incrementally-maintained column
+      (`V1__baseline_schema.sql`, `not null default 0`, `@Builder.Default 0`) - recompute-on-write
+      via a fresh `PhotoRepository.countDistinctByFacesPerson` (COUNT DISTINCT, so a photo with 2+
+      faces of the same person still counts once) at every point a face is attached to/detached
+      from a person, same call sites `PersonEmbeddingBucketEntity` maintenance already documents:
+      `PersonRecognitionServiceImpl.updatePerson/addPerson/mergeFacesIntoTarget`,
+      `FaceServiceImpl.attachFaceToPerson/detachFaceFromPerson/deleteFace`,
+      `FaceDetectionServiceImpl.deleteFaces`. New `PersonRepository.
+      findAllOrderByNamedFirstThenPhotoCountDesc` (fixed JPQL `ORDER BY CASE WHEN...`);
+      `FaceServiceImpl.getPersons` strips any `Sort` off the incoming `Pageable` (down to
+      `PageRequest.of(page, size)`) before calling it, so `?sort=` can never override the fixed
+      order. `mapToPerson` now reads the persisted column directly (also kills the old N+1).
+      Verified: `mvn test` full suite green, 117 tests, run twice back-to-back; added
+      `FaceServiceTest` coverage (photoCount recalculating across setFacePerson/unlink/delete, a
+      3-faces-1-photo merge collapsing to photoCount=1 proving the DISTINCT, and the sort order
+      holding even when the request asks for `?sort=name,asc`).
 
-- [ ] **Feature** (user request, 2026-09-09): a back button on the Person detail page
+- [x] **Feature** (user request, 2026-09-09): a back button on the Person detail page
       (`PersonDetail.jsx`, route `/persons/:personId`) to navigate back to the Persons grid
       (`/persons`). There's already an exact precedent for this pattern to copy — `Header.jsx`
       renders a `<button onClick={() => navigate('/albums')}><ArrowLeft/></button>` when
@@ -4556,8 +4598,11 @@ new work is identified or completed, so nothing gets lost between sessions.
       actually threaded into `Header.jsx` before assuming the exact same mechanism transfers
       as-is) navigating to `navigate('/persons')`. New i18n key `backToPersons` (en/fr), matching
       `backToAlbums`/`backToSpaces`'s existing style.
+      **Done** (2026-09-09, overnight run): confirmed no `menuPersonId`-equivalent plumbing exists
+      for Persons - used the pathname test alone (`pathname.startsWith('/persons/')`), unambiguous
+      since `/persons/:id` always means a specific person is being viewed. `npm test`: 129/129 pass.
 
-- [ ] **Feature** (user request, 2026-09-09): a search/sort text input for the Albums grid
+- [x] **Feature** (user request, 2026-09-09): a search/sort text input for the Albums grid
       (`/albums` route, `AlbumGridDisplay.jsx`, fed by `useAlbumManagement.js`'s `albums` state
       from `GET /api/albums` — already returns the full unpaginated list, so this can be a
       client-side filter, no backend change needed). User's own word was "beautiful" — this is a
@@ -4574,8 +4619,15 @@ new work is identified or completed, so nothing gets lost between sessions.
       realistically small enough for a plain `useMemo`-filtered re-render on every keystroke to
       stay smooth — if the album count is large enough that this is a concern, that's worth a note
       rather than silently shipping something janky.
+      **Done** (2026-09-09, overnight run): confirmed `AlbumServiceImpl.getAllAlbums` already sorts
+      by name, so no extra client-side sort was needed on top of the filter. Client-side
+      case-insensitive substring filter (`useMemo`, no debounce), styled search bar (`.modal-input`
+      + `lucide-react`'s `Search` icon) rendered as a sibling ahead of the grid's own
+      `.content-body`, same pattern `LibraryTimeline.jsx`'s `.library-timeline` uses. Distinct empty
+      states for "no albums at all" vs. "no albums match this search" (new
+      `noAlbumsMatchSearch` key). `npm test`: 129/129 pass.
 
-- [ ] **Bug** (user report, 2026-09-09): mobile web and the native Android app show a variable
+- [x] **Bug** (user report, 2026-09-09): mobile web and the native Android app show a variable
       photo-grid column count (commonly 5 on typical phone widths) instead of a fixed 4. Both use
       "auto-fill by minimum tile size" grids, which is what makes the count viewport-width-
       dependent rather than a deliberate fixed number:
@@ -4595,8 +4647,12 @@ new work is identified or completed, so nothing gets lost between sessions.
         column count today (check before assuming). Not verifiable against a real Android
         build/emulator in this environment (same caveat as other Android-touching entries in this
         file) — worth a real-device check before shipping.
+      **Done** (2026-09-09, overnight run): both switched to `repeat(4, 1fr)` /
+      `GridCells.Fixed(4)` exactly as scoped above. No other CSS/logic touched. `npm test`:
+      129/129 pass (no test asserted a specific column count). Android side NOT build-verified (no
+      Android SDK/emulator in this environment) - worth a real-device check before shipping.
 
-- [ ] **Feature** (user request, 2026-09-09): on mobile web and the Android app, the duplicate-
+- [x] **Feature** (user request, 2026-09-09): on mobile web and the Android app, the duplicate-
       cluster badge (the small "×N similar" indicator on a photo grid card for a cluster of
       matching duplicates) should show only the icon and count, no "similar" text label — full text
       is presumably too cramped once the item above lands (4 narrower columns instead of 5).
@@ -4624,6 +4680,10 @@ new work is identified or completed, so nothing gets lost between sessions.
         `PhotoGridContent.kt`/`PhotoThumbnail.kt` renders anything from it yet. Not a bug to fix
         today, just a design constraint to record for whenever that native feature actually gets
         built: icon + count only, matching the web behavior above, no text label from day one.
+      **Done** (2026-09-09, overnight run - web only, Android untouched per its own note above):
+      split `similarPhotosBadge` into a standalone count + new `similarLabel` key, CSS-hidden at
+      the `≤768px` breakpoint exactly as scoped. `DuplicateClusterModal.jsx` untouched.
+      `npm test`: 129/129 pass.
 
 - [ ] **Flaky test** (user report, 2026-09-09): `PhotoServiceTest.
       downloadSingleAndMultiplePhotosSetContentDispositionAndZipEntries` fails intermittently in
@@ -4657,3 +4717,45 @@ new work is identified or completed, so nothing gets lost between sessions.
         in `PhotoController#downloadMultiple` to see, at the moment of failure, exactly which photoId
         is missing and why (not found by `findByIdInAndSpaceUserId`, vs. found but
         `originalPath`/file missing on disk).
+      - **2026-09-09 overnight run — further investigation, real bug found and fixed, but NOT
+        confirmed as root cause**: re-ran the isolated-test check (`mvn test -Dtest=PhotoServiceTest`,
+        6 clean runs) — confirms it still doesn't reproduce alone. Ran the full suite clean twice
+        (both green, 120/121 tests) before a background repeated-full-suite-run attempt got
+        contaminated by concurrent source edits (BUILD FAILURE from a mid-edit compile, not a real
+        test failure — confirmed by an immediate clean `mvn -q compile` right after finishing the
+        edit) and was abandoned rather than restarted, given this is a bonus/best-effort item.
+        While reasoning through the collision theory above, found a SEPARATE, real, independently-
+        verifiable concurrency bug: `TaskWorkerManagerImpl.queuedTasks` (the in-memory guard against
+        double-submitting a task to an executor) did its check-then-add as two separate steps
+        (`if (!contains) add(...)`) on a `CopyOnWriteArrayList`, not one atomic operation, across
+        THREE call sites (`pollLightPendingTasks`, `pollMiddleChargeTasks`, `pollHeavyTaskType`).
+        `pollLightPendingTasks` (handles `PROCESS_UPLOAD`, this test's own upload path) runs both on
+        a real `@Scheduled(fixedDelay=5000)` timer thread AND via `AbstractIntegrationTest.
+        waitForTaskCompletion`'s own direct call, on two different threads that CAN genuinely race —
+        this exact class of bug is already independently documented (see `queuedTasks`'s own
+        pre-existing comment) as an observed production issue for `UPLOAD_FROM_IMMICH`
+        (`FileAlreadyExistsException`), just not previously connected to `PROCESS_UPLOAD` or to this
+        flaky test. If two threads both submit the same `PROCESS_UPLOAD` task, both build a
+        `PhotoEntity` with the identical `id` (`task.getPhotoId()`, pre-allocated at upload-chunk
+        time) and race `Files.move()`'ing the same temp file — the loser gets a `NoSuchFileException`
+        and fails the task, and depending on which of the two transactions commits its own
+        task-status update LAST, the task's final persisted status ends up unpredictably COMPLETED
+        or FAILED even though the photo itself was created correctly by the winner. Fixed
+        (`queuedTasks` → `ConcurrentHashMap.newKeySet()`, `Set.add()`'s return value used as the
+        atomic check-and-mark) in a separate commit, with a new
+        `TaskWorkerManagerConcurrentPollTest` (many concurrent pollers hammering a real upload's
+        task). **Honesty check, not overclaiming**: hammering the poll from up to 64 concurrent
+        threads, several attempts, did NOT reproduce the pre-fix race even against the original
+        unfixed code — the real window (between `findExecutableTasks`' SELECT and `markQueued`'s
+        commit) is apparently narrower than plain JVM thread-scheduling jitter reliably hits against
+        an in-memory H2 DB. So: this is a real, independently-justified concurrency fix (worth
+        having regardless), and it targets a plausible failure family (task status becoming wrong
+        while the underlying data is actually fine) - but it is **not confirmed** to be the exact
+        mechanism behind the "zip size" symptom specifically. Root cause is still open.
+      - **What's left, for whoever picks this up next**: the debug-logging approach above (around
+        `findOwnedByIds`/the zip-writing loop, to see at failure time exactly which photoId is
+        missing and why) is still the most direct path to a confirmed root cause, since neither
+        mechanism ruled in so far (hash collision, task-double-submission) cleanly explains the
+        observed symptom on its own. A long repeated-full-suite-run loop (dozens of iterations,
+        uninterrupted by other work in the same checkout) is the other option, just expensive in
+        wall-clock time.
