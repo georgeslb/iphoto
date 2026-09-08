@@ -96,6 +96,18 @@ iphoto:
 
 server:
   port: 8080
+  # docker-compose.yml runs this app behind an external nginx reverse proxy (upload.attieh.uk) -
+  # without this, Spring/Tomcat has no idea the original request was HTTPS on the real hostname
+  # (it only sees plain HTTP from nginx on the compose-internal network) and builds any
+  # scheme/host-dependent value (redirect Location headers, request.isSecure()) off that wrong
+  # view instead of nginx's X-Forwarded-Proto/-Host/-For headers. "framework" delegates the
+  # translation to Spring's own ForwardedHeaderFilter (recommended over "native"'s
+  # Tomcat-Valve-based approach for a Spring Security app - runs as a normal filter, ahead of the
+  # security filter chain, which is what "native" bypasses). Not the fix for the reported
+  # guest-share-session issue by itself (verified via ShareFlowIntegrationTest that session
+  # establishment/ShareAccessFilter/guest endpoints all work correctly end-to-end already) - this
+  # is a real, separate gap in reverse-proxy correctness worth closing regardless.
+  forward-headers-strategy: framework
   servlet:
     session:
       timeout: 30m
