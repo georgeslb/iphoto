@@ -21,5 +21,12 @@ public interface TaskWorkerManager {
     // poller ever picking it back up (worker thread died, app restart, submit() failure, ...).
     void reclaimStuckProcessingTasks();
 
+    // Periodic visibility into each pool's own backlog (queued = submitted but no free thread yet,
+    // active = actually running right now) - the only place all four executors' state is reported
+    // together, so a growing backlog on one specific pool (vs. the others) is visible directly in
+    // the logs rather than only inferrable from how fast tasks move through pollLightPendingTasks/
+    // etc.
+    void logThreadPoolStatus();
+
     void shutdown();
 }

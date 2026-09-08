@@ -122,42 +122,52 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
     @Override
     @Scheduled(fixedDelay = 5000)
     public void pollLightPendingTasks() {
-        adjustLightConcurrencyForCpuLoad();
-        int limit = lightConcurrencyLimit.get();
+        log.info("pollLightPendingTasks starting");
+        try {
+            adjustLightConcurrencyForCpuLoad();
+            int limit = lightConcurrencyLimit.get();
 
-        Set<TaskEntity> lightTasks = new HashSet<>();
-        if (lightThreadPoolExecutor.getQueueSize() < limit) {
-            lightTasks = transactionTemplate.execute(status ->
-                    taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), LocalDateTime.now(), LIGHT_TASK_TYPES, Limit.of(limit - lightThreadPoolExecutor.getQueueSize())));
-        }
-
-        markQueued(lightTasks);
-        // See queuedTasks' own field comment for why this check exists - findExecutableTasks
-        // above filters on PENDING, but a task reclaimed by reclaimStuckProcessingTasks while
-        // still genuinely running could otherwise be re-submitted here on top of itself.
-        for (TaskEntity task : lightTasks) {
-            if (!queuedTasks.contains(task.getId())){
-                queuedTasks.add(task.getId());
-                lightThreadPoolExecutor.submit(() -> processTask(task.getId()));
+            Set<TaskEntity> lightTasks = new HashSet<>();
+            if (lightThreadPoolExecutor.getQueueSize() < limit) {
+                lightTasks = transactionTemplate.execute(status ->
+                        taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), LocalDateTime.now(), LIGHT_TASK_TYPES, Limit.of(limit - lightThreadPoolExecutor.getQueueSize())));
             }
+
+            markQueued(lightTasks);
+            // See queuedTasks' own field comment for why this check exists - findExecutableTasks
+            // above filters on PENDING, but a task reclaimed by reclaimStuckProcessingTasks while
+            // still genuinely running could otherwise be re-submitted here on top of itself.
+            for (TaskEntity task : lightTasks) {
+                if (!queuedTasks.contains(task.getId())){
+                    queuedTasks.add(task.getId());
+                    lightThreadPoolExecutor.submit(() -> processTask(task.getId()));
+                }
+            }
+        } finally {
+            log.info("pollLightPendingTasks finished");
         }
     }
 
     @Scheduled(fixedDelay = 60000)
     @Override
     public void pollMiddleChargeTasks() {
-        Set<TaskEntity> middleTasks = new HashSet<>();
-        if (middleThreadPoolExecutor.getQueueSize() < middleThreadPoolExecutor.getQueueCapacity()) {
-            middleTasks = transactionTemplate.execute(status ->
-                    taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), LocalDateTime.now(), MIDDLE_TASK_TYPES, Limit.of(middleThreadPoolExecutor.getQueueCapacity() - middleThreadPoolExecutor.getQueueSize())));
-        }
-
-        markQueued(middleTasks);
-        for (TaskEntity task : middleTasks) {
-            if (!queuedTasks.contains(task.getId())) {
-                queuedTasks.add(task.getId());
-                middleThreadPoolExecutor.submit(() -> processTask(task.getId()));
+        log.info("pollMiddleChargeTasks starting");
+        try {
+            Set<TaskEntity> middleTasks = new HashSet<>();
+            if (middleThreadPoolExecutor.getQueueSize() < middleThreadPoolExecutor.getQueueCapacity()) {
+                middleTasks = transactionTemplate.execute(status ->
+                        taskRepository.findExecutableTasks(TaskStatus.PENDING.name(), LocalDateTime.now(), MIDDLE_TASK_TYPES, Limit.of(middleThreadPoolExecutor.getQueueCapacity() - middleThreadPoolExecutor.getQueueSize())));
             }
+
+            markQueued(middleTasks);
+            for (TaskEntity task : middleTasks) {
+                if (!queuedTasks.contains(task.getId())) {
+                    queuedTasks.add(task.getId());
+                    middleThreadPoolExecutor.submit(() -> processTask(task.getId()));
+                }
+            }
+        } finally {
+            log.info("pollMiddleChargeTasks finished");
         }
     }
     // See pollPendingTasks' own comment for why this has to happen before submit(), not after -
@@ -213,17 +223,27 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
     @Override
     @Scheduled(fixedDelay = 300_000)
     public void pollFaceRecognitionTask() {
-        if (!adminService.isHeavyTasksActivated()) return;
+        log.info("pollFaceRecognitionTask starting");
+        try {
+            if (!adminService.isHeavyTasksActivated()) return;
 
-        pollHeavyTaskType(TaskType.FACE_RECOGNITION, faceRecognitionThreadPoolExecutor);
+            pollHeavyTaskType(TaskType.FACE_RECOGNITION, faceRecognitionThreadPoolExecutor);
+        } finally {
+            log.info("pollFaceRecognitionTask finished");
+        }
     }
 
     @Scheduled(fixedDelay = 30000)
     @Override
     public void pollDuplicationTask() {
-        if (!adminService.isHeavyTasksActivated()) return;
+        log.info("pollDuplicationTask starting");
+        try {
+            if (!adminService.isHeavyTasksActivated()) return;
 
-        pollHeavyTaskType(TaskType.CHECK_DUPLICATION, duplicationThreadPoolExecutor);
+            pollHeavyTaskType(TaskType.CHECK_DUPLICATION, duplicationThreadPoolExecutor);
+        } finally {
+            log.info("pollDuplicationTask finished");
+        }
     }
 
 
@@ -270,18 +290,38 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
     @Override
     @Scheduled(fixedDelay = 3_600_000)
     public void reclaimStuckProcessingTasks() {
-        LocalDateTime threshold = LocalDateTime.now().minus(STUCK_TASK_AGE);
-        transactionTemplate.executeWithoutResult(status -> {
-            List<TaskEntity> stuck = taskRepository.findByStatusInAndUpdatedAtBefore(IN_FLIGHT_STATUSES, threshold);
-            if (stuck.isEmpty()) return;
-            log.warn("Reclaiming {} task(s) stuck QUEUED/PROCESSING for over {} - resetting to PENDING with a randomized retry delay",
-                    stuck.size(), STUCK_TASK_AGE);
-            for (TaskEntity task : stuck) {
-                task.setStatus(TaskStatus.PENDING);
-                task.setExecuteAt(LocalDateTime.now().plusMinutes(randomRetryDelayMinutes()));
-                taskRepository.save(task);
-            }
-        });
+        log.info("reclaimStuckProcessingTasks starting");
+        try {
+            LocalDateTime threshold = LocalDateTime.now().minus(STUCK_TASK_AGE);
+            transactionTemplate.executeWithoutResult(status -> {
+                List<TaskEntity> stuck = taskRepository.findByStatusInAndUpdatedAtBefore(IN_FLIGHT_STATUSES, threshold);
+                if (stuck.isEmpty()) return;
+                log.warn("Reclaiming {} task(s) stuck QUEUED/PROCESSING for over {} - resetting to PENDING with a randomized retry delay",
+                        stuck.size(), STUCK_TASK_AGE);
+                for (TaskEntity task : stuck) {
+                    task.setStatus(TaskStatus.PENDING);
+                    task.setExecuteAt(LocalDateTime.now().plusMinutes(randomRetryDelayMinutes()));
+                    taskRepository.save(task);
+                }
+            });
+        } finally {
+            log.info("reclaimStuckProcessingTasks finished");
+        }
+    }
+
+    // How often logThreadPoolStatus reports. Independent of every poll*PendingTasks interval
+    // above (5s-5min) - this is a monitoring tick, not a work tick, so one interval covering all
+    // four pools is simpler than matching each pool's own cadence.
+    @Override
+    @Scheduled(fixedDelay = 60_000)
+    public void logThreadPoolStatus() {
+        log.info("Thread pool status - light: {} queued/{} active, middle: {} queued/{} active, " +
+                        "duplication: {} queued/{} active, faceRecognition: {} queued/{} active, in-flight tasks tracked: {}",
+                lightThreadPoolExecutor.getQueueSize(), lightThreadPoolExecutor.getActiveCount(),
+                middleThreadPoolExecutor.getQueueSize(), middleThreadPoolExecutor.getActiveCount(),
+                duplicationThreadPoolExecutor.getQueueSize(), duplicationThreadPoolExecutor.getActiveCount(),
+                faceRecognitionThreadPoolExecutor.getQueueSize(), faceRecognitionThreadPoolExecutor.getActiveCount(),
+                queuedTasks.size());
     }
 
     private int randomRetryDelayMinutes() {
@@ -301,6 +341,11 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
             transactionTemplate.executeWithoutResult(status -> {
                 TaskEntity task = taskRepository.findById(taskId).orElse(null);
                 if (task == null) return;
+                // A few task types (SYNC_FROM_IMMICH/UPLOAD_FROM_IMMICH - see ImmichImportServiceImpl)
+                // already log their own, more detailed "starting"/"done" pair - this one is
+                // deliberately generic and uniform across every task type, including the ones that
+                // don't have their own, and is the only place that logs the FINAL status explicitly.
+                log.info("Task {} ({}) started", task.getId(), task.getTaskType());
                 try {
                     if (PROCESS_UPLOAD.equals(task.getTaskType())) {
                         processUpload(task);
@@ -369,6 +414,7 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
                         immichImportService.recordAssetTaskFailure(task);
                     }
                 }
+                log.info("Task {} ({}) finished with status {}", task.getId(), task.getTaskType(), task.getStatus());
                 taskRepository.save(task);
             });
         } finally {
