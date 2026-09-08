@@ -30,6 +30,7 @@ import java.lang.management.ManagementFactory;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -72,6 +73,27 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
     private static final double CPU_LOAD_HIGH_THRESHOLD = 0.85;
     private final AtomicInteger lightConcurrencyLimit;
 
+    // In-memory guard against submitting the same task id to an executor twice while it's already
+    // in flight (queued or actively PROCESSING) - a real race, not theoretical: reclaimStuckProcessingTasks
+    // (see below) resets any task still QUEUED/PROCESSING past STUCK_TASK_AGE back to PENDING,
+    // which the next poll*PendingTasks tick would otherwise happily pick up and submit AGAIN even
+    // though the original run is still genuinely executing (a large Immich video download/upload
+    // taking longer than expected, not actually stuck). Two concurrent executions of the exact
+    // same UPLOAD_FROM_IMMICH task is exactly what produced a real production
+    // java.nio.file.FileAlreadyExistsException on Files.move (see
+    // ImmichImportServiceImpl#finalizeUploadFromImmich) - one execution wins and completes
+    // normally, the other trips over the file the winner already placed and gets marked FAILED,
+    // permanently skewing the day's imported/failed counters (see
+    // ImmichImportServiceImpl#reconcileOrphanedCompletedAsset, which now also corrects that
+    // specific double-count once a retry notices the asset is actually fully imported after all).
+    // A task id is added here the instant a poller decides to submit it (before executor.submit,
+    // so there's no window where it's "queued" but not yet tracked) and removed only once
+    // processTask has fully finished with it either way - see processTask's own comment. Plain
+    // task-id membership, not a full Set, because CopyOnWriteArrayList is what's already used
+    // elsewhere in this class for a similar small, read-mostly, cross-thread-visible list; a
+    // HashSet would need external synchronization instead for the same safety.
+    private final List<UUID> queuedTasks = new CopyOnWriteArrayList<>();
+
     public TaskWorkerManagerImpl(TaskRepository taskRepository, ObjectMapper objectMapper, TransactionTemplate transactionTemplate, DuplicationService duplicationService, PhotoService photoService, FaceDetectionService faceDetectionService, FaceRecognitionService faceRecognitionService
             , ImmichImportService immichImportService, ImmichAlbumImportService immichAlbumImportService, AdminService adminService, @Qualifier("lightThreadPoolExecutor") ThreadPoolTaskExecutor lightThreadPoolExecutor,
               @Qualifier("duplicationThreadPoolExecutor") ThreadPoolTaskExecutor duplicationThreadPoolExecutor,
@@ -110,8 +132,14 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
         }
 
         markQueued(lightTasks);
+        // See queuedTasks' own field comment for why this check exists - findExecutableTasks
+        // above filters on PENDING, but a task reclaimed by reclaimStuckProcessingTasks while
+        // still genuinely running could otherwise be re-submitted here on top of itself.
         for (TaskEntity task : lightTasks) {
-            lightThreadPoolExecutor.submit(() -> processTask(task.getId()));
+            if (!queuedTasks.contains(task.getId())){
+                queuedTasks.add(task.getId());
+                lightThreadPoolExecutor.submit(() -> processTask(task.getId()));
+            }
         }
     }
 
@@ -126,7 +154,10 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
 
         markQueued(middleTasks);
         for (TaskEntity task : middleTasks) {
-            middleThreadPoolExecutor.submit(() -> processTask(task.getId()));
+            if (!queuedTasks.contains(task.getId())) {
+                queuedTasks.add(task.getId());
+                middleThreadPoolExecutor.submit(() -> processTask(task.getId()));
+            }
         }
     }
     // See pollPendingTasks' own comment for why this has to happen before submit(), not after -
@@ -205,7 +236,10 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
         }
         markQueued(tasks);
         for (TaskEntity task : tasks) {
-            executor.submit(() -> processTask(task.getId()));
+            if (!queuedTasks.contains(task.getId())) {
+                queuedTasks.add(task.getId());
+                executor.submit(() -> processTask(task.getId()));
+            }
         }
     }
 
@@ -256,79 +290,90 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
 
     private void processTask(UUID taskId) {
         markProcessing(taskId);
-        transactionTemplate.executeWithoutResult(status -> {
-            TaskEntity task = taskRepository.findById(taskId).orElse(null);
-            if (task == null) return;
-            try {
-                if (PROCESS_UPLOAD.equals(task.getTaskType())) {
-                    processUpload(task);
-                } else if (PERMANENT_DELETE.equals(task.getTaskType())) {
-                    handlePermanentDelete(task);
-                    task.setStatus(TaskStatus.COMPLETED);
-                } else if (HASH_IMAGE.equals(task.getTaskType())) {
-                    duplicationService.hashImage(task);
-                    task.setStatus(TaskStatus.COMPLETED);
-                } else if (CHECK_DUPLICATION.equals(task.getTaskType())) {
-                    duplicationService.checkDuplication(task);
-                } else if (ISOLATE_FACES.equals(task.getTaskType())) {
-                    faceDetectionService.detectAndSaveFaces(task);
-                } else if (FACE_RECOGNITION.equals(task.getTaskType())) {
-                    faceRecognitionService.groupFaces();
-                    task.setExecuteAt(LocalDateTime.now().plusSeconds(30));
+        // queuedTasks.remove wraps the WHOLE call (not just the inner try/catch below) so it
+        // fires even when task == null (row deleted out from under an already-queued/PROCESSING
+        // task - e.g. triggerDayImportInternal's own cleanup, see ImmichImportServiceImpl) or if
+        // taskRepository.save(task) itself throws - either way this taskId must stop being
+        // considered "in flight", or a genuinely later, legitimate re-submission of a *different*
+        // task could never happen to reuse this exact (random) UUID anyway, but leaving it in the
+        // list forever is still a real bug worth not having, not just a harmless one.
+        try {
+            transactionTemplate.executeWithoutResult(status -> {
+                TaskEntity task = taskRepository.findById(taskId).orElse(null);
+                if (task == null) return;
+                try {
+                    if (PROCESS_UPLOAD.equals(task.getTaskType())) {
+                        processUpload(task);
+                    } else if (PERMANENT_DELETE.equals(task.getTaskType())) {
+                        handlePermanentDelete(task);
+                        task.setStatus(TaskStatus.COMPLETED);
+                    } else if (HASH_IMAGE.equals(task.getTaskType())) {
+                        duplicationService.hashImage(task);
+                        task.setStatus(TaskStatus.COMPLETED);
+                    } else if (CHECK_DUPLICATION.equals(task.getTaskType())) {
+                        duplicationService.checkDuplication(task);
+                    } else if (ISOLATE_FACES.equals(task.getTaskType())) {
+                        faceDetectionService.detectAndSaveFaces(task);
+                    } else if (FACE_RECOGNITION.equals(task.getTaskType())) {
+                        faceRecognitionService.groupFaces();
+                        task.setExecuteAt(LocalDateTime.now().plusSeconds(30));
+                        task.setStatus(TaskStatus.PENDING);
+                    } else if (SYNC_FROM_IMMICH.equals(task.getTaskType())) {
+                        // Phase 1: staging only, never touches photos/photo_metadata (see
+                        // ImmichImportService). An outcome comes back only when the asset was fully
+                        // handled without needing phase 2 (already imported / content-duplicate) -
+                        // otherwise phase 2 (UPLOAD_FROM_IMMICH, already queued by this call) is what
+                        // records the day row's outcome once it finishes.
+                        Optional<ImmichAssetImportOutcome> outcome = immichImportService.processSyncFromImmichTask(task);
+                        task.setStatus(TaskStatus.COMPLETED);
+                        outcome.ifPresent(o -> immichImportService.recordAssetTaskOutcome(task, o));
+                    } else if (UPLOAD_FROM_IMMICH.equals(task.getTaskType())) {
+                        ImmichAssetImportOutcome outcome = immichImportService.finalizeUploadFromImmich(task);
+                        task.setStatus(TaskStatus.COMPLETED);
+                        immichImportService.recordAssetTaskOutcome(task, outcome);
+                    } else if (IMPORT_IMMICH_ALBUM.equals(task.getTaskType())) {
+                        immichAlbumImportService.processAlbumImportTask(task);
+                        task.setStatus(TaskStatus.COMPLETED);
+                    } else if (ACTIVATE_HEAVY_TASKS.equals(task.getTaskType())) {
+                        // Not real work to execute - this row exists purely so pollHeavyTasks can read
+                        // the admin's latest activate/deactivate choice (see
+                        // AdminService#isHeavyTasksActivated, which queries for it directly rather than
+                        // relying on this task ever actually running). Still picked up by the light
+                        // poller like any other light task type though (heavy=false), so it needs a
+                        // terminal status here or it would sit stuck in PROCESSING forever.
+                        task.setStatus(TaskStatus.COMPLETED);
+                    }
+                }
+                catch (NonTransientDataAccessException e) {
+                    log.warn("Task {} hit a Not transient database error", task.getId(), e);
+                    task.setStatus(TaskStatus.FAILED);
+                }
+                catch (DataAccessException e) {
+                    log.warn("Task {} hit a database error", task.getId(), e);
                     task.setStatus(TaskStatus.PENDING);
-                } else if (SYNC_FROM_IMMICH.equals(task.getTaskType())) {
-                    // Phase 1: staging only, never touches photos/photo_metadata (see
-                    // ImmichImportService). An outcome comes back only when the asset was fully
-                    // handled without needing phase 2 (already imported / content-duplicate) -
-                    // otherwise phase 2 (UPLOAD_FROM_IMMICH, already queued by this call) is what
-                    // records the day row's outcome once it finishes.
-                    Optional<ImmichAssetImportOutcome> outcome = immichImportService.processSyncFromImmichTask(task);
-                    task.setStatus(TaskStatus.COMPLETED);
-                    outcome.ifPresent(o -> immichImportService.recordAssetTaskOutcome(task, o));
-                } else if (UPLOAD_FROM_IMMICH.equals(task.getTaskType())) {
-                    ImmichAssetImportOutcome outcome = immichImportService.finalizeUploadFromImmich(task);
-                    task.setStatus(TaskStatus.COMPLETED);
-                    immichImportService.recordAssetTaskOutcome(task, outcome);
-                } else if (IMPORT_IMMICH_ALBUM.equals(task.getTaskType())) {
-                    immichAlbumImportService.processAlbumImportTask(task);
-                    task.setStatus(TaskStatus.COMPLETED);
-                } else if (ACTIVATE_HEAVY_TASKS.equals(task.getTaskType())) {
-                    // Not real work to execute - this row exists purely so pollHeavyTasks can read
-                    // the admin's latest activate/deactivate choice (see
-                    // AdminService#isHeavyTasksActivated, which queries for it directly rather than
-                    // relying on this task ever actually running). Still picked up by the light
-                    // poller like any other light task type though (heavy=false), so it needs a
-                    // terminal status here or it would sit stuck in PROCESSING forever.
-                    task.setStatus(TaskStatus.COMPLETED);
+                    task.setExecuteAt(LocalDateTime.now().plusMinutes(randomRetryDelayMinutes()));
                 }
-            }
-            catch (NonTransientDataAccessException e) {
-                log.warn("Task {} hit a Not transient database error", task.getId(), e);
-                task.setStatus(TaskStatus.FAILED);
-            }
-            catch (DataAccessException e) {
-                log.warn("Task {} hit a database error", task.getId(), e);
-                task.setStatus(TaskStatus.PENDING);
-                task.setExecuteAt(LocalDateTime.now().plusMinutes(randomRetryDelayMinutes()));
-            }
-            catch (ImmichApiException e) {
-                log.warn("Task {} hit a network error talking to Immich", task.getId(), e);
-                task.setStatus(TaskStatus.PENDING);
-                task.setExecuteAt(LocalDateTime.now().plusMinutes(randomRetryDelayMinutes()));
-            }
-            catch (Throwable e) {
-                log.error("Task failed", e);
-                task.setStatus(TaskStatus.FAILED);
-                task.setErrorMessage(e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
-                StringWriter sw = new StringWriter();
-                e.printStackTrace(new PrintWriter(sw));
-                task.setStackTrace(sw.toString());
-                if (SYNC_FROM_IMMICH.equals(task.getTaskType()) || UPLOAD_FROM_IMMICH.equals(task.getTaskType())) {
-                    immichImportService.recordAssetTaskFailure(task);
+                catch (ImmichApiException e) {
+                    log.warn("Task {} hit a network error talking to Immich", task.getId(), e);
+                    task.setStatus(TaskStatus.PENDING);
+                    task.setExecuteAt(LocalDateTime.now().plusMinutes(randomRetryDelayMinutes()));
                 }
-            }
-            taskRepository.save(task);
-        });
+                catch (Throwable e) {
+                    log.error("Task failed", e);
+                    task.setStatus(TaskStatus.FAILED);
+                    task.setErrorMessage(e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+                    StringWriter sw = new StringWriter();
+                    e.printStackTrace(new PrintWriter(sw));
+                    task.setStackTrace(sw.toString());
+                    if (SYNC_FROM_IMMICH.equals(task.getTaskType()) || UPLOAD_FROM_IMMICH.equals(task.getTaskType())) {
+                        immichImportService.recordAssetTaskFailure(task);
+                    }
+                }
+                taskRepository.save(task);
+            });
+        } finally {
+            queuedTasks.remove(taskId);
+        }
     }
 
     private void processUpload(TaskEntity task) throws Exception {

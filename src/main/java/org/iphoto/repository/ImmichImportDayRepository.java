@@ -34,4 +34,15 @@ public interface ImmichImportDayRepository extends JpaRepository<ImmichImportDay
     @Modifying(clearAutomatically = true)
     @Query("update ImmichImportDayEntity d set d.failedCount = d.failedCount + 1, d.updatedAt = CURRENT_TIMESTAMP where d.id = :id")
     void incrementFailed(@Param("id") UUID id);
+
+    // Un-counts one or more PREVIOUSLY-recorded failures for an asset that's since turned out to
+    // be genuinely, fully imported after all (see ImmichImportServiceImpl#reconcileOrphanedCompletedAsset -
+    // a lingering FAILED task for an asset whose row+file both actually exist, most commonly left
+    // behind by a losing concurrent/duplicate execution of the same UPLOAD_FROM_IMMICH task - see
+    // TaskWorkerManagerImpl's queuedTasks dedup guard for the actual race this comes from).
+    // Clamped at 0 (CASE WHEN, not a plain subtraction) so an unexpected extra call can never send
+    // failedCount negative. Atomic for the same reason incrementFailed is - concurrent workers.
+    @Modifying(clearAutomatically = true)
+    @Query("update ImmichImportDayEntity d set d.failedCount = CASE WHEN d.failedCount - :count < 0 THEN 0 ELSE d.failedCount - :count END, d.updatedAt = CURRENT_TIMESTAMP where d.id = :id")
+    void decrementFailed(@Param("id") UUID id, @Param("count") int count);
 }

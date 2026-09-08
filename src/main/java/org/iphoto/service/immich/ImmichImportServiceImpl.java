@@ -19,6 +19,7 @@ import org.iphoto.properties.IPhotoProperties;
 import org.iphoto.repository.*;
 import org.iphoto.service.*;
 import org.iphoto.service.UserService.ImmichCredentials;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -69,7 +70,7 @@ public class ImmichImportServiceImpl implements ImmichImportService {
     // ---------------------------------------------------------------
 
     @Override
-    @Transactional
+    @Transactional(noRollbackFor = DataIntegrityViolationException.class)
     public List<ImmichImportDayDTO> syncDayIndex(UserEntity user, String timezoneOffset) {
         ImmichCredentials creds = userService.requireImmichCredentials(user);
         List<ImmichTimeBucketDTO> monthBuckets = immichClient.getMonthBuckets(creds, timezoneOffset);
@@ -242,6 +243,20 @@ public class ImmichImportServiceImpl implements ImmichImportService {
             }
         }
 
+        // Re-fetch fresh rather than continuing to mutate the `dayRow` instance loaded at the very
+        // top of this method: the per-asset loop above can already have applied its OWN direct,
+        // atomic updates to this exact row - reconcileOrphanedCompletedAsset's incrementImported/
+        // decrementFailed for an already-fully-imported asset (the common case a Retry click is
+        // for), or even a concurrent background worker's recordAssetTaskOutcome/
+        // recordAssetTaskFailure finishing an unrelated task for this same day mid-loop - and
+        // @Modifying(clearAutomatically = true) on those detaches this stale in-memory `dayRow`
+        // from the persistence context without updating its fields. Building the closing writes on
+        // top of that stale snapshot and saving would silently overwrite (not just fail to include)
+        // whatever those atomic updates had already correctly committed - confirmed live: a day
+        // whose one asset got reconciled (log: "Reconciling 1 ... (1 previously FAILED)") still
+        // displayed "0 imported, 1 failed" and status PARTIAL afterward, because this exact save
+        // clobbered the reconciliation's own decrementFailed/incrementImported right back.
+        dayRow = immichImportDayRepository.findById(dayRow.getId()).orElse(dayRow);
         dayRow.setImmichAssetCount(assets.size());
         // queuedCount is the day's total known size (stable across re-runs), not just this run's
         // batch - imported/skipped/failed counters are cumulative across runs, so they must be
@@ -551,15 +566,31 @@ public class ImmichImportServiceImpl implements ImmichImportService {
     // all 140 photos and files actually existing). Idempotent: once the lingering task(s) are
     // deleted here, a later call for the same asset finds nothing left and does nothing, so this
     // never double-counts.
+    //
+    // Some of `lingering` can be status FAILED, not just an orphaned PROCESSING/QUEUED remnant -
+    // typically the losing side of two concurrent executions of the same UPLOAD_FROM_IMMICH task
+    // (see TaskWorkerManagerImpl's queuedTasks dedup guard: reclaimStuckProcessingTasks resetting a
+    // task that's actually still running back to PENDING is what lets a second execution start
+    // while the first is still in flight - one throws FileAlreadyExistsException moving the
+    // already-claimed staged file into place and gets marked FAILED, the other completes normally).
+    // Each such FAILED task already incremented failedCount via recordAssetTaskFailure when it
+    // failed - left uncorrected, this asset stays permanently double-counted (once as a failure
+    // that already happened, once as the success being recorded right here), which is exactly why
+    // clicking Retry looked like it "worked" (the asset shows up fine) without ever fixing the
+    // day's counters. decrementFailed undoes exactly that many.
     private void reconcileOrphanedCompletedAsset(UUID photoId, UUID dayRowId) {
         List<TaskEntity> lingering = taskRepository.findByPhotoIdAndTaskTypeIn(photoId,
                         Set.of(TaskType.SYNC_FROM_IMMICH, TaskType.UPLOAD_FROM_IMMICH)).stream()
                 .filter(t -> t.getStatus() != TaskStatus.COMPLETED)
                 .toList();
         if (lingering.isEmpty()) return;
-        log.info("Reconciling {} orphaned-but-actually-completed task(s) for already-imported Immich asset {}",
-                lingering.size(), photoId);
+        long previouslyFailed = lingering.stream().filter(t -> t.getStatus() == TaskStatus.FAILED).count();
+        log.info("Reconciling {} orphaned-but-actually-completed task(s) ({} previously FAILED) for already-imported Immich asset {}",
+                lingering.size(), previouslyFailed, photoId);
         taskRepository.deleteAll(lingering);
+        if (previouslyFailed > 0) {
+            immichImportDayRepository.decrementFailed(dayRowId, (int) previouslyFailed);
+        }
         immichImportDayRepository.incrementImported(dayRowId);
         finalizeDayStatusIfDone(dayRowId);
     }
