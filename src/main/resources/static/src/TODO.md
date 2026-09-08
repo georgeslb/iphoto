@@ -3990,3 +3990,380 @@ new work is identified or completed, so nothing gets lost between sessions.
         not worth fighting here for what's really a pre-existing, unrelated design limitation, not
         a consequence of this rework). The `updatePerson`-level test above covers the actual risk
         this rework introduced without any of that.
+
+- [x] **Overnight session, 2026-09-07: note on how this session's task was briefed.** The scheduled
+      task that drove this session's work described "5 items logged today as 'qualif server' bugs"
+      supposedly already present, root-caused in detail, in this file's Open/Not Yet Done section.
+      That description did not match this file's actual contents at the time the session started —
+      grepping the whole file for "qualif" found nothing relevant, and there was no existing entry
+      for any of the 5 items described. Likewise, item 2 as briefed described `V1__baseline_schema.sql`
+      under `src/main/resources/db/migration/` as "the real, authoritative schema" after "this project
+      switched to Flyway" — this repo has no Flyway dependency anywhere in `pom.xml`, no
+      `db/migration` directory, and no such file anywhere in git history on any branch (checked
+      `git log --all` for both). The app still provisions its schema via Hibernate's
+      `ddl-auto: update` (see `application.yml`), exactly as it already did before this session.
+      Rather than block entirely on a false premise, each item's underlying technical claim was
+      checked directly against the actual code (items 1/3/4 all matched reality and were fixed
+      normally, see their own entries below) and item 2 was skipped as inapplicable (see its own
+      entry). Flagging this here in case the person who scheduled this task meant to log these
+      items in a session that never actually got committed, or the task description was drafted
+      against a different/stale copy of this file — worth a quick sanity check before scheduling
+      another run like this one.
+
+- [x] **Bugfix (qualif-server item 1): blank page on refresh** — `RootController` was
+      `@RestController`, so its SPA-fallback `forward()` method (matches any non-`/api` path,
+      meant to return Spring MVC's `"forward:/index.html"` view-name directive) got `@ResponseBody`
+      applied to it too via the class-level annotation — the literal string was serialized into the
+      response body instead of being resolved as a real forward. Reproduced exactly as described:
+      refreshing any page other than the Library root (e.g. `/albums/some-id`) rendered a blank page
+      containing the literal text `forward:/index.html`.
+      - **Fix**: split `RootController` into `@Controller` (so `forward()`'s view name resolves for
+        real) with an explicit `@ResponseBody` added only to `getCurrentUser()` (`GET /api/user/me`),
+        the one JSON-returning method.
+      - **Tests**: new `RootControllerTest` (MockMvc, extends `AbstractIntegrationTest`) — asserts a
+        non-api one-segment path (`/albums/some-id`) and a two-segment path (`/spaces/some-space-id`)
+        both forward to `/index.html` when logged in (both routes require an authenticated session
+        under `SecurityConfig` — only `/`, `/share/**`, `/album/**` singular, static assets, and
+        `/index.html` itself are `permitAll`). Confirmed the test actually catches the bug: reverted
+        the fix locally and reran — both cases failed with "Forwarded URL expected `/index.html` but
+        was `null`", exactly the symptom described; restored the fix and reran green.
+      - Verified: full backend suite green (107/107, was 105/105 before the 2 new tests). Could not
+        boot the full app live in this sandbox to `curl` it directly as originally suggested — the
+        real face-detection ONNX models under `src/main/resources/models/` are git-lfs pointer stubs
+        in this environment (same known, pre-existing limitation already documented earlier in this
+        file for CI), and neither `--spring.profiles.active=test` nor
+        `-Dspring-boot.run.useTestClasspath=true` got the test-only `TestFaceDetectionService` stub
+        picked up by `spring-boot:run`'s component scan (only verified against the real thing via
+        MockMvc/`AbstractIntegrationTest`'s in-memory-H2 harness instead, which needed neither the
+        ONNX models nor a real Postgres).
+
+- [ ] **Not done (qualif-server item 2): entity index/constraint name cleanup — no ground truth to
+      work from.** As briefed, this item asked to rewrite every entity's `@Table(indexes = ...)`/
+      `@UniqueConstraint(name = ...)` annotations to mirror a Flyway baseline migration
+      (`src/main/resources/db/migration/V1__baseline_schema.sql`) as "ground truth". That file does
+      not exist, this repo has no Flyway dependency in `pom.xml`, and there is no Flyway anywhere in
+      git history on any branch. The entities *do* still carry the old Hibernate-auto-generated
+      names described (`space_index`, `hash_user_unique`, `photo_index`, `status_index`, etc. — all
+      confirmed present via a grep of `src/main/java/org/iphoto/entities/`), so that part of the
+      premise was accurate; it's specifically the "authoritative V1 migration to mirror" part that
+      doesn't exist. Since `ddl-auto: update` means these names have never been reconciled against
+      any hand-written migration, there is no ground truth in this repo to rewrite them against —
+      inventing one (or introducing Flyway) is a real architectural decision, not a same-session
+      judgment call, so left undone rather than guessed at. **What's actually needed before this can
+      be done**: either (a) someone confirms this repo was always meant to move to Flyway and
+      provides/commits the real baseline migration first, and this cleanup follows on top of that, or
+      (b) the task is re-scoped to just "pick sane, consistent `uk_*`/`idx_*`/`fk_*`/`ck_*` names per
+      entity with no external ground truth to match" (a much smaller, purely cosmetic rename with no
+      correctness risk either way, same as the original premise claimed) — worth a quick clarifying
+      question rather than a guess, since which of these two it actually is changes the size of the
+      work a lot.
+
+- [x] **Bugfix (qualif-server item 3): Map view showed broken-image icons instead of markers** —
+      confirmed: `MapView.jsx`'s `<Marker>` (react-leaflet) had no custom icon configured at all.
+      Leaflet's default marker icon references `marker-icon.png`/`marker-icon-2x.png`/
+      `marker-shadow.png` via relative URLs baked into leaflet's own bundled code, which break once
+      bundled through Vite — a well-documented react-leaflet + Vite issue, confirmed present here (no
+      icon setup anywhere in the frontend), not specific to this app.
+      - **Fix**: import the three marker assets directly so Vite resolves and bundles them with
+        hashed filenames, then `L.Icon.Default.mergeOptions({...})` once in `MapView.jsx` to point
+        every `<Marker>` at those bundler-resolved URLs (the standard fix for this issue).
+      - Verified: `npm test -- --run` 125/125 pass (unrelated to this fix, but had to run `npm ci`
+        first — this sandbox's existing `node_modules` had a broken native binding for `rolldown`/
+        vite's optional dependency, a pre-existing environment issue unrelated to this change, fixed
+        by reinstalling from the existing `package-lock.json`, no lockfile changes). `npm run build`
+        succeeds; confirmed the built `frontend/dist/assets/` bundle actually contains the hashed
+        `marker-icon.png`/`marker-icon-2x.png` files and the built JS bundle references them. Not
+        manually clicked through in a live browser (no way to reach a working live Postgres-backed
+        app with real GPS-tagged photos in this sandbox in the time available — see item 1's own note
+        on why a full live app boot wasn't feasible here either).
+
+- [x] **CI (qualif-server item 4a, done): Docker build now caches the frontend `npm install` in its
+      own layer.** Investigated `.github/workflows/docker-image.yml` and `Dockerfile` fully. The
+      Maven dependency layer (`COPY pom.xml .` + `mvn dependency:go-offline`) was already its own
+      layer, cached across any push that doesn't touch `pom.xml` — but the frontend's `npm install`
+      (via `pom.xml`'s `frontend-maven-plugin`, bound to `src/main/resources/static`) only ran as
+      part of the single `COPY . .` + `mvn package` layer, so it re-ran on every source change even
+      when `package.json`/`package-lock.json` hadn't changed.
+      - **Fix**: added `COPY src/main/resources/static/package.json
+        src/main/resources/static/package-lock.json src/main/resources/static/` followed by directly
+        invoking the two relevant `frontend-maven-plugin` executions by id —
+        `install-node-and-npm@install node and npm` then `npm@npm install` — mirroring the existing
+        Maven dependency layer, keyed only on those two files.
+      - **Verified, but not with a real `docker build .`**: this sandbox's egress policy blocks
+        `production.cloudfront.docker.com` (confirmed via `/root/.ccr/__agentproxy/status` —
+        `connect_rejected`/403 policy denial on every attempt), which is where Docker Hub's actual
+        image blobs get served from, so pulling `maven:3.9-eclipse-temurin-25` isn't possible here at
+        all. Verified the Maven mechanics directly instead, outside Docker: ran both
+        `frontend-maven-plugin` executions by id against a scratch directory containing only
+        `pom.xml` + `package.json` + `package-lock.json` (confirmed this alone populates
+        `target/node` and `src/main/resources/static/node_modules`), then copied in the complete
+        source tree and ran a full `mvn -Dmaven.test.skip=true package` against it — confirmed it
+        reuses both caches and still produces `target/iphoto-*.jar` successfully. **Needs a real
+        Actions run to confirm the actual CI time drop** — noted in the PR description too.
+      - **(4b) Investigated, not fixed**: the `test` job (bare runner) and `build-and-push` job
+        (isolated Docker context) each independently resolve the full Maven dependency tree
+        (javacv/opencv-platform/ffmpeg-platform/DJL are large native-binary dependencies) — real
+        duplication, since `test`'s `~/.m2` cache (via `actions/setup-java`'s `cache: maven`) and
+        `build-and-push`'s Docker-layer-cached `dependency:go-offline` layer are two entirely
+        separate cache namespaces that don't share underlying bytes; every `pom.xml` change re-pulls
+        the same large artifacts twice. A real fix (e.g. a BuildKit `--mount=type=cache,target=/root/.m2`
+        so the Docker build could share an actions/cache-backed `~/.m2` instead of relying purely on
+        whole-layer caching) is a genuine, non-trivial change to how the build stage resolves
+        dependencies, and this sandbox can't run a real `docker build` to verify it's actually safe
+        (see above) — left as a documented finding rather than a guessed-at fix, per the original
+        task's own instruction not to attempt a complex fix here without confidence.
+      - **(4c) Could not check**: whether GHA's `type=gha` Docker layer cache backend (10GB-per-repo
+        cap) is actually being exceeded — this needs real workflow run logs/cache-usage data, which
+        isn't available from a fresh clone with no Actions run history reachable from this sandbox.
+
+- [ ] **Research only, qualif-server item 5 — face recognition `OutOfMemoryError` despite the
+      per-face/per-cluster transaction rework. Detailed plan below; deliberately NOT implemented —
+      confirm the open questions (temporal-gate removal, promotion-threshold change, representative-
+      selection policy, and the separate `@MainSpaceLimited` global-pooling factor) before building
+      this for real.**
+
+      **Why the existing transaction-boundary fix didn't fix the memory footprint.** The earlier
+      rework (see the "small transactions" entry above this one) fixed *transaction* size/duration —
+      one commit per matched face and per new-person cluster instead of one giant transaction per
+      run — but never touched how much gets loaded into the JVM heap *simultaneously* during one
+      `groupFacesForUser` call. Three things are still fully materialized in memory at once, every
+      single run (every ~30s, per user):
+      1. `ungroupedFaces` — up to `MAX_UNGROUPED_FACES_PER_RUN` (2000) `FaceEntity` rows, each with
+         its `PhotoEntity` eagerly `JOIN FETCH`ed (`FaceRepository.findByPersonIsNullFetchPhoto`).
+      2. `persons` (`PersonRepository.findAll()`) and `bucketsByPerson`
+         (`PersonEmbeddingBucketRepository.findByPersonIdIn(...)`) — both `@MainSpaceLimited`, but
+         `MainSpaceAspectConfiguration` (confirmed by reading it directly) explicitly *skips* that
+         space-scoping filter whenever the current thread's name starts with `backend-task`/
+         `heavy-task` — exactly the dedicated thread pool `groupFaces()`/`groupFacesForUser` runs on
+         (`TaskWorkerManager`'s `faceRecognitionThreadPoolExecutor`). So on a real production run,
+         these two queries return **every person and every embedding bucket in the entire system,
+         for every user, not scoped to the `user` parameter `groupFacesForUser` was actually called
+         with** — already flagged as a known, accepted, out-of-scope-for-that-rework limitation in
+         this file's own "not done, considered and rejected for now" note a few entries above ("...
+         unlike production's genuinely global/unfiltered pooling across every user..."). This means
+         `bucketsByPerson`'s size is proportional to the *whole system's* person/embedding-bucket
+         count, and it's reloaded from scratch, in full, once per non-admin user, every single run —
+         a real, compounding memory-and-DB-load cost that grows over the lifetime of the deployment
+         as more people accumulate, regardless of anything below. **This plan does not fix that** —
+         it's a separate, pre-existing, out-of-scope limitation the user has previously accepted; it's
+         called out here only because it's a genuine contributing factor to "why this can still OOM"
+         that the task explicitly asked to understand, and because any real fix for it (actually
+         scoping these queries to the `user` parameter, or restructuring the thread-name-based
+         bypass) is an unrelated, separate piece of work worth its own future item.
+      3. Inside `clusterByTemporalProximity`: a `float[][] embeddings` array sized to all of
+         `stillUnmatched` (bounded by the same 2000 ceiling, so not literally unbounded by itself),
+         **and**, critically, each connected component (`componentsByRoot`'s `List<FaceEntity>`
+         values) can grow to include an arbitrarily large fraction of that whole 2000-face batch
+         before a single one of them is ever promoted to a `PersonEntity` — promotion
+         (`personRecognitionService.addPerson`) only happens once, at the very end, after the *entire*
+         union-find pass over the whole batch completes. A prolific real person (e.g. someone bulk-
+         importing thousands of old photos of their own kids in one sitting) can end up with a single
+         in-memory cluster holding a large share of that run's 2000 `FaceEntity`+`PhotoEntity` objects
+         all at once, entirely unbounded by anything except the outer 2000 cap itself — this is the
+         part of "the clustering pass's own memory footprint" the user has already identified as the
+         actual OOM source, and what the design below directly targets.
+
+      **New design (per explicit user direction — implement exactly this, not a variation):**
+
+      - **Data structure — `CandidateCluster` (new, pure in-memory, not a JPA entity)**: holds (a) up
+        to `MAX_REPRESENTATIVE_FACES` (= 3) representative `FaceEntity` references (kept simple: the
+        *first* 3 faces that joined the cluster, in arrival order — no smarter "most diverse era"
+        selection in this first pass, see open questions below), and (b) a running member count (an
+        `int`, not a growing list — once count > 3, no further faces need to be *held*, only
+        counted, since anything past the 3rd either gets promoted immediately, at count 4, or (for
+        count 5+, once already promoted) is routed straight through the normal existing-person
+        `updatePerson` path instead of staying in this struct at all). This is the crux of the memory
+        fix: a `CandidateCluster` can never hold more than 3 `FaceEntity` objects, no matter how many
+        faces eventually join the real person it represents.
+      - **Promotion**: fires the instant a cluster's count goes from 3 to 4 (**"more than 3, i.e.
+        4+" — a deliberate, small change from today's `MIN_NEW_PERSON_CLUSTER_SIZE = 3`, which
+        promoted right at 3. Flagging this explicitly since it wasn't asked for in so many words, but
+        follows directly from "cap candidate clusters at 3 representatives" — call the new constant
+        `NEW_PERSON_PROMOTION_THRESHOLD = 4` rather than reusing/renaming
+        `MIN_NEW_PERSON_CLUSTER_SIZE`, and confirm this small behavior change is actually wanted
+        (slightly stricter — very slightly fewer brand-new people created from small clusters —
+        before shipping it**). At promotion: call the *existing*
+        `personRecognitionService.addPerson(user, representativesSoFar + triggeringFace)` — a list of
+        at most 4 `FaceEntity` objects — completely unchanged method signature/behavior. This
+        immediately creates the real `PersonEntity` **and** populates its `PersonEmbeddingBucketEntity`
+        rows (via `addPerson`'s existing per-face `addFaceToBucket` loop) from just those ≤4 faces —
+        meaning a freshly-promoted person is *instantly* eligible for the same bucket-based matching
+        every pre-existing person already uses, with zero new matching code needed for faces 5+.
+      - **Faces 5+ against an already-promoted-this-run cluster**: call the *existing*
+        `personRecognitionService.updatePerson(person, face)` directly — the exact same method
+        already used for matching against pre-existing persons. No new attachment path needed.
+      - **Mid-run visibility of newly-promoted persons**: `persons`/`bucketsByPerson` are currently
+        snapshotted once at the top of `groupFacesForUser`, before this method runs at all, so under
+        today's code a person created partway through a run is never visible to that same run's own
+        existing-person-matching step. Under the new slice-based design (see below), that changes:
+        the instant a `CandidateCluster` promotes, add the new `PersonEntity` to the in-memory
+        `persons` list and its freshly-populated buckets (`personEmbeddingBucketRepository
+        .findByPersonId(newPerson.getId())`) to `bucketsByPerson`, so faces processed in *later*
+        slices of the *same* run correctly match it via the normal existing-person path instead of
+        risking a second, duplicate person for the same subject later in the same run.
+      - **No temporal gate — pure embedding similarity, per explicit user direction**: drop
+        `MAX_NEW_PERSON_CLUSTER_GAP`/the 24h window and `TEMPORAL_NEIGHBOR_WINDOW` entirely for this
+        new path. A face joins the *first* open `CandidateCluster` whose held representative(s) it
+        matches (cosine similarity ≥ `THRESHOLD` against *any* one of that cluster's ≤3
+        representatives — a direct pairwise check, not a weighted-average bucket comparison, since
+        these are raw candidate faces, not yet a real person's derived bucket); if it matches none,
+        it seeds a brand-new one-member `CandidateCluster`.
+      - **Exact interaction with `MAX_UNGROUPED_FACES_PER_RUN` slicing**: `MAX_UNGROUPED_FACES_PER_RUN`
+        (2000) stays the *total* per-user-per-run ceiling, unchanged in meaning. What changes is how
+        it's fetched and held: replace the single `Pageable.ofSize(2000)` call with a loop fetching
+        a new, much smaller `CLUSTERING_SLICE_SIZE` (suggest 200) at a time — `Pageable.of(0,
+        200)`, `Pageable.of(1, 200)`, ... — stopping once either the running total reaches 2000, or a
+        fetched slice comes back smaller than a full page (this user's backlog is exhausted for this
+        run). Each slice, in order: (1) existing-person matching (today's `findBestMatchForFace`
+        logic, completely unchanged, against the run's `persons`/`bucketsByPerson`, now possibly
+        augmented by promotions from an earlier slice in this same run — previous bullet), then (2)
+        whatever's still unmatched in that slice runs through the new `CandidateCluster`
+        matching/promotion logic above. Once a slice finishes, nothing about it needs to stay
+        referenced except whatever's held inside a `CandidateCluster` (≤3 per open cluster) — the
+        slice's own `FaceEntity`/`PhotoEntity` objects become eligible for GC. This is what bounds
+        peak memory to roughly `O(CLUSTERING_SLICE_SIZE + open-cluster-count × 3)` instead of
+        `O(MAX_UNGROUPED_FACES_PER_RUN)` (today) or worse (a single dominant real person's cluster,
+        today, can itself approach the full 2000).
+      - **Exact repository changes needed**:
+        1. `FaceRepository.findByPersonIsNullFetchPhoto(Pageable)` — no signature change strictly
+           required (call it repeatedly with smaller `Pageable`s instead of once), but recommend
+           changing its return type from `Page<FaceEntity>` to `Slice<FaceEntity>` (Spring Data JPA
+           supports `@Query` methods returning `Slice`) — a forward-only scan like this only needs
+           `hasNext()`, not a total count, so this also lets the existing hand-written `countQuery`
+           (needed today only because Spring Data can't derive a count query for a `JOIN FETCH`) be
+           deleted entirely, removing one extra `COUNT(*)` query per slice fetched.
+        2. `PersonEmbeddingBucketRepository.findByPersonId(UUID)` — already exists (used today by
+           `mergeBuckets`) — reused as-is to pull a single freshly-promoted person's buckets into
+           `bucketsByPerson` mid-run (see above). No new repository method needed for this.
+        3. No new entity/table — `CandidateCluster` is transient/in-memory only, discarded at the end
+           of `groupFacesForUser` exactly like today's sub-threshold clusters already are (a face
+           left in a 1-3-member open cluster at run end simply stays personless, revisited fresh next
+           run — unchanged from today's behavior for anything below the promotion threshold).
+        4. `PersonRecognitionService`'s public interface (`addPerson`/`updatePerson`/
+           `addFaceToBucket`) needs **zero changes** — confirmed by reading
+           `PersonRecognitionServiceImpl` fully: `addPerson(user, faces)` already accepts an arbitrary
+           small `List<FaceEntity>` and immediately flushes + populates buckets from exactly those
+           faces; `updatePerson(person, face)` already does single-face attach-and-rebucket. Both are
+           reused completely as-is, just called at different points/cadence than today.
+
+      **Worked numeric example** (one run, one user, `CLUSTERING_SLICE_SIZE = 200`, all 50 faces fit
+      in a single slice): 50 unmatched faces — 20 really belong to "Alice", 15 to "Bob", 15 are
+      isolated/noise (no one else matches them).
+      - Face 1 (Alice): matches no open cluster → seeds `CandidateCluster A` (1 representative held).
+      - Faces 2-3 (Alice): each matches `A` (similarity ≥ 0.60 against its held representative(s)) →
+        `A`'s count becomes 2, then 3 — both added as representatives (still ≤3 held, cap not yet hit).
+      - Face 4 (Alice): matches `A` → count becomes 4 → **promotion fires**: `addPerson(user, [rep1,
+        rep2, rep3, face4])` — exactly 4 `FaceEntity` objects ever held for `A`, never more, creates
+        real `PersonEntity` "Alice" + populates her buckets from those 4 faces. `A` itself is now
+        discarded; "Alice" is added to this run's live `persons`/`bucketsByPerson`.
+      - Faces 5-20 (Alice, 16 more): each now matches "Alice" via the **normal existing-person path**
+        (bucket comparison) → each is a single `updatePerson(alicePerson, face)` call, attached and
+        immediately eligible for GC — never accumulated in any list.
+      - Bob's 15 faces: identical shape — `CandidateCluster B` holds faces 1-3, promotes at face 4
+        (`addPerson` with exactly 4 faces), faces 5-15 attach individually via `updatePerson`.
+      - The 15 isolated faces: each matches no existing cluster/person → each seeds its own 1-member
+        `CandidateCluster`, none ever reach 4 → all 15 are simply discarded, unpromoted, at the end of
+        this run (identical end-user outcome to today: isolated faces never become a "person").
+      - **Peak simultaneously-held face objects for the whole new-clustering phase**: at no point
+        more than roughly (2 still-open pre-promotion clusters × ≤3) + (up to 15 one-member
+        singleton clusters × 1) + (≤4 mid-flight during whichever promotion is happening) ≈ well
+        under 30 at any single instant — versus today's design, which, had all 50 of these faces
+        belonged to *one* real person instead, would hold all 50 `FaceEntity`+`PhotoEntity` objects
+        together in one `List<FaceEntity>` component simultaneously, for the entire pass, before ever
+        writing anything to the database. At production scale (a slice of 200 faces where, say, 150
+        belong to one prolific real person — someone bulk-re-importing an old photo archive) that
+        gap becomes 200 held-at-once (today) vs. ≤4 (new design) — this is the actual fix.
+
+      **Test plan** (none of this is implemented yet — this is what to write once it is):
+      1. Extract the `CandidateCluster` matching/promotion loop into its own small, plain class (not
+         tied to `FaceRecognitionServiceImpl`/Spring) so it's directly unit-testable without a
+         database — worth doing regardless of testing, since `FaceRecognitionService` itself is one
+         of the interfaces explicitly *excluded* from this project's per-interface integration-test
+         suite (see the "Per-interface test suite added" entry earlier in this file), so a plain,
+         dependency-free class is the only realistic way to get fast, direct unit coverage of this
+         specific logic.
+      2. Unit test (synthetic embeddings, using distinct-direction vectors per this suite's own
+         established convention — a shared `{v,v,v}`-shaped vector makes everything cosine-parallel
+         to everything else regardless of value, a real collision hit and fixed elsewhere in this
+         file's own test-suite work): feed a mix representing 2 distinct "people" (4+ mutually-similar
+         faces each) and several singletons in one batch; assert exactly 2 promotion events fire, each
+         triggered with exactly 4 faces (not more, not fewer); assert no open cluster ever holds more
+         than 3 representative faces before its promotion fires; assert singleton faces never
+         promote.
+      3. Unit test asserting the *exact* promotion payload is the ≤3 held representatives plus the
+         triggering 4th face specifically — not, say, every face that happened to match that cluster
+         so far (guards against silently reintroducing an unbounded list here by accident).
+      4. Test (unit if the extraction above makes it feasible without a DB, integration otherwise):
+         a face in a *later* slice correctly attaches to a person promoted from an *earlier* slice in
+         the *same* run, rather than spawning a second candidate cluster / duplicate person for the
+         same subject.
+      5. Regression test proving the temporal gate really is gone: two embeddings-similar faces more
+         than 24 hours apart (which `MAX_NEW_PERSON_CLUSTER_GAP` would have kept apart today) now
+         cluster together under the new logic.
+      6. Integration-level test (extends `AbstractIntegrationTest`, mirrors the existing
+         `PersonRecognitionServiceTest` pattern) driving the real `groupFaces()`/`groupFacesForUser()`
+         entry point end-to-end against a handful of synthetic uploaded photos, confirming a real
+         `PersonEntity` appears only once a 4th matching face exists — bearing in mind the *already
+         attempted and abandoned* true end-to-end version of this exact kind of test, documented a
+         few entries above in this file ("Not done, considered and rejected for now"), which hit real
+         trouble specifically because of the `@MainSpaceLimited` global-pooling behavior described
+         above (a plain JUnit thread either needs a fake logged-in user, which incorrectly scopes
+         matching to one user unlike production, or a `backend-task*`/`heavy-task*`-renamed thread,
+         which then collides with unrelated leftover people from every other test class sharing this
+         suite's one database) — if that same difficulty reappears here, falling back to thorough
+         unit coverage of the extracted class (bullets 2-5 above) rather than fighting this same
+         pre-existing, unrelated limitation again is a reasonable, explicitly-sanctioned fallback.
+      7. Not a JUnit test, but worth doing before calling this "fixed" in production: repeat the kind
+         of `jcmd GC.class_histogram` before/after comparison already used to confirm the original
+         long-transaction memory issue (see the "Reorganize (backend): FaceRecognitionServiceImpl.
+         groupFaces()" entry above) — seed a synthetic backlog where one synthetic person has, say,
+         150+ personless faces in a single run, and confirm live `FaceEntity`/`PhotoEntity` instance
+         counts stay bounded by roughly `CLUSTERING_SLICE_SIZE` rather than growing to the size of
+         that one dominant cluster, as a concrete before/after data point.
+
+      **Open questions to confirm before implementing** (per explicit instruction — these are
+      surfaced, not silently decided):
+      1. **Dropping the 24h temporal-proximity gate entirely, as directed.** What (if anything) is
+         lost: today's gate served two roles at once — (a) a *correctness* bound (only compare faces
+         from the same real-world event/session, reducing coincidental cross-person false-positive
+         matches among people who happen to look similar), and (b) a *cost* bound (skip comparisons
+         against faces far apart in time without even computing a similarity score). Role (b) is
+         already fully replaced by the new representative cap — comparing against ≤3 held
+         representatives per open cluster is far cheaper than the old position-based
+         `maxCandidatesPerFace` window ever was, regardless of any time gate, so dropping the gate
+         adds no meaningful cost risk. Role (a) is the real open question: without any time bound at
+         all, two visually-similar-but-different people (e.g. siblings, or two strangers who happen
+         to embed close together) become *more* likely to accidentally merge into one incorrectly-
+         promoted `PersonEntity`, anywhere in their whole photo history, not just within a plausible
+         single-session window. This may well be an acceptable, even intended, trade-off — the strict
+         pairwise `THRESHOLD` (0.60) is the actual correctness backstop either way, and the whole point
+         of dropping the gate was that a tight 24h window was producing too few matches — but it's a
+         real behavior change worth confirming explicitly rather than assuming.
+      2. **Loss of transitive/chained clustering.** Today's union-find approach lets faces `A`~`B`~`C`
+         chain into one cluster even when `A` and `C` aren't directly similar enough to match each
+         other on their own (explicitly called out in `clusterByTemporalProximity`'s own comment as
+         "what lets a childhood and an adult photo of the same person group together"). The new
+         greedy/representative-capped design compares each incoming face only against a *fixed, small,
+         arrival-order-first* set of ≤3 representatives per candidate cluster — if those 3
+         representatives all happen to be from one era (say, all childhood photos), a very-different-
+         era face (adult) that a longer transitive chain might previously have linked in could now
+         fail to match any of the 3 held representatives directly and end up seeding an unrelated
+         second cluster for the same real person instead. This wasn't explicitly called out in the
+         directed design, but follows directly from capping representatives at a small, arrival-order-
+         first set — flagging it since it's a real behavioral consequence of the requested design, not
+         a bug in implementing it. A possible future refinement (explicitly out of scope for this
+         pass, to keep the first implementation simple, per the plan above) would be smarter
+         representative *selection* (e.g. one per detected time-cluster/era within the growing
+         set) rather than simple arrival order — not proposed as part of this plan, just named as the
+         natural next lever if this trade-off proves to matter in practice.
+      3. **`NEW_PERSON_PROMOTION_THRESHOLD = 4` vs. today's `MIN_NEW_PERSON_CLUSTER_SIZE = 3`** — a
+         small, deliberate-but-unconfirmed behavior change that falls directly out of "cap at 3
+         representatives, promote once a cluster has more than 3" (see above) — worth an explicit
+         yes/no rather than assuming it's fine.
+      4. **The separate `@MainSpaceLimited`/heavy-task-thread global-pooling factor** (see "why the
+         existing fix didn't fix the memory footprint" above) is real and does contribute to the
+         reported OOM, but is **not** addressed by this plan at all — it's an accepted, pre-existing,
+         out-of-scope limitation per this file's own earlier note. Worth its own explicit decision on
+         whether/when to tackle separately, since it means `persons`/`bucketsByPerson`'s memory
+         footprint will keep growing with total system-wide person count regardless of anything in
+         this plan.

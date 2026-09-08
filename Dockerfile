@@ -27,9 +27,28 @@ WORKDIR /workspace
 COPY pom.xml .
 RUN mvn -B -q -Dmaven.test.skip=true dependency:go-offline
 
+# Same idea for the frontend: install node/npm and run `npm install` in their own layer, keyed
+# only on package.json/package-lock.json (see pom.xml's frontend-maven-plugin executions "install
+# node and npm"/"npm install", bound to src/main/resources/static) - so it stays cached across
+# any commit that doesn't touch those two files, instead of re-running on every source change as
+# part of the single COPY-everything-then-package layer below. Invoking each execution directly
+# by id (`plugin:goal@execution-id`) applies that execution's own <configuration> (nodeVersion/
+# npmVersion/workingDirectory/installDirectory) exactly as the full `mvn package` build would,
+# without needing the rest of the source tree present yet. Verified locally (outside Docker, this
+# sandbox can't reach Docker Hub to run a real `docker build`): running these two goals against
+# just pom.xml + package.json + package-lock.json populates target/node and
+# src/main/resources/static/node_modules, and a subsequent full `mvn package` against the
+# complete source reuses both caches and still succeeds.
+COPY src/main/resources/static/package.json src/main/resources/static/package-lock.json src/main/resources/static/
+RUN mvn -B -q "com.github.eirslett:frontend-maven-plugin:1.15.0:install-node-and-npm@install node and npm" \
+    && mvn -B -q "com.github.eirslett:frontend-maven-plugin:1.15.0:npm@npm install"
+
 # Full source + build. This one `mvn package` invocation also runs the frontend build and the
 # DJL face/feature model downloads (see pom.xml's frontend-maven-plugin/maven-antrun-plugin
-# executions, generate-resources phase) - both need network access, fine on a CI runner.
+# executions, generate-resources phase) - both need network access, fine on a CI runner. The
+# frontend-maven-plugin's "install node and npm"/"npm install" executions run again here too
+# (Maven doesn't know to skip them), but land on the warm caches from the layer above and are
+# fast whenever package.json/package-lock.json didn't change.
 COPY . .
 RUN mvn -B -q -Dmaven.test.skip=true package
 
