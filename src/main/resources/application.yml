@@ -16,7 +16,12 @@ spring:
 
   jpa:
     hibernate:
-      ddl-auto: update
+      # Schema is now owned by Flyway (src/main/resources/db/migration) - validate just checks the
+      # entity mappings still agree with whatever Flyway built, it never issues DDL of its own.
+      # Replaces the old ddl-auto=update. Flyway itself needs no config here - defaults
+      # (spring.flyway.enabled=true, locations=classpath:db/migration) are exactly right, and
+      # V1__baseline_schema.sql assumes a fresh database, not a migration off an existing one.
+      ddl-auto: validate
     show-sql: false
     properties:
       hibernate:

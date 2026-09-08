@@ -55,14 +55,32 @@ RUN mvn -B -q -Dmaven.test.skip=true package
 FROM eclipse-temurin:25-jre AS runtime
 WORKDIR /app
 
-# javacv's opencv-platform/ffmpeg-platform artifacts bundle their own native .so files, but they
-# still commonly dlopen a handful of base system libraries to actually load. This list is
-# best-effort (derived from what OpenCV/FFmpeg native builds typically need on a minimal Debian
-# base), not verified against a real run of this exact image in this environment - if face
-# detection/duplicate-hashing/thumbnail generation fails at runtime with a native
-# UnsatisfiedLinkError, start here. curl is only for the HEALTHCHECK below.
+# javacv's opencv-platform/ffmpeg-platform artifacts bundle their own native .so files, but those
+# still dlopen a handful of base system libraries to actually load. The previous list here
+# (libgomp1/libsm6/libxext6/libxrender1) was a best-effort guess that turned out to be incomplete -
+# a real qualification-server run hit "UnsatisfiedLinkError: no jniopencv_highgui in
+# java.library.path" despite it. This one is no longer a guess: verified by extracting the actual
+# linux-x86_64 .so files from both org.bytedeco:opencv (4.11.0-1.5.12) and org.bytedeco:ffmpeg
+# (7.1.1-1.5.12) - the exact versions this pom.xml resolves - and running `ldd` against every one
+# of them inside this exact eclipse-temurin:25-jre base image (Ubuntu 26.04) until nothing reports
+# "not found":
+#   - libopencv_highgui.so.411 turned out to be built against GTK2, not headless - it links
+#     libgtk-x11-2.0/libgdk-x11-2.0 (-> libgtk2.0-0t64 on this Ubuntu release, "t64" being the
+#     64-bit time_t package rename), libcairo.so.2 (-> libcairo2), and libgdk_pixbuf-2.0.so.0
+#     (-> libgdk-pixbuf-2.0-0).
+#   - libopencv_core.so.411 needs libopenblas.so.0 (-> libopenblas0) for its linear-algebra
+#     backend - not exercised by anything that previously got smoke-tested here.
+#   - every core FFmpeg library (avcodec/avformat/avfilter/avutil/swresample/swscale) needs
+#     libva.so.2/libva-drm.so.2 (-> libva2/libva-drm2, VA-API hardware video acceleration - a hard
+#     link-time NEEDED entry, not something only pulled in if actually used); libavdevice
+#     additionally needs libasound.so.2/libpulse.so.0 (-> libasound2t64/libpulse0) for its
+#     ALSA/PulseAudio capture backends.
+# curl is only for the HEALTHCHECK below.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl libgomp1 libsm6 libxext6 libxrender1 \
+    && apt-get install -y --no-install-recommends \
+       curl libgomp1 libsm6 libxext6 libxrender1 \
+       libgtk2.0-0t64 libcairo2 libgdk-pixbuf-2.0-0 libopenblas0 \
+       libva2 libva-drm2 libasound2t64 libpulse0 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /workspace/target/iphoto-*.jar app.jar

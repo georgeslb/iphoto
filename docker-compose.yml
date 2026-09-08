@@ -20,6 +20,7 @@
 
 services:
   iphoto-db:
+    container_name: iphoto-db
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
@@ -48,6 +49,7 @@ services:
         max-file: "3"
 
   iphoto-app:
+    container_name: iphoto-app
     image: ghcr.io/georgeslb/iphoto:${IPHOTO_TAG:-latest}
     restart: unless-stopped
     depends_on:
