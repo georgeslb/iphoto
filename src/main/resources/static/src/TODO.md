@@ -4115,10 +4115,11 @@ new work is identified or completed, so nothing gets lost between sessions.
         cap) is actually being exceeded — this needs real workflow run logs/cache-usage data, which
         isn't available from a fresh clone with no Actions run history reachable from this sandbox.
 
-- [ ] **Design confirmed, not yet implemented — qualif-server item 5: face recognition
-      `OutOfMemoryError` despite the per-face/per-cluster transaction rework.** Detailed plan below
-      (originally written by an overnight session as 4 open questions; all 4 now resolved - see each
-      question's own note for the final call):
+- [x] **Implemented — qualif-server item 5: face recognition `OutOfMemoryError` despite the
+      per-face/per-cluster transaction rework.** Full design below (originally written by an
+      overnight session as 4 open questions; all 4 resolved - see each question's own note for the
+      final call - then implemented exactly as resolved; see "Implementation summary" at the very
+      end of this entry for what changed, where, and test results):
       1. **Temporal gate**: not dropped entirely - widened from 24h to **90 days**
          (`MAX_NEW_PERSON_CLUSTER_GAP = Duration.ofDays(90)`), a real but much looser bound than
          today's, instead of no bound at all.
@@ -4306,7 +4307,8 @@ new work is identified or completed, so nothing gets lost between sessions.
         belong to one prolific real person — someone bulk-re-importing an old photo archive) that
         gap becomes 200 held-at-once (today) vs. ≤3 (new design) — this is the actual fix.
 
-      **Test plan** (none of this is implemented yet — this is what to write once it is):
+      **Test plan** (implemented - see "Implementation summary" at the end of this entry for final
+      results and where each bullet below landed):
       1. Extract the `CandidateCluster` matching/promotion loop into its own small, plain class (not
          tied to `FaceRecognitionServiceImpl`/Spring) so it's directly unit-testable without a
          database — worth doing regardless of testing, since `FaceRecognitionService` itself is one
@@ -4393,3 +4395,71 @@ new work is identified or completed, so nothing gets lost between sessions.
          item** - an accepted, pre-existing limitation; `persons`/`bucketsByPerson`'s memory footprint
          will keep growing with total system-wide person count regardless of anything in this plan,
          tracked separately.
+
+      **Implementation summary** (implemented exactly per the design above, on
+      `feature/face-recognition-sampled-clustering`):
+      - New `org.iphoto.service.CandidateClusterer` (plain, dependency-free, no Spring/JPA-session
+        dependency beyond using `FaceEntity`/`PhotoEntity` as in-memory values) - its inner
+        `CandidateCluster` holds ≤3 representative `FaceEntity` references per open cluster, matches
+        a face against the first open cluster with any representative that both clears `THRESHOLD`
+        cosine similarity and falls within the configured temporal gap, and promotes (returning the
+        exact 3 faces, then discarding the cluster) the instant a cluster's member count reaches the
+        configured cap - constructor-parameterized (similarity threshold / max gap / promotion size)
+        so it's independently unit-testable with values other than production's.
+      - `FaceRepository.findByPersonIsNullFetchPhoto`: return type changed `Page` → `Slice`, added
+        `ORDER BY f.photo.dateTaken ASC`, dropped the hand-written `countQuery` entirely, exactly as
+        directed.
+      - `FaceRecognitionServiceImpl.groupFacesForUser` rewritten: a `CLUSTERING_SLICE_SIZE = 200`
+        slice-fetch loop (`PageRequest` + `Slice.hasNext()`, no upfront total-count query) replaces
+        the single `MAX_UNGROUPED_FACES_PER_RUN`-sized fetch; `clusterByTemporalProximity` and its
+        `UnionFind` helper are removed entirely (replaced by one `CandidateClusterer` instance per
+        user run, fed every face across every slice in chronological order); `TEMPORAL_NEIGHBOR_WINDOW`
+        is gone (no longer needed - see the design section above); `MAX_NEW_PERSON_CLUSTER_GAP`
+        widened from `Duration.ofHours(24)` to `Duration.ofDays(90)`. Mid-run visibility of a
+        newly-promoted person is implemented by re-fetching it by id (via
+        `faceRepository.findById(promotedFace.getId()).getPerson().getId()`, then
+        `personRepository.findById`/`personEmbeddingBucketRepository.findByPersonId`) and folding it
+        into the run's own mutable `persons`/`bucketsByPerson` - `PersonRecognitionService`'s public
+        interface needed zero changes, exactly as the design called for. The existing per-face/
+        per-cluster independent-transaction boundaries (`personRecognitionService`'s
+        REQUIRED-propagation `updatePerson`/`addPerson` calls, each its own try/catch) are untouched;
+        no new ambient transaction was introduced around any of this.
+      - Tests added:
+        - `CandidateClustererTest` (plain JUnit, no Spring context, no database - test plan bullets
+          2, 3, 5): two distinct synthetic "people" each promote at exactly 3 members with the exact
+          3 faces that joined as the payload (not every face that ever matched); a promoted cluster
+          is discarded, so a still-matching 4th face doesn't silently rejoin it; faces 48h apart
+          cluster together under the widened 90-day gate where the original 24h gate would not have;
+          a pair >90 days apart still never clusters.
+        - `FaceRepositoryTest.returnsUngroupedFacesOrderedByPhotoDateTakenAscendingRegardlessOfInsertionOrder`
+          (test plan bullet 5b) - seeds 3 faces with `dateTaken` deliberately out of insertion order,
+          confirms `findByPersonIsNullFetchPhoto` returns them oldest-first.
+        - `FaceRecognitionServiceImplTest` - two integration tests driving the REAL
+          `groupFaces()`/`groupFacesForUser()` entry point end-to-end (test plan bullets 4 and 6):
+          a real `PersonEntity` appears only once a 3rd matching face exists (picked up by a second
+          run once the 3rd face is added, matching `MAX_UNGROUPED_FACES_PER_RUN`'s own "picked up by
+          a later run" comment), and a 4th face arriving after a same-run promotion attaches to that
+          new person instead of seeding a duplicate. **Deviation from the test plan's own fallback
+          expectation**: bullet 6 pre-authorized falling back to unit-only coverage if the
+          `@MainSpaceLimited`/shared-test-database collision documented in this file's "Not done,
+          considered and rejected for now" note (the entry above this one) reappeared. It didn't -
+          that earlier attempt scoped its queries to *admin's* space (via `runAsAdmin`) or bypassed
+          scoping entirely (thread-rename), both of which see every other test class's leftover data
+          in the same shared H2 database. Here, each test creates its own fresh, uniquely-named
+          non-admin user (via `UserService.createUser`, which also creates that user's own private
+          default space) and pushes *that same user's own* `Authentication` for the duration of the
+          call - since `@MainSpaceLimited` scopes by the current principal's own default space id,
+          this isolates each test's fixtures from the rest of the suite without needing global/
+          thread-rename bypass, so the real end-to-end path was directly testable after all. Test
+          plan bullet 4's own text called out a literal `CLUSTERING_SLICE_SIZE` (200-row) DB-page
+          boundary; that was deliberately not forced (see the test's own comment) - the mid-run-
+          visibility code under test is instantiated once per user run, outside the slice-fetch loop,
+          so it behaves identically regardless of which physical page a later face's row lands on.
+        - Test plan bullet 7 (a `jcmd GC.class_histogram` before/after production memory comparison)
+          was **not run** - it's an operational verification step for a real deployment, not a JUnit
+          test; left as a follow-up for whoever deploys this change.
+      - `mvn test`: full suite green, **114 tests, 0 failures, 0 errors**, run twice back-to-back
+        (same verification convention as the "small transactions" entry above) with no
+        order-dependent flakiness.
+      - The `@MainSpaceLimited`/heavy-task-thread global-pooling factor (open question 4 above)
+        remains untouched and out of scope, exactly as directed.
