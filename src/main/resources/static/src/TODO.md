@@ -5,6 +5,45 @@ new work is identified or completed, so nothing gets lost between sessions.
 
 ## Done
 
+- [x] **Feature: Android/Google Photos-style mobile grid + icon-only Lightbox actions on mobile.**
+      `App.css`'s `@media (max-width: 768px)`/`(max-width: 480px)` blocks previously just shrank
+      `.photo-card`'s fixed height while leaving `.photo-grid`'s desktop flex-wrap "masonry" (rows
+      justified to fill the container width, so row height varies per row) in place — fine on a
+      wide desktop window, but produces inconsistent, oddly-cropped row heights on a narrow phone.
+      Standard Android/iOS Photos apps use a uniform grid of square-cropped thumbnails instead, so
+      mobile now switches `.photo-grid` to `display: grid` with `repeat(auto-fill, minmax(Npx,
+      1fr))` columns (100px ≤768px, 80px ≤480px) and forces `.photo-card` to `aspect-ratio: 1/1`
+      via `height: auto !important`/`flex-basis: auto !important` (overriding `PhotoGrid.jsx`'s
+      inline per-photo masonry sizing — confirmed those inline styles are only ever the constant
+      default 220px outside of drag-to-reorder, which is desktop-only, so forcing them off on
+      mobile is safe). `.photo-grid::after`'s flex last-row spacer trick is disabled under grid
+      layout (`content: none`) since it would otherwise render as a stray empty cell. The
+      (non-functional on touch, no polyfill) drag-to-reorder handle is now also hidden on mobile
+      rather than shown doing nothing.
+      Also restructured `Lightbox.jsx`'s sidebar action buttons (Edit/Add-to-Album/Remove-from-
+      Album/Restore/Move-to-Main/Move-to-Garbage/Permanent-Delete) into one `.lightbox-actions`
+      wrapper, with each label wrapped in a `.lightbox-action-label` span and a matching `title`
+      attribute added for accessibility once the label is hidden. Desktop is unaffected (wrapper
+      div has no layout rule of its own, buttons keep their existing stacked full-width look); on
+      mobile, `.lightbox-actions` becomes a centered horizontal row of 44px circular icon-only
+      buttons (label span `display: none`) — matching the standard Android Photos lightbox's
+      bottom icon bar instead of a stack of labeled buttons.
+      Companion change in the native Android app (`android/app/.../ui/common/PhotoGridContent.kt`):
+      grouped `PagedPhotosUiState.photos` by `Photo.groupDate` (Kotlin's `groupBy` preserves both
+      key-encounter order and each group's element order, so the existing newest-first ordering
+      from the backend is preserved) and rendered a full-span `DayHeader` item above each day's
+      thumbnails in the same `LazyVerticalGrid` — mirrors the web app's day-sectioned grid without
+      changing `PhotoGridContent`'s public signature (still shared as-is by
+      `AlbumDetailScreen.kt`/`SpaceDetailScreen.kt`). `PhotoThumbnail.kt` gained an `isVideo`
+      parameter drawing a small play-glyph badge (bottom-right, matches the web grid's own
+      `.video-badge` role) — wired from `photo.contentType?.startsWith("video")`. Not verified by
+      actually running the Android build (no Android SDK/emulator in this environment) — worth a
+      real-device/emulator check of the day-header grouping and thumbnail aspect ratio before
+      shipping. The native `PhotoDetailScreen.kt` was deliberately left alone: it already only has
+      one icon button (back arrow, no other actions), since `PhotoApi` is read-only (no delete/
+      move/edit endpoints exist yet for the native app) — nothing there currently renders as a
+      text button needing conversion.
+
 - [x] **`DuplicateClusterModal.jsx` redesigned — flicker compare instead of a static image grid.**
       User feedback on the equal-size-columns `/duplicates` page ("hard to see differences and
       choose") led to exploring four options (metadata diff strip, auto-suggested keeper badge,
