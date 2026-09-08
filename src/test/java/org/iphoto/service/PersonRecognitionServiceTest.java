@@ -143,7 +143,7 @@ class PersonRecognitionServiceTest extends AbstractIntegrationTest {
         FaceEntity face1 = saveFace(photo, 2.0f);
         FaceEntity face2 = saveFace(photo, 2.1f);
 
-        personRecognitionService.addPerson(admin, List.of(face1, face2));
+        personRecognitionService.addPerson(List.of(face1, face2));
 
         FaceEntity reloaded1 = faceRepository.findById(face1.getId()).orElseThrow();
         FaceEntity reloaded2 = faceRepository.findById(face2.getId()).orElseThrow();
@@ -160,11 +160,11 @@ class PersonRecognitionServiceTest extends AbstractIntegrationTest {
 
         FaceEntity biggerFace1 = saveFace(photo, 3.0f);
         FaceEntity biggerFace2 = saveFace(photo, 3.1f);
-        personRecognitionService.addPerson(admin, List.of(biggerFace1, biggerFace2));
+        personRecognitionService.addPerson(List.of(biggerFace1, biggerFace2));
         UUID biggerPersonId = faceRepository.findById(biggerFace1.getId()).orElseThrow().getPerson().getId();
 
         FaceEntity smallerFace = saveFace(photo, 3.2f);
-        personRecognitionService.addPerson(admin, List.of(smallerFace));
+        personRecognitionService.addPerson(List.of(smallerFace));
         UUID smallerPersonId = faceRepository.findById(smallerFace.getId()).orElseThrow().getPerson().getId();
 
         PersonEntity target = personRecognitionService.mergePersons(biggerPersonId, smallerPersonId);
@@ -181,12 +181,12 @@ class PersonRecognitionServiceTest extends AbstractIntegrationTest {
         PhotoEntity photo = savePhoto(space, admin, LocalDateTime.of(2024, 4, 1, 0, 0));
 
         FaceEntity targetFace = saveFace(photo, 4.0f);
-        personRecognitionService.addPerson(admin, List.of(targetFace));
+        personRecognitionService.addPerson(List.of(targetFace));
         UUID targetId = faceRepository.findById(targetFace.getId()).orElseThrow().getPerson().getId();
 
         FaceEntity sourceFace1 = saveFace(photo, 4.1f);
         FaceEntity sourceFace2 = saveFace(photo, 4.2f);
-        personRecognitionService.addPerson(admin, List.of(sourceFace1, sourceFace2));
+        personRecognitionService.addPerson(List.of(sourceFace1, sourceFace2));
         UUID sourceId = faceRepository.findById(sourceFace1.getId()).orElseThrow().getPerson().getId();
 
         // Source has MORE faces than target here - mergeInto must still keep target as the keeper.

@@ -188,11 +188,10 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
                     // own independent transaction) shouldn't stop the rest of this user's new-person
                     // clusters from being created in this run.
                     try {
-                        personRecognitionService.addPerson(user, promotedClusterFaces.get());
+                        personRecognitionService.addPerson(promotedClusterFaces.get());
                         // Mid-run visibility (see class-level field comment above): re-fetch the
-                        // brand-new person via one of the faces just handed to addPerson (its
-                        // interface needs no change for this - see TODO.md's "qualif-server item 5"
-                        // entry) and fold it into this run's own persons/bucketsByPerson, so every
+                        // brand-new person via one of the faces just handed to addPerson and fold
+                        // it into this run's own persons/bucketsByPerson, so every
                         // later face - in this same slice or a later one - matches it via the
                         // normal existing-person path instead of seeding a duplicate cluster.
                         UUID newPersonId = faceRepository.findById(promotedClusterFaces.get().getFirst().getId())
@@ -251,7 +250,24 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
         double weightedSimilaritySum = 0;
         int totalWeight = 0;
         for (PersonEmbeddingBucketEntity bucket : nearest) {
-            double similarity = cosineSimilarity(faceEmbedding, EmbeddingCodec.toFloats(bucket.getEmbedding()));
+            float[] bucketVector = EmbeddingCodec.toFloats(bucket.getEmbedding());
+            // A dimension mismatch means this bucket can't be meaningfully compared at all (a
+            // different embedding-model generation, or - in the already-known, accepted
+            // @MainSpaceLimited global-pooling case where this runs unfiltered across every
+            // user's data at once, see the class comment - simply an unrelated person). Previously
+            // this threw out of cosineSimilarity uncaught, aborting groupFacesForUser's ENTIRE run
+            // for whichever user happened to be current at that moment (every remaining face and
+            // candidate cluster in that run silently abandoned, caught only by the method's own
+            // outer catch-all) - one incompatible bucket anywhere in `persons` was enough to break
+            // face grouping for everyone. Skipping just this one bucket and continuing is exactly
+            // what an empty/no-match result already means for a person with no comparable buckets
+            // at all (see the totalWeight == 0 check below).
+            if (bucketVector.length != faceEmbedding.vector().length) {
+                log.warn("Skipping person {} bucket {} for embedding comparison - dimension mismatch ({} vs {})",
+                        person.getId(), bucket.getId(), bucketVector.length, faceEmbedding.vector().length);
+                continue;
+            }
+            double similarity = cosineSimilarity(faceEmbedding, bucketVector);
             weightedSimilaritySum += similarity * bucket.getFaceCount();
             totalWeight += bucket.getFaceCount();
         }

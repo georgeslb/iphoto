@@ -33,7 +33,6 @@ public class PersonRecognitionServiceImpl implements PersonRecognitionService {
 
     private final FaceRepository faceRepository;
     private final PersonRepository personRepository;
-    private final SpaceService spaceService;
     private final PersonEmbeddingBucketRepository personEmbeddingBucketRepository;
 
     @Override
@@ -60,8 +59,17 @@ public class PersonRecognitionServiceImpl implements PersonRecognitionService {
     }
 
     @Override
-    public void addPerson(UserEntity user, List<FaceEntity> faces) { // Added UserEntity parameter
-        PersonEntity newPerson = PersonEntity.builder().space(spaceService.getDefaultSpaceForUser(user)).faces(faces).build();
+    public void addPerson(List<FaceEntity> faces) {
+        // The new person's space comes from the faces actually being attached, not a separately-
+        // passed "owner" - every face in a real cluster already belongs to the same space (a
+        // person can't span spaces), and faces.get(0).getPhoto() is guaranteed already-initialized
+        // even though these FaceEntity instances are detached (FaceRepository.findByPersonIsNullFetchPhoto's
+        // own JOIN FETCH f.photo - see its comment). photo.getSpace() itself may come back as an
+        // uninitialized lazy proxy rather than a fully-loaded SpaceEntity, but that's fine here:
+        // it's only ever used below as a FK reference when persisting newPerson, which Hibernate
+        // resolves from the proxy's own already-known id, never needing to initialize it further.
+        SpaceEntity space = faces.get(0).getPhoto().getSpace();
+        PersonEntity newPerson = PersonEntity.builder().space(space).faces(faces).build();
         recalculateCoverFace(newPerson);
         // Flush the brand-new person immediately, before any face is made to reference it: faces
         // in `faces` are detached (loaded earlier, outside this transaction), so saving them

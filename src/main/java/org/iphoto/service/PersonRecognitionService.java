@@ -2,7 +2,6 @@ package org.iphoto.service;
 
 import org.iphoto.entities.FaceEntity;
 import org.iphoto.entities.PersonEntity;
-import org.iphoto.entities.UserEntity;
 
 import java.util.List;
 import java.util.UUID;
@@ -11,7 +10,13 @@ public interface PersonRecognitionService {
 
     void updatePerson(PersonEntity person, FaceEntity face);
 
-    void addPerson(UserEntity user, List<FaceEntity> faces);
+    // The new person's space is derived from `faces` themselves (the first face's photo's space -
+    // see the impl), not from a separate "which user does this belong to" argument: `faces` is
+    // never empty (callers only promote once a real cluster of matching faces exists) and is
+    // always already scoped to one single space by construction, so re-deriving it from the data
+    // being attached is both simpler and strictly more correct than trusting a caller to separately
+    // pass the right owner.
+    void addPerson(List<FaceEntity> faces);
 
     // Merges two people into one: the person with FEWER faces (the "source") has every one of its
     // faces reassigned to the person with more faces (the "target"), then the now-empty source is
