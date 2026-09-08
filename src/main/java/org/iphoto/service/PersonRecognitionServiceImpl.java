@@ -13,8 +13,10 @@ import org.springframework.util.CollectionUtils;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 // Plain @Transactional (REQUIRED), not REQUIRES_NEW: addFaceToBucket/removeFaceFromBucket/
 // recalculateCoverFace/updatePerson/addPerson must be able to join a caller's existing
@@ -63,7 +65,7 @@ public class PersonRecognitionServiceImpl implements PersonRecognitionService {
         // The new person's space comes from the faces actually being attached, not a separately-
         // passed "owner" - every face in a real cluster already belongs to the same space (a
         // person can't span spaces), and faces.get(0).getPhoto() is guaranteed already-initialized
-        // even though these FaceEntity instances are detached (FaceRepository.findByPersonIsNullFetchPhoto's
+        // even though these FaceEntity instances are detached (FaceRepository.findByPersonIsNullAndSpaceIdFetchPhoto's
         // own JOIN FETCH f.photo - see its comment). photo.getSpace() itself may come back as an
         // uninitialized lazy proxy rather than a fully-loaded SpaceEntity, but that's fine here:
         // it's only ever used below as a FK reference when persisting newPerson, which Hibernate
@@ -79,7 +81,7 @@ public class PersonRecognitionServiceImpl implements PersonRecognitionService {
         PersonEntity person = personRepository.saveAndFlush(newPerson);
         faces.forEach(faceEntity -> faceEntity.setPerson(person));
         faceRepository.saveAll(faces);
-        faces.forEach(face -> addFaceToBucket(person, face));
+        addFacesToBuckets(person, faces);
     }
 
     @Override
@@ -192,6 +194,40 @@ public class PersonRecognitionServiceImpl implements PersonRecognitionService {
         bucket.setEmbedding(EmbeddingCodec.toBytes(updated));
         bucket.setFaceCount(bucket.getFaceCount() + 1);
         personEmbeddingBucketRepository.save(bucket);
+    }
+
+    // Batched equivalent of calling addFaceToBucket once per face in `faces` - addPerson's own
+    // caller (FaceRecognitionServiceImpl.groupFacesForUser) hands it a whole freshly-promoted
+    // cluster at once (typically 3+ faces, per MIN_NEW_PERSON_CLUSTER_SIZE), and doing that one
+    // findByPersonIdAndBucketYear read + one save per face defeated the whole point of already
+    // having them all in hand: N faces meant N round-trips even though most clusters only ever
+    // span a small handful of distinct calendar years (often just one). Groups by bucket year
+    // first, so this does one read + one save PER DISTINCT YEAR represented in `faces`, folding
+    // every face for that year into the running average in memory in between (still the same
+    // weightedAverage math, just no longer round-tripping to the DB between each fold). Not used
+    // by updatePerson's single-face path - there's only ever one bucket to touch there, so
+    // addFaceToBucket above is already minimal for that case.
+    private void addFacesToBuckets(PersonEntity person, List<FaceEntity> faces) {
+        Map<Integer, List<FaceEntity>> facesByBucketYear = faces.stream()
+                .collect(Collectors.groupingBy(PersonRecognitionServiceImpl::bucketYearFor));
+        for (Map.Entry<Integer, List<FaceEntity>> entry : facesByBucketYear.entrySet()) {
+            int bucketYear = entry.getKey();
+            PersonEmbeddingBucketEntity bucket = personEmbeddingBucketRepository
+                    .findByPersonIdAndBucketYear(person.getId(), bucketYear)
+                    .orElseGet(() -> PersonEmbeddingBucketEntity.builder()
+                            .person(person).bucketYear(bucketYear).faceCount(0).embedding(new byte[0]).build());
+
+            int count = bucket.getFaceCount();
+            float[] running = count == 0 ? null : EmbeddingCodec.toFloats(bucket.getEmbedding());
+            for (FaceEntity face : entry.getValue()) {
+                float[] incoming = EmbeddingCodec.toFloats(face.getEmbedding());
+                running = count == 0 ? incoming : weightedAverage(running, count, incoming);
+                count++;
+            }
+            bucket.setEmbedding(EmbeddingCodec.toBytes(running));
+            bucket.setFaceCount(count);
+            personEmbeddingBucketRepository.save(bucket);
+        }
     }
 
     @Override
