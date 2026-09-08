@@ -92,6 +92,12 @@ export default function Header({
             <ArrowLeft size={18} />
           </button>
         )}
+        {/* No menuPersonId-equivalent plumbing exists for Persons (unlike menuAlbumId/menuSpaceId
+            above) - the pathname test alone is unambiguous here, since /persons/:id always means a
+            specific person is being viewed. */}
+        {pathname.startsWith('/persons/') && (
+          <button className="btn" onClick={() => navigate('/persons')} title={messages["backToPersons"]}><ArrowLeft size={18} /></button>
+        )}
       </div>
 
       <div className="header-actions" style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
