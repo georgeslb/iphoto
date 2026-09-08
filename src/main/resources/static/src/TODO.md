@@ -4624,3 +4624,36 @@ new work is identified or completed, so nothing gets lost between sessions.
         `PhotoGridContent.kt`/`PhotoThumbnail.kt` renders anything from it yet. Not a bug to fix
         today, just a design constraint to record for whenever that native feature actually gets
         built: icon + count only, matching the web behavior above, no text label from day one.
+
+- [ ] **Flaky test** (user report, 2026-09-09): `PhotoServiceTest.
+      downloadSingleAndMultiplePhotosSetContentDispositionAndZipEntries` fails intermittently in
+      full-suite `mvn test` runs — observed both "Expected size: 2 but was: 0" and "...was: 1" for
+      the downloaded zip's entry count — but passes reliably every time run in isolation (confirmed:
+      5/5 clean runs of just this test). Not yet root-caused; investigation so far has ruled out
+      more than it's confirmed:
+      - **Confirmed real, but doesn't fully explain the symptom**: `AbstractIntegrationTest.
+        generateTestJpeg()` fills a 64x64 image with one random solid `Color` per call —
+        empirically (2000 generated JPEGs, hashed), this has a real, non-negligible MD5 collision
+        rate, noticeably higher than a naive 24-bit-random estimate would predict (plausibly because
+        JPEG quantization maps many distinct solid colors to byte-identical compressed output for a
+        flat-color image — worth confirming that theory rather than trusting it blindly).
+        `PhotoRepository.findByFileHash` enforces global file-hash uniqueness, so a collision makes
+        `PhotoServiceImpl.uploadAsset` return DUPLICATED/TRASHED instead of creating a new photo
+        (reuses the EXISTING photo's id via `task.setPhotoId(...)`, task status becomes
+        IGNORED/TRASHED). **But**: neither IGNORED nor TRASHED is treated as terminal by
+        `AbstractIntegrationTest.waitForTaskCompletion` (only COMPLETED/FAILED return/throw — anything
+        else just sleeps and retries for up to 10s then throws its own "did not complete in time"
+        `AssertionError`) — so a collision hit during either of THIS test's own two `uploadPhoto()`
+        calls should surface as a **timeout** assertion thrown from inside `uploadPhoto()`, not the
+        "zip size" assertion actually observed at the test's own final line. The collision mechanism
+        is real and worth keeping in mind for the whole suite's general flakiness, but doesn't
+        obviously explain this specific test's specific failure mode on its own — there's likely a
+        second, related mechanism still unidentified (e.g. something about a stale/reused photoId
+        from a collision earlier in the SAME suite run, interacting with this test's own fresh
+        space/photos in a way not yet worked out).
+      - **Not yet tried**: reproducing via a repeated-loop full `mvn test` run (this test's own
+        isolation doesn't reproduce it — needs the real cross-test shared-DB conditions the rest of
+        the suite provides) with temporary debug logging around `findOwnedByIds`/the zip-writing loop
+        in `PhotoController#downloadMultiple` to see, at the moment of failure, exactly which photoId
+        is missing and why (not found by `findByIdInAndSpaceUserId`, vs. found but
+        `originalPath`/file missing on disk).
