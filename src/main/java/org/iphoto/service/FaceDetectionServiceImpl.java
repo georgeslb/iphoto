@@ -12,6 +12,7 @@ import ai.djl.modality.cv.output.Rectangle;
 import ai.djl.repository.zoo.ZooModel;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.iphoto.configuration.BlurDetector;
 import org.iphoto.configuration.FaceAligner;
 import org.iphoto.entities.FaceEntity;
 import org.iphoto.entities.PersonEntity;
@@ -27,6 +28,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.file.Paths;
@@ -59,6 +61,20 @@ public class FaceDetectionServiceImpl implements FaceDetectionService {
     // Stricter than the model's own confThresh (0.85, FaceDetectionConfiguration) — only applied to
     // the small-face band above, not to every detection.
     private static final double SMALL_FACE_MIN_CONFIDENCE = 0.92;
+
+    // Variance-of-Laplacian blur-rejection threshold (see BlurDetector) - below this, a face crop
+    // is rejected outright at detection time and never becomes a FaceEntity, the same place
+    // MIN_FACE_SIZE/SMALL_FACE_MIN_CONFIDENCE above reject too-small/low-confidence detections (see
+    // TODO.md's "detect blurry faces and reject them at detection time" entry - user confirmed
+    // "we have too many [faces] right now", junk/blurry detections bloating the Persons page).
+    // ~100 is the commonly-cited starting point for this metric (Pech-Pacheco et al.); this
+    // environment has no real photo library to empirically tune it against actual blurry/sharp
+    // face crops from this app's own data, so it's the literature default, NOT independently
+    // verified here - worth revisiting against real data before trusting it long-term (see
+    // BlurDetectorTest for what IS verified: the metric itself correctly discriminates a sharp
+    // synthetic image from a genuinely blurred version of itself, and a flat/solid-color image
+    // scores near zero).
+    private static final double BLUR_VARIANCE_THRESHOLD = 100.0;
 
 
     @Override
@@ -162,6 +178,16 @@ public class FaceDetectionServiceImpl implements FaceDetectionService {
                     try {
                         Image subImage =
                                 image.getSubImage(x, y, w, h);
+
+                        // Cheapest point to blur-check: the exact crop pixels are already in
+                        // memory here, before FaceAligner.align/resize does any extra work on them.
+                        double blurVariance = BlurDetector.laplacianVariance((BufferedImage) subImage.getWrappedImage());
+                        if (blurVariance < BLUR_VARIANCE_THRESHOLD) {
+                            log.info("Skipping blurry face (variance={}, threshold={}) in photo {}",
+                                    blurVariance, BLUR_VARIANCE_THRESHOLD, photo.getId());
+                            continue;
+                        }
+
                         Image embeddingInput;
 
                         if (box instanceof Landmark landmark) {
