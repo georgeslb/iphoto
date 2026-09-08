@@ -2481,9 +2481,8 @@ new work is identified or completed, so nothing gets lost between sessions.
         103/103 pass. Frontend: new `photoReorder.test.js` (9/9) plus 4 new
         `usePhotoActions.test.js` cases for `handleReorderPhotos`; full suite 125/125 pass;
         `npm run build` succeeds. Not yet manually clicked through in the running app.
-- [ ] **Feature**: detect blurry faces. Confirmed feasible, not yet implemented — no design
-      decision made yet on what to DO with the signal (see below), just logging the "can this be
-      done" question the user asked.
+- [ ] **Feature**: detect blurry faces and reject them at detection time (option (e) below,
+      confirmed 2026-09-09 — see the Design decision note for why/scope).
       - **Technique**: variance of the Laplacian (Pech-Pacheco et al.) — grayscale the face crop,
         run a Laplacian edge filter, take the variance of the result. Sharp faces have lots of
         fine-edge high-frequency content -> high variance; blurry ones lack it -> low variance,
@@ -2498,16 +2497,27 @@ new work is identified or completed, so nothing gets lost between sessions.
         `FaceAligner.align`/resizing it down for the embedding model — cheapest point to compute a
         blur score, since the exact crop pixels are already in memory and no extra I/O is needed.
         Would need a new column on `FaceEntity` (e.g. `blurScore` or `isBlurry`) to persist it.
-      - **Open design question — what to actually do with a blurry flag** (this is what's blocking
-        implementation, not the detection itself): user's explicit leaning is (e) — reject the
-        face outright at detection time, same place `MIN_FACE_SIZE`/`SMALL_FACE_MIN_CONFIDENCE`
-        already reject too-small/low-confidence detections (`FaceDetectionService.
-        detectAndSaveFaces`'s `continue` checks) — a blurry crop would just never become a
-        `FaceEntity` at all, no new column, no UI changes anywhere. User explicitly said they need
-        more time to decide before committing to this though, so **not yet implemented** — do not
-        build this on the next session without re-confirming, in case the decision changes.
-        Other options that were on the table before that leaning, kept here in case (e) gets
-        reconsidered: (a) never pick a blurry face as a person's `coverFace`
+      - **Design decision — CONFIRMED 2026-09-09**: user gave the explicit go-ahead ("we have too
+        many [faces] right now") to implement (e) — reject the face outright at detection time,
+        same place `MIN_FACE_SIZE`/`SMALL_FACE_MIN_CONFIDENCE` already reject too-small/low-
+        confidence detections (`FaceDetectionService.detectAndSaveFaces`'s `continue` checks) — a
+        blurry crop just never becomes a `FaceEntity` at all, no new column needed, no UI changes
+        required for this part. This is what "too many faces" actually refers to: junk/blurry
+        detections are bloating the Persons page (via spurious low-quality clusters/new-person
+        promotions off bad crops) — implementing (e) stops the bleeding going forward. Threshold
+        needs empirical tuning against this app's real photos (start near the commonly-cited ~100
+        Laplacian-variance cutoff, but verify against a sample of real blurry vs. sharp face crops
+        from this app's own data before trusting it, per the Technique note above).
+        **Explicitly NOT in scope for this pass**: bulk-deleting/cleaning up FaceEntity/PersonEntity
+        rows that already exist from blurry detections made before this change ships — that's
+        destructive, irreversible, and affects real user data already in the DB; (e) only prevents
+        *new* blurry faces from being saved. If the Persons-page clutter is still bad after (e)
+        ships and the pagination/sort work below, revisit option (c) below as a deliberate,
+        explicitly-confirmed follow-up (e.g. an admin-triggered "delete this unnamed person and
+        its faces" action) — never as something an autonomous run decides to do on its own.
+        Other options that were on the table before this decision, kept here in case (e) alone
+        isn't enough and one of these is worth adding on top: (a) never pick a blurry face as a
+        person's `coverFace`
         (`PersonRecognitionService.recalculateCoverFace`) — cheapest, safest, no real downside,
         and notably NOT mutually exclusive with (e) (a face just above whatever blur-reject
         threshold could still be too blurry to want as a cover); (b) a visual "blurry" badge on
@@ -4502,3 +4512,65 @@ new work is identified or completed, so nothing gets lost between sessions.
         order-dependent flakiness.
       - The `@MainSpaceLimited`/heavy-task-thread global-pooling factor (open question 4 above)
         remains untouched and out of scope, exactly as directed.
+
+- [ ] **Bug** (user report, 2026-09-09): `GET /api/faces/persons` is a real `Page<PersonDTO>`
+      (`FaceController#getPersons`, `@PageableDefault(size = 50, ...)`), but `hooks/usePersons.js`
+      calls `fetch('/api/faces/persons')` with no `page`/`size` params and no load-more mechanism
+      at all — it just takes `data.content` and stops, so anyone with more than 50 people (or,
+      practically, more than 50 face clusters once the blurry-face-rejection item below cuts down
+      on junk) can never see the rest. Needs real pagination on the Persons page (`Persons.jsx`) —
+      either a "load more" button/infinite-scroll (`IntersectionObserver`, consistent with how
+      `PhotoGrid.jsx`'s day-indexed grid already loads more content) or classic page controls;
+      infinite-scroll is probably the better fit for a photo-grid-styled page like this one. Update
+      `usePersons.js` to track page/hasMore state and append pages rather than replace, mirroring
+      the shape `useDayIndexedPhotos.js`/`useSharedAlbumPhotos.js` already use for the
+      `{content, page: {size, number, totalElements, totalPages}}` VIA_DTO envelope (see
+      `JsonConfiguration`'s `@EnableSpringDataWebSupport(pageSerializationMode = VIA_DTO)`).
+
+- [ ] **Feature** (user request, 2026-09-09): Persons should sort named people before unnamed
+      ones, then by photo count descending — i.e. `ORDER BY (name IS NULL OR name = ''), photoCount
+      DESC` in spirit. `FaceController#getPersons`'s current `@PageableDefault(sort = "name",
+      direction = DESC)` can't express this (plain property sort has no "empty/null last" concept,
+      and it's not sorting by photo count at all) — needs a real custom query
+      (`PersonRepository`/`FaceService.getPersons`) with an explicit `ORDER BY CASE WHEN p.name IS
+      NULL OR p.name = '' THEN 1 ELSE 0 END, p.photoCount DESC` (JPQL `CASE WHEN` in `ORDER BY`
+      works fine in Hibernate) rather than relying on the incoming `Pageable`'s sort at all — this
+      ordering should be the fixed, non-negotiable default, not something the caller can override
+      via `?sort=`. Verify `PersonDTO`/`PersonEntity` actually carries a `photoCount` column to
+      sort by server-side (check before assuming — it may currently only be computed/exposed
+      elsewhere); if it doesn't exist as a persisted/queryable column yet, that's this item's real
+      blocker and needs solving first (e.g. a `photoCount` column on `PersonEntity`, incrementally
+      maintained the same way `AlbumEntity.photoCount`/`SpaceEntity.photoCount` already are,
+      rather than computed per-request) — do not fake the sort with client-side re-ordering of one
+      already-paginated page, since that would only sort within each page, not across the whole
+      list.
+
+- [ ] **Feature** (user request, 2026-09-09): a back button on the Person detail page
+      (`PersonDetail.jsx`, route `/persons/:personId`) to navigate back to the Persons grid
+      (`/persons`). There's already an exact precedent for this pattern to copy — `Header.jsx`
+      renders a `<button onClick={() => navigate('/albums')}><ArrowLeft/></button>` when
+      `pathname.startsWith('/albums/') && menuAlbumId`, and an equivalent one for Spaces
+      (`isSpacesPage`) — add a matching branch for `pathname.startsWith('/persons/')` (need a
+      `menuPersonId`-equivalent check, or just the pathname test alone if there's no existing
+      per-route "menu id" plumbing for Persons — check how `menuAlbumId`/`isSpacesPage` are
+      actually threaded into `Header.jsx` before assuming the exact same mechanism transfers
+      as-is) navigating to `navigate('/persons')`. New i18n key `backToPersons` (en/fr), matching
+      `backToAlbums`/`backToSpaces`'s existing style.
+
+- [ ] **Feature** (user request, 2026-09-09): a search/sort text input for the Albums grid
+      (`/albums` route, `AlbumGridDisplay.jsx`, fed by `useAlbumManagement.js`'s `albums` state
+      from `GET /api/albums` — already returns the full unpaginated list, so this can be a
+      client-side filter, no backend change needed). User's own word was "beautiful" — this is a
+      real, polished UI element the user will look at, not a bare `<input>`; match the app's
+      existing input styling (see `.modal-input` in `App.css`, used by e.g.
+      `CreateShareLinkModal.jsx`'s password field) and consider a `lucide-react` `Search` icon
+      (already a dependency, used elsewhere in the app) inside/beside the field for affordance.
+      Typing filters `albums` by case-insensitive substring match against `album.name` before
+      passing to `AlbumGridDisplay`; also worth sorting the filtered result alphabetically by name
+      (album order from `GET /api/albums` is otherwise whatever `AlbumServiceImpl.getAllAlbums`
+      returns, not necessarily name order — check that before assuming a sort is even needed on
+      top of the filter). Debounce isn't strictly needed for a client-side filter over an
+      already-loaded array (no network round-trip per keystroke), but do check `albums.length` is
+      realistically small enough for a plain `useMemo`-filtered re-render on every keystroke to
+      stay smooth — if the album count is large enough that this is a concern, that's worth a note
+      rather than silently shipping something janky.
