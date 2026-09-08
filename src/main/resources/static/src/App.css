@@ -56,6 +56,12 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
    so it carries the matching side padding itself rather than relying on a shared wrapper. */
 .library-timeline { padding: 24px 40px 0 40px; }
 
+/* Top-of-Albums-page search bar (AlbumGridDisplay.jsx), same "sibling with its own padding"
+   pattern as .library-timeline above. */
+.album-search-bar { position: relative; padding: 24px 40px 0 40px; max-width: 420px; }
+.album-search-icon { position: absolute; left: 52px; top: 50%; transform: translateY(-50%); color: var(--text-secondary); pointer-events: none; }
+.album-search-input.modal-input { padding-left: 40px; }
+
 .memories-strip { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 4px; }
 
 .memory-card {
@@ -1602,6 +1608,15 @@ button.upload-item-name.upload-item-name-link:hover {
 
   .library-timeline {
     padding: 16px 16px 0 16px;
+  }
+
+  .album-search-bar {
+    padding: 16px 16px 0 16px;
+    max-width: none;
+  }
+
+  .album-search-icon {
+    left: 28px;
   }
 
   .header-actions {
