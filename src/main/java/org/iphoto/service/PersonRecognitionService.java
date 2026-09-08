@@ -49,4 +49,17 @@ public interface PersonRecognitionService {
     void addFaceToBucket(PersonEntity person, FaceEntity face);
 
     void removeFaceFromBucket(PersonEntity person, FaceEntity face);
+
+    // PersonEntity.photoCount maintenance - a persisted, incrementally-maintained column (the same
+    // recompute-on-write pattern AlbumEntity.photoCount/AlbumServiceImpl.setAlbumPhotoCount already
+    // use, rather than SpaceEntity's atomic-delta one) backing the Persons page's fixed named-first/
+    // photoCount-DESC sort (PersonRepository's custom query needs a real queryable column to sort
+    // by - photoCount used to only ever be computed per-request, see FaceServiceImpl.mapToPerson).
+    // Re-runs a fresh COUNT(DISTINCT photo) query rather than tracking a running delta, so it's
+    // self-correcting regardless of call order - must be called (and the person saved afterward)
+    // at every point a face is attached to or detached from a person, same set of call sites as the
+    // bucket-maintenance methods above: updatePerson/addPerson/mergeFacesIntoTarget here, and
+    // FaceService's attachFaceToPerson/detachFaceFromPerson/deleteFace, and
+    // FaceDetectionService's deleteFaces (whole-photo deletion).
+    void recalculatePhotoCount(PersonEntity person);
 }

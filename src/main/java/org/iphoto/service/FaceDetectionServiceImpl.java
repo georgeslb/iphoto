@@ -14,6 +14,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.configuration.FaceAligner;
 import org.iphoto.entities.FaceEntity;
+import org.iphoto.entities.PersonEntity;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.TaskEntity;
 import org.iphoto.model.TaskStatus;
@@ -29,6 +30,9 @@ import org.springframework.transaction.annotation.Transactional;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.file.Paths;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.UUID;
 
 @Service
 @Slf4j
@@ -59,9 +63,16 @@ public class FaceDetectionServiceImpl implements FaceDetectionService {
 
     @Override
     public void deleteFaces(PhotoEntity photo) {
+        // Every person with at least one face on this photo needs a photoCount recalculation once
+        // the faces are actually gone below - collected up front (by id, not entity - PersonEntity's
+        // Lombok equals/hashCode touches its lazy `faces` collection, not worth relying on just for
+        // a Set membership check) since faceRepository.deleteByPhotoId is a bulk delete, not
+        // something to hang a per-face callback off of.
+        Map<UUID, PersonEntity> affectedPersons = new HashMap<>();
         photo.getFaces().forEach(faceEntity -> {
             if (faceEntity.getPerson() != null) {
                 personRecognitionService.removeFaceFromBucket(faceEntity.getPerson(), faceEntity);
+                affectedPersons.put(faceEntity.getPerson().getId(), faceEntity.getPerson());
             }
             personRepository.findByCoverFace(faceEntity).forEach(personEntity -> {
                 personEntity.setCoverFace(null);
@@ -76,6 +87,13 @@ public class FaceDetectionServiceImpl implements FaceDetectionService {
             });
         });
         faceRepository.deleteByPhotoId(photo);
+
+        // photoCount must be recalculated AFTER the faces are actually gone (same reasoning as
+        // FaceService.deleteFace).
+        affectedPersons.values().forEach(personEntity -> {
+            personRecognitionService.recalculatePhotoCount(personEntity);
+            personRepository.save(personEntity);
+        });
     }
 
     @Override

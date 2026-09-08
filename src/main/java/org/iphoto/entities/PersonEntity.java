@@ -1,6 +1,7 @@
 package org.iphoto.entities;
 
 import jakarta.persistence.*;
+import lombok.Builder;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.Setter;
@@ -62,6 +63,16 @@ public class PersonEntity extends BaseEntity { // Extends BaseEntity
     @Enumerated(EnumType.STRING)
     @Column(name = "cover_face_origin")
     private CoverFaceOrigin coverFaceOrigin;
+
+    // Distinct photos reachable through this person's faces - persisted and incrementally
+    // maintained (recompute-on-write, see PersonRecognitionService.recalculatePhotoCount) the same
+    // way AlbumEntity.photoCount is, rather than computed per-request, so PersonRepository's
+    // Persons-page sort query has a real queryable column to ORDER BY. @Builder.Default rather than
+    // requiring every builder call site (production and test) to set it explicitly - a
+    // freshly-built person always starts at 0 faces/photos unless a caller says otherwise.
+    @Builder.Default
+    @Column(nullable = false)
+    private Integer photoCount = 0;
 
     // This ensures that before a Person is deleted from the DB, the reference in all
     // their associated faces is set to null, preventing a foreign key constraint violation
