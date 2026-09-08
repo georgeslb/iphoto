@@ -4574,3 +4574,53 @@ new work is identified or completed, so nothing gets lost between sessions.
       realistically small enough for a plain `useMemo`-filtered re-render on every keystroke to
       stay smooth — if the album count is large enough that this is a concern, that's worth a note
       rather than silently shipping something janky.
+
+- [ ] **Bug** (user report, 2026-09-09): mobile web and the native Android app show a variable
+      photo-grid column count (commonly 5 on typical phone widths) instead of a fixed 4. Both use
+      "auto-fill by minimum tile size" grids, which is what makes the count viewport-width-
+      dependent rather than a deliberate fixed number:
+      - **Web**: `App.css`'s `.photo-grid` under `@media (max-width: 768px)`
+        (`grid-template-columns: repeat(auto-fill, minmax(100px, 1fr))`) and
+        `@media (max-width: 480px)` (`minmax(80px, 1fr)`) — switch both to
+        `repeat(4, 1fr)` for a guaranteed 4 columns regardless of exact viewport width. `.photo-card`
+        already forces `aspect-ratio: 1/1` + `width: 100%` in this breakpoint (see the surrounding
+        "Android/Google Photos-style dense square grid" comment), so cells stay square automatically
+        with a fixed column count — no other CSS should need to change. Leave `.album-grid` alone
+        (still `auto-fill`/`minmax`) — the user's report was specifically about the photo grid, not
+        albums.
+      - **Android**: `android/app/src/main/java/org/iphoto/mobile/ui/common/PhotoGridContent.kt`
+        line ~65, `columns = GridCells.Adaptive(minSize = 100.dp)` → `columns = GridCells.Fixed(4)`.
+      - Pure CSS/layout-parameter change, no JS/Kotlin logic touched — `npm test` (frontend) should
+        stay green with no test updates needed unless something unexpectedly asserts a specific
+        column count today (check before assuming). Not verifiable against a real Android
+        build/emulator in this environment (same caveat as other Android-touching entries in this
+        file) — worth a real-device check before shipping.
+
+- [ ] **Feature** (user request, 2026-09-09): on mobile web and the Android app, the duplicate-
+      cluster badge (the small "×N similar" indicator on a photo grid card for a cluster of
+      matching duplicates) should show only the icon and count, no "similar" text label — full text
+      is presumably too cramped once the item above lands (4 narrower columns instead of 5).
+      - **Web** (`PhotoGrid.jsx`'s `renderDisplayItem`, the badge rendered as
+        `<Layers size={12} /> {messages["similarPhotosBadge"](item.members.length)}`): the count and
+        the word "similar" currently come from one combined i18n template
+        (`i18n.js`'s `"similarPhotosBadge": (count) => \`${count} similar\`` — same in fr as
+        `"similaires"`). Split so the count can render standalone and the label can be hidden purely
+        in CSS at the mobile breakpoint — same established pattern as `.lightbox-actions
+        .lightbox-action-label { display: none; }` a bit above in `App.css`'s `@media (max-width:
+        768px)` block (icon-only mobile buttons, text label CSS-hidden not removed from the DOM).
+        Concretely: wrap the label in its own `<span className="duplicate-badge-label">` fed by a
+        new plain (non-count) i18n key, e.g. `"similarLabel": "similar"` / `"similaires"`, add a
+        `.duplicate-badge .duplicate-badge-label { display: none; }` rule under the same `≤768px`
+        media query, and render `<Layers size={12}/> {item.members.length}<span
+        className="duplicate-badge-label"> {messages["similarLabel"]}</span>` (count as plain text,
+        not through the combined template, so an accidental desktop regression to "3 similar"
+        without a space isn't introduced). Leave `DuplicateClusterModal.jsx`'s own title badge (uses
+        the same `similarPhotosBadge` key) untouched — the user's report reads as being about the
+        grid-card badge, not the popup, which has room for the full text; if that assumption turns
+        out wrong, it's a one-line follow-up. **Do not delete the combined `similarPhotosBadge` i18n
+        key** — the modal still uses it.
+      - **Android**: there is no duplicate-cluster badge in the native app today at all —
+        `Photo.kt`'s `duplicates: List<Photo>?` field exists but nothing in
+        `PhotoGridContent.kt`/`PhotoThumbnail.kt` renders anything from it yet. Not a bug to fix
+        today, just a design constraint to record for whenever that native feature actually gets
+        built: icon + count only, matching the web behavior above, no text label from day one.
