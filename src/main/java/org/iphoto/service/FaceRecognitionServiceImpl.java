@@ -107,12 +107,22 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
     private void groupFacesForUser(UserEntity user) {
         try {
             log.info("starting person grouping for user {}", user.getUsername());
-            // Still snapshotted once per run, same as before this rework (see class comment on
-            // this being a separate, out-of-scope @MainSpaceLimited/heavy-task-thread limitation) -
-            // but now MUTATED as brand-new people are promoted mid-run (see below), so later slices
-            // (and later faces within the same slice) see them via the normal existing-person path
-            // instead of risking a second, duplicate CandidateCluster/person for the same subject.
-            List<PersonEntity> persons = new ArrayList<>(personRepository.findAll());
+            // Resolved once, explicitly, and threaded through every query below by id - NOT via
+            // the @MainSpaceLimited-annotated repository methods this used to call
+            // (personRepository.findAll()/faceRepository.findByPersonIsNullFetchPhoto). Those
+            // silently do nothing on the thread this runs on: TaskWorkerManager's dedicated
+            // heavy-task pool matches MainSpaceAspectConfiguration's own backend-task*/heavy-task*
+            // bypass, so the filter never actually got bound to any space there - meaning every
+            // user's people/faces were being pooled together globally, and a real cluster could
+            // end up mixing faces that belong to completely different accounts into one person.
+            // Passing the space explicitly (findAllBySpaceId/findByPersonIsNullAndSpaceIdFetchPhoto)
+            // is correct regardless of which thread this runs on.
+            SpaceEntity space = spaceService.getDefaultSpaceForUser(user);
+            // Still snapshotted once per run, same as before this rework - but now MUTATED as
+            // brand-new people are promoted mid-run (see below), so later slices (and later faces
+            // within the same slice) see them via the normal existing-person path instead of
+            // risking a second, duplicate CandidateCluster/person for the same subject.
+            List<PersonEntity> persons = new ArrayList<>(personRepository.findAllBySpaceId(space.getId()));
             Map<UUID, List<PersonEmbeddingBucketEntity>> bucketsByPerson = new HashMap<>(personEmbeddingBucketRepository
                     .findByPersonIdIn(persons.stream().map(PersonEntity::getId).toList())
                     .stream()
@@ -132,7 +142,7 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
                 // transaction), and both the logging line below and CandidateClusterer read
                 // face.getPhoto() well after that point - needs to already be loaded, not a lazy
                 // proxy with no session left to resolve it on demand.
-                Slice<FaceEntity> slice = faceRepository.findByPersonIsNullFetchPhoto(PageRequest.of(pageNumber, CLUSTERING_SLICE_SIZE));
+                Slice<FaceEntity> slice = faceRepository.findByPersonIsNullAndSpaceIdFetchPhoto(space.getId(), PageRequest.of(pageNumber, CLUSTERING_SLICE_SIZE));
                 List<FaceEntity> faces = slice.getContent();
                 if (faces.isEmpty()) {
                     break;
@@ -251,11 +261,12 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
         int totalWeight = 0;
         for (PersonEmbeddingBucketEntity bucket : nearest) {
             float[] bucketVector = EmbeddingCodec.toFloats(bucket.getEmbedding());
-            // A dimension mismatch means this bucket can't be meaningfully compared at all (a
-            // different embedding-model generation, or - in the already-known, accepted
-            // @MainSpaceLimited global-pooling case where this runs unfiltered across every
-            // user's data at once, see the class comment - simply an unrelated person). Previously
-            // this threw out of cosineSimilarity uncaught, aborting groupFacesForUser's ENTIRE run
+            // A dimension mismatch means this bucket can't be meaningfully compared at all (most
+            // likely a different embedding-model generation coexisting from before a model swap -
+            // `persons` is properly space-scoped now, see groupFacesForUser's own comment, so this
+            // is no longer expected to fire on some OTHER user's person the way it could when
+            // @MainSpaceLimited was silently a no-op here). Previously this threw out of
+            // cosineSimilarity uncaught, aborting groupFacesForUser's ENTIRE run
             // for whichever user happened to be current at that moment (every remaining face and
             // candidate cluster in that run silently abandoned, caught only by the method's own
             // outer catch-all) - one incompatible bucket anywhere in `persons` was enough to break

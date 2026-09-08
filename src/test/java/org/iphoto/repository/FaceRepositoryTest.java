@@ -28,12 +28,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 // whichever faces happen to come back first, narrowing the transitive-chaining loss inherent to a
 // capped representative set).
 //
-// findByPersonIsNullFetchPhoto is @MainSpaceLimited, so this runs as admin (runAsAdmin) with its
-// fixtures in admin's own main space, same as FaceServiceTest/PersonRecognitionServiceTest. This
-// shared H2 database also holds OTHER test classes' own person-null faces in admin's space by the
-// time this runs, so the assertion below filters the returned content down to just this test's own
-// 3 known face ids (by id, not by list equality) rather than asserting on the full returned list -
-// their RELATIVE order among each other is what's under test here, regardless of interleaving.
+// findByPersonIsNullAndSpaceIdFetchPhoto takes an explicit space_id (not @MainSpaceLimited - see
+// its own comment on why: FaceRecognitionServiceImpl, its only real caller, runs on a thread where
+// that annotation is a deliberate no-op), so this uses admin's own main space directly rather than
+// going through runAsAdmin/SecurityContextHolder at all. This shared H2 database also holds OTHER
+// test classes' own person-null faces in admin's space by the time this runs, so the assertion
+// below filters the returned content down to just this test's own 3 known face ids (by id, not by
+// list equality) rather than asserting on the full returned list - their RELATIVE order among each
+// other is what's under test here, regardless of interleaving.
 class FaceRepositoryTest extends AbstractIntegrationTest {
 
     @Autowired
@@ -69,7 +71,7 @@ class FaceRepositoryTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void returnsUngroupedFacesOrderedByPhotoDateTakenAscendingRegardlessOfInsertionOrder() throws Exception {
+    void returnsUngroupedFacesOrderedByPhotoDateTakenAscendingRegardlessOfInsertionOrder() {
         UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
         SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
 
@@ -91,8 +93,7 @@ class FaceRepositoryTest extends AbstractIntegrationTest {
         int pageNumber = 0;
         boolean hasNext;
         do {
-            int currentPage = pageNumber;
-            Slice<FaceEntity> slice = runAsAdmin(() -> faceRepository.findByPersonIsNullFetchPhoto(PageRequest.of(currentPage, 200)));
+            Slice<FaceEntity> slice = faceRepository.findByPersonIsNullAndSpaceIdFetchPhoto(space.getId(), PageRequest.of(pageNumber, 200));
             slice.getContent().stream()
                     .filter(face -> ourFaceIds.contains(face.getId()))
                     .map(FaceEntity::getId)

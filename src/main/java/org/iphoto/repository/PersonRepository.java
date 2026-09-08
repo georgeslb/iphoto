@@ -12,8 +12,14 @@ import java.util.UUID;
 
 @Repository
 public interface PersonRepository extends JpaRepository<PersonEntity, UUID> {
-    @MainSpaceLimited
-    List<PersonEntity> findAll();
+    // Explicit space_id filter, NOT @MainSpaceLimited: FaceRecognitionServiceImpl.groupFacesForUser
+    // (the only caller) runs on TaskWorkerManager's own dedicated heavy-task thread pool, where
+    // MainSpaceAspectConfiguration deliberately treats @MainSpaceLimited as a no-op (see its own
+    // comment on backend-task*/heavy-task* thread names) - an annotation that LOOKS like it scopes
+    // results but silently doesn't there was exactly what let genuinely different users' people get
+    // mixed together during face grouping. Passing the space explicitly instead is correct
+    // regardless of which thread this runs on.
+    List<PersonEntity> findAllBySpaceId(UUID spaceId);
     List<PersonEntity>  findByCoverFace(FaceEntity faceEntity);
 
     // Scoped to the current user's space like every other @MainSpaceLimited lookup here — a name

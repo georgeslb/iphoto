@@ -17,7 +17,7 @@ import java.util.Optional;
 // excluded from this project's per-interface integration-test suite.
 //
 // Faces MUST be fed to add() in chronological photo.dateTaken-ascending order across the WHOLE
-// run (not just within one slice) - see FaceRepository.findByPersonIsNullFetchPhoto's ORDER BY and
+// run (not just within one slice) - see FaceRepository.findByPersonIsNullAndSpaceIdFetchPhoto's ORDER BY and
 // FaceRecognitionServiceImpl.groupFacesForUser, which feeds one long-lived instance of this class
 // across every slice of one user's run. Chronological order is what lets a cluster's up-to-3 held
 // representatives get picked up as the timeline progresses (a childhood photo, then a teenage one,

@@ -1,6 +1,5 @@
 package org.iphoto.repository;
 
-import org.iphoto.configuration.MainSpaceLimited;
 import org.iphoto.entities.FaceEntity;
 import org.iphoto.entities.PhotoEntity;
 import org.springframework.data.domain.Page;
@@ -8,6 +7,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Slice;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -34,9 +34,17 @@ public interface FaceRepository extends JpaRepository<FaceEntity, UUID> {
     // needs hasNext(), never a total count - so the previous hand-written countQuery (needed only
     // because Spring Data can't reliably derive a count query for a JOIN FETCH @Query) is gone
     // entirely, removing one extra COUNT(*) query per slice fetched.
-    @MainSpaceLimited
-    @Query("SELECT f FROM FaceEntity f JOIN FETCH f.photo WHERE f.person IS NULL ORDER BY f.photo.dateTaken ASC")
-    Slice<FaceEntity> findByPersonIsNullFetchPhoto(Pageable pageable);
+    //
+    // Explicit space_id filter, NOT @MainSpaceLimited: groupFacesForUser (the only caller) runs on
+    // TaskWorkerManager's own dedicated heavy-task thread pool, where MainSpaceAspectConfiguration
+    // deliberately treats @MainSpaceLimited as a no-op (see its own comment on backend-task*/
+    // heavy-task* thread names) - an annotation that LOOKS like it scopes results but silently
+    // doesn't there was exactly what let genuinely different users' faces get mixed into the same
+    // candidate cluster/person during face grouping. Passing the space explicitly instead is
+    // correct regardless of which thread this runs on (see PersonRepository.findAllBySpaceId's
+    // matching comment).
+    @Query("SELECT f FROM FaceEntity f JOIN FETCH f.photo p WHERE f.person IS NULL AND p.space.id = :spaceId ORDER BY p.dateTaken ASC")
+    Slice<FaceEntity> findByPersonIsNullAndSpaceIdFetchPhoto(@Param("spaceId") UUID spaceId, Pageable pageable);
 
     List<FaceEntity> findByPhotoId(UUID photoId);
 
