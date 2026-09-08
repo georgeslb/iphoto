@@ -11,12 +11,11 @@ import org.iphoto.repository.PersonEmbeddingBucketRepository;
 import org.iphoto.repository.PersonRepository;
 import org.iphoto.repository.UserRepository;
 import org.iphoto.util.EmbeddingCodec;
-import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Slice;
 import org.springframework.stereotype.Service;
-import org.springframework.util.CollectionUtils;
 
 import java.time.Duration;
-import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -47,30 +46,40 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
     // Threshold for Cosine Similarity: A higher value means a stricter match. Kept strict and
     // never loosened for "same person, different age" cases — a face at 5 and the same face at
     // 25 are NOT expected to clear this directly. Instead, a rich timeline of in-between photos
-    // lets matches chain through nearby ages (see TEMPORAL_NEIGHBOR_WINDOW below), so long-range
-    // drift is handled by transitivity, not by weakening the per-pair confidence bar.
+    // lets matches chain through nearby ages, so long-range drift is handled by transitivity (see
+    // CandidateClusterer's own class comment on chronological feed order), not by weakening the
+    // per-pair confidence bar.
     private static final double THRESHOLD = 0.60;
-
-    // No longer used for matching against EXISTING persons (see PersonEmbeddingBucketEntity/
-    // NEAREST_BUCKET_COUNT below for that, now precomputed per-year buckets instead of live
-    // per-face queries) - kept only as the base unit for clusterByTemporalProximity's
-    // maxCandidatesPerFace safety cap, for NEW-person clustering.
-    private static final int TEMPORAL_NEIGHBOR_WINDOW = 10;
 
     // Cap on ungrouped faces processed in a single run. groupFaces() reruns every ~30s
     // (TaskWorkerManager's FACE_RECOGNITION task), so a backlog beyond this is simply picked up
     // by later runs — this just bounds memory/cost per run rather than being a correctness limit.
     private static final int MAX_UNGROUPED_FACES_PER_RUN = 2000;
 
+    // How many ungrouped faces are fetched (and held in memory) at a time, out of the run's
+    // overall MAX_UNGROUPED_FACES_PER_RUN ceiling - replaces the old single 2000-row fetch. This,
+    // together with CandidateClusterer's own ≤3-representative-per-cluster cap, is what actually
+    // bounds this method's peak memory footprint: a slice's own FaceEntity/PhotoEntity objects
+    // become eligible for GC once it finishes, leaving only whatever CandidateClusterer itself
+    // still holds (≤3 faces per still-open cluster) referenced across slices. See TODO.md's
+    // "qualif-server item 5" entry for the full worked-example rationale.
+    private static final int CLUSTERING_SLICE_SIZE = 200;
+
     // Minimum faces required for a brand-new (not-yet-matched-to-an-existing-person) cluster to
     // become a PersonEntity, to avoid spurious 1-2 face "people" from noise/coincidental matches.
+    // Reused directly as CandidateClusterer's own representative cap/promotion threshold below - a
+    // cluster promotes the INSTANT it reaches this many members, using exactly those faces as both
+    // its representatives and the personRecognitionService.addPerson payload.
     private static final int MIN_NEW_PERSON_CLUSTER_SIZE = 3;
 
     // Ceiling on how far apart (in real elapsed time) two faces can be and still be compared
-    // during new-person clustering (see clusterByTemporalProximity). This is the primary bound
-    // there now — TEMPORAL_NEIGHBOR_WINDOW is kept only as a cost safety cap, see that method's
-    // comment for why a pure position-based window was wrong.
-    private static final Duration MAX_NEW_PERSON_CLUSTER_GAP = Duration.ofHours(24);
+    // during new-person clustering (see CandidateClusterer). Widened from the original 24h to 90
+    // days - see TODO.md's "qualif-server item 5" entry, resolved question 1: 24h was causing a
+    // real "too few matches" problem, and the old position-based cost concern that originally
+    // motivated a tight window no longer applies now that comparisons are bounded by
+    // CandidateClusterer's own ≤3-representative cap rather than by scanning a growing candidate
+    // window.
+    private static final Duration MAX_NEW_PERSON_CLUSTER_GAP = Duration.ofDays(90);
 
     @Override
     public void groupFaces() { // Added UserEntity parameter
@@ -98,83 +107,110 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
     private void groupFacesForUser(UserEntity user) {
         try {
             log.info("starting person grouping for user {}", user.getUsername());
-            List<PersonEntity> persons = personRepository.findAll();
-            // FetchPhoto: this list outlives the short transaction that loaded it (see class
-            // comment - each face's own match/cluster write is now its own separate transaction),
-            // and both the logging line below and clusterByTemporalProximity read face.getPhoto()
-            // well after that point - needs to already be loaded, not a lazy proxy with no session
-            // left to resolve it on demand.
-            List<FaceEntity> ungroupedFaces = faceRepository
-                    .findByPersonIsNullFetchPhoto(Pageable.ofSize(MAX_UNGROUPED_FACES_PER_RUN))
-                    .stream().toList();
-
-            // A face manually unlinked from a person (FaceService.unlinkFaceFromPerson /
-            // setFacePerson) must never be silently reattached to that SAME person by this
-            // automatic pass — that would undo the user's correction. It can still match a
-            // different person, or seed a brand-new one below. Loaded once per run, keyed by
-            // face id, instead of a query per (face, candidate person) pair.
-            Map<UUID, Set<UUID>> excludedPersonIdsByFace = faceLinkExclusionRepository
-                    .findByFaceIdIn(ungroupedFaces.stream().map(FaceEntity::getId).toList())
-                    .stream()
-                    .collect(Collectors.groupingBy(
-                            exclusion -> exclusion.getFace().getId(),
-                            Collectors.mapping(exclusion -> exclusion.getExcludedPerson().getId(), Collectors.toSet())
-                    ));
-
-            // Precomputed per-person, per-year embedding buckets (see PersonEmbeddingBucketEntity),
-            // batch-loaded once for every candidate person in this whole run - matching a face
-            // against a person is now a pure in-memory comparison against this small precomputed
-            // set instead of a fresh DB query (nearestTemporalNeighbors, since removed) per
-            // (face, person) pair.
-            Map<UUID, List<PersonEmbeddingBucketEntity>> bucketsByPerson = personEmbeddingBucketRepository
+            // Still snapshotted once per run, same as before this rework (see class comment on
+            // this being a separate, out-of-scope @MainSpaceLimited/heavy-task-thread limitation) -
+            // but now MUTATED as brand-new people are promoted mid-run (see below), so later slices
+            // (and later faces within the same slice) see them via the normal existing-person path
+            // instead of risking a second, duplicate CandidateCluster/person for the same subject.
+            List<PersonEntity> persons = new ArrayList<>(personRepository.findAll());
+            Map<UUID, List<PersonEmbeddingBucketEntity>> bucketsByPerson = new HashMap<>(personEmbeddingBucketRepository
                     .findByPersonIdIn(persons.stream().map(PersonEntity::getId).toList())
                     .stream()
-                    .collect(Collectors.groupingBy(bucket -> bucket.getPerson().getId()));
+                    .collect(Collectors.groupingBy(bucket -> bucket.getPerson().getId())));
 
-            List<FaceEntity> stillUnmatched = new ArrayList<>();
-            for (FaceEntity face : ungroupedFaces) {
-                log.info("Working on face in photo {}", face.getPhoto().getId());
-                Set<UUID> excludedPersonIds = excludedPersonIdsByFace.getOrDefault(face.getId(), Set.of());
-                List<PersonEntity> eligiblePersons = excludedPersonIds.isEmpty()
-                        ? persons
-                        : persons.stream().filter(person -> !excludedPersonIds.contains(person.getId())).toList();
+            // One instance per user run, fed faces across every slice below in chronological
+            // (photo.dateTaken ascending) order - see CandidateClusterer's own class comment for
+            // why that ordering matters and how its ≤3-representative cap bounds memory regardless
+            // of how large the real person behind any one cluster turns out to be.
+            CandidateClusterer candidateClusterer = new CandidateClusterer(THRESHOLD, MAX_NEW_PERSON_CLUSTER_GAP, MIN_NEW_PERSON_CLUSTER_SIZE);
 
-                // Decoded/normalized once per face rather than once per (face, person) pair below -
-                // findBestMatchForFace checks every eligible person, and each check used to re-decode
-                // and re-normalize this SAME face's embedding from scratch.
-                NormalizedEmbedding faceEmbedding = NormalizedEmbedding.of(EmbeddingCodec.toFloats(face.getEmbedding()));
-                int targetYear = PersonEmbeddingBucketEntity.bucketYearFor(face);
-                Optional<PersonWithScore> bestMatch = findBestMatchForFace(faceEmbedding, targetYear, eligiblePersons, bucketsByPerson);
-                if (bestMatch.isPresent()) {
-                    // Each match is now its own independent transaction (see class comment) - a
-                    // failure on one face must not stop the rest of this user's faces (or the
-                    // new-person clustering below) from being attempted in this same run, the way
-                    // it used to when this whole method shared one transaction and one uncaught
-                    // exception aborted everything after it.
-                    try {
-                        personRecognitionService.updatePerson(bestMatch.get().getPerson(), face);
-                    } catch (Exception e) {
-                        log.error("could not update person {} for face {}", bestMatch.get().getPerson().getId(), face.getId(), e);
+            int processedTotal = 0;
+            int pageNumber = 0;
+            while (processedTotal < MAX_UNGROUPED_FACES_PER_RUN) {
+                // FetchPhoto: this list outlives the short transaction that loaded it (see class
+                // comment - each face's own match/cluster write is now its own separate
+                // transaction), and both the logging line below and CandidateClusterer read
+                // face.getPhoto() well after that point - needs to already be loaded, not a lazy
+                // proxy with no session left to resolve it on demand.
+                Slice<FaceEntity> slice = faceRepository.findByPersonIsNullFetchPhoto(PageRequest.of(pageNumber, CLUSTERING_SLICE_SIZE));
+                List<FaceEntity> faces = slice.getContent();
+                if (faces.isEmpty()) {
+                    break;
+                }
+
+                // A face manually unlinked from a person (FaceService.unlinkFaceFromPerson /
+                // setFacePerson) must never be silently reattached to that SAME person by this
+                // automatic pass — that would undo the user's correction. It can still match a
+                // different person, or seed a brand-new one below. Loaded fresh per slice, keyed by
+                // face id, instead of a query per (face, candidate person) pair.
+                Map<UUID, Set<UUID>> excludedPersonIdsByFace = faceLinkExclusionRepository
+                        .findByFaceIdIn(faces.stream().map(FaceEntity::getId).toList())
+                        .stream()
+                        .collect(Collectors.groupingBy(
+                                exclusion -> exclusion.getFace().getId(),
+                                Collectors.mapping(exclusion -> exclusion.getExcludedPerson().getId(), Collectors.toSet())
+                        ));
+
+                for (FaceEntity face : faces) {
+                    log.info("Working on face in photo {}", face.getPhoto().getId());
+                    Set<UUID> excludedPersonIds = excludedPersonIdsByFace.getOrDefault(face.getId(), Set.of());
+                    List<PersonEntity> eligiblePersons = excludedPersonIds.isEmpty()
+                            ? persons
+                            : persons.stream().filter(person -> !excludedPersonIds.contains(person.getId())).toList();
+
+                    // Decoded/normalized once per face rather than once per (face, person) pair below -
+                    // findBestMatchForFace checks every eligible person, and each check used to re-decode
+                    // and re-normalize this SAME face's embedding from scratch.
+                    NormalizedEmbedding faceEmbedding = NormalizedEmbedding.of(EmbeddingCodec.toFloats(face.getEmbedding()));
+                    int targetYear = PersonEmbeddingBucketEntity.bucketYearFor(face);
+                    Optional<PersonWithScore> bestMatch = findBestMatchForFace(faceEmbedding, targetYear, eligiblePersons, bucketsByPerson);
+                    if (bestMatch.isPresent()) {
+                        // Each match is now its own independent transaction (see class comment) - a
+                        // failure on one face must not stop the rest of this user's faces (or the
+                        // new-person clustering below) from being attempted in this same run, the way
+                        // it used to when this whole method shared one transaction and one uncaught
+                        // exception aborted everything after it.
+                        try {
+                            personRecognitionService.updatePerson(bestMatch.get().getPerson(), face);
+                        } catch (Exception e) {
+                            log.error("could not update person {} for face {}", bestMatch.get().getPerson().getId(), face.getId(), e);
+                        }
+                        continue;
                     }
-                } else {
-                    stillUnmatched.add(face);
-                }
-            }
 
-            // Whatever didn't match an existing person gets clustered among itself into brand-new
-            // people. Processing the FULL leftover set here (rather than a separately re-paginated
-            // sample, as before) avoids splitting one real person's faces into multiple PersonEntity
-            // rows purely because they landed in different pagination batches.
-            clusterByTemporalProximity(stillUnmatched).forEach(cluster -> {
-                // Same reasoning as the per-face try/catch above - one bad cluster (each its own
-                // independent transaction) shouldn't stop the rest of this user's new-person
-                // clusters from being created in this run.
-                try {
-                    personRecognitionService.addPerson(user, cluster);
-                } catch (Exception e) {
-                    log.error("could not create a new person for user {} from a cluster of {} face(s)", user.getId(), cluster.size(), e);
+                    // No existing person matched - hand it to the memory-bounded candidate
+                    // clusterer instead of accumulating it into a full-run leftover list.
+                    Optional<List<FaceEntity>> promotedClusterFaces = candidateClusterer.add(face);
+                    if (promotedClusterFaces.isEmpty()) {
+                        continue;
+                    }
+                    // Same reasoning as the per-face try/catch above - one bad cluster (each its
+                    // own independent transaction) shouldn't stop the rest of this user's new-person
+                    // clusters from being created in this run.
+                    try {
+                        personRecognitionService.addPerson(user, promotedClusterFaces.get());
+                        // Mid-run visibility (see class-level field comment above): re-fetch the
+                        // brand-new person via one of the faces just handed to addPerson (its
+                        // interface needs no change for this - see TODO.md's "qualif-server item 5"
+                        // entry) and fold it into this run's own persons/bucketsByPerson, so every
+                        // later face - in this same slice or a later one - matches it via the
+                        // normal existing-person path instead of seeding a duplicate cluster.
+                        UUID newPersonId = faceRepository.findById(promotedClusterFaces.get().getFirst().getId())
+                                .orElseThrow().getPerson().getId();
+                        personRepository.findById(newPersonId).ifPresent(persons::add);
+                        bucketsByPerson.put(newPersonId, personEmbeddingBucketRepository.findByPersonId(newPersonId));
+                    } catch (Exception e) {
+                        log.error("could not create a new person for user {} from a cluster of {} face(s)",
+                                user.getId(), promotedClusterFaces.get().size(), e);
+                    }
                 }
-            });
+
+                processedTotal += faces.size();
+                if (!slice.hasNext()) {
+                    break;
+                }
+                pageNumber++;
+            }
             log.info("finishing person grouping for user {}", user.getUsername());
         } catch (Exception e) {
             log.error("cant process face recognition for user {}", user.getId(), e);
@@ -258,147 +294,6 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
             return 0; // Avoid division by zero
         }
         return dotProduct / (a.norm() * Math.sqrt(normB));
-    }
-
-    /**
-     * Calculates the Cosine Similarity between two vectors.
-     * The result is between -1 and 1, where 1 means the vectors are identical.
-     */
-    private double cosineSimilarity(float[] vectorA, float[] vectorB) {
-        if (vectorA.length != vectorB.length) {
-            throw new IllegalArgumentException("Vectors must have the same dimension.");
-        }
-        double dotProduct = 0.0;
-        double normA = 0.0;
-        double normB = 0.0;
-        for (int i = 0; i < vectorA.length; i++) {
-            dotProduct += vectorA[i] * vectorB[i];
-            // x*x rather than Math.pow(x, 2) - a plain multiply, no transcendental-function
-            // overhead for what's always an integer square here.
-            normA += (double) vectorA[i] * vectorA[i];
-            normB += (double) vectorB[i] * vectorB[i];
-        }
-        if (normA == 0 || normB == 0) {
-            return 0; // Avoid division by zero
-        }
-        return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-    }
-
-    // Clusters faces with no existing-person match into brand-new people. Faces are sorted by
-    // photo date, then each face is compared against the faces that follow it, bounded primarily
-    // by MAX_NEW_PERSON_CLUSTER_GAP (real elapsed time) rather than by position in the sorted
-    // list. Since the list is sorted, this single forward-looking pass already covers every pair
-    // within the gap in both directions (checking i->j also covers j's "before" side).
-    //
-    // BUG THIS FIXES: the window used to be purely positional (next TEMPORAL_NEIGHBOR_WINDOW
-    // faces, full stop) over the list of ALL of the user's ungrouped faces across every photo —
-    // not scoped to one event/session. Two people recurring ~40 minutes apart across 3 photos of
-    // the same gathering went completely ungrouped because ~13 unrelated faces from OTHER
-    // people's photos, taken in between, pushed the second occurrence outside the position
-    // window even though it was nowhere near TEMPORAL_NEIGHBOR_WINDOW faces away in *time*. Each
-    // real person then fragmented into disconnected 2-face (or 1-face) components, all of which
-    // MIN_NEW_PERSON_CLUSTER_SIZE silently discarded. A generous position-based cap
-    // (maxCandidatesPerFace, well above TEMPORAL_NEIGHBOR_WINDOW) is kept below purely as a cost
-    // safety net, so a burst of many photos within the same short time span doesn't blow up cost.
-    //
-    // Matches are merged via union-find (connected components), not single-anchor grouping: a
-    // direct link is only required between temporally-adjacent faces, and two faces far apart in
-    // age can still end up in the same cluster by chaining through the faces in between — this is
-    // what lets a childhood and an adult photo of the same person group together, as long as the
-    // account has a reasonably continuous timeline of photos of them, without ever loosening the
-    // strict pairwise THRESHOLD.
-    private List<List<FaceEntity>> clusterByTemporalProximity(List<FaceEntity> facesToCluster) {
-        if (CollectionUtils.isEmpty(facesToCluster)) {
-            return new ArrayList<>();
-        }
-
-        List<FaceEntity> sorted = facesToCluster.stream()
-                .filter(face -> face.getEmbedding() != null
-                        && face.getPhoto() != null
-                        && face.getPhoto().getDateTaken() != null)
-                .sorted(Comparator.comparing(face -> face.getPhoto().getDateTaken()))
-                .toList();
-
-        int n = sorted.size();
-        if (n == 0) {
-            return new ArrayList<>();
-        }
-
-        float[][] embeddings = new float[n][];
-        for (int i = 0; i < n; i++) {
-            embeddings[i] = EmbeddingCodec.toFloats(sorted.get(i).getEmbedding());
-        }
-
-        // Hard cap on candidates compared per face, on top of the time gap below — a dense event
-        // (hundreds/thousands of same-day photos) could otherwise turn the time-bounded scan into
-        // real O(n^2) cost. TEMPORAL_NEIGHBOR_WINDOW faces would have been too tight (that's the
-        // bug being fixed here), so this is deliberately a much larger multiple of it, not the
-        // same value.
-        int maxCandidatesPerFace = TEMPORAL_NEIGHBOR_WINDOW * 20;
-
-        UnionFind unionFind = new UnionFind(n);
-        for (int i = 0; i < n; i++) {
-            LocalDateTime baseTime = sorted.get(i).getPhoto().getDateTaken();
-            int candidateCap = Math.min(n, i + 1 + maxCandidatesPerFace);
-            for (int j = i + 1; j < candidateCap; j++) {
-                // List is sorted by dateTaken, so once one candidate exceeds the gap every later
-                // one does too — safe to stop scanning this i entirely, not just skip this j.
-                if (Duration.between(baseTime, sorted.get(j).getPhoto().getDateTaken())
-                        .compareTo(MAX_NEW_PERSON_CLUSTER_GAP) > 0) {
-                    break;
-                }
-                if (cosineSimilarity(embeddings[i], embeddings[j]) >= THRESHOLD) {
-                    unionFind.union(i, j);
-                }
-            }
-        }
-
-        Map<Integer, List<FaceEntity>> componentsByRoot = new HashMap<>();
-        for (int i = 0; i < n; i++) {
-            componentsByRoot.computeIfAbsent(unionFind.find(i), root -> new ArrayList<>()).add(sorted.get(i));
-        }
-
-        return componentsByRoot.values().stream()
-                .filter(cluster -> cluster.size() >= MIN_NEW_PERSON_CLUSTER_SIZE)
-                .toList();
-    }
-
-    // Minimal union-find (disjoint-set) with path compression + union by rank, used to merge
-    // temporally-chained face matches into connected components.
-    private static final class UnionFind {
-        private final int[] parent;
-        private final int[] rank;
-
-        UnionFind(int size) {
-            parent = new int[size];
-            rank = new int[size];
-            for (int i = 0; i < size; i++) {
-                parent[i] = i;
-            }
-        }
-
-        int find(int i) {
-            if (parent[i] != i) {
-                parent[i] = find(parent[i]);
-            }
-            return parent[i];
-        }
-
-        void union(int a, int b) {
-            int rootA = find(a);
-            int rootB = find(b);
-            if (rootA == rootB) {
-                return;
-            }
-            if (rank[rootA] < rank[rootB]) {
-                parent[rootA] = rootB;
-            } else if (rank[rootA] > rank[rootB]) {
-                parent[rootB] = rootA;
-            } else {
-                parent[rootB] = rootA;
-                rank[rootA]++;
-            }
-        }
     }
 
     @Builder
