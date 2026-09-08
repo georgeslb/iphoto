@@ -4115,11 +4115,32 @@ new work is identified or completed, so nothing gets lost between sessions.
         cap) is actually being exceeded — this needs real workflow run logs/cache-usage data, which
         isn't available from a fresh clone with no Actions run history reachable from this sandbox.
 
-- [ ] **Research only, qualif-server item 5 — face recognition `OutOfMemoryError` despite the
-      per-face/per-cluster transaction rework. Detailed plan below; deliberately NOT implemented —
-      confirm the open questions (temporal-gate removal, promotion-threshold change, representative-
-      selection policy, and the separate `@MainSpaceLimited` global-pooling factor) before building
-      this for real.**
+- [ ] **Design confirmed, not yet implemented — qualif-server item 5: face recognition
+      `OutOfMemoryError` despite the per-face/per-cluster transaction rework.** Detailed plan below
+      (originally written by an overnight session as 4 open questions; all 4 now resolved - see each
+      question's own note for the final call):
+      1. **Temporal gate**: not dropped entirely - widened from 24h to **90 days**
+         (`MAX_NEW_PERSON_CLUSTER_GAP = Duration.ofDays(90)`), a real but much looser bound than
+         today's, instead of no bound at all.
+      2. **Chaining loss** (a childhood and an adult photo of the same person might not link if a
+         cluster's 3 held representatives all happen to be one era): fixed by **fetching/processing
+         each user's ungrouped-faces backlog in chronological order** (`photo.dateTaken` ascending)
+         rather than arbitrary DB fetch order - a cluster's representatives are then naturally
+         picked up across the timeline as it progresses, instead of whichever 3 happened to come
+         back first, sharply reducing (not eliminating) the era-mismatch risk without reintroducing
+         the old O(n²)/unbounded-component cost the original union-find approach had.
+      3. **Promotion threshold**: stays at **3** (not the `NEW_PERSON_PROMOTION_THRESHOLD = 4`
+         floated below) - a cluster promotes the INSTANT it reaches 3 members, using exactly those 3
+         faces as both its representatives and the `addPerson` payload. Simpler than the original
+         "hold 3, promote on a 4th" idea: no held-vs-triggering-face distinction needed, and this
+         matches today's existing `MIN_NEW_PERSON_CLUSTER_SIZE = 3` exactly, just reached via a
+         memory-bounded incremental comparison instead of a full pairwise/union-find pass. Every
+         mention of `NEW_PERSON_PROMOTION_THRESHOLD`/"promote at 4" below is superseded by this -
+         left in place rather than rewritten so the reasoning trail stays visible, but treat
+         `MIN_NEW_PERSON_CLUSTER_SIZE = 3` (existing constant, reused) with "promote at 3, using
+         those exact 3 faces" as the real, final rule.
+      4. **`@MainSpaceLimited` global-pooling factor**: confirmed out of scope for this pass, stays a
+         separate future item, exactly as flagged below - not addressed here.
 
       **Why the existing transaction-boundary fix didn't fix the memory footprint.** The earlier
       rework (see the "small transactions" entry above this one) fixed *transaction* size/duration —
@@ -4169,23 +4190,20 @@ new work is identified or completed, so nothing gets lost between sessions.
         *first* 3 faces that joined the cluster, in arrival order — no smarter "most diverse era"
         selection in this first pass, see open questions below), and (b) a running member count (an
         `int`, not a growing list — once count > 3, no further faces need to be *held*, only
-        counted, since anything past the 3rd either gets promoted immediately, at count 4, or (for
-        count 5+, once already promoted) is routed straight through the normal existing-person
-        `updatePerson` path instead of staying in this struct at all). This is the crux of the memory
-        fix: a `CandidateCluster` can never hold more than 3 `FaceEntity` objects, no matter how many
-        faces eventually join the real person it represents.
-      - **Promotion**: fires the instant a cluster's count goes from 3 to 4 (**"more than 3, i.e.
-        4+" — a deliberate, small change from today's `MIN_NEW_PERSON_CLUSTER_SIZE = 3`, which
-        promoted right at 3. Flagging this explicitly since it wasn't asked for in so many words, but
-        follows directly from "cap candidate clusters at 3 representatives" — call the new constant
-        `NEW_PERSON_PROMOTION_THRESHOLD = 4` rather than reusing/renaming
-        `MIN_NEW_PERSON_CLUSTER_SIZE`, and confirm this small behavior change is actually wanted
-        (slightly stricter — very slightly fewer brand-new people created from small clusters —
-        before shipping it**). At promotion: call the *existing*
-        `personRecognitionService.addPerson(user, representativesSoFar + triggeringFace)` — a list of
-        at most 4 `FaceEntity` objects — completely unchanged method signature/behavior. This
+        counted, since once a cluster promotes at count 3 (see below) it's routed straight through
+        the normal existing-person `updatePerson` path instead of staying in this struct at all).
+        This is the crux of the memory fix: a `CandidateCluster` can never hold more than 3
+        `FaceEntity` objects, no matter how many faces eventually join the real person it represents.
+      - **Promotion — fires at count 3, threshold unchanged from today (updated per user decision
+        above)**: the original draft here proposed holding 3 as representatives and promoting only
+        on a 4th ("more than 3"); the user confirmed keeping the threshold at today's
+        `MIN_NEW_PERSON_CLUSTER_SIZE = 3` instead - a cluster promotes the INSTANT its count reaches
+        3, using exactly those 3 faces as both its representatives and the promotion payload (no
+        held-vs-triggering-face distinction needed, simpler than the original draft). At promotion:
+        call the *existing* `personRecognitionService.addPerson(user, theseThree)` - a list of
+        exactly 3 `FaceEntity` objects — completely unchanged method signature/behavior. This
         immediately creates the real `PersonEntity` **and** populates its `PersonEmbeddingBucketEntity`
-        rows (via `addPerson`'s existing per-face `addFaceToBucket` loop) from just those ≤4 faces —
+        rows (via `addPerson`'s existing per-face `addFaceToBucket` loop) from just those 3 faces —
         meaning a freshly-promoted person is *instantly* eligible for the same bucket-based matching
         every pre-existing person already uses, with zero new matching code needed for faces 5+.
       - **Faces 5+ against an already-promoted-this-run cluster**: call the *existing*
@@ -4200,27 +4218,41 @@ new work is identified or completed, so nothing gets lost between sessions.
         .findByPersonId(newPerson.getId())`) to `bucketsByPerson`, so faces processed in *later*
         slices of the *same* run correctly match it via the normal existing-person path instead of
         risking a second, duplicate person for the same subject later in the same run.
-      - **No temporal gate — pure embedding similarity, per explicit user direction**: drop
-        `MAX_NEW_PERSON_CLUSTER_GAP`/the 24h window and `TEMPORAL_NEIGHBOR_WINDOW` entirely for this
-        new path. A face joins the *first* open `CandidateCluster` whose held representative(s) it
-        matches (cosine similarity ≥ `THRESHOLD` against *any* one of that cluster's ≤3
-        representatives — a direct pairwise check, not a weighted-average bucket comparison, since
-        these are raw candidate faces, not yet a real person's derived bucket); if it matches none,
-        it seeds a brand-new one-member `CandidateCluster`.
+      - **Wide temporal gate — 90 days, not dropped (updated per user decision above)**: replace
+        `MAX_NEW_PERSON_CLUSTER_GAP = Duration.ofHours(24)` with `Duration.ofDays(90)`;
+        `TEMPORAL_NEIGHBOR_WINDOW` still goes away (it was only ever a *cost* cap for the old
+        position-based scan, made obsolete by the ≤3-representative cap itself). A face joins the
+        *first* open `CandidateCluster` whose held representative(s) it matches (cosine similarity ≥
+        `THRESHOLD` against *any* one of that cluster's ≤3 representatives **and** within 90 days of
+        at least one of them — a direct pairwise check, not a weighted-average bucket comparison,
+        since these are raw candidate faces, not yet a real person's derived bucket); if it matches
+        none, it seeds a brand-new one-member `CandidateCluster`.
+      - **Chronological processing order (new, per user decision above)**: `FaceRepository
+        .findByPersonIsNullFetchPhoto` must return results ordered by `f.photo.dateTaken ASC` (add
+        an explicit `ORDER BY` to its `@Query`, not left to natural/id order) so that both slice
+        fetch order AND within-slice iteration order are chronological across a user's WHOLE
+        backlog, not just within one slice. This is what actually addresses the chaining-loss
+        concern below: a cluster's ≤3 representatives get picked up as the timeline progresses
+        (e.g. two childhood photos then one teenage photo, rather than three arbitrary DB-order
+        picks), so a later adult-era face is more likely to land within the 90-day gate of *some*
+        already-processed representative from a closer-in-time cluster, and more likely overall to
+        transitively chain through intermediate-age faces the way today's union-find does - without
+        reintroducing an unbounded in-memory component.
       - **Exact interaction with `MAX_UNGROUPED_FACES_PER_RUN` slicing**: `MAX_UNGROUPED_FACES_PER_RUN`
         (2000) stays the *total* per-user-per-run ceiling, unchanged in meaning. What changes is how
         it's fetched and held: replace the single `Pageable.ofSize(2000)` call with a loop fetching
-        a new, much smaller `CLUSTERING_SLICE_SIZE` (suggest 200) at a time — `Pageable.of(0,
-        200)`, `Pageable.of(1, 200)`, ... — stopping once either the running total reaches 2000, or a
-        fetched slice comes back smaller than a full page (this user's backlog is exhausted for this
-        run). Each slice, in order: (1) existing-person matching (today's `findBestMatchForFace`
-        logic, completely unchanged, against the run's `persons`/`bucketsByPerson`, now possibly
-        augmented by promotions from an earlier slice in this same run — previous bullet), then (2)
-        whatever's still unmatched in that slice runs through the new `CandidateCluster`
-        matching/promotion logic above. Once a slice finishes, nothing about it needs to stay
-        referenced except whatever's held inside a `CandidateCluster` (≤3 per open cluster) — the
-        slice's own `FaceEntity`/`PhotoEntity` objects become eligible for GC. This is what bounds
-        peak memory to roughly `O(CLUSTERING_SLICE_SIZE + open-cluster-count × 3)` instead of
+        a new, much smaller `CLUSTERING_SLICE_SIZE` (suggest 200) at a time, ordered chronologically
+        (previous bullet) — `Pageable.of(0, 200)`, `Pageable.of(1, 200)`, ... — stopping once either
+        the running total reaches 2000, or a fetched slice comes back smaller than a full page
+        (this user's backlog is exhausted for this run). Each slice, in order: (1) existing-person
+        matching (today's `findBestMatchForFace` logic, completely unchanged, against the run's
+        `persons`/`bucketsByPerson`, now possibly augmented by promotions from an earlier slice in
+        this same run — previous bullet), then (2) whatever's still unmatched in that slice runs
+        through the new `CandidateCluster` matching/promotion logic above. Once a slice finishes,
+        nothing about it needs to stay referenced except whatever's held inside a `CandidateCluster`
+        (≤3 per open cluster) — the slice's own `FaceEntity`/`PhotoEntity` objects become eligible
+        for GC. This is what bounds peak memory to roughly
+        `O(CLUSTERING_SLICE_SIZE + open-cluster-count × 3)` instead of
         `O(MAX_UNGROUPED_FACES_PER_RUN)` (today) or worse (a single dominant real person's cluster,
         today, can itself approach the full 2000).
       - **Exact repository changes needed**:
@@ -4245,33 +4277,34 @@ new work is identified or completed, so nothing gets lost between sessions.
            faces; `updatePerson(person, face)` already does single-face attach-and-rebucket. Both are
            reused completely as-is, just called at different points/cadence than today.
 
-      **Worked numeric example** (one run, one user, `CLUSTERING_SLICE_SIZE = 200`, all 50 faces fit
-      in a single slice): 50 unmatched faces — 20 really belong to "Alice", 15 to "Bob", 15 are
-      isolated/noise (no one else matches them).
+      **Worked numeric example** (updated for promote-at-3, per user decision above; one run, one
+      user, `CLUSTERING_SLICE_SIZE = 200`, faces fetched chronologically, all 50 fit in a single
+      slice): 50 unmatched faces — 20 really belong to "Alice", 15 to "Bob", 15 are isolated/noise
+      (no one else matches them).
       - Face 1 (Alice): matches no open cluster → seeds `CandidateCluster A` (1 representative held).
-      - Faces 2-3 (Alice): each matches `A` (similarity ≥ 0.60 against its held representative(s)) →
-        `A`'s count becomes 2, then 3 — both added as representatives (still ≤3 held, cap not yet hit).
-      - Face 4 (Alice): matches `A` → count becomes 4 → **promotion fires**: `addPerson(user, [rep1,
-        rep2, rep3, face4])` — exactly 4 `FaceEntity` objects ever held for `A`, never more, creates
-        real `PersonEntity` "Alice" + populates her buckets from those 4 faces. `A` itself is now
-        discarded; "Alice" is added to this run's live `persons`/`bucketsByPerson`.
-      - Faces 5-20 (Alice, 16 more): each now matches "Alice" via the **normal existing-person path**
+      - Face 2 (Alice): matches `A` (similarity ≥ 0.60 against its held representative(s), within
+        the 90-day gate) → `A`'s count becomes 2 — added as a representative (still ≤3 held).
+      - Face 3 (Alice): matches `A` → count becomes 3 → **promotion fires immediately**:
+        `addPerson(user, [face1, face2, face3])` — exactly 3 `FaceEntity` objects ever held for `A`,
+        never more, creates real `PersonEntity` "Alice" + populates her buckets from those 3 faces.
+        `A` itself is now discarded; "Alice" is added to this run's live `persons`/`bucketsByPerson`.
+      - Faces 4-20 (Alice, 17 more): each now matches "Alice" via the **normal existing-person path**
         (bucket comparison) → each is a single `updatePerson(alicePerson, face)` call, attached and
         immediately eligible for GC — never accumulated in any list.
-      - Bob's 15 faces: identical shape — `CandidateCluster B` holds faces 1-3, promotes at face 4
-        (`addPerson` with exactly 4 faces), faces 5-15 attach individually via `updatePerson`.
+      - Bob's 15 faces: identical shape — `CandidateCluster B` promotes at face 3
+        (`addPerson` with exactly 3 faces), faces 4-15 attach individually via `updatePerson`.
       - The 15 isolated faces: each matches no existing cluster/person → each seeds its own 1-member
-        `CandidateCluster`, none ever reach 4 → all 15 are simply discarded, unpromoted, at the end of
+        `CandidateCluster`, none ever reach 3 → all 15 are simply discarded, unpromoted, at the end of
         this run (identical end-user outcome to today: isolated faces never become a "person").
       - **Peak simultaneously-held face objects for the whole new-clustering phase**: at no point
         more than roughly (2 still-open pre-promotion clusters × ≤3) + (up to 15 one-member
-        singleton clusters × 1) + (≤4 mid-flight during whichever promotion is happening) ≈ well
+        singleton clusters × 1) + (≤3 mid-flight during whichever promotion is happening) ≈ well
         under 30 at any single instant — versus today's design, which, had all 50 of these faces
         belonged to *one* real person instead, would hold all 50 `FaceEntity`+`PhotoEntity` objects
         together in one `List<FaceEntity>` component simultaneously, for the entire pass, before ever
         writing anything to the database. At production scale (a slice of 200 faces where, say, 150
         belong to one prolific real person — someone bulk-re-importing an old photo archive) that
-        gap becomes 200 held-at-once (today) vs. ≤4 (new design) — this is the actual fix.
+        gap becomes 200 held-at-once (today) vs. ≤3 (new design) — this is the actual fix.
 
       **Test plan** (none of this is implemented yet — this is what to write once it is):
       1. Extract the `CandidateCluster` matching/promotion loop into its own small, plain class (not
@@ -4284,25 +4317,27 @@ new work is identified or completed, so nothing gets lost between sessions.
       2. Unit test (synthetic embeddings, using distinct-direction vectors per this suite's own
          established convention — a shared `{v,v,v}`-shaped vector makes everything cosine-parallel
          to everything else regardless of value, a real collision hit and fixed elsewhere in this
-         file's own test-suite work): feed a mix representing 2 distinct "people" (4+ mutually-similar
+         file's own test-suite work): feed a mix representing 2 distinct "people" (3+ mutually-similar
          faces each) and several singletons in one batch; assert exactly 2 promotion events fire, each
-         triggered with exactly 4 faces (not more, not fewer); assert no open cluster ever holds more
-         than 3 representative faces before its promotion fires; assert singleton faces never
-         promote.
-      3. Unit test asserting the *exact* promotion payload is the ≤3 held representatives plus the
-         triggering 4th face specifically — not, say, every face that happened to match that cluster
-         so far (guards against silently reintroducing an unbounded list here by accident).
+         triggered with exactly 3 faces (not more, not fewer); assert no open cluster ever holds more
+         than 3 representative faces; assert singleton/duo faces never promote.
+      3. Unit test asserting the *exact* promotion payload is exactly the 3 faces that reached the
+         cluster - not, say, every face that happened to match it before promotion (guards against
+         silently reintroducing an unbounded list here by accident).
       4. Test (unit if the extraction above makes it feasible without a DB, integration otherwise):
          a face in a *later* slice correctly attaches to a person promoted from an *earlier* slice in
          the *same* run, rather than spawning a second candidate cluster / duplicate person for the
          same subject.
-      5. Regression test proving the temporal gate really is gone: two embeddings-similar faces more
-         than 24 hours apart (which `MAX_NEW_PERSON_CLUSTER_GAP` would have kept apart today) now
-         cluster together under the new logic.
+      5. Regression test proving the temporal gate is now 90 days, not 24h: two embeddings-similar
+         faces more than 24h but less than 90 days apart (which `MAX_NEW_PERSON_CLUSTER_GAP` would
+         have kept apart today) now cluster together; a pair more than 90 days apart still does not.
+      5b. Test proving chronological fetch order: seed faces for one synthetic person out of
+          calendar order (insert the most recent one first), confirm
+          `FaceRepository.findByPersonIsNullFetchPhoto` still returns them oldest-`dateTaken`-first.
       6. Integration-level test (extends `AbstractIntegrationTest`, mirrors the existing
          `PersonRecognitionServiceTest` pattern) driving the real `groupFaces()`/`groupFacesForUser()`
          entry point end-to-end against a handful of synthetic uploaded photos, confirming a real
-         `PersonEntity` appears only once a 4th matching face exists — bearing in mind the *already
+         `PersonEntity` appears only once a 3rd matching face exists — bearing in mind the *already
          attempted and abandoned* true end-to-end version of this exact kind of test, documented a
          few entries above in this file ("Not done, considered and rejected for now"), which hit real
          trouble specifically because of the `@MainSpaceLimited` global-pooling behavior described
@@ -4320,49 +4355,41 @@ new work is identified or completed, so nothing gets lost between sessions.
          counts stay bounded by roughly `CLUSTERING_SLICE_SIZE` rather than growing to the size of
          that one dominant cluster, as a concrete before/after data point.
 
-      **Open questions to confirm before implementing** (per explicit instruction — these are
-      surfaced, not silently decided):
-      1. **Dropping the 24h temporal-proximity gate entirely, as directed.** What (if anything) is
-         lost: today's gate served two roles at once — (a) a *correctness* bound (only compare faces
-         from the same real-world event/session, reducing coincidental cross-person false-positive
-         matches among people who happen to look similar), and (b) a *cost* bound (skip comparisons
-         against faces far apart in time without even computing a similarity score). Role (b) is
-         already fully replaced by the new representative cap — comparing against ≤3 held
-         representatives per open cluster is far cheaper than the old position-based
-         `maxCandidatesPerFace` window ever was, regardless of any time gate, so dropping the gate
-         adds no meaningful cost risk. Role (a) is the real open question: without any time bound at
-         all, two visually-similar-but-different people (e.g. siblings, or two strangers who happen
-         to embed close together) become *more* likely to accidentally merge into one incorrectly-
-         promoted `PersonEntity`, anywhere in their whole photo history, not just within a plausible
-         single-session window. This may well be an acceptable, even intended, trade-off — the strict
-         pairwise `THRESHOLD` (0.60) is the actual correctness backstop either way, and the whole point
-         of dropping the gate was that a tight 24h window was producing too few matches — but it's a
-         real behavior change worth confirming explicitly rather than assuming.
+      **Open questions — RESOLVED** (originally surfaced here, not silently decided; each now has an
+      explicit answer, folded into the design sections above too):
+      1. **Dropping the 24h temporal-proximity gate entirely, as originally directed.** ~~What (if
+         anything) is lost~~ → **resolved: not dropped, widened to 90 days.** The gate served two
+         roles at once — (a) a *correctness* bound (only compare faces from roughly the same
+         real-world stretch of time, reducing coincidental cross-person false-positive matches among
+         people who happen to look similar - siblings, lookalike strangers), and (b) a *cost* bound
+         (skip comparisons against faces far apart in time without even computing a similarity
+         score). Role (b) is already fully replaced by the new representative cap regardless of any
+         time gate. For role (a), rather than accept the full risk of no bound at all, the gate stays
+         but widened from 24h to 90 days - most of the "too few matches" problem the tight 24h window
+         was causing goes away, while still bounding worst-case cross-person confusion to a
+         reasonable window instead of a person's entire multi-year history.
       2. **Loss of transitive/chained clustering.** Today's union-find approach lets faces `A`~`B`~`C`
          chain into one cluster even when `A` and `C` aren't directly similar enough to match each
          other on their own (explicitly called out in `clusterByTemporalProximity`'s own comment as
-         "what lets a childhood and an adult photo of the same person group together"). The new
-         greedy/representative-capped design compares each incoming face only against a *fixed, small,
-         arrival-order-first* set of ≤3 representatives per candidate cluster — if those 3
-         representatives all happen to be from one era (say, all childhood photos), a very-different-
-         era face (adult) that a longer transitive chain might previously have linked in could now
-         fail to match any of the 3 held representatives directly and end up seeding an unrelated
-         second cluster for the same real person instead. This wasn't explicitly called out in the
-         directed design, but follows directly from capping representatives at a small, arrival-order-
-         first set — flagging it since it's a real behavioral consequence of the requested design, not
-         a bug in implementing it. A possible future refinement (explicitly out of scope for this
-         pass, to keep the first implementation simple, per the plan above) would be smarter
-         representative *selection* (e.g. one per detected time-cluster/era within the growing
-         set) rather than simple arrival order — not proposed as part of this plan, just named as the
-         natural next lever if this trade-off proves to matter in practice.
-      3. **`NEW_PERSON_PROMOTION_THRESHOLD = 4` vs. today's `MIN_NEW_PERSON_CLUSTER_SIZE = 3`** — a
-         small, deliberate-but-unconfirmed behavior change that falls directly out of "cap at 3
-         representatives, promote once a cluster has more than 3" (see above) — worth an explicit
-         yes/no rather than assuming it's fine.
+         "what lets a childhood and an adult photo of the same person group together"). The
+         representative-capped design compares each incoming face only against a small set of ≤3
+         held representatives per candidate cluster — if those happen to be from one era, a
+         different-era face that a longer transitive chain might previously have linked in could fail
+         to match directly. → **resolved: fetch/process each user's backlog in chronological
+         (`dateTaken` ascending) order** rather than arbitrary DB order (see the design section
+         above) - representatives are then picked up as the timeline progresses instead of whichever
+         3 happened to come back first, meaningfully narrowing (not eliminating) this gap without
+         reintroducing an unbounded in-memory component. Smarter representative *selection* (e.g. one
+         per detected era within a growing set) remains a possible *future* refinement if chronological
+         ordering alone doesn't prove sufficient in practice - not needed for this pass.
+      3. **`NEW_PERSON_PROMOTION_THRESHOLD = 4` vs. today's `MIN_NEW_PERSON_CLUSTER_SIZE = 3`** →
+         **resolved: stays at 3.** A cluster promotes the instant it reaches 3 members, using those
+         same 3 faces as the promotion payload - no separate held-representatives-vs-triggering-face
+         distinction. Matches today's existing behavior/constant exactly; see the design section
+         above for the simplified promotion logic this produces.
       4. **The separate `@MainSpaceLimited`/heavy-task-thread global-pooling factor** (see "why the
          existing fix didn't fix the memory footprint" above) is real and does contribute to the
-         reported OOM, but is **not** addressed by this plan at all — it's an accepted, pre-existing,
-         out-of-scope limitation per this file's own earlier note. Worth its own explicit decision on
-         whether/when to tackle separately, since it means `persons`/`bucketsByPerson`'s memory
-         footprint will keep growing with total system-wide person count regardless of anything in
-         this plan.
+         reported OOM. → **resolved: confirmed out of scope for this pass, stays a separate future
+         item** - an accepted, pre-existing limitation; `persons`/`bucketsByPerson`'s memory footprint
+         will keep growing with total system-wide person count regardless of anything in this plan,
+         tracked separately.
