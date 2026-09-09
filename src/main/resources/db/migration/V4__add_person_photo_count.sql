@@ -1,0 +1,14 @@
+-- Backs PersonEntity.photoCount (see PersonRepository.findAllOrderByNamedFirstThenPhotoCountDesc /
+-- FaceController#getPersons' fixed "named first, then photo count descending" sort) - a real,
+-- persisted, incrementally-maintained column so the sort's ORDER BY can use it directly, replacing
+-- the old per-request COUNT query FaceServiceImpl.mapToPerson used to run for every person on
+-- every page. Same pattern as albums.photo_count/spaces.photo_count above.
+--
+-- This was originally (wrongly) added directly into V1__baseline_schema.sql instead of as its own
+-- migration - since V1 had already been applied to real deployments by then, that edit changed
+-- V1's checksum without changing what was actually in those databases, breaking Flyway validation
+-- for everyone who'd already deployed before this fix (see the "checksum mismatch" investigation
+-- around 2026-09-09 in TODO.md). Moved here instead, as an additive migration, which is the only
+-- safe way to change schema after a migration has shipped - a migration file must never be edited
+-- once any real deployment has applied it.
+alter table people add column photo_count integer not null default 0;
