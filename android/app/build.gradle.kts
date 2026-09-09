@@ -59,5 +59,11 @@ dependencies {
 
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
+    // On-device folder sync: WorkManager runs the actual upload/garbage job in the background
+    // (only ever enqueued by a user tapping "Sync now", never on a schedule), DocumentFile walks
+    // the SAF-picked folder tree.
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
+    implementation("androidx.documentfile:documentfile:1.0.1")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

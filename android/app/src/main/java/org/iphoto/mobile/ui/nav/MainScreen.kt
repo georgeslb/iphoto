@@ -27,6 +27,7 @@ import org.iphoto.mobile.ui.photo.PhotoDetailScreen
 import org.iphoto.mobile.ui.shares.SharesScreen
 import org.iphoto.mobile.ui.spaces.SpaceDetailScreen
 import org.iphoto.mobile.ui.spaces.SpacesScreen
+import org.iphoto.mobile.ui.sync.SyncScreen
 
 @Composable
 fun MainScreen(onLogout: () -> Unit) {
@@ -102,6 +103,9 @@ fun MainScreen(onLogout: () -> Unit) {
             }
             composable(Destination.Shares.route) {
                 SharesScreen()
+            }
+            composable(Destination.Sync.route) {
+                SyncScreen()
             }
             composable(
                 route = "photo/{photoId}",

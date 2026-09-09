@@ -27,7 +27,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        val container = AppContainer(applicationContext)
+        val container = (application as IPhotoApplication).container
 
         setContent {
             CompositionLocalProvider(LocalAppContainer provides container) {
