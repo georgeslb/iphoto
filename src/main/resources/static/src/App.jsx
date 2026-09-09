@@ -30,6 +30,7 @@ import ImmichImportManagement from './components/ImmichImportManagement';
 import SpaceGridDisplay from './components/SpaceGridDisplay'; // Import SpaceGridDisplay
 import SpaceDetail from './components/SpaceDetail'; // Import SpaceDetail
 import MemoriesBar from './components/MemoriesBar';
+import PersonMergeSuggestionBanner from './components/PersonMergeSuggestionBanner';
 import { useDayIndexedPhotos } from './hooks/useDayIndexedPhotos';
 import { removeFromPhotosByDay } from './utils/photoListUpdates';
 import { useAlbumManagement } from './hooks/useAlbumManagement';
@@ -304,6 +305,7 @@ function App() {
   // correctly resolves to 'garbage' rather than 'library' for the Garbage instance of this).
   const libraryPhotoGrid = (
     <>
+      {selectedMenu === 'library' && <PersonMergeSuggestionBanner />}
       {selectedMenu === 'library' && <MemoriesBar onSeekToDay={seekToMemoryDay} />}
       <PhotoGrid
           dayIndex={dayIndexed}

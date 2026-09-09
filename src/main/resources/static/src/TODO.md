@@ -93,6 +93,11 @@ and a compressed record of how we got here, not a second copy of the spec.
   anywhere in `src/`, candidates for `npm uninstall` absent a near-term plan to use them.
 - **Dead state, `Lightbox.jsx`**: `albumAllowed`/`setAlbumAllowed` — set but never read. Worth
   checking git history before deleting in case it's a half-finished feature rather than leftover.
+- **Dead CSS, `App.css`**: `.library-timeline`/`.memory-card` and a first, duplicate `.memories-strip`
+  rule (around line 54-67) look like leftovers from the old `LibraryTimeline.jsx`/month-timeline
+  design that was fully replaced by the day-indexed Memories bar (a second, real `.memories-strip`
+  block exists further down and is what `MemoriesBar.jsx` actually uses) — confirm nothing still
+  references the first block before deleting it.
 - **`react-hooks/exhaustive-deps` warnings not yet individually triaged** (each needs judgment,
   not a blind auto-fix — some omissions are intentional): `useMenuSelection.js` (missing
   `setPhotoSelection`), `App.jsx` (missing `currentAlbumId`/`currentSpaceId`/`selectedMenu`),
@@ -194,6 +199,11 @@ matters again; `specification.md` is the source of truth for current behavior.
     of holding an unbounded connected-component in memory. Existing-person matching moved from
     scanning nearby individual faces to precomputed per-person-per-year embedding buckets
     (`PersonEmbeddingBucketEntity`), maintained incrementally.
+  - Fixed a real production bug where face grouping pooled every user's faces/persons together
+    globally instead of per-user: `groupFacesForUser` ran on a thread name
+    `MainSpaceAspectConfiguration` treats as exempt from the `@MainSpaceLimited` space filter, so
+    its queries were silently unfiltered. Fixed by resolving the target space explicitly and
+    querying by it directly, not relying on the annotation/`SecurityContextHolder` at all.
   - Feature set: Person detail page (`/persons/:personId`, mirrors Album/Space detail) with a
     horizontal person-switcher strip; manually remove one face detection; named face labels;
     rename/reassign a single face's person from the Lightbox (with a merge-confirmation prompt on
@@ -208,6 +218,18 @@ matters again; `specification.md` is the source of truth for current behavior.
     missing the `isNew()` JPA callbacks every sibling entity has (caused
     `detached entity passed to persist` on cross-transaction saves); `/api/faces/photo/{id}` not
     scoped to the requesting user's own space (security fix).
+  - **Merge suggestions**: a new extra step (`PersonMergeSuggestionService`), run right after each
+    user's own face-to-person matching/clustering inside `groupFacesForUser`, compares every
+    existing person's overall (all-years-averaged) embedding directly against every other
+    person's — much stricter threshold than ordinary face-to-person matching — and upserts a
+    `PersonMergeSuggestionEntity` row for any pair similar enough to plausibly be the same real
+    person (dropping a row that no longer clears the bar, e.g. after an unlink). Never merges
+    anything itself. Library page: `PersonMergeSuggestionBanner.jsx` shows a notice whenever
+    `GET /api/faces/persons/merge-suggestions` returns at least one suggestion; its popup
+    (`PersonMergeSuggestionModal.jsx`) shows one pair at a time with Merge (the existing
+    `/persons/merge` two-person flow, unchanged), Next, and Close. A merge discards any suggestion
+    naming either person (the deleted source via FK cascade, the surviving target explicitly,
+    since its embedding just changed) so the next run recomputes it fresh.
 
 ### Sharing
 - Full design in `specification.md` §4.4. Originally broken end-to-end (wrong URI parsing, guest

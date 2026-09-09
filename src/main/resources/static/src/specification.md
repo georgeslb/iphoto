@@ -369,13 +369,19 @@ This section describes the application's features. For the corresponding backend
           person are picked up as the timeline progresses rather than compared all-at-once. A person
           with only two photos taken decades apart, with nothing in between, still won't cluster
           together — an inherent limitation of any temporally-windowed approach, not a bug.
-    *   **Known limitation, left alone deliberately**: `MainSpaceAspectConfiguration.enableSpaceFilter`
+    *   **Space scoping during face grouping**: `MainSpaceAspectConfiguration.enableSpaceFilter`
         skips enabling the per-user `spaceFilter` Hibernate filter for any thread named
-        `backend-task*`, and `FACE_RECOGNITION` (like all `TaskWorkerManager` background tasks) always
-        runs on such a thread — so `@MainSpaceLimited` queries in `FaceRepository`/`PersonRepository`
-        are effectively unfiltered during face grouping, meaning it likely pools faces/persons across
-        all users rather than scoping per user. Deliberately left as-is (confirmed still out of scope
-        as of the clustering redesign above) — worth revisiting if this is ever a multi-tenant concern.
+        `backend-task*`/`heavy-task*`, and `FACE_RECOGNITION` (like all `TaskWorkerManager`
+        background tasks) always runs on such a thread — so a plain `@MainSpaceLimited` query would
+        be silently unfiltered there (this was a real bug for a while: `groupFacesForUser` used to
+        call `@MainSpaceLimited` `personRepository.findAll()`/`faceRepository.
+        findByPersonIsNullFetchPhoto`, which pooled every user's faces/persons together on a
+        production run, letting a cluster mix faces from different accounts into one `PersonEntity`).
+        Fixed by resolving the target user's space explicitly once (`SpaceService
+        .getDefaultSpaceForUser`) and querying with it directly — `PersonRepository.findAllBySpaceId`/
+        `FaceRepository.findByPersonIsNullAndSpaceIdFetchPhoto` — instead of relying on
+        `@MainSpaceLimited`/`SecurityContextHolder` at all, which is correct regardless of which
+        thread the query runs on.
     *   **Cover photo (`Persons.jsx`)**: each person's icon on `/persons` is their `coverFace` —
         `PersonRecognitionService.recalculateCoverFace` picks the face whose photo has the most
         recent valid `dateTaken` (i.e. "latest known photo of them"), recalculated whenever a face
@@ -463,6 +469,34 @@ This section describes the application's features. For the corresponding backend
         (ties broken arbitrarily), keeping the target's name and cover face unconditionally; the
         now-empty source person is deleted. Distinct from the single-face reassignment above: this
         moves *every* face the source person had.
+    *   **Merge suggestions** (Library page): an extra step, run alongside face recognition
+        (`PersonMergeSuggestionService`, invoked from `FaceRecognitionService.groupFacesForUser`
+        right after that user's own face-to-person matching/clustering finishes), compares every
+        existing person's *overall* embedding (a weighted average across every one of their
+        `PersonEmbeddingBucketEntity` rows, not just the nearest-year ones ordinary face matching
+        uses) directly against every other person's — surfacing a pair for a human to review
+        whenever two people look similar enough to plausibly be the same real person, using a
+        stricter threshold than the one used to attach a single face to a person (so this doesn't
+        fire nearly as often as ordinary matching does). This never merges anything automatically —
+        it only ever writes a `PersonMergeSuggestionEntity` row for the Library page to surface.
+        - `components/PersonMergeSuggestionBanner.jsx` (Library only, rendered alongside
+          `MemoriesBar.jsx` right below the header): shown whenever
+          `GET /api/faces/persons/merge-suggestions` returns at least one live suggestion for the
+          current user's space. Clicking "Review" opens `PersonMergeSuggestionModal.jsx`, showing
+          one suggested pair at a time (cover face, name, photo count, similarity percentage for
+          each side) with three actions — **Merge** (calls the exact same
+          `POST /api/faces/persons/merge` two-person flow described above — there is only ever one
+          merge mechanism in the app, this doesn't add a second one), **Next** (advances to the
+          next suggestion without acting on this one), and **Close** (dismisses the popup without
+          merging or otherwise recording anything — the same suggestion is shown again next time
+          the banner is opened).
+        - A suggestion is upserted (not just inserted) on every run: if a previously-flagged pair's
+          similarity has since dropped below the threshold (e.g. a face was unlinked or moved to a
+          different person), the row is deleted instead of left stale. When two people are merged
+          (through this flow or the plain `/persons/merge` action), any suggestion naming the
+          now-deleted source is cascade-deleted at the DB level, and any suggestion naming the
+          surviving target is explicitly discarded too (its embedding just changed), so the next
+          scheduled run recomputes it fresh rather than leaving a stale suggestion in place.
     *   **Renaming a whole person** (`Persons.jsx`'s inline name edit; `PersonDetail.jsx`'s page
         title, click-to-edit like Lightbox's metadata fields; `FaceService.renamePerson`, `PUT
         /api/faces/person/{id}` with `{name, confirmed, mergeWithPersonIds}`) — a third, distinct
@@ -692,6 +726,9 @@ Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
     (§4.3) — does not delete the underlying `FaceEntity` or the photo.
 *   `POST /api/faces/persons/merge`: Merge two people (`{personIds: [id1, id2]}`) — the person
     with fewer faces always merges into the one with more (§4.3).
+*   `GET /api/faces/persons/merge-suggestions`: Every live "these two people might be the same"
+    suggestion for the current user's space, most-similar first (§4.3) — written by an extra step
+    alongside face recognition, not computed on request.
 *   `GET /api/faces/photo/{id}`: Every face detected on a photo (backs the Lightbox's "Faces
     Detected" section).
 *   `DELETE /api/faces/{id}`: Delete one face detection (not the photo).

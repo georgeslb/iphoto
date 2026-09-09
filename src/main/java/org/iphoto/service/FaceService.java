@@ -5,6 +5,7 @@ import org.iphoto.entities.UserEntity;
 import org.iphoto.model.DayBucketDTO;
 import org.iphoto.model.FaceDTO;
 import org.iphoto.model.PersonDTO;
+import org.iphoto.model.PersonMergeSuggestionDTO;
 import org.iphoto.model.Photo;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -78,4 +79,8 @@ public interface FaceService {
     // Merges two people (the Persons page multi-select action) — thin delegate to
     // PersonRecognitionService.mergePersons so FaceController's dependencies stay unchanged.
     PersonDTO mergePersons(List<UUID> personIds);
+
+    // Library page banner/popup (see PersonMergeSuggestionService) — every live "these two people
+    // might be the same" suggestion for the current user's own space, most-similar first.
+    List<PersonMergeSuggestionDTO> getMergeSuggestions(UserEntity user);
 }

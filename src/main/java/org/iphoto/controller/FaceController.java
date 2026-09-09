@@ -7,6 +7,7 @@ import org.iphoto.exception.PersonNameCollisionsException;
 import org.iphoto.model.DayBucketDTO;
 import org.iphoto.model.FaceDTO;
 import org.iphoto.model.PersonDTO;
+import org.iphoto.model.PersonMergeSuggestionDTO;
 import org.iphoto.model.Photo;
 import org.iphoto.model.request.FaceRenameRequest;
 import org.iphoto.model.request.PersonMergeRequest;
@@ -63,6 +64,16 @@ public class FaceController extends AbstractBaseController {
     public ResponseEntity<Page<PersonDTO>> getPersons(@PageableDefault(size = 50, sort = "name", direction = Sort.Direction.DESC)  Pageable pageable) {
         UserEntity currentUser = getCurrentUser();
         return ResponseEntity.ok(faceService.getPersons(pageable));
+    }
+
+    // Library page banner/popup (see PersonMergeSuggestionService, specification.md's Persons
+    // View section) — every live "these two people might be the same" suggestion for the current
+    // user's own space, most-similar first. A fixed, non-paginated list (`getSuggestionsForSpace`
+    // does no on-the-fly comparison, just reads already-computed rows) — realistically small for a
+    // personal photo library, no pagination needed the way the plain persons list has.
+    @GetMapping("/persons/merge-suggestions")
+    public ResponseEntity<List<PersonMergeSuggestionDTO>> getPersonMergeSuggestions() {
+        return ResponseEntity.ok(faceService.getMergeSuggestions(getCurrentUser()));
     }
 
     @GetMapping("/person/{id}")

@@ -54,6 +54,14 @@ export const allMessages = {
     "renameWithoutMergingButton": "Rename",
     "errorRenamingPerson": "Failed to rename person.",
     "personNamePlaceholder": "Name this person",
+    "personMergeSuggestionBannerText": (count) => count === 1
+      ? "We found 2 people who might be the same person."
+      : `We found ${count} pairs of people who might be the same person.`,
+    "reviewSuggestionsButton": "Review",
+    "personMergeSuggestionModalTitle": "Are these the same person?",
+    "personMergeSuggestionCounter": (index, total) => `Suggestion ${index} of ${total}`,
+    "personMergeSuggestionSimilarity": (percent) => `${percent}% similar`,
+    "nextSuggestionButton": "Next",
     "networkResponseNotOk": "Network response was not ok",
     "iPhotoTitle": "iPhoto",
     "libraryLink": "Library",
@@ -407,6 +415,14 @@ export const allMessages = {
     "renameWithoutMergingButton": "Renommer",
     "errorRenamingPerson": "Échec du renommage de la personne.",
     "personNamePlaceholder": "Nommer cette personne",
+    "personMergeSuggestionBannerText": (count) => count === 1
+      ? "Nous avons trouvé 2 personnes qui pourraient être la même personne."
+      : `Nous avons trouvé ${count} paires de personnes qui pourraient être la même personne.`,
+    "reviewSuggestionsButton": "Examiner",
+    "personMergeSuggestionModalTitle": "S'agit-il de la même personne ?",
+    "personMergeSuggestionCounter": (index, total) => `Suggestion ${index} sur ${total}`,
+    "personMergeSuggestionSimilarity": (percent) => `${percent} % de similarité`,
+    "nextSuggestionButton": "Suivant",
     "networkResponseNotOk": "La réponse du réseau n'était pas OK",
     "iPhotoTitle": "iPhoto",
     "libraryLink": "Bibliothèque",
