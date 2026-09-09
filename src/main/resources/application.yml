@@ -76,6 +76,13 @@ iphoto:
     username: admin
     password: admin
     role: ADMIN
+  security:
+    # Signs the "remember me" persistent-login cookie (SecurityConfig) - a local-dev-only default,
+    # MUST be overridden to a real secret in production (IPHOTO_REMEMBER_ME_KEY, same
+    # required-override pattern as admin.password/IPHOTO_ADMIN_PASSWORD - see
+    # docker-compose.yml/.env.example). Anyone who knows this value can forge a valid remember-me
+    # cookie for any username.
+    remember-me-key: dev-only-remember-me-key-change-in-production
   memories:
     # Library's "on this day" bar - one candidate window per offset. Plain integer = exact day
     # only; append -Nd/+Nd (either order) to widen the search N days earlier/later, e.g.

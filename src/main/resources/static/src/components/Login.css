@@ -45,6 +45,25 @@
     box-sizing: border-box; /* Include padding in width */
 }
 
+.form-group-checkbox {
+    margin-bottom: 24px;
+}
+
+.form-group-checkbox label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: normal;
+    color: #555;
+    cursor: pointer;
+}
+
+.form-group-checkbox input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+
 .login-form .error-message {
     color: #e74c3c;
     margin-bottom: 15px;

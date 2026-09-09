@@ -3,10 +3,17 @@ import { useNavigate } from 'react-router-dom';
 import './Login.css'; // Assuming you'll create a Login.css for styling
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
+// Chrome (and other browsers) never offered to save this login in its password manager - the
+// <input>s had no name/autocomplete attributes at all, which Chrome's save-password heuristics
+// rely on to identify a username/password pair (this matters even more for an AJAX/fetch-based
+// login like this one, which never does a real page navigation - autocomplete="username"/
+// "current-password" plus the real <form>'s onSubmit event and the post-login route change
+// unmounting this component are what let Chrome recognize and offer to save the credentials).
 function Login({ checkAuthStatus }) {
     const { messages } = useLocale(); // Use the useLocale hook
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
+    const [rememberMe, setRememberMe] = useState(false);
     const [error, setError] = useState('');
     const navigate = useNavigate();
 
@@ -15,12 +22,18 @@ function Login({ checkAuthStatus }) {
         setError('');
 
         try {
+            // remember-me matches SecurityConfig's rememberMeParameter - only sent when checked
+            // (Spring's RememberMeConfigurer treats the parameter's mere presence with a truthy
+            // value as "on", so omitting it entirely when unchecked, rather than sending
+            // "remember-me=false", is the correct way to say "not this time").
+            const body = `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`
+                + (rememberMe ? '&remember-me=true' : '');
             const response = await fetch('/api/login', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/x-www-form-urlencoded',
                 },
-                body: `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`,
+                body,
             });
 
             if (response.ok) {
@@ -52,6 +65,8 @@ function Login({ checkAuthStatus }) {
                     <input
                         type="text"
                         id="username"
+                        name="username"
+                        autoComplete="username"
                         value={username}
                         onChange={(e) => setUsername(e.target.value)}
                         required
@@ -62,10 +77,23 @@ function Login({ checkAuthStatus }) {
                     <input
                         type="password"
                         id="password"
+                        name="password"
+                        autoComplete="current-password"
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                         required
                     />
+                </div>
+                <div className="form-group form-group-checkbox">
+                    <label htmlFor="remember-me">
+                        <input
+                            type="checkbox"
+                            id="remember-me"
+                            checked={rememberMe}
+                            onChange={(e) => setRememberMe(e.target.checked)}
+                        />
+                        {messages["rememberMeLabel"]}
+                    </label>
                 </div>
                 <button type="submit" className="login-button">{messages["loginButton"]}</button>
             </form>

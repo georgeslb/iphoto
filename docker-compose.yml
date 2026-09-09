@@ -76,6 +76,11 @@ services:
       # password is deployment config (IPhotoApplication#initDatabase reconciles it on every boot,
       # not just the account's first-ever creation).
       IPHOTO_ADMIN_PASSWORD: ${IPHOTO_ADMIN_PASSWORD:?set IPHOTO_ADMIN_PASSWORD in .env}
+      # Signs the "remember me" persistent-login cookie (SecurityConfig/SecurityProperties) -
+      # required, same reasoning as IPHOTO_ADMIN_PASSWORD above: the application.yml default is a
+      # known, local-dev-only value, and anyone who knows it can forge a valid remember-me cookie
+      # for any username.
+      IPHOTO_REMEMBER_ME_KEY: ${IPHOTO_REMEMBER_ME_KEY:?set IPHOTO_REMEMBER_ME_KEY in .env}
       # Overrides application.yml's local-dev-relative "logs/" default (see its own comment) - a
       # path under the dedicated iphoto-logs volume below instead, so rotated log files survive a
       # container recreate/redeploy. A separate volume from iphoto-storage on purpose: logs are
