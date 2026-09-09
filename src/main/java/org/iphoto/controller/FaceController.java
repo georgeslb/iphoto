@@ -59,8 +59,11 @@ public class FaceController extends AbstractBaseController {
         }
     }
 
+    // Sort order (named people first, then photoCount descending) is fixed server-side -
+    // FaceServiceImpl.getPersons strips any Sort off this Pageable before querying, so a caller
+    // can't override it via ?sort=; only page/size are honored from here.
     @GetMapping("/persons")
-    public ResponseEntity<Page<PersonDTO>> getPersons(@PageableDefault(size = 50, sort = "name", direction = Sort.Direction.DESC)  Pageable pageable) {
+    public ResponseEntity<Page<PersonDTO>> getPersons(@PageableDefault(size = 50) Pageable pageable) {
         UserEntity currentUser = getCurrentUser();
         return ResponseEntity.ok(faceService.getPersons(pageable));
     }

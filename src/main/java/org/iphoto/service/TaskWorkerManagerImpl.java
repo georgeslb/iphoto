@@ -30,7 +30,7 @@ import java.lang.management.ManagementFactory;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.*;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -88,11 +88,17 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
     // specific double-count once a retry notices the asset is actually fully imported after all).
     // A task id is added here the instant a poller decides to submit it (before executor.submit,
     // so there's no window where it's "queued" but not yet tracked) and removed only once
-    // processTask has fully finished with it either way - see processTask's own comment. Plain
-    // task-id membership, not a full Set, because CopyOnWriteArrayList is what's already used
-    // elsewhere in this class for a similar small, read-mostly, cross-thread-visible list; a
-    // HashSet would need external synchronization instead for the same safety.
-    private final List<UUID> queuedTasks = new CopyOnWriteArrayList<>();
+    // processTask has fully finished with it either way - see processTask's own comment.
+    // ConcurrentHashMap.newKeySet() (NOT a CopyOnWriteArrayList, which this used to be) specifically
+    // so every poll*PendingTasks/reclaimStuckProcessingTasks call site below can do the
+    // check-and-mark-in-flight as ONE atomic Set.add() call: a separate "if (!contains) add(...)"
+    // pair is a classic check-then-act race between any two of those methods running on different
+    // threads at once - e.g. this scheduled poller's own timer thread ("scheduling-1") racing a
+    // caller that also triggers a poll synchronously (AbstractIntegrationTest.waitForTaskCompletion
+    // does exactly this in the test suite) - both can see "not yet queued" before either has added
+    // it, and both submit the SAME task id, reproducing this exact double-execution hazard for
+    // whichever task the race happens to land on, not just UPLOAD_FROM_IMMICH.
+    private final Set<UUID> queuedTasks = ConcurrentHashMap.newKeySet();
 
     public TaskWorkerManagerImpl(TaskRepository taskRepository, ObjectMapper objectMapper, TransactionTemplate transactionTemplate, DuplicationService duplicationService, PhotoService photoService, FaceDetectionService faceDetectionService, FaceRecognitionService faceRecognitionService
             , ImmichImportService immichImportService, ImmichAlbumImportService immichAlbumImportService, AdminService adminService, @Qualifier("lightThreadPoolExecutor") ThreadPoolTaskExecutor lightThreadPoolExecutor,
@@ -134,12 +140,13 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
             }
 
             markQueued(lightTasks);
-            // See queuedTasks' own field comment for why this check exists - findExecutableTasks
-            // above filters on PENDING, but a task reclaimed by reclaimStuckProcessingTasks while
-            // still genuinely running could otherwise be re-submitted here on top of itself.
+            // See queuedTasks' own field comment for why this check-and-add must be one atomic
+            // Set.add() call - findExecutableTasks above filters on PENDING, but a task reclaimed by
+            // reclaimStuckProcessingTasks while still genuinely running (or this same method racing
+            // itself across threads - see the field comment) could otherwise be re-submitted here on
+            // top of itself.
             for (TaskEntity task : lightTasks) {
-                if (!queuedTasks.contains(task.getId())){
-                    queuedTasks.add(task.getId());
+                if (queuedTasks.add(task.getId())) {
                     lightThreadPoolExecutor.submit(() -> processTask(task.getId()));
                 }
             }
@@ -161,8 +168,7 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
 
             markQueued(middleTasks);
             for (TaskEntity task : middleTasks) {
-                if (!queuedTasks.contains(task.getId())) {
-                    queuedTasks.add(task.getId());
+                if (queuedTasks.add(task.getId())) {
                     middleThreadPoolExecutor.submit(() -> processTask(task.getId()));
                 }
             }
@@ -256,8 +262,7 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
         }
         markQueued(tasks);
         for (TaskEntity task : tasks) {
-            if (!queuedTasks.contains(task.getId())) {
-                queuedTasks.add(task.getId());
+            if (queuedTasks.add(task.getId())) {
                 executor.submit(() -> processTask(task.getId()));
             }
         }

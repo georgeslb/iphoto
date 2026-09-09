@@ -251,6 +251,75 @@ class FaceServiceTest extends AbstractIntegrationTest {
                 .andReturn();
         assertThat(objectMapper.readTree(result.getResponse().getContentAsString()).get("id").asText()).isEqualTo(bigger.getId().toString());
         assertThat(personRepository.findById(smaller.getId())).isEmpty();
+        // All three faces (biggerFace1, biggerFace2, smallerFace) live on the same single `photo` -
+        // photoCount counts DISTINCT photos, so the merged person should show 1, not 3.
+        assertThat(personRepository.findById(bigger.getId()).orElseThrow().getPhotoCount()).isEqualTo(1);
+    }
+
+    @Test
+    void photoCountIsRecalculatedAsFacesAreAttachedAndDetached() throws Exception {
+        MockHttpSession session = loginAsAdmin();
+        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
+        PhotoEntity photo = savePhoto(space, admin);
+        FaceEntity face = saveFace(photo);
+
+        // setFacePerson's new-person branch: photoCount starts at 1 (one photo, one face).
+        mockMvc.perform(put("/api/faces/{id}/person", face.getId()).session(session).contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new FaceRenameRequest("Hank", false))))
+                .andExpect(status().isOk());
+        // findByNameIgnoreCase is @MainSpaceLimited - needs an authenticated SecurityContextHolder
+        // principal even for a direct repository call, not just the real mockMvc requests above.
+        PersonEntity person = runAsAdmin(() -> personRepository.findByNameIgnoreCase("Hank").orElseThrow());
+        assertThat(person.getPhotoCount()).isEqualTo(1);
+
+        // unlinkFaceFromPerson detaches the face - photoCount drops back to 0.
+        mockMvc.perform(delete("/api/faces/{id}/person", face.getId()).session(session))
+                .andExpect(status().isNoContent());
+        assertThat(personRepository.findById(person.getId()).orElseThrow().getPhotoCount()).isEqualTo(0);
+
+        // Re-attach via setFacePerson's existing-person branch (confirmMerge=true - "Hank" already
+        // exists from above, and the face is currently unassigned, so this is the same
+        // isDifferentPerson/confirm-collision path setFacePersonRenamesOrMergesDependingOnCollision
+        // exercises), then delete the face outright - photoCount must follow a face DELETION too,
+        // not just an unlink.
+        mockMvc.perform(put("/api/faces/{id}/person", face.getId()).session(session).contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new FaceRenameRequest("Hank", true))))
+                .andExpect(status().isOk());
+        assertThat(personRepository.findById(person.getId()).orElseThrow().getPhotoCount()).isEqualTo(1);
+
+        mockMvc.perform(delete("/api/faces/{id}", face.getId()).session(session))
+                .andExpect(status().isNoContent());
+        assertThat(personRepository.findById(person.getId()).orElseThrow().getPhotoCount()).isEqualTo(0);
+    }
+
+    @Test
+    void getPersonsSortsNamedFirstThenPhotoCountDescendingRegardlessOfRequestedSort() throws Exception {
+        MockHttpSession session = loginAsAdmin();
+        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
+
+        PersonEntity unnamedHighCount = personRepository.save(PersonEntity.builder().space(space).faces(new ArrayList<>()).photoCount(100).build());
+        PersonEntity namedLowCount = personRepository.save(PersonEntity.builder().space(space).name("Zed").faces(new ArrayList<>()).photoCount(1).build());
+        PersonEntity namedHighCount = personRepository.save(PersonEntity.builder().space(space).name("Amy").faces(new ArrayList<>()).photoCount(50).build());
+
+        // Deliberately asks for the opposite sort via ?sort= - the server-side fixed order must win.
+        MvcResult result = mockMvc.perform(get("/api/faces/persons").session(session).param("size", "500").param("sort", "name,asc"))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode content = objectMapper.readTree(result.getResponse().getContentAsString()).get("content");
+        List<String> orderedIds = new ArrayList<>();
+        content.forEach(p -> orderedIds.add(p.get("id").asText()));
+
+        int namedHighIdx = orderedIds.indexOf(namedHighCount.getId().toString());
+        int namedLowIdx = orderedIds.indexOf(namedLowCount.getId().toString());
+        int unnamedIdx = orderedIds.indexOf(unnamedHighCount.getId().toString());
+
+        assertThat(namedHighIdx).isGreaterThanOrEqualTo(0);
+        assertThat(namedLowIdx).isGreaterThanOrEqualTo(0);
+        assertThat(unnamedIdx).isGreaterThanOrEqualTo(0);
+        assertThat(namedHighIdx).isLessThan(namedLowIdx); // named, higher photoCount first
+        assertThat(namedLowIdx).isLessThan(unnamedIdx); // named (even low count) before unnamed
     }
 
     @Test
