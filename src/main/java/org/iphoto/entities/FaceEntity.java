@@ -47,6 +47,16 @@ public class FaceEntity { // Extends BaseEntity
     @Column(columnDefinition = "BYTEA")
     private byte[] faceThumbnail; // Stores the cropped JPEG image of the face for UI display
 
+    // NEW until one groupFaces() run has analysed it (matched, promoted, or left an unclustered
+    // singleton), then flipped to OLD - see FaceStatus and FaceRecognitionServiceImpl's
+    // groupFacesForUser. @Builder.Default so every existing FaceEntity.builder() call site (test
+    // fixtures included) gets NEW without having to set it explicitly, matching a freshly detected
+    // face's real starting state.
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    @Builder.Default
+    private FaceStatus status = FaceStatus.NEW;
+
 
     public FaceEntity() {
         super();

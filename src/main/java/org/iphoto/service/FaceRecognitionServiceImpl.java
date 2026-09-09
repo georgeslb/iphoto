@@ -164,37 +164,66 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
 
                 for (FaceEntity face : faces) {
                     log.info("Working on face in photo {}", face.getPhoto().getId());
-                    Set<UUID> excludedPersonIds = excludedPersonIdsByFace.getOrDefault(face.getId(), Set.of());
-                    List<PersonEntity> eligiblePersons = excludedPersonIds.isEmpty()
-                            ? persons
-                            : persons.stream().filter(person -> !excludedPersonIds.contains(person.getId())).toList();
+                    // Only a NEW face gets the expensive existing-person analysis below (checked
+                    // against every eligible person's buckets) - an OLD one already went through
+                    // this exact check in a past run and found no match, and nothing about the
+                    // face itself changes between runs. Re-running it every ~30s forever for a
+                    // face that will never match anyone is exactly the "loop undefinitely on old
+                    // no-related faces" this status flag exists to avoid. It's still handed to
+                    // candidateClusterer.add() below regardless of status though - a NEW face must
+                    // still be compared against every OLD, still-unmatched (person IS NULL) face
+                    // for clustering purposes, since a genuinely new person can only be discovered
+                    // once at least MIN_NEW_PERSON_CLUSTER_SIZE faces of theirs exist, old and new
+                    // alike (see the regression test in FaceRecognitionServiceImplTest covering
+                    // exactly this: a person completed by a later run's NEW face joining two
+                    // earlier runs' now-OLD leftover faces).
+                    boolean wasNew = face.getStatus() == FaceStatus.NEW;
+                    if (wasNew) {
+                        Set<UUID> excludedPersonIds = excludedPersonIdsByFace.getOrDefault(face.getId(), Set.of());
+                        List<PersonEntity> eligiblePersons = excludedPersonIds.isEmpty()
+                                ? persons
+                                : persons.stream().filter(person -> !excludedPersonIds.contains(person.getId())).toList();
 
-                    // Decoded/normalized once per face rather than once per (face, person) pair below -
-                    // findBestMatchForFace checks every eligible person, and each check used to re-decode
-                    // and re-normalize this SAME face's embedding from scratch.
-                    NormalizedEmbedding faceEmbedding = NormalizedEmbedding.of(EmbeddingCodec.toFloats(face.getEmbedding()));
-                    int targetYear = PersonEmbeddingBucketEntity.bucketYearFor(face);
-                    Optional<PersonWithScore> bestMatch = findBestMatchForFace(faceEmbedding, targetYear, eligiblePersons, bucketsByPerson);
-                    if (bestMatch.isPresent()) {
-                        // Each match is now its own independent transaction (see class comment) - a
-                        // failure on one face must not stop the rest of this user's faces (or the
-                        // new-person clustering below) from being attempted in this same run, the way
-                        // it used to when this whole method shared one transaction and one uncaught
-                        // exception aborted everything after it.
-                        try {
-                            personRecognitionService.updatePerson(bestMatch.get().getPerson(), face);
-                        } catch (Exception e) {
-                            log.error("could not update person {} for face {}", bestMatch.get().getPerson().getId(), face.getId(), e);
+                        // Decoded/normalized once per face rather than once per (face, person) pair below -
+                        // findBestMatchForFace checks every eligible person, and each check used to re-decode
+                        // and re-normalize this SAME face's embedding from scratch.
+                        NormalizedEmbedding faceEmbedding = NormalizedEmbedding.of(EmbeddingCodec.toFloats(face.getEmbedding()));
+                        int targetYear = PersonEmbeddingBucketEntity.bucketYearFor(face);
+                        Optional<PersonWithScore> bestMatch = findBestMatchForFace(faceEmbedding, targetYear, eligiblePersons, bucketsByPerson);
+                        if (bestMatch.isPresent()) {
+                            // Each match is now its own independent transaction (see class comment) - a
+                            // failure on one face must not stop the rest of this user's faces (or the
+                            // new-person clustering below) from being attempted in this same run, the way
+                            // it used to when this whole method shared one transaction and one uncaught
+                            // exception aborted everything after it. updatePerson also flips this face's
+                            // status to OLD as part of the same save - see its own comment.
+                            try {
+                                personRecognitionService.updatePerson(bestMatch.get().getPerson(), face);
+                            } catch (Exception e) {
+                                log.error("could not update person {} for face {}", bestMatch.get().getPerson().getId(), face.getId(), e);
+                            }
+                            continue;
+                        }
+                    }
+
+                    // No existing person matched (or this is an OLD face that already knows it
+                    // won't) - hand it to the memory-bounded candidate clusterer instead of
+                    // accumulating it into a full-run leftover list.
+                    Optional<List<FaceEntity>> promotedClusterFaces = candidateClusterer.add(face);
+                    if (promotedClusterFaces.isEmpty()) {
+                        if (wasNew) {
+                            // Analysed this run (matching + clustering) and still didn't resolve to
+                            // a person - mark it OLD so future runs skip the matching step for it,
+                            // while it stays a person-null clustering candidate for later NEW faces.
+                            face.setStatus(FaceStatus.OLD);
+                            faceRepository.save(face);
                         }
                         continue;
                     }
-
-                    // No existing person matched - hand it to the memory-bounded candidate
-                    // clusterer instead of accumulating it into a full-run leftover list.
-                    Optional<List<FaceEntity>> promotedClusterFaces = candidateClusterer.add(face);
-                    if (promotedClusterFaces.isEmpty()) {
-                        continue;
-                    }
+                    // A promoted cluster's own faces (possibly a mix of OLD leftovers and the NEW
+                    // face that just completed it) get person + OLD status together via
+                    // personRecognitionService.addPerson below - no separate save needed here even
+                    // for the wasNew case.
                     // Same reasoning as the per-face try/catch above - one bad cluster (each its
                     // own independent transaction) shouldn't stop the rest of this user's new-person
                     // clusters from being created in this run.
