@@ -315,55 +315,67 @@ This section describes the application's features. For the corresponding backend
     *   A world map (`/map`) displays photos based on their embedded geolocation data.
 *   **Persons View:**
     *   A dedicated view (`/persons`) suggests functionality related to facial recognition and grouping photos by people.
-    *   Backend pipeline (`FaceDetectionService` + `FaceAligner` + `FaceRecognitionService`): RetinaFace
-        (DJL/PyTorch, `FaceDetectionConfiguration`) detects face boxes + 5-point landmarks on the
-        **original, full-resolution** photo (not the resized-for-hashing copy `DuplicationService` uses —
-        detection needs the extra pixels). Each detected box is padded 20% and, if it clears the size/
-        confidence gates below, run through `FaceAligner.align` (rotates level using the eye-line
-        landmarks, crops with its own 20% padding, resizes to 112×112 via bicubic interpolation) before
-        going through the embedding model. Embeddings + a PNG thumbnail are saved per `FaceEntity`;
-        `FaceRecognitionService.groupFaces` clusters them into `PersonEntity`s.
-    *   **Small-face gating** (`FaceDetectionService`): RetinaFace's smallest anchor tier (scale=16,
-        `FaceDetectionConfiguration`) is built to detect faces well under 60px, but faces under 60px
-        (post-padding) used to be discarded outright regardless of detector confidence — a flat
-        `w < 60 || h < 60` cutoff — because including them was producing poor-quality embeddings.
-        Root cause turned out to be a real bug in `FaceAligner`, not an inherent limit of small faces:
-        `leftEye`/`rightEye` were both read from a **freshly-created** `points.iterator()`, so both got
-        the same first landmark point, making `rightX-leftX`/`rightY-leftY` always `0` and the eye-line
-        rotation a permanent no-op — every face (not just small ones) was aligned unrotated, which hurts
-        small faces disproportionately since uncorrected tilt eats a bigger fraction of their little
-        available signal. Fixed by reading both points off the same iterator instance. With alignment
-        now actually working, the flat cutoff was replaced with `MIN_FACE_SIZE=32` (hard floor — below
-        this there's genuinely not enough resolution) plus a confidence-aware band: faces between 32px
-        and the old 60px threshold are kept only when the detector's confidence is ≥`0.92` (stricter
-        than the model's own `confThresh=0.85`), to control the extra false-positive risk small crops
-        carry now that they're no longer blocked outright. Not verified against real photos (no `mvn`/
-        live app access from this shell) — worth watching face-detection quality on small/background
-        faces after this deploys, and tuning `SMALL_FACE_MIN_CONFIDENCE`/`MIN_FACE_SIZE` from there.
+    *   Backend pipeline (`FaceDetectionService` + `FaceAligner` + `FaceRecognitionService`): **SCRFD**
+        (InsightFace's `buffalo_l` pack, `det_10g.onnx`, run via DJL's ONNX Runtime engine —
+        `FaceDetectionConfiguration`) detects face boxes + 5-point landmarks on the **original,
+        full-resolution** photo (not the resized-for-hashing copy `DuplicationService` uses — detection
+        needs the extra pixels). Each detected box is padded 20% and, if it clears the size/confidence
+        gates below, run through `FaceAligner.align` (rotates level using the eye-line landmarks, crops
+        with its own 20% padding, resizes to 112×112 via bicubic interpolation) before going through the
+        embedding model — **ArcFace R50** (`w600k_r50.onnx`, same `buffalo_l` pack, 512-dim embeddings).
+        Both `.onnx` files are vendored under `src/main/resources/models/` (committed via git-lfs, not
+        downloaded at build/runtime) so the app has no external model-hosting dependency. Embeddings + a
+        PNG thumbnail are saved per `FaceEntity`; `FaceRecognitionService.groupFaces` clusters them into
+        `PersonEntity`s. (An earlier version of this pipeline used RetinaFace + PyTorch; replaced
+        outright, no compatibility shim — old `FaceEntity`/`PersonEntity` rows are meaningless against
+        the new embedding space and were truncated rather than migrated when this shipped.)
+    *   **Small-face gating** (`FaceDetectionService`): faces under 60px (post-padding) are discarded
+        outright unless they clear `MIN_FACE_SIZE=32` (hard floor — below this there's genuinely not
+        enough resolution) **and** the detector's confidence is ≥`SMALL_FACE_MIN_CONFIDENCE=0.92`
+        (stricter than the detector's own `confThresh=0.5`) — small crops carry more false-positive
+        risk than large ones, so they need a higher bar to be kept at all. `FaceAligner`'s eye-line
+        rotation must read both eye landmarks off the same iterator instance (an earlier bug reading
+        both from a fresh iterator made the rotation a permanent no-op) — tilt correction matters more
+        for small crops, where it eats a bigger fraction of the little available signal.
     *   **Age-invariant clustering** (`FaceRecognitionService`): a person's face embedding drifts
         meaningfully over years (e.g. age 5 vs. age 25), so a single flat cosine-similarity threshold
         between two far-apart-in-age photos of the same person will usually never clear the bar
         directly — and shouldn't be loosened to compensate, since that raises the false-merge risk for
-        genuinely different people. Instead, both matching paths only ever compare a face against its
-        `TEMPORAL_NEIGHBOR_WINDOW` (=10) closest-in-time faces (before AND after), and rely on
-        transitive chaining to bridge large age gaps: `findBestMatchForFace` compares a new face
-        against each existing `PersonEntity`'s nearest-in-time faces (not that person's whole history
-        averaged together, which dilutes the score across eras); `clusterByTemporalProximity` forms
-        brand-new people from leftover ungrouped faces by sorting them by photo date and union-find
-        (connected-components) merging matches between temporally-adjacent faces — so a childhood and
-        an adult photo of the same person can end up in one cluster by chaining through the many
-        in-between-age photos of them, without any single pairwise comparison ever needing to bridge
-        the full gap itself. This only works as well as the account's photo timeline is populated —
-        a person with just two photos taken decades apart, and nothing in between, won't cluster
-        together; that's an inherent limitation of this approach, not a bug.
+        genuinely different people. Two separate paths handle this:
+        - **Matching against an existing person** (`findBestMatchForFace`): compares a face against
+          that person's own precomputed `PersonEmbeddingBucketEntity` rows — one running-average
+          embedding per person per calendar year of their photos (bucketed by year, not one global
+          average, specifically so a childhood era and an adult era don't dilute each other's
+          signature), weighted toward the 2 nearest-by-year buckets. Buckets are maintained
+          incrementally (`PersonRecognitionService#addFaceToBucket`/`removeFaceFromBucket`) every time
+          a face is attached to, detached from, or merged into a person, rather than recomputed from
+          scratch per match.
+        - **Clustering leftover ungrouped faces into brand-new people** (`CandidateClusterer`, run
+          from `FaceRecognitionService#groupFacesForUser`): faces are fetched oldest-`dateTaken`-first
+          in bounded slices (`CLUSTERING_SLICE_SIZE=200` at a time, capped overall at
+          `MAX_UNGROUPED_FACES_PER_RUN`) rather than all at once, to bound memory — a single prolific
+          real person's faces can no longer pin an unbounded, ever-growing in-memory cluster the way an
+          earlier full union-find implementation could. Each open candidate cluster holds at most 3
+          representative faces; an incoming face joins the first cluster whose representative(s) it
+          matches (cosine similarity ≥ `THRESHOLD=0.60` **and** within `MAX_NEW_PERSON_CLUSTER_GAP`
+          (90 days) of at least one of them), or seeds a new one-member cluster otherwise. A cluster
+          promotes to a real `PersonEntity` the instant it reaches `MIN_NEW_PERSON_CLUSTER_SIZE=3`
+          members, using exactly those 3 faces as both representatives and the promotion payload —
+          faces 4+ for that same person then attach via the normal existing-person bucket-matching path
+          above, including newly-promoted people from earlier in the same run (so a later slice can
+          match a person promoted from an earlier slice instead of risking a duplicate). Chronological
+          processing order is what lets transitive chaining still bridge large age gaps despite the
+          per-cluster representative cap — a childhood, then teenage, then adult photo of the same
+          person are picked up as the timeline progresses rather than compared all-at-once. A person
+          with only two photos taken decades apart, with nothing in between, still won't cluster
+          together — an inherent limitation of any temporally-windowed approach, not a bug.
     *   **Known limitation, left alone deliberately**: `MainSpaceAspectConfiguration.enableSpaceFilter`
         skips enabling the per-user `spaceFilter` Hibernate filter for any thread named
         `backend-task*`, and `FACE_RECOGNITION` (like all `TaskWorkerManager` background tasks) always
         runs on such a thread — so `@MainSpaceLimited` queries in `FaceRepository`/`PersonRepository`
         are effectively unfiltered during face grouping, meaning it likely pools faces/persons across
-        all users rather than scoping per user. Found while redesigning the clustering logic above;
-        the user was asked and explicitly said not to change `MainSpaceAspectConfiguration` for this
-        work, so it remains as-is. Worth revisiting if this is ever a multi-tenant concern.
+        all users rather than scoping per user. Deliberately left as-is (confirmed still out of scope
+        as of the clustering redesign above) — worth revisiting if this is ever a multi-tenant concern.
     *   **Cover photo (`Persons.jsx`)**: each person's icon on `/persons` is their `coverFace` —
         `PersonRecognitionService.recalculateCoverFace` picks the face whose photo has the most
         recent valid `dateTaken` (i.e. "latest known photo of them"), recalculated whenever a face
@@ -496,9 +508,7 @@ This section describes the application's features. For the corresponding backend
 
 A share link is owned by a user and points at exactly one album (`ShareEntity.album`). Anyone
 with the link can view that album's photos read-only, with or without a password; the owner can
-delete the link or remove its password at any time. This was substantially rewritten/fixed in a
-later pass — the notes below describe the current, working design; see the "History" callout at
-the end of this section for what was actually broken beforehand.
+delete the link or remove its password at any time.
 
 *   **Address scheme:** `/share/{userMd5}/{name}`, e.g. `/share/3a1f.../vacation-2024`. `userMd5`
     is `md5(user.id)` (`ShareService.computeUserMd5`, `org.springframework.util.DigestUtils`),
@@ -570,16 +580,6 @@ the end of this section for what was actually broken beforehand.
     `getAlbumPhotos`/`getAlbum`, which the *authenticated* album-detail view still uses — reusing
     the filtered version for guests would 500 them; reusing the unfiltered version for real users
     would remove their space isolation entirely).
-*   **History — what was actually broken before this pass** (kept for context, not current
-    behavior): the old `/{albumId}/{name}` share-lookup route, the old `ShareAlbumFilter`
-    (extracted the wrong URI segment as an id — an off-by-one — and called an
-    `@MainSpaceLimited` `shareRepository.findById` that 500'd for guests), `getShareDetailsById`/
-    `getSharePassword` (same `@MainSpaceLimited` problem, meaning the password-login endpoint
-    itself 500'd for anonymous callers), the unprotected flow never establishing any session at
-    all (so every subsequent photo/album fetch was unauthenticated), and a frontend/backend key
-    mismatch (`ShareLinkPage.jsx` read `data.selectedAlbumIds`, the backend only ever sent
-    `albumIds`/`albumId`). None of this is present anymore, but it's why the guest flow was
-    rewritten rather than incrementally patched.
 
 ## 5. Backend API Endpoints
 
@@ -678,6 +678,26 @@ Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
 *   `POST /api/immich/days/{day}/import`: Trigger (or retry) that day's import.
 *   `POST /api/immich/albums/import`: Import Immich albums + album-level shared links
     (run after day-imports — see §6).
+
+### 5.9. Persons & Faces
+*   `GET /api/faces/persons`: Paginated list of every person (see §4.3 for sort/pagination gaps
+    tracked in `TODO.md`).
+*   `GET /api/faces/person/{id}`: A single person by id.
+*   `PUT /api/faces/person/{id}`: Rename a person (`{name, confirmed, mergeWithPersonIds}`) —
+    409 + candidate `PersonDTO`s on a name collision unless `confirmed: true` (§4.3).
+*   `GET /api/faces/person/{id}/faces`: Every `FaceEntity` linked to a person.
+*   `GET /api/faces/person/{id}/days` / `/photos/day/{day}`: Day-indexed photos for a person,
+    same pattern as Library/Album/Space/Garbage (§4.1).
+*   `DELETE /api/faces/person/{personId}/photo/{photoId}`: Unlink a person from one photo
+    (§4.3) — does not delete the underlying `FaceEntity` or the photo.
+*   `POST /api/faces/persons/merge`: Merge two people (`{personIds: [id1, id2]}`) — the person
+    with fewer faces always merges into the one with more (§4.3).
+*   `GET /api/faces/photo/{id}`: Every face detected on a photo (backs the Lightbox's "Faces
+    Detected" section).
+*   `DELETE /api/faces/{id}`: Delete one face detection (not the photo).
+*   `PUT /api/faces/{id}/person`: Rename/reassign one face's person (`{name, confirmMerge}`) —
+    409 + the colliding `PersonDTO` unless `confirmMerge: true` (§4.3).
+*   `DELETE /api/faces/{id}/person`: Unlink one face from its person, keeping the `FaceEntity`.
 
 ## 6. Technical Architecture (Inferred from Code)
 
@@ -824,7 +844,26 @@ Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
         were built from Immich's public API docs without full field-by-field live verification,
         and are flagged in code comments accordingly — treat `ImmichClient` as the first thing to
         check if an import behaves oddly.
-*   **Testing:** Vitest + React Testing Library (`npm test`). No CI workflow runs this
+*   **Database schema:** Flyway-managed (`org.flywaydb:flyway-core` +
+    `flyway-database-postgresql`), versioned migrations under
+    `src/main/resources/db/migration/` (`V1__baseline_schema.sql` is the current baseline).
+    `spring.jpa.hibernate.ddl-auto` is `validate`, not `update` — Hibernate checks the schema
+    matches its entity mappings at startup but never creates/alters tables itself; every schema
+    change needs a new Flyway migration. Every entity's `@Table(indexes = ...)`/
+    `@UniqueConstraint(name = ...)` annotations are kept mirroring the migration's actual
+    constraint/index names (`uk_<table>_<cols>`/`idx_<table>_<cols>`/`ck_<table>_<col>`) — purely
+    for `ddl-auto: validate` and readability, since Hibernate doesn't check names, only that the
+    columns/tables it expects exist.
+*   **Backend testing:** JUnit/MockMvc integration tests under `src/test/java/org/iphoto/`, one
+    per service interface, run against an in-memory H2 database (`MODE=PostgreSQL`) rather than a
+    real Postgres — H2 is fast enough to share one Spring context/database across the whole test
+    run, isolated by unique per-test names/ids rather than a fresh database per class.
+    `FaceRecognitionService`/`DuplicationService`/`FaceDetectionService` are deliberately excluded
+    (native/model-dependent, no live face-detection model available in every environment that runs
+    these tests) — `FaceDetectionConfiguration`'s model-loading beans are `@Profile("!test")`, with
+    a no-op `TestFaceDetectionService` standing in so `TaskWorkerManager`'s constructor dependency
+    is still satisfied.
+*   **Frontend testing:** Vitest + React Testing Library (`npm test`). No CI workflow runs this
     automatically yet — it's a local-only `npm run` command for now. Test files live next to
     the code they cover (`*.test.js`/`*.test.jsx`), not in a separate `__tests__` directory.
     Shared test helpers live in `src/test/` (`setup.js` for global test environment config —
