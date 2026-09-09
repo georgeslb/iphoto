@@ -99,10 +99,53 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Nightly (02:00 container-local time, see nas-backup/crontab) sync of iphoto-storage and a
+  # pg_dump of iphoto-db to a Synology NAS on the LAN, over rsync-over-SSH. Entirely optional -
+  # `docker compose up -d` still works with no NAS configured, this service just won't have the
+  # NAS_* variables it needs and will fail its own validation instead of the rest of the stack.
+  # See nas-backup/README.md for one-time SSH key setup on the NAS side.
+  iphoto-nas-backup:
+    container_name: iphoto-nas-backup
+    build: ./nas-backup
+    restart: unless-stopped
+    depends_on:
+      iphoto-db:
+        condition: service_healthy
+    environment:
+      PGHOST: iphoto-db
+      PGPORT: 5432
+      PGDATABASE: iphoto
+      PGUSER: iphoto
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      NAS_HOST: ${NAS_HOST:?set NAS_HOST in .env}
+      NAS_SSH_PORT: ${NAS_SSH_PORT:-22}
+      NAS_USER: ${NAS_USER:?set NAS_USER in .env}
+      NAS_ASSETS_PATH: ${NAS_ASSETS_PATH:-/volume1/iphoto-backup/assets}
+      NAS_DB_DUMPS_PATH: ${NAS_DB_DUMPS_PATH:-/volume1/iphoto-backup/db-dumps}
+      NAS_REPORTS_PATH: ${NAS_REPORTS_PATH:-/volume1/iphoto-backup/reports}
+      DB_DUMP_RETENTION_DAYS: ${DB_DUMP_RETENTION_DAYS:-30}
+      TZ: ${BACKUP_TZ:-UTC}
+    volumes:
+      # Same named volume iphoto-app writes originals/thumbnails into, mounted read-only here -
+      # this container only ever reads from it to sync to the NAS, it never writes back.
+      - iphoto-storage:/data/iphoto:ro
+      - iphoto-nas-backup-dumps:/backup/db-dumps
+      - iphoto-nas-backup-reports:/backup/reports
+      # Private key for NAS_USER on the Synology, generated once on the host (see
+      # nas-backup/README.md) - never baked into the image or committed to the repo.
+      - ${NAS_SSH_KEY_HOST_PATH:-./nas-backup/secrets/id_ed25519}:/run/secrets/nas_ssh_key:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   iphoto-db-data:
   iphoto-storage:
   iphoto-logs:
+  iphoto-nas-backup-dumps:
+  iphoto-nas-backup-reports:
 
 networks:
   # Pre-existing network, not owned by this compose file - shared with whatever else already runs

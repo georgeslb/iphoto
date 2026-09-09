@@ -62,3 +62,9 @@ android/captures/
 # application.yml's logging.file.name default - only used when running the jar directly outside
 # Docker (docker-compose.yml overrides this to a mounted volume path instead).
 /logs/
+
+### NAS backup ###
+# SSH private key for the Synology NAS user (nas-backup/README.md) - generated per-deployment on
+# the host, never committed.
+/nas-backup/secrets/*
+!/nas-backup/secrets/.gitkeep

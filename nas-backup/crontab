@@ -1,0 +1,6 @@
+# dcron table for the nas-backup container's root user (installed at /etc/crontabs/root).
+# Runs once a night at 02:00 in the container's TZ (set via the TZ environment variable in
+# docker-compose.yml, default UTC - entrypoint.sh links /etc/localtime so dcron actually honors it).
+# Output goes to the cron log file rather than nowhere - `docker logs` will otherwise show nothing
+# from a cron-driven container between runs, which makes a silently-broken schedule hard to notice.
+0 2 * * * /usr/local/bin/backup.sh >> /var/log/nas-backup/cron.log 2>&1

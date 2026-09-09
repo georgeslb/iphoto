@@ -37,6 +37,7 @@ public class PersonRecognitionServiceImpl implements PersonRecognitionService {
     private final FaceRepository faceRepository;
     private final PersonRepository personRepository;
     private final PersonEmbeddingBucketRepository personEmbeddingBucketRepository;
+    private final PersonMergeSuggestionService personMergeSuggestionService;
     private final PhotoRepository photoRepository;
 
     @Override
@@ -141,6 +142,12 @@ public class PersonRecognitionServiceImpl implements PersonRecognitionService {
         mergeBuckets(source, target);
 
         personRepository.delete(source);
+
+        // Any merge-suggestion row naming source is cascade-deleted along with it (see
+        // PersonMergeSuggestionEntity), but target's own aggregate embedding just changed - drop
+        // any suggestion naming target too, so the next scheduled run recomputes it fresh instead
+        // of leaving a now-stale suggestion sitting on the Library page.
+        personMergeSuggestionService.discardSuggestionsInvolving(target.getId());
 
         return target;
     }

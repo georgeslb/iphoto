@@ -42,6 +42,7 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
     private final SpaceService spaceService;
     private final FaceLinkExclusionRepository faceLinkExclusionRepository;
     private final PersonEmbeddingBucketRepository personEmbeddingBucketRepository;
+    private final PersonMergeSuggestionService personMergeSuggestionService;
 
     // Threshold for Cosine Similarity: A higher value means a stricter match. Kept strict and
     // never loosened for "same person, different age" cases — a face at 5 and the same face at
@@ -220,6 +221,22 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
                 }
                 pageNumber++;
             }
+
+            // Extra step, after this user's own face-to-person matching/clustering above: compare
+            // every existing person against every other directly (not one face against a person)
+            // to suggest a MERGE for a human to review - e.g. two PersonEntitys that clustering
+            // never had a reason to compare against each other directly (a person built entirely
+            // from an early cluster vs. one built entirely from a much later one, say) but whose
+            // overall identity looks like the same real person. Reuses this run's own `persons`/
+            // `bucketsByPerson` snapshot (already mutated with any newly-promoted people above) -
+            // no extra query needed. Wrapped separately so a failure here can't undo/interrupt the
+            // matching/clustering work already committed above for this user.
+            try {
+                personMergeSuggestionService.refreshSuggestions(space, persons, bucketsByPerson);
+            } catch (Exception e) {
+                log.error("could not refresh person-merge suggestions for user {}", user.getId(), e);
+            }
+
             log.info("finishing person grouping for user {}", user.getUsername());
         } catch (Exception e) {
             log.error("cant process face recognition for user {}", user.getId(), e);

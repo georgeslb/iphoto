@@ -6,12 +6,14 @@ import org.iphoto.entities.FaceEntity;
 import org.iphoto.entities.FaceLinkExclusionEntity;
 import org.iphoto.entities.PersonEntity;
 import org.iphoto.entities.PhotoEntity;
+import org.iphoto.entities.SpaceEntity;
 import org.iphoto.entities.UserEntity; // Import UserEntity
 import org.iphoto.exception.PersonNameCollisionException;
 import org.iphoto.exception.PersonNameCollisionsException;
 import org.iphoto.model.DayBucketDTO;
 import org.iphoto.model.FaceDTO;
 import org.iphoto.model.PersonDTO;
+import org.iphoto.model.PersonMergeSuggestionDTO;
 import org.iphoto.model.Photo;
 import org.iphoto.repository.FaceLinkExclusionRepository;
 import org.iphoto.repository.FaceRepository;
@@ -41,6 +43,8 @@ public class FaceServiceImpl implements FaceService {
     private final PhotoService photoService;
     private final PersonRecognitionService personRecognitionService;
     private final FaceLinkExclusionRepository faceLinkExclusionRepository;
+    private final PersonMergeSuggestionService personMergeSuggestionService;
+    private final SpaceService spaceService;
 
     @Override
     @Transactional
@@ -327,5 +331,17 @@ public class FaceServiceImpl implements FaceService {
             throw new IllegalArgumentException("mergePersons requires exactly 2 distinct person ids");
         }
         return mapToPerson(personRecognitionService.mergePersons(personIds.get(0), personIds.get(1)));
+    }
+
+    @Override
+    public List<PersonMergeSuggestionDTO> getMergeSuggestions(UserEntity user) {
+        SpaceEntity space = spaceService.getDefaultSpaceForUser(user);
+        return personMergeSuggestionService.getSuggestionsForSpace(space.getId()).stream()
+                .map(suggestion -> new PersonMergeSuggestionDTO(
+                        suggestion.getId(),
+                        mapToPerson(suggestion.getPersonA()),
+                        mapToPerson(suggestion.getPersonB()),
+                        suggestion.getSimilarity()))
+                .toList();
     }
 }
