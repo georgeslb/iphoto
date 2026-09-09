@@ -113,6 +113,13 @@ services:
     container_name: iphoto-nas-backup
     build: ./nas-backup
     restart: unless-stopped
+    # entrypoint.sh execs crond as PID 1 - a process that's PID 1 is automatically its own
+    # session leader, and POSIX forbids a session leader from calling setpgid() on itself, which
+    # crond does internally for job control ("setpgid: Operation not permitted" at startup).
+    # init: true makes Docker run its own tiny init (tini, bundled with the engine) as PID 1
+    # instead, with crond as its child - sidesteps the restriction entirely, no Dockerfile change
+    # needed.
+    init: true
     depends_on:
       iphoto-db:
         condition: service_healthy
