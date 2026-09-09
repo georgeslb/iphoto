@@ -369,6 +369,19 @@ This section describes the application's features. For the corresponding backend
           person are picked up as the timeline progresses rather than compared all-at-once. A person
           with only two photos taken decades apart, with nothing in between, still won't cluster
           together — an inherent limitation of any temporally-windowed approach, not a bug.
+    *   **`FaceEntity.status` (`NEW`/`OLD`)**: every face starts `NEW` (`FaceDetectionServiceImpl`).
+        `groupFacesForUser` only runs the expensive existing-person analysis (`findBestMatchForFace`,
+        checked against every person's buckets) for `NEW` faces - an `OLD` one already went through
+        that check in a past run and found nothing, and skipping it is what stops a large,
+        permanently-unmatched backlog (faces that will never cluster into anyone) from being
+        re-analysed against every person on every ~30s run forever. A face flips to `OLD` once
+        analysed this way, regardless of outcome (matched, promoted into a brand-new person via
+        `CandidateClusterer`, or still an unclustered singleton) - see `PersonRecognitionService
+        .updatePerson`/`addPerson` (matched/promoted cases) and `groupFacesForUser`'s own explicit
+        flip (unresolved case). `OLD` faces are still fed into `CandidateClusterer` every run exactly
+        like `NEW` ones, though - clustering itself is unaffected by status, since a brand-new person
+        can only be discovered once enough of their faces exist, old and new alike, and a face that
+        completes a cluster stays valid evidence regardless of when it was first seen.
     *   **Space scoping during face grouping**: `MainSpaceAspectConfiguration.enableSpaceFilter`
         skips enabling the per-user `spaceFilter` Hibernate filter for any thread named
         `backend-task*`/`heavy-task*`, and `FACE_RECOGNITION` (like all `TaskWorkerManager`

@@ -230,6 +230,14 @@ matters again; `specification.md` is the source of truth for current behavior.
     `/persons/merge` two-person flow, unchanged), Next, and Close. A merge discards any suggestion
     naming either person (the deleted source via FK cascade, the surviving target explicitly,
     since its embedding just changed) so the next run recomputes it fresh.
+  - Added `FaceEntity.status` (`NEW`/`OLD`, migration `V3__add_face_status.sql`) so
+    `groupFacesForUser` stops re-running the expensive existing-person match against every person
+    for the same known-unmatched face on every ~30s run forever. See `specification.md` §4.3 for
+    the current design; `PersonRecognitionServiceImpl.updatePerson`/`addPerson` flip a face to
+    `OLD` when they attach it to a person, `groupFacesForUser` flips it explicitly when a run's
+    clustering pass leaves it an unresolved singleton. `CandidateClusterer` itself is untouched —
+    `OLD` faces are still fed into it every run so a later `NEW` face can still complete a cluster
+    with earlier runs' leftovers (regression-tested in `FaceRecognitionServiceImplTest`).
 
 ### Sharing
 - Full design in `specification.md` §4.4. Originally broken end-to-end (wrong URI parsing, guest

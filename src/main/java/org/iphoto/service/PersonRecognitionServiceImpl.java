@@ -56,6 +56,10 @@ public class PersonRecognitionServiceImpl implements PersonRecognitionService {
         FaceEntity managedFace = faceRepository.findById(face.getId())
                 .orElseThrow(() -> new NoSuchElementException("no face found with id " + face.getId()));
         managedFace.setPerson(managedPerson);
+        // Once attached to a person it's excluded from every NEW/OLD-driven query anyway (they all
+        // filter person IS NULL first), but marking it OLD here too keeps FaceEntity.status an
+        // honest "has this face had its one analysis pass" record regardless of caller.
+        managedFace.setStatus(FaceStatus.OLD);
         faceRepository.save(managedFace);
         managedPerson.getFaces().add(managedFace);
         recalculateCoverFace(managedPerson);
@@ -85,7 +89,10 @@ public class PersonRecognitionServiceImpl implements PersonRecognitionService {
         // persisted row — not just a pending, not-yet-flushed insert — or Hibernate throws
         // TransientObjectException at commit time ("references an unsaved transient instance").
         PersonEntity person = personRepository.saveAndFlush(newPerson);
-        faces.forEach(faceEntity -> faceEntity.setPerson(person));
+        faces.forEach(faceEntity -> {
+            faceEntity.setPerson(person);
+            faceEntity.setStatus(FaceStatus.OLD); // see updatePerson's matching comment above
+        });
         faceRepository.saveAll(faces);
         addFacesToBuckets(person, faces);
         recalculatePhotoCount(person);

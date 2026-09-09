@@ -2,6 +2,7 @@ package org.iphoto.service;
 
 import org.iphoto.AbstractIntegrationTest;
 import org.iphoto.entities.FaceEntity;
+import org.iphoto.entities.FaceStatus;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.SpaceEntity;
 import org.iphoto.entities.UserEntity;
@@ -13,6 +14,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 
 import java.time.LocalDateTime;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -49,6 +51,8 @@ class FaceRecognitionServiceImplTest extends AbstractIntegrationTest {
     private PhotoRepository photoRepository;
     @Autowired
     private FaceRepository faceRepository;
+    @Autowired
+    private PersonRecognitionService personRecognitionService;
 
     private UserEntity createTestUser() {
         return userService.createUser("face-grouping-" + UUID.randomUUID(), "password", "USER");
@@ -142,5 +146,46 @@ class FaceRecognitionServiceImplTest extends AbstractIntegrationTest {
                 .as("face4 must attach to the person promoted from face1-3 in this same run, not stay unmatched")
                 .isNotNull();
         assertThat(faceRepository.findById(face4.getId()).orElseThrow().getPerson().getId()).isEqualTo(personId);
+    }
+
+    // Covers the FaceStatus.NEW/OLD split added to stop groupFacesForUser re-running the expensive
+    // existing-person match (findBestMatchForFace, checked against every person) on the same
+    // known-unmatched face every single run forever. A face already marked OLD (a past run already
+    // checked it against every person and found nothing) must NOT get re-matched even when a person
+    // that would now match it exists - only a genuinely NEW face gets that analysis. The OLD face
+    // still isn't lost, though: it remains a person-null clustering candidate (see
+    // aRealPersonAppearsOnlyOnceAThirdMatchingFaceExistsAndPicksUpTheBacklogOnALaterRun above for
+    // that half of the contract) - this test only exercises the existing-person-matching skip.
+    @Test
+    void anOldFaceIsNeverReMatchedAgainstAnExistingPersonButANewOneStillIs() {
+        UserEntity testUser = createTestUser();
+        SpaceEntity space = spaceService.getDefaultSpaceForUser(testUser);
+        LocalDateTime t = LocalDateTime.of(2024, 8, 1, 12, 0);
+        float[] direction = {0f, 0f, 1f};
+
+        // A real person, built directly (not via groupFaces()) so it already exists before either
+        // face below is ever analysed.
+        FaceEntity personFace = saveFace(savePhoto(space, testUser, t), direction);
+        personRecognitionService.addPerson(List.of(personFace));
+        UUID personId = faceRepository.findById(personFace.getId()).orElseThrow().getPerson().getId();
+
+        // Same direction as personFace - would clear THRESHOLD easily - but marked OLD up front, as
+        // if a past run had already tried and failed to match it (before this person existed).
+        FaceEntity oldFace = saveFace(savePhoto(space, testUser, t.plusMinutes(1)), direction);
+        oldFace.setStatus(FaceStatus.OLD);
+        faceRepository.save(oldFace);
+
+        // Genuinely NEW, same direction, same person to match against.
+        FaceEntity newFace = saveFace(savePhoto(space, testUser, t.plusMinutes(2)), direction);
+
+        faceRecognitionService.groupFaces();
+
+        assertThat(faceRepository.findById(oldFace.getId()).orElseThrow().getPerson())
+                .as("an OLD face must not be re-matched against an existing person")
+                .isNull();
+        assertThat(faceRepository.findById(newFace.getId()).orElseThrow().getPerson())
+                .as("a NEW face must still be matched against an existing person")
+                .isNotNull();
+        assertThat(faceRepository.findById(newFace.getId()).orElseThrow().getPerson().getId()).isEqualTo(personId);
     }
 }
