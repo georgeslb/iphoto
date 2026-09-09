@@ -93,6 +93,14 @@ public interface PhotoRepository extends JpaRepository<PhotoEntity, UUID> {
     // above (Person view has never excluded garbage photos).
     Page<PhotoEntity> findByFacesPersonAndGroupedDay(PersonEntity person, LocalDate groupedDay, Pageable pageable);
 
+    // Backs PersonRecognitionServiceImpl.recalculatePhotoCount - a photo with two+ faces belonging
+    // to the same person (e.g. a group shot the detector matched twice) must still only count once,
+    // unlike findByFacesPerson above (a plain derived join, no DISTINCT - fine for that method's
+    // own paginated-listing use, not for a count meant to be an accurate "photos this person is in"
+    // number).
+    @Query("SELECT COUNT(DISTINCT p) FROM PhotoEntity p JOIN p.faces f WHERE f.person = :person")
+    long countDistinctByFacesPerson(@Param("person") PersonEntity person);
+
     long countByIsGarbageFalseAndAlbums(Set<AlbumEntity> album);
 
     Slice<PhotoEntity> findBySpaceIdAndDateTakenBetweenAndPhashNotNullAndMhashNotNullAndIsGarbageFalse(UUID spaceId, LocalDateTime startDateTaken, LocalDateTime endDateTaken, Pageable pageable);

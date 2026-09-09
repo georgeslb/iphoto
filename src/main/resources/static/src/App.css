@@ -56,6 +56,12 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
    so it carries the matching side padding itself rather than relying on a shared wrapper. */
 .library-timeline { padding: 24px 40px 0 40px; }
 
+/* Top-of-Albums-page search bar (AlbumGridDisplay.jsx), same "sibling with its own padding"
+   pattern as .library-timeline above. */
+.album-search-bar { position: relative; padding: 24px 40px 0 40px; max-width: 420px; }
+.album-search-icon { position: absolute; left: 52px; top: 50%; transform: translateY(-50%); color: var(--text-secondary); pointer-events: none; }
+.album-search-input.modal-input { padding-left: 40px; }
+
 .memories-strip { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 4px; }
 
 .memory-card {
@@ -1676,6 +1682,15 @@ button.upload-item-name.upload-item-name-link:hover {
     padding: 16px 16px 0 16px;
   }
 
+  .album-search-bar {
+    padding: 16px 16px 0 16px;
+    max-width: none;
+  }
+
+  .album-search-icon {
+    left: 28px;
+  }
+
   .header-actions {
     flex-wrap: nowrap;
     overflow-x: auto;
@@ -1691,7 +1706,7 @@ button.upload-item-name.upload-item-name-link:hover {
      just shrinking the same masonry layout. */
   .photo-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+    grid-template-columns: repeat(4, 1fr);
     gap: 2px;
   }
   .photo-grid::after {
@@ -1765,6 +1780,12 @@ button.upload-item-name.upload-item-name-link:hover {
     display: none;
   }
 
+  /* Icon-only duplicate badge on mobile - the full "N similar" text is too cramped in the fixed
+     4-column grid above, so hide the label and keep just the icon + count. */
+  .duplicate-badge .duplicate-badge-label {
+    display: none;
+  }
+
   .upload-queue {
     left: 12px;
     right: 12px;
@@ -1775,7 +1796,7 @@ button.upload-item-name.upload-item-name-link:hover {
 
 @media (max-width: 480px) {
   .photo-grid {
-    grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+    grid-template-columns: repeat(4, 1fr);
     gap: 2px;
   }
 

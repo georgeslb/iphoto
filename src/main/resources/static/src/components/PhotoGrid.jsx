@@ -397,7 +397,7 @@ export default function PhotoGrid({
         title={messages["expandDuplicateGroup"]}
         onClick={(e) => { e.stopPropagation(); setOpenDuplicateMemberIds(item.members.map(m => m.id)); }}
       >
-        <Layers size={12} /> {messages["similarPhotosBadge"](item.members.length)}
+        <Layers size={12} /> {item.members.length}<span className="duplicate-badge-label"> {messages["similarLabel"]}</span>
       </button>
     );
     return renderPhotoCard(item.primary, day, isDropNeighbor, badge, size);

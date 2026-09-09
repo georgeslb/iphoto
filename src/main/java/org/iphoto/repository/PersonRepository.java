@@ -3,7 +3,10 @@ package org.iphoto.repository;
 import org.iphoto.configuration.MainSpaceLimited;
 import org.iphoto.entities.FaceEntity;
 import org.iphoto.entities.PersonEntity;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -12,6 +15,16 @@ import java.util.UUID;
 
 @Repository
 public interface PersonRepository extends JpaRepository<PersonEntity, UUID> {
+
+    // Persons-page fixed sort: named people first, then by photoCount descending - a plain
+    // property Pageable sort (the old @PageableDefault(sort = "name")) can't express "empty/null
+    // last" or sort by photoCount at all. Deliberately not letting the incoming Pageable's own Sort
+    // override this - FaceServiceImpl.getPersons strips any Sort off the Pageable it passes in here
+    // before calling this, so there's nothing for Spring Data to append after this query's own
+    // ORDER BY.
+    @Query(value = "SELECT p FROM PersonEntity p ORDER BY CASE WHEN p.name IS NULL OR p.name = '' THEN 1 ELSE 0 END, p.photoCount DESC",
+            countQuery = "SELECT COUNT(p) FROM PersonEntity p")
+    Page<PersonEntity> findAllOrderByNamedFirstThenPhotoCountDesc(Pageable pageable);
     // Explicit space_id filter, NOT @MainSpaceLimited: FaceRecognitionServiceImpl.groupFacesForUser
     // (the only caller) runs on TaskWorkerManager's own dedicated heavy-task thread pool, where
     // MainSpaceAspectConfiguration deliberately treats @MainSpaceLimited as a no-op (see its own

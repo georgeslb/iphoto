@@ -165,6 +165,7 @@ create table people (
     cover_face_id uuid,
     cover_face_origin varchar(255),
     space_id uuid not null,
+    photo_count integer not null default 0,
     constraint people_pkey primary key (id),
     constraint uk_people_cover_face_id unique (cover_face_id),
     constraint ck_people_cover_face_origin check (cover_face_origin in ('CALCULATED', 'MANUAL')),

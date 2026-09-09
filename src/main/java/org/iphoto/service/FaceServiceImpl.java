@@ -19,6 +19,7 @@ import org.iphoto.repository.FaceLinkExclusionRepository;
 import org.iphoto.repository.FaceRepository;
 import org.iphoto.repository.PersonRepository;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -79,7 +80,12 @@ public class FaceServiceImpl implements FaceService {
 
     @Override
     public Page<PersonDTO> getPersons(Pageable pageable) {
-        return personRepository.findAll(pageable)
+        // Named-first/photoCount-DESC is the fixed, non-negotiable default (see
+        // PersonRepository.findAllOrderByNamedFirstThenPhotoCountDesc) - strip any Sort the caller
+        // asked for via ?sort= so there's nothing for Spring Data to append after that query's own
+        // ORDER BY, only page/size survive here.
+        Pageable pageSizeOnly = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize());
+        return personRepository.findAllOrderByNamedFirstThenPhotoCountDesc(pageSizeOnly)
                 .map(this::mapToPerson); // Pass user to mapToPerson
     }
 
@@ -92,7 +98,11 @@ public class FaceServiceImpl implements FaceService {
 
     private PersonDTO mapToPerson(PersonEntity personEntity) { // Added UserEntity parameter
         FaceDTO coverPhoto = personEntity.getCoverFace() != null ? mapToDTO(personEntity.getCoverFace()) : null;
-        int photoCount = (int) photoService.findByPerson(personEntity, Pageable.ofSize(1)).getTotalElements();
+        // photoCount is now a persisted, incrementally-maintained column (see
+        // PersonRecognitionService.recalculatePhotoCount) rather than a live per-request count -
+        // reading it directly here also avoids the N+1 query-per-person this used to do on every
+        // Persons-page fetch.
+        int photoCount = personEntity.getPhotoCount() == null ? 0 : personEntity.getPhotoCount();
         return new PersonDTO(personEntity.getId(), personEntity.getName(), coverPhoto, photoCount);
     }
 
@@ -179,11 +189,19 @@ public class FaceServiceImpl implements FaceService {
 
         // Must happen before the face row is actually deleted below - removeFaceFromBucket still
         // needs to read this face's own embedding to subtract it back out of its person's bucket.
-        if (face.getPerson() != null) {
-            personRecognitionService.removeFaceFromBucket(face.getPerson(), face);
+        PersonEntity person = face.getPerson();
+        if (person != null) {
+            personRecognitionService.removeFaceFromBucket(person, face);
         }
 
         faceRepository.delete(face);
+
+        // photoCount must be recalculated AFTER the face row is actually gone, not before - it
+        // counts DISTINCT photos still reachable through this person's remaining faces.
+        if (person != null) {
+            personRecognitionService.recalculatePhotoCount(person);
+            personRepository.save(person);
+        }
     }
 
     @Override
@@ -253,6 +271,7 @@ public class FaceServiceImpl implements FaceService {
                     .space(face.getPhoto().getSpace())
                     .name(name.trim())
                     .faces(new ArrayList<>())
+                    .photoCount(0) // NOT NULL column - attachFaceToPerson below recalculates the real value
                     .build();
             // Must be persisted BEFORE attachFaceToPerson runs, not after: that method points
             // face.person at this object, and its exclusion cleanup issues a @Modifying bulk
@@ -291,6 +310,7 @@ public class FaceServiceImpl implements FaceService {
             person.setCoverFace(null);
             personRecognitionService.recalculateCoverFace(person);
         }
+        personRecognitionService.recalculatePhotoCount(person);
     }
 
     // Attaches the face to a (possibly brand-new) person and recalculates its cover face.
@@ -302,6 +322,7 @@ public class FaceServiceImpl implements FaceService {
         personRecognitionService.addFaceToBucket(person, face);
         faceLinkExclusionRepository.deleteByFaceIdAndExcludedPersonId(face.getId(), person.getId());
         personRecognitionService.recalculateCoverFace(person);
+        personRecognitionService.recalculatePhotoCount(person);
     }
 
     @Override

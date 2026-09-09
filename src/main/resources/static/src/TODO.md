@@ -218,7 +218,7 @@ matters again; `specification.md` is the source of truth for current behavior.
     missing the `isNew()` JPA callbacks every sibling entity has (caused
     `detached entity passed to persist` on cross-transaction saves); `/api/faces/photo/{id}` not
     scoped to the requesting user's own space (security fix).
-  - **Merge suggestions**: a new extra step (`PersonMergeSuggestionService`), run right after each
+  - A new extra step (`PersonMergeSuggestionService`), run right after each
     user's own face-to-person matching/clustering inside `groupFacesForUser`, compares every
     existing person's overall (all-years-averaged) embedding directly against every other
     person's — much stricter threshold than ordinary face-to-person matching — and upserts a

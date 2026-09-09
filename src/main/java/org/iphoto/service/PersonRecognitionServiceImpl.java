@@ -5,6 +5,7 @@ import org.iphoto.entities.*;
 import org.iphoto.repository.FaceRepository;
 import org.iphoto.repository.PersonEmbeddingBucketRepository;
 import org.iphoto.repository.PersonRepository;
+import org.iphoto.repository.PhotoRepository;
 import org.iphoto.util.EmbeddingCodec;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,6 +38,7 @@ public class PersonRecognitionServiceImpl implements PersonRecognitionService {
     private final PersonRepository personRepository;
     private final PersonEmbeddingBucketRepository personEmbeddingBucketRepository;
     private final PersonMergeSuggestionService personMergeSuggestionService;
+    private final PhotoRepository photoRepository;
 
     @Override
     public void updatePerson(PersonEntity person, FaceEntity face) { // Added UserEntity parameter
@@ -57,6 +59,7 @@ public class PersonRecognitionServiceImpl implements PersonRecognitionService {
         faceRepository.save(managedFace);
         managedPerson.getFaces().add(managedFace);
         recalculateCoverFace(managedPerson);
+        recalculatePhotoCount(managedPerson);
         personRepository.save(managedPerson);
         addFaceToBucket(managedPerson, managedFace);
     }
@@ -72,7 +75,9 @@ public class PersonRecognitionServiceImpl implements PersonRecognitionService {
         // it's only ever used below as a FK reference when persisting newPerson, which Hibernate
         // resolves from the proxy's own already-known id, never needing to initialize it further.
         SpaceEntity space = faces.get(0).getPhoto().getSpace();
-        PersonEntity newPerson = PersonEntity.builder().space(space).faces(faces).build();
+        // photoCount(0) - NOT NULL column, recalculatePhotoCount below sets the real value once
+        // the faces are actually attached and saved.
+        PersonEntity newPerson = PersonEntity.builder().space(space).faces(faces).photoCount(0).build();
         recalculateCoverFace(newPerson);
         // Flush the brand-new person immediately, before any face is made to reference it: faces
         // in `faces` are detached (loaded earlier, outside this transaction), so saving them
@@ -83,6 +88,8 @@ public class PersonRecognitionServiceImpl implements PersonRecognitionService {
         faces.forEach(faceEntity -> faceEntity.setPerson(person));
         faceRepository.saveAll(faces);
         addFacesToBuckets(person, faces);
+        recalculatePhotoCount(person);
+        personRepository.save(person);
     }
 
     @Override
@@ -125,6 +132,7 @@ public class PersonRecognitionServiceImpl implements PersonRecognitionService {
         faceRepository.saveAll(facesToMove);
 
         recalculateCoverFace(target);
+        recalculatePhotoCount(target);
         personRepository.save(target);
 
         // Fold source's bucket contribution into target's directly (merging averages bucket-by-
@@ -163,6 +171,11 @@ public class PersonRecognitionServiceImpl implements PersonRecognitionService {
         person.setCoverFaceOrigin(CoverFaceOrigin.CALCULATED);
     }
 
+
+    @Override
+    public void recalculatePhotoCount(PersonEntity person) {
+        person.setPhotoCount((int) photoRepository.countDistinctByFacesPerson(person));
+    }
 
     private FaceEntity getLastFaceForPerson(PersonEntity person) {
         FaceEntity bestFace = null;
