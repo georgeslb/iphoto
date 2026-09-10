@@ -748,6 +748,11 @@ button.upload-item-name.upload-item-name-link:hover {
 .status-text.IN_PROGRESS { color: #007aff; }
 .status-text.PARTIAL { color: #ff9500; }
 .status-text.NOT_IMPORTED { color: var(--text-secondary, #888); }
+/* Admin > Tasks page (components/TaskManagement.jsx) - the raw TaskStatus values not already
+   covered above (COMPLETED/FAILED/IGNORED/TRASHED). */
+.status-text.PENDING { color: var(--text-secondary, #888); }
+.status-text.QUEUED { color: #ff9500; }
+.status-text.PROCESSING { color: #007aff; }
 
 .immich-coverage-banner {
   margin: 12px 0;

@@ -328,3 +328,10 @@ matters again; `specification.md` is the source of truth for current behavior.
   and a Leaflet marker-icon/Vite bundling issue that showed broken-image icons on the Map view.
 - Photo storage reorganized from one flat directory into `{year}/{month}/` subfolders (by
   `dateTaken`); an optional admin-triggered backfill migrates pre-existing flat-stored files.
+- Added an Admin > Tasks page (`/admin/tasks`, `TaskManagement.jsx` + `useTaskManagement.js`):
+  paginated, filterable (status/type) list of every `TaskEntity`, with per-row and mass-selection
+  ("select all restartable on this page") restart — resets a task back to `PENDING` regardless of
+  its current status, clearing any error. Backend: `AdminController`/`AdminServiceImpl`'s
+  `getTasks`/`restartTask`/`restartTasks`, `TaskRepository.findByOptionalStatusAndTaskType`
+  (optional status/type filters, no hardcoded `ORDER BY` — sorting is left entirely to the
+  caller's `Pageable` instead), `TaskAdminDTO`. See specification.md §5.7.

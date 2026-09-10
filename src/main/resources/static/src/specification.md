@@ -62,6 +62,10 @@ This document outlines the functionality and behavior of the IPHOTO web applicat
     *   `USER`: Standard user.
     *   `ADMIN`: Has access to additional features, such as the User Management panel.
 *   **User Management (Admin):** An admin-only section (`/admin/users`) exists for managing user accounts.
+*   **Task Management (Admin):** An admin-only section (`/admin/tasks`, `TaskManagement.jsx`) lists
+    every `TaskEntity` row (paginated, filterable by status/type) and lets an admin manually
+    restart one or many tasks — resetting them back to `PENDING` (clearing any error) regardless of
+    their current status. See §5.7.
 
 ## 3. Main Application Layout
 
@@ -712,6 +716,20 @@ Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
 *   `POST /api/admin/storage/migrate-flat-files`: One-time, idempotent backfill moving any
     pre-existing flat-stored photo/thumbnail into the `{year}/{month}` storage layout (see §6).
     Not run automatically — an admin triggers it explicitly.
+*   `GET /api/admin/tasks?status=&taskType=&page=&size=`: Paginated `TaskAdminDTO` list backing
+    the Admin > Tasks page — `status`/`taskType` are both optional, independent filters (either or
+    both may be omitted); sorted newest-first by default (`createdAt` desc, page/size otherwise
+    following the same `Pageable`/`PageResponse` convention every other paginated list here uses).
+*   `POST /api/admin/tasks/{id}/restart`: Resets one task back to `PENDING` (clears
+    `errorMessage`/`stackTrace`, sets `executeAt` to now) regardless of its current status —
+    including `QUEUED`/`PROCESSING`, unlike `AdminServiceImpl#updateImageTaskToDo`'s own replay
+    pass, which skips anything not already `COMPLETED`. An admin manually restarting a task they
+    can see in the UI is trusted to know it's actually stuck, not still genuinely running; a real race with a
+    still-alive worker just means that task executes twice, which every task type already has to
+    tolerate (the same hourly stuck-task reclaim can race a slow-but-alive worker identically, with
+    no human judgment involved at all).
+*   `POST /api/admin/tasks/restart` (`{taskIds: [...]}`): Bulk counterpart for the Tasks page's
+    mass-selection action — one round trip instead of one per row; returns `{restarted: n}`.
 
 ### 5.8. Immich import (per-user, not admin-only — see §6)
 *   `GET /api/immich/settings`: Current user's Immich connection (`{baseUrl, connected}` — the

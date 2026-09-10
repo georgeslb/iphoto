@@ -194,6 +194,38 @@
     font-weight: 600;
 }
 
+.task-management-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 16px;
+}
+
+.task-management-toolbar label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 14px;
+    color: #555;
+}
+
+.task-id-cell {
+    font-family: monospace;
+    font-size: 12px;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.task-management-pagination {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 16px;
+}
+
 @media (max-width: 768px) {
     .user-management-container {
         margin: 12px;
