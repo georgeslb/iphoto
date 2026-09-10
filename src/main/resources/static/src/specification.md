@@ -498,15 +498,22 @@ This section describes the application's features. For the corresponding backend
         it only ever writes a `PersonMergeSuggestionEntity` row for the Library page to surface.
         - `components/PersonMergeSuggestionBanner.jsx` (Library only, rendered alongside
           `MemoriesBar.jsx` right below the header): shown whenever
-          `GET /api/faces/persons/merge-suggestions` returns at least one live suggestion for the
-          current user's space. Clicking "Review" opens `PersonMergeSuggestionModal.jsx`, showing
-          one suggested pair at a time (cover face, name, photo count, similarity percentage for
-          each side) with three actions — **Merge** (calls the exact same
-          `POST /api/faces/persons/merge` two-person flow described above — there is only ever one
-          merge mechanism in the app, this doesn't add a second one), **Next** (advances to the
-          next suggestion without acting on this one), and **Close** (dismisses the popup without
-          merging or otherwise recording anything — the same suggestion is shown again next time
-          the banner is opened).
+          `GET /api/faces/persons/merge-suggestions/count` reports at least one live suggestion for
+          the current user's space — a cheap, count-only read (no face thumbnails at all) that's
+          all the banner text needs before the popup is even opened. Clicking "Review" opens
+          `PersonMergeSuggestionModal.jsx`, fetching and showing one suggested pair at a time (cover
+          face, name, photo count, similarity percentage for each side) via
+          `GET /api/faces/persons/merge-suggestions?page=N&size=1` with three actions — **Merge**
+          (calls the exact same `POST /api/faces/persons/merge` two-person flow described above —
+          there is only ever one merge mechanism in the app, this doesn't add a second one), **Next**
+          (fetches the next page/suggestion without acting on this one), and **Close** (dismisses
+          the popup without merging or otherwise recording anything — the same suggestion is shown
+          again next time the banner is opened). Deliberately paginated at `size=1` rather than one
+          flat unpaginated list of every suggestion (the original design) — each entry embeds BOTH
+          persons' full base64 cover-face thumbnails, and since the popup only ever displays one
+          pair on screen at a time, fetching every other pair's face images too turned a real
+          library's response into several megabytes and multiple seconds just to render a banner
+          that, until opened, only needs a number.
         - A suggestion is upserted (not just inserted) on every run: if a previously-flagged pair's
           similarity has since dropped below the threshold (e.g. a face was unlinked or moved to a
           different person), the row is deleted instead of left stale. When two people are merged
@@ -757,9 +764,15 @@ Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
     (§4.3) — does not delete the underlying `FaceEntity` or the photo.
 *   `POST /api/faces/persons/merge`: Merge two people (`{personIds: [id1, id2]}`) — the person
     with fewer faces always merges into the one with more (§4.3).
-*   `GET /api/faces/persons/merge-suggestions`: Every live "these two people might be the same"
-    suggestion for the current user's space, most-similar first (§4.3) — written by an extra step
-    alongside face recognition, not computed on request.
+*   `GET /api/faces/persons/merge-suggestions/count`: Cheap count of live "these two people might
+    be the same" suggestions for the current user's space (`{count: n}`) — no face thumbnails, not
+    even one suggestion's worth. Backs the banner text before the popup is opened.
+*   `GET /api/faces/persons/merge-suggestions?page=&size=`: Paginated `PersonMergeSuggestionDTO`
+    list, most-similar first (§4.3) — written by an extra step alongside face recognition, not
+    computed on request. The popup only ever shows one pair at a time, so the frontend always asks
+    for `size=1`; each entry embeds both persons' full base64 cover-face thumbnails, which is why
+    this is paginated at all rather than the flat list it used to be (see §4.3's Persons View
+    section for the full story on why that mattered).
 *   `GET /api/faces/photo/{id}`: Every face detected on a photo (backs the Lightbox's "Faces
     Detected" section).
 *   `DELETE /api/faces/{id}`: Delete one face detection (not the photo).

@@ -334,14 +334,23 @@ public class FaceServiceImpl implements FaceService {
     }
 
     @Override
-    public List<PersonMergeSuggestionDTO> getMergeSuggestions(UserEntity user) {
+    public Page<PersonMergeSuggestionDTO> getMergeSuggestions(UserEntity user, Pageable pageable) {
         SpaceEntity space = spaceService.getDefaultSpaceForUser(user);
-        return personMergeSuggestionService.getSuggestionsForSpace(space.getId()).stream()
+        // Fixed sort (most-similar-first) is baked into the repository's derived query - strip
+        // any client-requested sort so there's nothing left for Spring Data to layer on top of
+        // it, same convention as getPersons above.
+        Pageable pageSizeOnly = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize());
+        return personMergeSuggestionService.getSuggestionsForSpace(space.getId(), pageSizeOnly)
                 .map(suggestion -> new PersonMergeSuggestionDTO(
                         suggestion.getId(),
                         mapToPerson(suggestion.getPersonA()),
                         mapToPerson(suggestion.getPersonB()),
-                        suggestion.getSimilarity()))
-                .toList();
+                        suggestion.getSimilarity()));
+    }
+
+    @Override
+    public long countMergeSuggestions(UserEntity user) {
+        SpaceEntity space = spaceService.getDefaultSpaceForUser(user);
+        return personMergeSuggestionService.countSuggestionsForSpace(space.getId());
     }
 }

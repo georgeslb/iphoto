@@ -80,7 +80,15 @@ public interface FaceService {
     // PersonRecognitionService.mergePersons so FaceController's dependencies stay unchanged.
     PersonDTO mergePersons(List<UUID> personIds);
 
-    // Library page banner/popup (see PersonMergeSuggestionService) — every live "these two people
-    // might be the same" suggestion for the current user's own space, most-similar first.
-    List<PersonMergeSuggestionDTO> getMergeSuggestions(UserEntity user);
+    // Library page banner/popup (see PersonMergeSuggestionService) — one page of the current
+    // user's own live "these two people might be the same" suggestions, most-similar first. The
+    // popup only ever shows one pair at a time, so callers always ask for size=1 — see
+    // FaceController#getPersonMergeSuggestions for why this is paginated instead of the flat list
+    // it used to be (a real library's full list, each entry embedding two base64 face thumbnails,
+    // could balloon into a multi-megabyte, multi-second response for a banner/popup that only ever
+    // needs one entry on screen at a time).
+    Page<PersonMergeSuggestionDTO> getMergeSuggestions(UserEntity user, Pageable pageable);
+
+    // Cheap count-only read backing the banner text before the popup is even opened.
+    long countMergeSuggestions(UserEntity user);
 }

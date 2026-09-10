@@ -8,6 +8,8 @@ import org.iphoto.entities.PersonMergeSuggestionEntity;
 import org.iphoto.entities.SpaceEntity;
 import org.iphoto.repository.PersonMergeSuggestionRepository;
 import org.iphoto.util.EmbeddingCodec;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -98,8 +100,13 @@ public class PersonMergeSuggestionServiceImpl implements PersonMergeSuggestionSe
     }
 
     @Override
-    public List<PersonMergeSuggestionEntity> getSuggestionsForSpace(UUID spaceId) {
-        return personMergeSuggestionRepository.findBySpaceIdOrderBySimilarityDesc(spaceId);
+    public Page<PersonMergeSuggestionEntity> getSuggestionsForSpace(UUID spaceId, Pageable pageable) {
+        return personMergeSuggestionRepository.findBySpaceIdOrderBySimilarityDesc(spaceId, pageable);
+    }
+
+    @Override
+    public long countSuggestionsForSpace(UUID spaceId) {
+        return personMergeSuggestionRepository.countBySpaceId(spaceId);
     }
 
     @Override

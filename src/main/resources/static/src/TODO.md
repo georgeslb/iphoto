@@ -225,11 +225,21 @@ matters again; `specification.md` is the source of truth for current behavior.
     `PersonMergeSuggestionEntity` row for any pair similar enough to plausibly be the same real
     person (dropping a row that no longer clears the bar, e.g. after an unlink). Never merges
     anything itself. Library page: `PersonMergeSuggestionBanner.jsx` shows a notice whenever
-    `GET /api/faces/persons/merge-suggestions` returns at least one suggestion; its popup
+    `GET /api/faces/persons/merge-suggestions/count` reports at least one suggestion; its popup
     (`PersonMergeSuggestionModal.jsx`) shows one pair at a time with Merge (the existing
     `/persons/merge` two-person flow, unchanged), Next, and Close. A merge discards any suggestion
     naming either person (the deleted source via FK cascade, the surviving target explicitly,
     since its embedding just changed) so the next run recomputes it fresh.
+  - Fixed a real production performance bug: the merge-suggestions endpoint used to be one flat,
+    unpaginated list of EVERY live suggestion, each entry embedding both persons' full base64
+    cover-face thumbnails (`FaceServiceImpl#mapToDTO`) — even though the popup only ever shows one
+    pair on screen at a time. A real library with many suggestions turned that into a ~16MB,
+    2+ second response for a banner that, until opened, only needs a count. Split into
+    `GET .../merge-suggestions/count` (cheap, no face images at all) for the banner text, and
+    `GET .../merge-suggestions?page=&size=` (the frontend always asks for `size=1`) for the popup —
+    `PersonMergeSuggestionRepository.findBySpaceIdOrderBySimilarityDesc` and
+    `PersonMergeSuggestionServiceImpl` now take a `Pageable`; `usePersonMergeSuggestions.js` fetches
+    one suggestion at a time instead of holding the whole list client-side.
   - Fixed a real production bug: merging two people (`PersonRecognitionServiceImpl.
     mergeFacesIntoTarget`, both the Persons-page merge and the suggestion-banner's Merge button)
     could throw a `uk_people_cover_face_id` unique-constraint violation. `recalculateCoverFace`
