@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import org.iphoto.AbstractIntegrationTest;
 import org.iphoto.entities.FaceEntity;
 import org.iphoto.entities.PersonEntity;
+import org.iphoto.entities.PersonMergeSuggestionEntity;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.SpaceEntity;
 import org.iphoto.entities.UserEntity;
@@ -11,6 +12,7 @@ import org.iphoto.model.request.FaceRenameRequest;
 import org.iphoto.model.request.PersonMergeRequest;
 import org.iphoto.model.request.PersonRenameRequest;
 import org.iphoto.repository.FaceRepository;
+import org.iphoto.repository.PersonMergeSuggestionRepository;
 import org.iphoto.repository.PersonRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.repository.SpaceRepository;
@@ -53,6 +55,8 @@ class FaceServiceTest extends AbstractIntegrationTest {
     private UserRepository userRepository;
     @Autowired
     private FaceService faceService;
+    @Autowired
+    private PersonMergeSuggestionRepository personMergeSuggestionRepository;
 
     private PhotoEntity savePhoto(SpaceEntity space, UserEntity user) {
         String seed = UUID.randomUUID().toString();
@@ -320,6 +324,48 @@ class FaceServiceTest extends AbstractIntegrationTest {
         assertThat(unnamedIdx).isGreaterThanOrEqualTo(0);
         assertThat(namedHighIdx).isLessThan(namedLowIdx); // named, higher photoCount first
         assertThat(namedLowIdx).isLessThan(unnamedIdx); // named (even low count) before unnamed
+    }
+
+    // Regression test for the merge-suggestions endpoint being changed from one flat, unpaginated
+    // list (every suggestion's two face thumbnails fetched up front, even though the popup only
+    // ever shows one pair at a time - a real library turned this into a multi-megabyte,
+    // multi-second response) to a cheap count endpoint plus a real size=1-paginated list.
+    @Test
+    void mergeSuggestionsAreCountedSeparatelyAndPagedOneAtATimeMostSimilarFirst() throws Exception {
+        MockHttpSession session = loginAsAdmin();
+        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
+        PersonEntity personA = personRepository.save(PersonEntity.builder().space(space).name("Ann").faces(new ArrayList<>()).build());
+        PersonEntity personB = personRepository.save(PersonEntity.builder().space(space).name("Ben").faces(new ArrayList<>()).build());
+        PersonEntity personC = personRepository.save(PersonEntity.builder().space(space).name("Cid").faces(new ArrayList<>()).build());
+        PersonEntity personD = personRepository.save(PersonEntity.builder().space(space).name("Dee").faces(new ArrayList<>()).build());
+
+        PersonMergeSuggestionEntity lessSimilar = personMergeSuggestionRepository.save(PersonMergeSuggestionEntity.builder()
+                .personA(personA).personB(personB).spaceId(space.getId()).similarity(0.78).build());
+        PersonMergeSuggestionEntity moreSimilar = personMergeSuggestionRepository.save(PersonMergeSuggestionEntity.builder()
+                .personA(personC).personB(personD).spaceId(space.getId()).similarity(0.91).build());
+
+        MvcResult countResult = mockMvc.perform(get("/api/faces/persons/merge-suggestions/count").session(session))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(objectMapper.readTree(countResult.getResponse().getContentAsString()).get("count").asInt()).isEqualTo(2);
+
+        MvcResult firstPage = mockMvc.perform(get("/api/faces/persons/merge-suggestions").session(session)
+                        .param("page", "0").param("size", "1"))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode firstBody = objectMapper.readTree(firstPage.getResponse().getContentAsString());
+        assertThat(firstBody.get("content")).hasSize(1);
+        assertThat(firstBody.get("content").get(0).get("id").asText()).isEqualTo(moreSimilar.getId().toString());
+        assertThat(firstBody.get("totalElements").asInt()).isEqualTo(2);
+
+        MvcResult secondPage = mockMvc.perform(get("/api/faces/persons/merge-suggestions").session(session)
+                        .param("page", "1").param("size", "1"))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode secondBody = objectMapper.readTree(secondPage.getResponse().getContentAsString());
+        assertThat(secondBody.get("content")).hasSize(1);
+        assertThat(secondBody.get("content").get(0).get("id").asText()).isEqualTo(lessSimilar.getId().toString());
     }
 
     @Test

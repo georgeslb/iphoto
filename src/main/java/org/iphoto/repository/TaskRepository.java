@@ -3,8 +3,11 @@ package org.iphoto.repository;
 import org.springframework.data.domain.Limit;
 import org.iphoto.entities.TaskEntity;
 import org.iphoto.model.TaskType;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDateTime;
@@ -59,4 +62,14 @@ public interface TaskRepository extends JpaRepository<TaskEntity, UUID> {
     // which carries the local AlbumEntity id for this task type) can be picked out to report that
     // album's current status.
     List<TaskEntity> findByUserIdAndTaskType(UUID userId, TaskType taskType);
+
+    // Admin > Tasks page (AdminController#getTasks/AdminServiceImpl#getTasks) - both filters are
+    // optional (either can be null, independently), and no ORDER BY here on purpose: the caller's
+    // Pageable already carries a sort (createdAt desc by default, see AdminController), and adding
+    // a second, hardcoded ORDER BY on top of that would just make Hibernate emit two competing
+    // ORDER BY clauses. status is compared as the raw String this entity actually persists (see
+    // TaskEntity.getStatus()/setStatus()'s own comment) - same convention every other status query
+    // here already uses.
+    @Query("SELECT t FROM TaskEntity t WHERE (:status IS NULL OR t.status = :status) AND (:taskType IS NULL OR t.taskType = :taskType)")
+    Page<TaskEntity> findByOptionalStatusAndTaskType(@Param("status") String status, @Param("taskType") TaskType taskType, Pageable pageable);
 }

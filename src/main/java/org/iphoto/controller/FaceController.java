@@ -6,6 +6,7 @@ import org.iphoto.exception.PersonNameCollisionException;
 import org.iphoto.exception.PersonNameCollisionsException;
 import org.iphoto.model.DayBucketDTO;
 import org.iphoto.model.FaceDTO;
+import org.iphoto.model.PageResponse;
 import org.iphoto.model.PersonDTO;
 import org.iphoto.model.PersonMergeSuggestionDTO;
 import org.iphoto.model.Photo;
@@ -24,6 +25,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.UUID;
 
@@ -70,13 +72,24 @@ public class FaceController extends AbstractBaseController {
     }
 
     // Library page banner/popup (see PersonMergeSuggestionService, specification.md's Persons
-    // View section) — every live "these two people might be the same" suggestion for the current
-    // user's own space, most-similar first. A fixed, non-paginated list (`getSuggestionsForSpace`
-    // does no on-the-fly comparison, just reads already-computed rows) — realistically small for a
-    // personal photo library, no pagination needed the way the plain persons list has.
+    // View section) — one page of the current user's own live "these two people might be the
+    // same" suggestions, most-similar first. Paginated at size=1 (the popup only ever shows one
+    // pair — PersonMergeSuggestionModal.jsx) rather than the flat, unpaginated list this used to
+    // be: each entry embeds BOTH persons' full base64 cover-face thumbnails
+    // (FaceServiceImpl#mapToDTO), so fetching every suggestion up front to show only one at a time
+    // meant paying for every other pair's face images too — a real library with many suggestions
+    // turned that into a multi-megabyte, multi-second response for a banner that, until opened,
+    // only needs a count (see getPersonMergeSuggestionsCount below).
     @GetMapping("/persons/merge-suggestions")
-    public ResponseEntity<List<PersonMergeSuggestionDTO>> getPersonMergeSuggestions() {
-        return ResponseEntity.ok(faceService.getMergeSuggestions(getCurrentUser()));
+    public PageResponse<PersonMergeSuggestionDTO> getPersonMergeSuggestions(@PageableDefault(size = 1) Pageable pageable) {
+        return PageResponse.from(faceService.getMergeSuggestions(getCurrentUser(), pageable));
+    }
+
+    // Cheap count-only endpoint for the banner text ("N people might be duplicates") — no face
+    // thumbnails, not even one suggestion's worth.
+    @GetMapping("/persons/merge-suggestions/count")
+    public Map<String, Long> getPersonMergeSuggestionsCount() {
+        return Map.of("count", faceService.countMergeSuggestions(getCurrentUser()));
     }
 
     @GetMapping("/person/{id}")

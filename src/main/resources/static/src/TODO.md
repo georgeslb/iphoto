@@ -225,11 +225,30 @@ matters again; `specification.md` is the source of truth for current behavior.
     `PersonMergeSuggestionEntity` row for any pair similar enough to plausibly be the same real
     person (dropping a row that no longer clears the bar, e.g. after an unlink). Never merges
     anything itself. Library page: `PersonMergeSuggestionBanner.jsx` shows a notice whenever
-    `GET /api/faces/persons/merge-suggestions` returns at least one suggestion; its popup
+    `GET /api/faces/persons/merge-suggestions/count` reports at least one suggestion; its popup
     (`PersonMergeSuggestionModal.jsx`) shows one pair at a time with Merge (the existing
     `/persons/merge` two-person flow, unchanged), Next, and Close. A merge discards any suggestion
     naming either person (the deleted source via FK cascade, the surviving target explicitly,
     since its embedding just changed) so the next run recomputes it fresh.
+  - Fixed a real production performance bug: the merge-suggestions endpoint used to be one flat,
+    unpaginated list of EVERY live suggestion, each entry embedding both persons' full base64
+    cover-face thumbnails (`FaceServiceImpl#mapToDTO`) — even though the popup only ever shows one
+    pair on screen at a time. A real library with many suggestions turned that into a ~16MB,
+    2+ second response for a banner that, until opened, only needs a count. Split into
+    `GET .../merge-suggestions/count` (cheap, no face images at all) for the banner text, and
+    `GET .../merge-suggestions?page=&size=` (the frontend always asks for `size=1`) for the popup —
+    `PersonMergeSuggestionRepository.findBySpaceIdOrderBySimilarityDesc` and
+    `PersonMergeSuggestionServiceImpl` now take a `Pageable`; `usePersonMergeSuggestions.js` fetches
+    one suggestion at a time instead of holding the whole list client-side.
+  - Fixed a real production bug: merging two people (`PersonRecognitionServiceImpl.
+    mergeFacesIntoTarget`, both the Persons-page merge and the suggestion-banner's Merge button)
+    could throw a `uk_people_cover_face_id` unique-constraint violation. `recalculateCoverFace`
+    picks the target's new cover face from ALL its faces, including the ones just moved over from
+    `source` — if the pick landed on the exact face that was `source`'s own cover face, saving
+    `target` collided with `source`'s still-in-place `cover_face_id` (source wasn't deleted until
+    afterward). Fixed by nulling and flushing `source`'s cover face right after its faces move,
+    before `target`'s new one is computed/saved. Regression test:
+    `PersonRecognitionServiceTest.mergePersonsSucceedsWhenSourcesCoverFaceBecomesTheTargetsNewCoverFace`.
   - Added `FaceEntity.status` (`NEW`/`OLD`, migration `V3__add_face_status.sql`) so
     `groupFacesForUser` stops re-running the expensive existing-person match against every person
     for the same known-unmatched face on every ~30s run forever. See `specification.md` §4.3 for
@@ -319,3 +338,10 @@ matters again; `specification.md` is the source of truth for current behavior.
   and a Leaflet marker-icon/Vite bundling issue that showed broken-image icons on the Map view.
 - Photo storage reorganized from one flat directory into `{year}/{month}/` subfolders (by
   `dateTaken`); an optional admin-triggered backfill migrates pre-existing flat-stored files.
+- Added an Admin > Tasks page (`/admin/tasks`, `TaskManagement.jsx` + `useTaskManagement.js`):
+  paginated, filterable (status/type) list of every `TaskEntity`, with per-row and mass-selection
+  ("select all restartable on this page") restart — resets a task back to `PENDING` regardless of
+  its current status, clearing any error. Backend: `AdminController`/`AdminServiceImpl`'s
+  `getTasks`/`restartTask`/`restartTasks`, `TaskRepository.findByOptionalStatusAndTaskType`
+  (optional status/type filters, no hardcoded `ORDER BY` — sorting is left entirely to the
+  caller's `Pageable` instead), `TaskAdminDTO`. See specification.md §5.7.

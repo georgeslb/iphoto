@@ -4,6 +4,8 @@ import org.iphoto.entities.PersonEmbeddingBucketEntity;
 import org.iphoto.entities.PersonEntity;
 import org.iphoto.entities.PersonMergeSuggestionEntity;
 import org.iphoto.entities.SpaceEntity;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 
 import java.util.List;
 import java.util.Map;
@@ -24,9 +26,15 @@ public interface PersonMergeSuggestionService {
     // brand-new people are promoted mid-run) rather than issuing its own queries.
     void refreshSuggestions(SpaceEntity space, List<PersonEntity> persons, Map<UUID, List<PersonEmbeddingBucketEntity>> bucketsByPerson);
 
-    // Every live suggestion for one space, most-similar first - backs the Library page banner/
-    // popup (FaceService.getMergeSuggestions maps these to PersonMergeSuggestionDTOs).
-    List<PersonMergeSuggestionEntity> getSuggestionsForSpace(UUID spaceId);
+    // One page of live suggestions for one space, most-similar first - backs the Library page
+    // banner/popup (FaceService.getMergeSuggestions maps these to PersonMergeSuggestionDTOs). The
+    // popup only ever shows one pair at a time, so the caller always asks for size=1 - see
+    // FaceController#getPersonMergeSuggestions for why this is paginated at all.
+    Page<PersonMergeSuggestionEntity> getSuggestionsForSpace(UUID spaceId, Pageable pageable);
+
+    // Cheap count-only read for the banner text ("N people might be duplicates") - doesn't pay for
+    // even a single suggestion's face thumbnails just to render a number.
+    long countSuggestionsForSpace(UUID spaceId);
 
     // Called after a person is merged away (PersonRecognitionService#mergeFacesIntoTarget) - the
     // target's own aggregate embedding just changed, so any suggestion mentioning either side of

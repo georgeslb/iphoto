@@ -138,6 +138,15 @@ public class PersonRecognitionServiceImpl implements PersonRecognitionService {
         source.getFaces().clear();
         faceRepository.saveAll(facesToMove);
 
+        // Every face source had (including whichever one was its cover face) just moved to
+        // target above. If target's own recalculated cover face below lands on that same face,
+        // saving target while source's still-unflushed cover_face_id row still points at it would
+        // violate uk_people_cover_face_id - two people can't reference the same cover face at
+        // once, even for the instant before source is deleted. Null it out and flush first so
+        // that column is free by the time target claims it.
+        source.setCoverFace(null);
+        personRepository.saveAndFlush(source);
+
         recalculateCoverFace(target);
         recalculatePhotoCount(target);
         personRepository.save(target);

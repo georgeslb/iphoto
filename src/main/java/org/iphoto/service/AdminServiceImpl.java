@@ -7,10 +7,12 @@ import org.apache.commons.collections4.SetUtils;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.TaskEntity;
 import org.iphoto.model.StorageMigrationSummaryDTO;
+import org.iphoto.model.TaskAdminDTO;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.TaskType;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.repository.TaskRepository;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Slice;
@@ -19,7 +21,9 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -116,5 +120,45 @@ public class AdminServiceImpl implements AdminService {
             pageable = photosSlice.nextPageable();
 
         } while (photosSlice.hasNext());
+    }
+
+    @Override
+    public Page<TaskAdminDTO> getTasks(TaskStatus status, TaskType taskType, Pageable pageable) {
+        String statusName = status != null ? status.name() : null;
+        return taskRepository.findByOptionalStatusAndTaskType(statusName, taskType, pageable)
+                .map(TaskAdminDTO::from);
+    }
+
+    @Override
+    public TaskAdminDTO restartTask(UUID taskId) {
+        TaskEntity task = taskRepository.findById(taskId)
+                .orElseThrow(() -> new NoSuchElementException("no task found with id " + taskId));
+        resetToPending(task);
+        return TaskAdminDTO.from(taskRepository.save(task));
+    }
+
+    @Override
+    public int restartTasks(List<UUID> taskIds) {
+        List<TaskEntity> tasks = taskRepository.findAllById(taskIds);
+        tasks.forEach(this::resetToPending);
+        taskRepository.saveAll(tasks);
+        return tasks.size();
+    }
+
+    // Manual admin override of a task's status - the same reset updateImageTaskToDo above and
+    // TaskWorkerManagerImpl#reclaimStuckProcessingTasks already apply automatically, just
+    // triggered on demand from the Tasks page instead of by a schedule/replay pass.
+    // Deliberately unconditional on the task's CURRENT status (including QUEUED/PROCESSING,
+    // unlike updateImageTaskToDo's COMPLETED-only exclusion above) - an admin who can see this
+    // exact task in the UI and chooses to restart it is trusted to know it's actually stuck, not
+    // still genuinely running. Worst case if it IS still running is that task executing twice,
+    // which every task type here already has to tolerate anyway (reclaimStuckProcessingTasks can
+    // race a slow-but-alive worker the exact same way, hourly, with no human judgment involved at
+    // all).
+    private void resetToPending(TaskEntity task) {
+        task.setStatus(TaskStatus.PENDING);
+        task.setErrorMessage(null);
+        task.setStackTrace(null);
+        task.setExecuteAt(LocalDateTime.now());
     }
 }

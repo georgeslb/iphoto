@@ -62,6 +62,10 @@ This document outlines the functionality and behavior of the IPHOTO web applicat
     *   `USER`: Standard user.
     *   `ADMIN`: Has access to additional features, such as the User Management panel.
 *   **User Management (Admin):** An admin-only section (`/admin/users`) exists for managing user accounts.
+*   **Task Management (Admin):** An admin-only section (`/admin/tasks`, `TaskManagement.jsx`) lists
+    every `TaskEntity` row (paginated, filterable by status/type) and lets an admin manually
+    restart one or many tasks — resetting them back to `PENDING` (clearing any error) regardless of
+    their current status. See §5.7.
 
 ## 3. Main Application Layout
 
@@ -494,15 +498,22 @@ This section describes the application's features. For the corresponding backend
         it only ever writes a `PersonMergeSuggestionEntity` row for the Library page to surface.
         - `components/PersonMergeSuggestionBanner.jsx` (Library only, rendered alongside
           `MemoriesBar.jsx` right below the header): shown whenever
-          `GET /api/faces/persons/merge-suggestions` returns at least one live suggestion for the
-          current user's space. Clicking "Review" opens `PersonMergeSuggestionModal.jsx`, showing
-          one suggested pair at a time (cover face, name, photo count, similarity percentage for
-          each side) with three actions — **Merge** (calls the exact same
-          `POST /api/faces/persons/merge` two-person flow described above — there is only ever one
-          merge mechanism in the app, this doesn't add a second one), **Next** (advances to the
-          next suggestion without acting on this one), and **Close** (dismisses the popup without
-          merging or otherwise recording anything — the same suggestion is shown again next time
-          the banner is opened).
+          `GET /api/faces/persons/merge-suggestions/count` reports at least one live suggestion for
+          the current user's space — a cheap, count-only read (no face thumbnails at all) that's
+          all the banner text needs before the popup is even opened. Clicking "Review" opens
+          `PersonMergeSuggestionModal.jsx`, fetching and showing one suggested pair at a time (cover
+          face, name, photo count, similarity percentage for each side) via
+          `GET /api/faces/persons/merge-suggestions?page=N&size=1` with three actions — **Merge**
+          (calls the exact same `POST /api/faces/persons/merge` two-person flow described above —
+          there is only ever one merge mechanism in the app, this doesn't add a second one), **Next**
+          (fetches the next page/suggestion without acting on this one), and **Close** (dismisses
+          the popup without merging or otherwise recording anything — the same suggestion is shown
+          again next time the banner is opened). Deliberately paginated at `size=1` rather than one
+          flat unpaginated list of every suggestion (the original design) — each entry embeds BOTH
+          persons' full base64 cover-face thumbnails, and since the popup only ever displays one
+          pair on screen at a time, fetching every other pair's face images too turned a real
+          library's response into several megabytes and multiple seconds just to render a banner
+          that, until opened, only needs a number.
         - A suggestion is upserted (not just inserted) on every run: if a previously-flagged pair's
           similarity has since dropped below the threshold (e.g. a face was unlinked or moved to a
           different person), the row is deleted instead of left stale. When two people are merged
@@ -712,6 +723,20 @@ Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
 *   `POST /api/admin/storage/migrate-flat-files`: One-time, idempotent backfill moving any
     pre-existing flat-stored photo/thumbnail into the `{year}/{month}` storage layout (see §6).
     Not run automatically — an admin triggers it explicitly.
+*   `GET /api/admin/tasks?status=&taskType=&page=&size=`: Paginated `TaskAdminDTO` list backing
+    the Admin > Tasks page — `status`/`taskType` are both optional, independent filters (either or
+    both may be omitted); sorted newest-first by default (`createdAt` desc, page/size otherwise
+    following the same `Pageable`/`PageResponse` convention every other paginated list here uses).
+*   `POST /api/admin/tasks/{id}/restart`: Resets one task back to `PENDING` (clears
+    `errorMessage`/`stackTrace`, sets `executeAt` to now) regardless of its current status —
+    including `QUEUED`/`PROCESSING`, unlike `AdminServiceImpl#updateImageTaskToDo`'s own replay
+    pass, which skips anything not already `COMPLETED`. An admin manually restarting a task they
+    can see in the UI is trusted to know it's actually stuck, not still genuinely running; a real race with a
+    still-alive worker just means that task executes twice, which every task type already has to
+    tolerate (the same hourly stuck-task reclaim can race a slow-but-alive worker identically, with
+    no human judgment involved at all).
+*   `POST /api/admin/tasks/restart` (`{taskIds: [...]}`): Bulk counterpart for the Tasks page's
+    mass-selection action — one round trip instead of one per row; returns `{restarted: n}`.
 
 ### 5.8. Immich import (per-user, not admin-only — see §6)
 *   `GET /api/immich/settings`: Current user's Immich connection (`{baseUrl, connected}` — the
@@ -739,9 +764,15 @@ Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
     (§4.3) — does not delete the underlying `FaceEntity` or the photo.
 *   `POST /api/faces/persons/merge`: Merge two people (`{personIds: [id1, id2]}`) — the person
     with fewer faces always merges into the one with more (§4.3).
-*   `GET /api/faces/persons/merge-suggestions`: Every live "these two people might be the same"
-    suggestion for the current user's space, most-similar first (§4.3) — written by an extra step
-    alongside face recognition, not computed on request.
+*   `GET /api/faces/persons/merge-suggestions/count`: Cheap count of live "these two people might
+    be the same" suggestions for the current user's space (`{count: n}`) — no face thumbnails, not
+    even one suggestion's worth. Backs the banner text before the popup is opened.
+*   `GET /api/faces/persons/merge-suggestions?page=&size=`: Paginated `PersonMergeSuggestionDTO`
+    list, most-similar first (§4.3) — written by an extra step alongside face recognition, not
+    computed on request. The popup only ever shows one pair at a time, so the frontend always asks
+    for `size=1`; each entry embeds both persons' full base64 cover-face thumbnails, which is why
+    this is paginated at all rather than the flat list it used to be (see §4.3's Persons View
+    section for the full story on why that mattered).
 *   `GET /api/faces/photo/{id}`: Every face detected on a photo (backs the Lightbox's "Faces
     Detected" section).
 *   `DELETE /api/faces/{id}`: Delete one face detection (not the photo).
