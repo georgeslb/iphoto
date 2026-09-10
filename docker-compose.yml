@@ -28,7 +28,12 @@ services:
       POSTGRES_USER: iphoto
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
-      - iphoto-db-data:/var/lib/postgresql/data
+      # Bind mount, not a Docker-managed named volume - lives at a known host path
+      # (/data/iphoto/postgres) instead of under /var/lib/docker/volumes, so it survives being
+      # found/backed up/inspected independently of Docker. Must be owned by whatever UID the
+      # postgres:16-alpine image's postgres user actually is (`docker run --rm postgres:16-alpine
+      # id postgres`) or the container will fail to start.
+      - /data/iphoto/postgres:/var/lib/postgresql/data
     # Not published to the host on purpose - only iphoto-app talks to this, over the
     # compose-internal network. Uncomment to reach it directly (e.g. psql/pgAdmin from the host).
     # ports:
@@ -82,14 +87,16 @@ services:
       # for any username.
       IPHOTO_REMEMBER_ME_KEY: ${IPHOTO_REMEMBER_ME_KEY:?set IPHOTO_REMEMBER_ME_KEY in .env}
       # Overrides application.yml's local-dev-relative "logs/" default (see its own comment) - a
-      # path under the dedicated iphoto-logs volume below instead, so rotated log files survive a
-      # container recreate/redeploy. A separate volume from iphoto-storage on purpose: logs are
-      # pruned by application.yml's own rolling policy (30 days / 500MB total), a very different
-      # retention need than photo originals, which this app never deletes on its own.
+      # path under the dedicated /data/iphoto/logs bind mount below instead, so rotated log files
+      # survive a container recreate/redeploy. A separate host directory from /data/iphoto/data on
+      # purpose: logs are pruned by application.yml's own rolling policy (30 days / 500MB total), a
+      # very different retention need than photo originals, which this app never deletes on its own.
       LOGGING_FILE_NAME: /data/iphoto-logs/iphoto.log
     volumes:
-      - iphoto-storage:/data/iphoto
-      - iphoto-logs:/data/iphoto-logs
+      # Bind mounts to known host paths under /data/iphoto, not Docker-managed named volumes - see
+      # iphoto-db's own volumes comment above for why.
+      - /data/iphoto/data:/data/iphoto
+      - /data/iphoto/logs:/data/iphoto-logs
     ports:
       - "${IPHOTO_PORT:-8080}:8080"
     healthcheck:
@@ -104,7 +111,7 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # Nightly (02:00 container-local time, see nas-backup/crontab) sync of iphoto-storage and a
+  # Nightly (02:00 container-local time, see nas-backup/crontab) sync of /data/iphoto/data and a
   # pg_dump of iphoto-db to a Synology NAS on the LAN, over rsync-over-SSH. Entirely optional -
   # `docker compose up -d` still works with no NAS configured, this service just won't have the
   # NAS_* variables it needs and will fail its own validation instead of the rest of the stack.
@@ -138,11 +145,11 @@ services:
       DB_DUMP_RETENTION_DAYS: ${DB_DUMP_RETENTION_DAYS:-30}
       TZ: ${BACKUP_TZ:-UTC}
     volumes:
-      # Same named volume iphoto-app writes originals/thumbnails into, mounted read-only here -
+      # Same host path iphoto-app writes originals/thumbnails into, bind-mounted read-only here -
       # this container only ever reads from it to sync to the NAS, it never writes back.
-      - iphoto-storage:/data/iphoto:ro
-      - iphoto-nas-backup-dumps:/backup/db-dumps
-      - iphoto-nas-backup-reports:/backup/reports
+      - /data/iphoto/data:/data/iphoto:ro
+      - /data/iphoto/dumps:/backup/db-dumps
+      - /data/iphoto/reports:/backup/reports
       # Private key for NAS_USER on the Synology, generated once on the host (see
       # nas-backup/README.md) - never baked into the image or committed to the repo.
       - ${NAS_SSH_KEY_HOST_PATH:-./nas-backup/secrets/id_ed25519}:/run/secrets/nas_ssh_key:ro
@@ -151,13 +158,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
-volumes:
-  iphoto-db-data:
-  iphoto-storage:
-  iphoto-logs:
-  iphoto-nas-backup-dumps:
-  iphoto-nas-backup-reports:
 
 networks:
   # Pre-existing network, not owned by this compose file - shared with whatever else already runs
