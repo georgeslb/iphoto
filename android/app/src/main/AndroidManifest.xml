@@ -3,6 +3,14 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Sync feature: the on-demand upload/garbage job runs as a WorkManager foreground job
+         (see SyncWorker) so the OS doesn't kill it mid-sync; these are what that requires. No
+         broad photo/media permission is needed since the folder is picked via SAF (Storage
+         Access Framework), which grants access to only that one tree. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:name=".IPhotoApplication"
         android:allowBackup="true"
