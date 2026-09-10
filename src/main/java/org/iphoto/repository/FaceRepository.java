@@ -1,11 +1,13 @@
 package org.iphoto.repository;
 
 import org.iphoto.entities.FaceEntity;
+import org.iphoto.entities.FaceStatus;
 import org.iphoto.entities.PhotoEntity;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Slice;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -53,4 +55,14 @@ public interface FaceRepository extends JpaRepository<FaceEntity, UUID> {
     List<FaceEntity> findByPersonIdAndPhotoId(UUID personId, UUID photoId);
 
     void deleteByPhotoId(PhotoEntity photo);
+
+    // Admin > Tasks page "Restart person extraction" button (AdminService#restartPersonRecognition):
+    // detaches every face from its person and flips it back to NEW so the next FACE_RECOGNITION run
+    // reconsiders the whole set from scratch - the faces themselves are kept (they're the expensive
+    // part: detection + embedding), only the grouping is thrown away. Must run BEFORE deleting the
+    // people rows (faces.person_id FK). clearAutomatically for the same reason as
+    // TaskRepository#resetAllToPendingByTaskType. Returns the row count.
+    @Modifying(clearAutomatically = true)
+    @Query("UPDATE FaceEntity f SET f.person = null, f.status = :status")
+    int detachAllFromPersonsAndResetStatus(@Param("status") FaceStatus status);
 }

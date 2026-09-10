@@ -87,4 +87,23 @@ public class AdminController extends AbstractBaseController {
     public Map<String, Integer> restartTasks(@RequestBody TaskRestartRequest request) {
         return Map.of("restarted", adminService.restartTasks(request.taskIds()));
     }
+
+    // Admin > Tasks page "Reprocessing" panel - re-run a whole pipeline stage from scratch. See
+    // AdminService for exactly what each one resets.
+    @PostMapping("/reprocess/faces")
+    public Map<String, Integer> reprocessFaces() {
+        return Map.of("tasksReset", adminService.restartFaceExtraction());
+    }
+
+    @PostMapping("/reprocess/duplicates")
+    public Map<String, Integer> reprocessDuplicates() {
+        return Map.of("tasksReset", adminService.restartDuplicationDetection());
+    }
+
+    // Destructive: deletes every person and detaches every face before re-running grouping (the
+    // faces themselves are kept). The frontend confirms before calling this.
+    @PostMapping("/reprocess/persons")
+    public Map<String, Integer> reprocessPersons() {
+        return adminService.restartPersonRecognition();
+    }
 }

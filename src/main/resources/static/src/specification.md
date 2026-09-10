@@ -65,7 +65,13 @@ This document outlines the functionality and behavior of the IPHOTO web applicat
 *   **Task Management (Admin):** An admin-only section (`/admin/tasks`, `TaskManagement.jsx`) lists
     every `TaskEntity` row (paginated, filterable by status/type) and lets an admin manually
     restart one or many tasks — resetting them back to `PENDING` (clearing any error) regardless of
-    their current status. See §5.7.
+    their current status. It also has a **Reprocessing** panel to re-run a whole pipeline stage:
+    *Restart face extraction* / *Restart duplicate detection* reset every `ISOLATE_FACES` /
+    `CHECK_DUPLICATION` task to `PENDING`; *Restart person recognition* (confirmed first, it's
+    destructive) deletes every `PersonEntity` (plus their embedding buckets and merge suggestions),
+    detaches every face and marks it `NEW`, then kicks the perpetual `FACE_RECOGNITION` task to
+    run now — the detected faces themselves (detection + embeddings) are kept, only the grouping is
+    thrown away. See §5.7.
 
 ## 3. Main Application Layout
 
@@ -737,6 +743,14 @@ Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
     no human judgment involved at all).
 *   `POST /api/admin/tasks/restart` (`{taskIds: [...]}`): Bulk counterpart for the Tasks page's
     mass-selection action — one round trip instead of one per row; returns `{restarted: n}`.
+*   `POST /api/admin/reprocess/faces` / `.../duplicates`: reset every `ISOLATE_FACES` /
+    `CHECK_DUPLICATION` task to `PENDING` in one statement; returns `{tasksReset: n}`.
+    `FaceDetectionService`/`DuplicationService` both delete a photo's prior results before
+    re-running, so this is a clean re-extraction, not a duplicating one.
+*   `POST /api/admin/reprocess/persons`: destructive — deletes every person (+ embedding buckets +
+    merge suggestions), detaches every face (`person_id = null`, `status = NEW`), and resets the
+    single perpetual `FACE_RECOGNITION` task to run now. Returns `{personsDeleted, facesReset}`.
+    The frontend confirms before calling it.
 
 ### 5.8. Immich import (per-user, not admin-only — see §6)
 *   `GET /api/immich/settings`: Current user's Immich connection (`{baseUrl, connected}` — the
