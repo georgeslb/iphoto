@@ -28,7 +28,8 @@ public interface AlbumRepository extends JpaRepository<AlbumEntity, UUID> {
     List<AlbumEntity> findAll();
 
     @MainSpaceLimited
-    Optional<AlbumEntity> findById(UUID id);
+    @Query("SELECT p FROM AlbumEntity p WHERE p.id = :id")
+    Optional<AlbumEntity> findByIdInMainSpace(UUID id);
 
     // Idempotency lookup for the Immich album import - lets a re-run find the album it already
     // created instead of hitting findByName's collision throw or creating a duplicate.

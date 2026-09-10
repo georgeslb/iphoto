@@ -5,6 +5,9 @@ import org.iphoto.entities.TaskEntity;
 
 public interface FaceDetectionService {
 
+    // Removes every face on a photo and repairs the people that referenced them (bucket counts,
+    // cover face, photoCount). Called by detectAndSaveFaces before re-detecting so a replayed
+    // ISOLATE_FACES task rebuilds a photo's faces instead of appending a duplicate set.
     void deleteFaces(PhotoEntity photo);
 
     // No longer self-locking - ISOLATE_FACES now runs on its own dedicated pool sized to exactly

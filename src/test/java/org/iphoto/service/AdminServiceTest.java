@@ -2,17 +2,22 @@ package org.iphoto.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import org.iphoto.AbstractIntegrationTest;
+import org.iphoto.entities.DuplicateEntity;
 import org.iphoto.entities.FaceEntity;
 import org.iphoto.entities.FaceStatus;
 import org.iphoto.entities.PersonEntity;
+import org.iphoto.entities.PhotoDuplicateEntity;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.SpaceEntity;
 import org.iphoto.entities.TaskEntity;
 import org.iphoto.entities.UserEntity;
+import org.iphoto.model.DuplicateStatus;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.TaskType;
+import org.iphoto.repository.DuplicateRepository;
 import org.iphoto.repository.FaceRepository;
 import org.iphoto.repository.PersonRepository;
+import org.iphoto.repository.PhotoDuplicateRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.repository.SpaceRepository;
 import org.iphoto.repository.TaskRepository;
@@ -49,6 +54,10 @@ class AdminServiceTest extends AbstractIntegrationTest {
     private SpaceRepository spaceRepository;
     @Autowired
     private UserRepository userRepository;
+    @Autowired
+    private PhotoDuplicateRepository photoDuplicateRepository;
+    @Autowired
+    private DuplicateRepository duplicateRepository;
 
     private TaskEntity saveTask(TaskType taskType, TaskStatus status, String errorMessage) {
         TaskEntity task = new TaskEntity();
@@ -147,6 +156,33 @@ class AdminServiceTest extends AbstractIntegrationTest {
     }
 
     @Test
+    void aCompletedTaskReportsHowLongItsLastRunTook() throws Exception {
+        MockHttpSession session = loginAsAdmin();
+        UUID spaceId = createSpace(session, "TaskTiming-" + UUID.randomUUID());
+        UUID photoId = uploadPhoto(session, spaceId); // runs a real PROCESS_UPLOAD task to COMPLETED
+
+        MvcResult result = mockMvc.perform(get("/api/admin/tasks")
+                        .session(session)
+                        .param("taskType", "PROCESS_UPLOAD")
+                        .param("status", "COMPLETED")
+                        .param("size", "200"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode content = objectMapper.readTree(result.getResponse().getContentAsString()).get("content");
+        JsonNode row = null;
+        for (JsonNode t : content) {
+            if (photoId.toString().equals(t.path("photoId").asText())) {
+                row = t;
+                break;
+            }
+        }
+        assertThat(row).as("the PROCESS_UPLOAD task for the just-uploaded photo").isNotNull();
+        assertThat(row.get("durationMs").isNull()).isFalse();
+        assertThat(row.get("durationMs").asLong()).isGreaterThanOrEqualTo(0);
+    }
+
+    @Test
     void restartTaskResetsItToPendingAndClearsItsError() throws Exception {
         MockHttpSession session = loginAsAdmin();
         TaskEntity failed = saveTask(TaskType.HASH_IMAGE, TaskStatus.FAILED, "boom");
@@ -226,6 +262,32 @@ class AdminServiceTest extends AbstractIntegrationTest {
     }
 
     @Test
+    void reprocessDuplicatesWipesExistingDuplicateGroupsSoTheyGetRebuilt() throws Exception {
+        MockHttpSession session = loginAsAdmin();
+        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
+        SpaceEntity mainSpace = spaceRepository.findByTypeEqualsMainAndUser(admin);
+        PhotoEntity photoA = savePhoto(mainSpace, admin);
+        PhotoEntity photoB = savePhoto(mainSpace, admin);
+
+        DuplicateEntity group = duplicateRepository.save(DuplicateEntity.builder()
+                .id(UUID.randomUUID()).space(mainSpace).hash("hash-" + UUID.randomUUID()).build());
+        photoDuplicateRepository.save(PhotoDuplicateEntity.builder()
+                .photo(photoA).duplicate(group).status(DuplicateStatus.IN_GROUP).build());
+        photoDuplicateRepository.save(PhotoDuplicateEntity.builder()
+                .photo(photoB).duplicate(group).status(DuplicateStatus.IN_GROUP).build());
+        TaskEntity dupTask = saveTask(TaskType.CHECK_DUPLICATION, TaskStatus.COMPLETED, null);
+
+        mockMvc.perform(post("/api/admin/reprocess/duplicates").session(session))
+                .andExpect(status().isOk());
+
+        // Both the join rows and the group itself are gone globally, so checkDuplication's
+        // photoAlreadyDuplicated() short-circuit no longer fires and the re-queued task re-scans.
+        assertThat(photoDuplicateRepository.count()).isZero();
+        assertThat(duplicateRepository.count()).isZero();
+        assertThat(taskRepository.findById(dupTask.getId()).orElseThrow().getStatus()).isEqualTo(TaskStatus.PENDING);
+    }
+
+    @Test
     void reprocessPersonsDeletesPeopleDetachesFacesAndKicksFaceRecognition() throws Exception {
         MockHttpSession session = loginAsAdmin();
         UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
@@ -249,7 +311,11 @@ class AdminServiceTest extends AbstractIntegrationTest {
         assertThat(body.get("personsDeleted").asInt()).isGreaterThanOrEqualTo(1);
         assertThat(body.get("facesReset").asInt()).isGreaterThanOrEqualTo(1);
 
-        assertThat(personRepository.findById(person.getId())).isEmpty();
+        // restartPersonRecognition wipes every person globally - existsById (a plain JpaRepository
+        // method, unlike the @MainSpaceLimited findById override) needs no SecurityContext to run
+        // from this bare test thread.
+        assertThat(personRepository.existsById(person.getId())).isFalse();
+        assertThat(personRepository.count()).isZero();
         FaceEntity reloadedFace = faceRepository.findById(face.getId()).orElseThrow();
         assertThat(reloadedFace.getPerson()).isNull();
         assertThat(reloadedFace.getStatus()).isEqualTo(FaceStatus.NEW);

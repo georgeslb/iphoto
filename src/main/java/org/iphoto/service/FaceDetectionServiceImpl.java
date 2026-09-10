@@ -102,7 +102,7 @@ public class FaceDetectionServiceImpl implements FaceDetectionService {
                 personRepository.save(personEntity);
             });
         });
-        faceRepository.deleteByPhotoId(photo);
+        faceRepository.deleteByPhoto(photo);
 
         // photoCount must be recalculated AFTER the faces are actually gone (same reasoning as
         // FaceService.deleteFace).
@@ -119,6 +119,12 @@ public class FaceDetectionServiceImpl implements FaceDetectionService {
             try {
                 log.info("Starting face detection for photo: {}", photo.getId());
                 if (photo.getContentType() != null && photo.getContentType().startsWith("image")) {
+                    // ISOLATE_FACES is replayable (admin "Restart face extraction" button, stuck-task
+                    // reclaim, updateImageTaskToDo) - clear any faces from a previous run first so a
+                    // re-run REBUILDS this photo's faces instead of appending a second set (detection
+                    // only ever inserts below, it never reconciles against what's already there).
+                    // No-op on the first run: the photo has no faces yet.
+                    deleteFaces(photo);
                     this.detectAndSaveFaces(photo); // Pass user to helper method
                     task.setStatus(TaskStatus.COMPLETED);
                 } else {

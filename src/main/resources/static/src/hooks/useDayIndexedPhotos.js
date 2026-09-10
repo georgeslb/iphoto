@@ -13,27 +13,41 @@ export function resolveDayIndexTarget(effectivePath) {
   if (spaceMatch) return { type: 'space', albumId: null, spaceId: spaceMatch[1], personId: null };
   if (personMatch) return { type: 'person', albumId: null, spaceId: null, personId: personMatch[1] };
   if (effectivePath === '/garbage') return { type: 'garbage', albumId: null, spaceId: null, personId: null };
+  // Public share-link routes (/share/:userMd5/:name[/p/:photoId]) render SharedAlbumView. This
+  // App-level hook still runs on that route, but the album id isn't in the path (SharedAlbumView
+  // resolves it from /api/share/:md5/:name first), so there's nothing to target here - give it a
+  // no-fetch 'share' target rather than letting it fall through to the library default and fire
+  // /api/photos/days, which a ROLE_SHARE guest can't call. SharedAlbumView itself calls this hook
+  // a second time with an explicit { type: 'shareAlbum', albumId } once it has the id.
+  if (effectivePath.startsWith('/share/')) return { type: 'share', albumId: null, spaceId: null, personId: null };
   return { type: 'library', albumId: null, spaceId: null, personId: null };
 }
 
+// Returns null for targets with no day-index endpoint yet (the share route before its album id is
+// known) - callers must skip the fetch entirely when this is null.
 function daysUrl({ type, albumId, spaceId, personId }) {
   if (type === 'album') return `/api/albums/${albumId}/days`;
+  if (type === 'shareAlbum') return `/api/albums/share/${albumId}/days`;
   if (type === 'space') return `/api/photos/space/${spaceId}/days`;
   if (type === 'person') return `/api/faces/person/${personId}/days`;
   if (type === 'garbage') return '/api/photos/garbage/days';
+  if (type === 'share') return null;
   return '/api/photos/days';
 }
 
 function dayPhotosUrl({ type, albumId, spaceId, personId }, day, page) {
+  if (type === 'share') return null;
   const base = type === 'album'
     ? `/api/albums/${albumId}/photos/day/${day}`
-    : type === 'space'
-      ? `/api/photos/space/${spaceId}/day/${day}`
-      : type === 'person'
-        ? `/api/faces/person/${personId}/photos/day/${day}`
-        : type === 'garbage'
-          ? `/api/photos/garbage/day/${day}`
-          : `/api/photos/day/${day}`;
+    : type === 'shareAlbum'
+      ? `/api/albums/share/${albumId}/photos/day/${day}`
+      : type === 'space'
+        ? `/api/photos/space/${spaceId}/day/${day}`
+        : type === 'person'
+          ? `/api/faces/person/${personId}/photos/day/${day}`
+          : type === 'garbage'
+            ? `/api/photos/garbage/day/${day}`
+            : `/api/photos/day/${day}`;
   return `${base}?page=${page}&size=${PAGE_SIZE}`;
 }
 
@@ -52,20 +66,32 @@ function normalizePage(data) {
   return { content: data.content || [], isLast: data.last !== false };
 }
 
-// Day-index browsing for every photo-listing view (Library/Album/Space/Garbage/Person): fetch
-// every day that has a photo up front (cheap - just a count + cover per day), then lazily fetch
-// each day's actual photos (paginated, 100/page) only once that day's section scrolls into view.
-// Replaces the old flat, page-number-paginated usePhotoData.js hook entirely (deleted).
-export function useDayIndexedPhotos(effectivePath) {
+// Day-index browsing for every photo-listing view (Library/Album/Space/Garbage/Person, plus the
+// guest SharedAlbumView): fetch every day that has a photo up front (cheap - just a count + cover
+// per day), then lazily fetch each day's actual photos (paginated, 100/page) only once that day's
+// section scrolls into view. Replaces the old flat, page-number-paginated usePhotoData.js hook
+// entirely (deleted).
+//
+// `explicitTarget`, when given, overrides the path-derived target - SharedAlbumView uses it to
+// point at { type: 'shareAlbum', albumId } once it has resolved the share's album id (the id isn't
+// in the route path). Pass a value with a stable identity (useMemo it) - though the reset effect
+// keys on a derived string, not the object, so an unstable one won't loop.
+export function useDayIndexedPhotos(effectivePath, explicitTarget = null) {
   const [days, setDays] = useState([]);
   const [loadingDays, setLoadingDays] = useState(true);
   const [photosByDay, setPhotosByDay] = useState({});
   const [dayPageState, setDayPageState] = useState({});
 
   // Kept current every render (cheap, pure regex match) so loadDayPage/refreshDays can read the
-  // latest target without needing effectivePath in their own dependency arrays.
-  const targetRef = useRef(resolveDayIndexTarget(effectivePath));
-  targetRef.current = resolveDayIndexTarget(effectivePath);
+  // latest target without needing it in their own dependency arrays.
+  const resolveTarget = () => explicitTarget || resolveDayIndexTarget(effectivePath);
+  const targetRef = useRef(resolveTarget());
+  targetRef.current = resolveTarget();
+
+  // Stable string identity for the current target - drives the reset-and-refetch effect below in
+  // place of the raw effectivePath (which doesn't change when only explicitTarget does).
+  const t = targetRef.current;
+  const targetKey = `${t.type}:${t.albumId || t.spaceId || t.personId || ''}`;
 
   // Mirrors usePhotoData.js's photosRef idiom: loadDayPage reads this instead of closing over
   // dayPageState, so its identity stays stable across renders.
@@ -73,9 +99,16 @@ export function useDayIndexedPhotos(effectivePath) {
   useEffect(() => { dayPageStateRef.current = dayPageState; }, [dayPageState]);
 
   const refreshDays = useCallback(async () => {
+    const url = daysUrl(targetRef.current);
+    if (!url) {
+      // Share-link route: SharedAlbumView owns the day index. Nothing consumes this hook there.
+      setDays([]);
+      setLoadingDays(false);
+      return;
+    }
     setLoadingDays(true);
     try {
-      const res = await fetch(daysUrl(targetRef.current));
+      const res = await fetch(url);
       const data = await res.json();
       setDays(Array.isArray(data) ? data : []);
     } catch (err) {
@@ -90,19 +123,22 @@ export function useDayIndexedPhotos(effectivePath) {
     setPhotosByDay({});
     setDayPageState({});
     refreshDays();
-    // refreshDays is stable (reads targetRef instead of closing over effectivePath); this effect
-    // should only re-run because effectivePath changed.
+    // refreshDays is stable (reads targetRef, not a closure); this effect should only re-run when
+    // the target itself changes - path navigation or SharedAlbumView resolving its album id.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectivePath]);
+  }, [targetKey]);
 
   const loadDayPage = useCallback(async (day) => {
     const current = dayPageStateRef.current[day];
     if (current?.loading || current?.isLast) return;
     const page = current?.nextPage ?? 0;
 
+    const url = dayPhotosUrl(targetRef.current, day, page);
+    if (!url) return; // share-link route - no per-day endpoint here (see resolveDayIndexTarget)
+
     setDayPageState(prev => ({ ...prev, [day]: { ...prev[day], loading: true } }));
     try {
-      const res = await fetch(dayPhotosUrl(targetRef.current, day, page));
+      const res = await fetch(url);
       const data = await res.json();
       const { content, isLast } = normalizePage(data);
       setPhotosByDay(prev => ({ ...prev, [day]: [...(prev[day] || []), ...content] }));
@@ -126,8 +162,10 @@ export function useDayIndexedPhotos(effectivePath) {
     await refreshDays();
     const loadedDays = Object.keys(dayPageStateRef.current);
     await Promise.all(loadedDays.map(async (day) => {
+      const url = dayPhotosUrl(targetRef.current, day, 0);
+      if (!url) return;
       try {
-        const res = await fetch(dayPhotosUrl(targetRef.current, day, 0));
+        const res = await fetch(url);
         const data = await res.json();
         const { content, isLast } = normalizePage(data);
         setPhotosByDay(prev => ({ ...prev, [day]: content }));

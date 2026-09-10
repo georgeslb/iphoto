@@ -65,7 +65,7 @@ public class AlbumServiceImpl implements AlbumService {
     @Override
     @Transactional(readOnly = true)
     public AlbumDTO getAlbumById(UUID id) {
-        return albumRepository.findById(id)
+        return albumRepository.findByIdInMainSpace(id)
                 .map(this::updateAlbumAndGetDto) // Pass user to updateAlbumAndGetDto
                 .orElseThrow(() -> new NoSuchElementException("Album not found with ID: " + id));
     }
@@ -105,7 +105,7 @@ public class AlbumServiceImpl implements AlbumService {
     @Transactional
     public AlbumDTO addPhotosToAlbum(UUID albumId, List<UUID> photoIds)  {
         AlbumEntity album = getAlbum(albumId);
-        Set<PhotoEntity> photosToAdd = photoRepository.findByIdIn(photoIds);
+        Set<PhotoEntity> photosToAdd = ownedByAlbumOwner(album, photoRepository.findByIdIn(photoIds));
         checkPhotosAreInMainSpace(photosToAdd);
         album.getPhotos().addAll(photosToAdd);
         AlbumDTO dto = updateAlbumAndGetDto(album);
@@ -120,7 +120,7 @@ public class AlbumServiceImpl implements AlbumService {
     public AlbumDTO removePhotosFromAlbum(UUID albumId, List<UUID> photoIds) {
         final AlbumEntity album = getAlbum(albumId);
 
-        Set<PhotoEntity> selectedPhotos = photoRepository.findByIdIn(photoIds);
+        Set<PhotoEntity> selectedPhotos = ownedByAlbumOwner(album, photoRepository.findByIdIn(photoIds));
         checkPhotosAreInMainSpace(selectedPhotos);
         selectedPhotos.forEach(album.getPhotos()::remove);
         if (album.getCoverPhoto() != null && photoIds.stream().anyMatch(photoId -> photoId.equals(album.getCoverPhoto().getId()))) {
@@ -137,8 +137,21 @@ public class AlbumServiceImpl implements AlbumService {
         }
     }
 
+    // getAlbum above is @MainSpaceLimited so the album belongs to the caller, but findByIdIn on
+    // the photo ids is NOT scoped - silently drop any id that isn't owned by the same user as the
+    // album (an album only ever references its owner's own Main-Space photos), so a caller can't
+    // splice another user's photos into their album by passing arbitrary ids. A no-op for the
+    // internal callers (upload/immich import/photo deletion), which only ever pass the owner's
+    // own photos.
+    private Set<PhotoEntity> ownedByAlbumOwner(AlbumEntity album, Set<PhotoEntity> photos) {
+        UUID ownerId = album.getSpace().getUser().getId();
+        return photos.stream()
+                .filter(p -> p.getSpace().getUser().getId().equals(ownerId))
+                .collect(Collectors.toSet());
+    }
+
     private AlbumEntity getAlbum(UUID albumId) {
-        return albumRepository.findById(albumId)
+        return albumRepository.findByIdInMainSpace(albumId)
                 .orElseThrow(() -> new NoSuchElementException("Album not found with ID: " + albumId));
     }
 
@@ -180,6 +193,23 @@ public class AlbumServiceImpl implements AlbumService {
         return photoRepository.findByIdAndAlbums_IdAndIsGarbageFalse(photoId, albumId)
                 .map(photoMapper::photoEntityToPhoto)
                 .orElseThrow(() -> new NoSuchElementException("Photo not found in album: " + photoId));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<DayBucketDTO> getAlbumDailyPhotoCountsForShare(UUID albumId) {
+        AlbumEntity album = getAlbumIgnoringSpace(albumId);
+        // Same cache key/entry as getAlbumDailyPhotoCounts - it's keyed by albumId and the counts
+        // are identical whichever door the caller came through.
+        return dayIndexCache.getAlbumDayCounts(albumId, () -> DayBucketDTO.from(photoRepository.countDailyPhotosByAlbums(Set.of(album))));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Page<Photo> getAlbumPhotosForDayForShare(UUID albumId, LocalDate day, Pageable pageable) {
+        AlbumEntity album = getAlbumIgnoringSpace(albumId);
+        return photoRepository.findByIsGarbageFalseAndAlbumsAndGroupedDay(Set.of(album), day, pageable)
+                .map(photoMapper::photoEntityToPhoto);
     }
 
     private AlbumEntity getAlbumIgnoringSpace(UUID albumId) {

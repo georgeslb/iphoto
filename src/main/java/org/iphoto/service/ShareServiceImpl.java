@@ -36,7 +36,7 @@ public class ShareServiceImpl implements ShareService {
             throw new IllegalArgumentException("Share with name '" + request.name() + "' already exists for this user.");
         }
 
-        return  albumRepository.findById(request.albumId()) // Ensure album belongs to the user
+        return  albumRepository.findByIdInMainSpace(request.albumId()) // Ensure album belongs to the user
                 .map(album -> {
                     ShareEntity share =
                             ShareEntity.builder().space(spaceService.getDefaultSpaceForUser(user)).name(request.name())
@@ -98,7 +98,7 @@ public class ShareServiceImpl implements ShareService {
 
     @Override
     public ShareResponse getShareById(UserEntity user, UUID id) {
-        return shareRepository.findById(id)
+        return shareRepository.findByIdInMainSpace(id)
                 .map(this::buildShareResponse)
                 .orElseThrow(() -> new NoSuchElementException("Share link not found or does not belong to the user."));
     }
@@ -106,7 +106,7 @@ public class ShareServiceImpl implements ShareService {
     @Override
     @Transactional
     public void deleteShare(UserEntity user, UUID id) {
-        ShareEntity share = shareRepository.findById(id)
+        ShareEntity share = shareRepository.findByIdInMainSpace(id)
                 .orElseThrow(() -> new NoSuchElementException("Share link not found or does not belong to the user."));
         shareRepository.delete(share);
     }
@@ -114,7 +114,7 @@ public class ShareServiceImpl implements ShareService {
     @Override
     @Transactional
     public ShareResponse updateSharePassword(UserEntity user, UUID id, String newPassword) {
-        ShareEntity share = shareRepository.findById(id)
+        ShareEntity share = shareRepository.findByIdInMainSpace(id)
                 .orElseThrow(() -> new NoSuchElementException("Share link not found or does not belong to the user."));
         share.setPaswword(encryptPassword(newPassword));
         return buildShareResponse(shareRepository.save(share));

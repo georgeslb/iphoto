@@ -80,7 +80,7 @@ class PhotoDeletionServiceTest extends AbstractIntegrationTest {
         // @MainSpaceLimited too, so this also needs runAsAdmin's authenticated context.
         int remainingAlbumPhotos = transactionTemplate.execute(status -> {
             try {
-                return runAsAdmin(() -> albumRepository.findById(album.getId()).orElseThrow().getPhotos().size());
+                return runAsAdmin(() -> albumRepository.findByIdInMainSpace(album.getId()).orElseThrow().getPhotos().size());
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }

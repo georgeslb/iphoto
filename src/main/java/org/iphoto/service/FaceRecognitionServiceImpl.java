@@ -236,7 +236,7 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
                         // normal existing-person path instead of seeding a duplicate cluster.
                         UUID newPersonId = faceRepository.findById(promotedClusterFaces.get().getFirst().getId())
                                 .orElseThrow().getPerson().getId();
-                        personRepository.findById(newPersonId).ifPresent(persons::add);
+                        personRepository.findByIdInMainSpace(newPersonId).ifPresent(persons::add);
                         bucketsByPerson.put(newPersonId, personEmbeddingBucketRepository.findByPersonId(newPersonId));
                     } catch (Exception e) {
                         log.error("could not create a new person for user {} from a cluster of {} face(s)",

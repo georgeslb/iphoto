@@ -119,24 +119,6 @@ function App() {
     handleCloseLightbox,
   } = useAppNavigationAndSelection(effectivePhotos, currentDuplicateGroup, backgroundLocation, effectivePath, saveScrollPosition);
 
-  let [photoSelection, setPhotoSelection] = useState({
-    menuSelection: {
-      canUpload: false,
-      canCreateAlbum: false,
-      canDeleteAlbum: false,
-      canCreateSpace: false,
-      canDeleteSpace: false,
-      canPermanentlyDeleteSpace: false,
-      canRestoreSpace: false,
-      canAddAAShareLink: false,
-    },
-    canBeDeleted: false, canBePermanentlyDeleted: false, canBeMovedToMain: false,
-    canBeMovedToAlbum: false, canBeRemovedFromAlbum: false, canBeModified: false,
-    canBeSetAsCover: false, canBeRestored: false
-  });
-
-  useMenuSelection(effectivePath, currentSpaceId, currentAlbumId, isLightboxOpen, selectedAlbumIds, selectedSpaceIds, selectedIds, selectedPhoto, setPhotoSelection);
-
   useEffect(() => {
     // Reset both selections when the path changes
     setSelectedIds([]);
@@ -193,6 +175,21 @@ function App() {
     handleCreateSpace,
     handleDeleteSpaces,
   } = useSpaceManagement(selectedMenu, setSelectedSpaceIds);
+
+  // Header/Lightbox button visibility - pure client-side derivation now (was POST
+  // /api/photos/selected). Depends on `spaces` for the current space's MAIN-or-not flag, so it
+  // sits below useSpaceManagement.
+  const photoSelection = useMenuSelection({
+    pathname: effectivePath,
+    currentSpaceId,
+    currentAlbumId,
+    isLightboxOpen,
+    selectedAlbumIds,
+    selectedSpaceIds,
+    selectedIds,
+    selectedPhoto,
+    spaces,
+  });
 
 
   /* Define the actual refreshAndMaintainScroll function using useCallback */

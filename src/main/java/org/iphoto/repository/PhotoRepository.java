@@ -1,5 +1,6 @@
 package org.iphoto.repository;
 
+import org.iphoto.configuration.MainSpaceLimited;
 import org.iphoto.entities.AlbumEntity;
 import org.iphoto.entities.PersonEntity;
 import org.iphoto.entities.PhotoEntity;
@@ -91,6 +92,7 @@ public interface PhotoRepository extends JpaRepository<PhotoEntity, UUID> {
 
     // Person's day-index equivalent - deliberately no isGarbage filter, matching findByFacesPerson
     // above (Person view has never excluded garbage photos).
+    @MainSpaceLimited
     Page<PhotoEntity> findByFacesPersonAndGroupedDay(PersonEntity person, LocalDate groupedDay, Pageable pageable);
 
     // Backs PersonRecognitionServiceImpl.recalculatePhotoCount - a photo with two+ faces belonging

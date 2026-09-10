@@ -24,7 +24,7 @@ public interface FaceService {
     // any photo id, guessable or not.
     List<FaceDTO> getFacesForPhoto(UserEntity user, UUID photoId);
 
-    Page<PersonDTO> getPersons(Pageable pageable);
+    Page<PersonDTO> getPersons(UserEntity currentUser, Pageable pageable);
 
     PersonDTO getPerson(UUID id);
 
@@ -55,14 +55,14 @@ public interface FaceService {
 
     Optional<FaceEntity> findById(UserEntity user, UUID id);
 
-    void deleteFace(UUID id);
+    void deleteFace(UserEntity user, UUID id);
 
     void unlinkPersonFromPhoto(UUID personId, UUID photoId);
 
     // Unlinks a single face from its current person, keeping the face itself (its detection box,
     // thumbnail and embedding are untouched) — for when one specific photo/face was
     // misattributed, without wanting to lose the face entirely (that's the separate deleteFace).
-    void unlinkFaceFromPerson(UUID faceId);
+    void unlinkFaceFromPerson(UserEntity user, UUID faceId);
 
     // Sets/changes which person a single face maps to, resolved by name — the Lightbox "Faces
     // Detected" rename affordance. Semantics (confirmed with the user):
@@ -74,7 +74,7 @@ public interface FaceService {
     //     ("merge into {existing person}?"). With confirmMerge, moves ONLY this one face to that
     //     existing person — the rest of its previous person's faces are untouched (a full
     //     person-to-person merge is the separate, explicit /persons/merge endpoint).
-    FaceDTO setFacePerson(UUID faceId, String name, boolean confirmMerge);
+    FaceDTO setFacePerson(UserEntity user, UUID faceId, String name, boolean confirmMerge);
 
     // Merges two people (the Persons page multi-select action) — thin delegate to
     // PersonRecognitionService.mergePersons so FaceController's dependencies stay unchanged.

@@ -218,7 +218,7 @@ public class ImmichAlbumImportServiceImpl implements ImmichAlbumImportService {
                 log.warn("Skipping unreadable IMPORT_IMMICH_ALBUM task {} payload", task.getId(), e);
                 continue;
             }
-            Integer photoCount = albumRepository.findById(task.getPhotoId()).map(AlbumEntity::getPhotoCount).orElse(null);
+            Integer photoCount = albumRepository.findByIdInMainSpace(task.getPhotoId()).map(AlbumEntity::getPhotoCount).orElse(null);
             result.add(new ImmichAlbumImportStatusDTO(
                     payload.get("immichAlbumId"), payload.get("albumName"), task.getPhotoId(),
                     task.getStatus(), photoCount, task.getErrorMessage(), task.getUpdatedAt()));
@@ -247,7 +247,7 @@ public class ImmichAlbumImportServiceImpl implements ImmichAlbumImportService {
         }
         UUID resolvedAlbumId = iphotoAlbumId;
 
-        AlbumEntity album = albumRepository.findById(resolvedAlbumId)
+        AlbumEntity album = albumRepository.findByIdInMainSpace(resolvedAlbumId)
                 .orElseThrow(() -> new NoSuchElementException("imported album " + resolvedAlbumId + " no longer exists"));
         String userMd5 = ShareService.computeUserMd5(user.getId());
         String shareName = resolveShareName(link, album, userMd5);

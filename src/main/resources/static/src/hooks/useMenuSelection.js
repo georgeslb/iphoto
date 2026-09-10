@@ -1,69 +1,70 @@
-import { useEffect, useCallback } from 'react';
+import { useMemo } from 'react';
+import { computeSelectionCapabilities } from '../utils/selectionCapabilities';
 
-export function useMenuSelection(pathname, spaceId, albumId, isLightboxOpen, selectedAlbumIds, selectedSpaceIds, selectedIds, selectedPhoto
-                                 , setPhotoSelection) {
-  const fetchSelection = useCallback(async () => {
-    // Guests on a /share/** route have no header/menu at all (see SharedAlbumView.jsx) — there's
-    // no selection UI to compute capability flags for, and /api/photos/selected requires a real
-    // authenticated user (it 500s for a guest's ROLE_SHARE session), so just skip it entirely.
-    if (pathname.startsWith('/share')) {
-      return;
-    }
-
+// Header/Lightbox action-button visibility. Was a POST /api/photos/selected round-trip on every
+// selection/view change; now pure client-side derivation (the mutating endpoints enforce their
+// own authorization, so these flags are cosmetic). Returns the same shape the endpoint did:
+// { menuSelection: {...}, canBeDeleted, canBeMovedToMain, ... }.
+export function useMenuSelection({
+  pathname,
+  currentSpaceId,
+  currentAlbumId,
+  isLightboxOpen,
+  selectedAlbumIds = [],
+  selectedSpaceIds = [],
+  selectedIds = [],
+  selectedPhoto = null,
+  spaces = [],
+}) {
+  return useMemo(() => {
+    // Same pathname -> menu mapping the old useMenuSelection fetch used.
     let menu = 'library';
-    let reqAlbumIds = [];
-    let reqSpaceIds = [];
-
     if (pathname === '/garbage') {
       menu = 'garbage';
-      reqSpaceIds = selectedSpaceIds;
     } else if (pathname.startsWith('/albums')) {
-      if (albumId) {
-        menu = 'album';
-        reqAlbumIds = [albumId];
-      } else {
-        menu = 'albums';
-        reqAlbumIds = selectedAlbumIds;
-      }
+      menu = currentAlbumId ? 'album' : 'albums';
     } else if (pathname.startsWith('/spaces')) {
-      if (spaceId) {
-        menu = 'space';
-        reqSpaceIds = [spaceId];
-      } else {
-        menu = 'spaces';
-        reqSpaceIds = selectedSpaceIds;
-      }
+      menu = currentSpaceId ? 'space' : 'spaces';
     }
-
     if (isLightboxOpen) {
       menu = 'lightbox';
     }
 
-    const menuSelectionRequest = {
-      menu: menu,
-      spaceIds: reqSpaceIds || [],
-      albumIds: reqAlbumIds || [],
-    };
+    const currentSpace = menu === 'space'
+      ? spaces.find(s => s.id === currentSpaceId)
+      : null;
+    // SpaceDTO.albumAllowed is true iff the space is the MAIN space (see SpaceServiceImpl).
+    const currentSpaceIsMain = currentSpace ? !!currentSpace.albumAllowed : null;
 
-    const request = {
-      menuSelectionRequest: menuSelectionRequest,
-      photosId: selectedPhoto ? [selectedPhoto.id] : selectedIds,
-    };
+    const albumTargeted =
+      (menu === 'album' && !!currentAlbumId) ||
+      (menu === 'albums' && selectedAlbumIds.length === 1);
 
-    try {
-      const res = await fetch('/api/photos/selected', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(request),
-      });
-      const data = await res.json();
-      setPhotoSelection(data);
-    } catch (error) {
-      console.error('Error fetching menu selection:', error);
-    }
-  }, [pathname, spaceId, albumId, isLightboxOpen, selectedAlbumIds, selectedSpaceIds, selectedIds, selectedPhoto, setPhotoSelection]);
+    const selectedCount = selectedPhoto ? 1 : selectedIds.length;
+    const singleSelectedInMainSpace =
+      menu === 'lightbox' && selectedPhoto
+        ? (selectedPhoto.inMainSpace ?? null)
+        : null;
 
-  useEffect(() => {
-    fetchSelection();
-  }, [fetchSelection]);
+    // Does the current list's row selection contain something the matching bulk action can act on?
+    // Drives the Header's "Delete Album(s)" / "Delete Selected Spaces" / garbage restore+purge
+    // buttons (all rendered inside Header's `selectionMode` block, acting on the selected ids).
+    const hasAlbumSelected = menu === 'albums' && selectedAlbumIds.length > 0;
+    const mainSpaceIds = new Set(spaces.filter(s => s.albumAllowed).map(s => s.id));
+    const hasNonMainSpaceSelected =
+      menu === 'spaces' && selectedSpaceIds.some(id => !mainSpaceIds.has(id));
+    // Trashed spaces on /garbage are never the MAIN space (it can't be sent to garbage).
+    const hasGarbageSpaceSelected = menu === 'garbage' && selectedSpaceIds.length > 0;
+
+    return computeSelectionCapabilities({
+      menu,
+      currentSpaceIsMain,
+      albumTargeted,
+      selectedCount,
+      singleSelectedInMainSpace,
+      hasAlbumSelected,
+      hasNonMainSpaceSelected,
+      hasGarbageSpaceSelected,
+    });
+  }, [pathname, currentSpaceId, currentAlbumId, isLightboxOpen, selectedAlbumIds, selectedSpaceIds, selectedIds, selectedPhoto, spaces]);
 }

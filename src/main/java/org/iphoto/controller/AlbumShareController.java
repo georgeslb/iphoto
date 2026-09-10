@@ -2,6 +2,7 @@ package org.iphoto.controller;
 
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.UserEntity;
+import org.iphoto.model.DayBucketDTO;
 import org.iphoto.model.Photo;
 import org.iphoto.repository.UserRepository;
 import org.iphoto.service.AlbumService;
@@ -16,6 +17,8 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.LocalDate;
+import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.UUID;
 
@@ -58,6 +61,28 @@ public class AlbumShareController extends AbstractBaseController {
         try {
             Photo photo = albumService.getAlbumPhotoForShare(id, photoId);
             return ResponseEntity.ok(photo);
+        } catch (NoSuchElementException e) {
+            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+        }
+    }
+
+    // Day-index browsing for the guest view - mirrors AlbumController's /{id}/days and
+    // /{id}/photos/day/{day}, so SharedAlbumView drives the same lazy per-day timeline as every
+    // authenticated photo-listing view. ShareAccessFilter gates both against the guest's share.
+    @GetMapping("/{id}/days")
+    public ResponseEntity<List<DayBucketDTO>> getAlbumDays(@PathVariable UUID id) {
+        try {
+            return ResponseEntity.ok(albumService.getAlbumDailyPhotoCountsForShare(id));
+        } catch (NoSuchElementException e) {
+            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+        }
+    }
+
+    @GetMapping("/{id}/photos/day/{day}")
+    public ResponseEntity<Page<Photo>> getAlbumPhotosForDay(@PathVariable UUID id, @PathVariable String day,
+            @PageableDefault(size = 100, sort = "dateTaken", direction = Sort.Direction.DESC) Pageable pageable) {
+        try {
+            return ResponseEntity.ok(albumService.getAlbumPhotosForDayForShare(id, LocalDate.parse(day), pageable));
         } catch (NoSuchElementException e) {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
         }

@@ -54,7 +54,11 @@ public interface FaceRepository extends JpaRepository<FaceEntity, UUID> {
 
     List<FaceEntity> findByPersonIdAndPhotoId(UUID personId, UUID photoId);
 
-    void deleteByPhotoId(PhotoEntity photo);
+    // Compares the `photo` association by instance (a plain derived delete: Spring Data selects the
+    // matching faces then removes them one by one) - FK-safe because Hibernate's flush orders the
+    // UPDATE people SET cover_face_id = null that FaceDetectionService#deleteFaces issues first,
+    // ahead of the face DELETEs, so fk_people_cover_face_id (RESTRICT, no ON DELETE) never trips.
+    void deleteByPhoto(PhotoEntity photo);
 
     // Admin > Tasks page "Restart person extraction" button (AdminService#restartPersonRecognition):
     // detaches every face from its person and flips it back to NEW so the next FACE_RECOGNITION run

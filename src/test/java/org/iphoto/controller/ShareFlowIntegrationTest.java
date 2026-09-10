@@ -68,7 +68,7 @@ public class ShareFlowIntegrationTest extends AbstractIntegrationTest {
                         .content(objectMapper.writeValueAsString(new AlbumPhotoRequest(List.of(photoId)))))
                 .andExpect(status().isOk());
 
-        AlbumEntity persistedAlbum = runAsAdmin(() -> albumRepository.findById(albumId).orElseThrow());
+        AlbumEntity persistedAlbum = runAsAdmin(() -> albumRepository.findByIdInMainSpace(albumId).orElseThrow());
         long photosInAlbum = runAsAdmin(() -> photoRepository.countByIsGarbageFalseAndAlbums(Set.of(persistedAlbum)));
         assertThat(photosInAlbum).isEqualTo(1);
 
@@ -130,5 +130,87 @@ public class ShareFlowIntegrationTest extends AbstractIntegrationTest {
         mockMvc.perform(get("/api/photos/{id}/thumbnail", photoId)
                         .session(sessionAfterEstablish))
                 .andExpect(status().isOk());
+
+        // Day-index browsing on the same ROLE_SHARE session - the endpoints SharedAlbumView now
+        // drives instead of a flat page-by-page scroll.
+        MvcResult guestDaysResult = mockMvc.perform(get("/api/albums/share/{id}/days", resolvedAlbumId)
+                        .session(sessionAfterEstablish))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode guestDays = objectMapper.readTree(guestDaysResult.getResponse().getContentAsString());
+        assertThat(guestDays).hasSize(1);
+        String day = guestDays.get(0).get("day").asText();
+
+        MvcResult guestDayPhotosResult = mockMvc.perform(get("/api/albums/share/{id}/photos/day/{day}", resolvedAlbumId, day)
+                        .session(sessionAfterEstablish))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode guestDayPhotos = objectMapper.readTree(guestDayPhotosResult.getResponse().getContentAsString());
+        assertThat(guestDayPhotos.get("content")).hasSize(1);
+        assertThat(guestDayPhotos.get("content").get(0).get("id").asText()).isEqualTo(photoId.toString());
+    }
+
+    // ShareAccessFilter gates the new /days and /photos/day/{day} tails the same as the rest of
+    // /api/albums/share/**: a guest authenticated for one album must not reach another album's
+    // day index by swapping the id in the URL.
+    @Test
+    void guestCannotReachADifferentAlbumsDayIndexThroughTheShareEndpoints() throws Exception {
+        MockHttpSession adminSession = loginAsAdmin();
+        UUID spaceId = createSpace(adminSession, "share-days-space-" + UUID.randomUUID());
+        UUID photoId = uploadPhoto(adminSession, spaceId);
+        mockMvc.perform(post("/api/photos/main").session(adminSession).contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(List.of(photoId))))
+                .andExpect(status().isOk());
+
+        UUID sharedAlbumId = createAlbumWithPhoto(adminSession, "shared-album-" + UUID.randomUUID(), photoId);
+        UUID otherAlbumId = createAlbumWithPhoto(adminSession, "other-album-" + UUID.randomUUID(), photoId);
+
+        String shareName = "share-days-link-" + UUID.randomUUID();
+        mockMvc.perform(post("/api/share").session(adminSession).contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new ShareRequest(shareName, 7, null, sharedAlbumId))))
+                .andExpect(status().isCreated());
+
+        JsonNode users = objectMapper.readTree(mockMvc.perform(get("/api/users").session(adminSession))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        UUID adminUserId = null;
+        for (JsonNode user : users) {
+            if ("admin".equals(user.get("username").asText())) {
+                adminUserId = UUID.fromString(user.get("id").asText());
+                break;
+            }
+        }
+        String userMd5 = ShareService.computeUserMd5(adminUserId);
+
+        MockHttpSession guestSession = new MockHttpSession();
+        MvcResult statusResult = mockMvc.perform(get("/api/share/{userMd5}/{name}", userMd5, shareName)
+                        .session(guestSession))
+                .andExpect(status().isOk())
+                .andReturn();
+        MockHttpSession established = (MockHttpSession) statusResult.getRequest().getSession(false);
+
+        // Its own album's day index: allowed.
+        mockMvc.perform(get("/api/albums/share/{id}/days", sharedAlbumId).session(established))
+                .andExpect(status().isOk());
+        // A different album's day index / day photos: blocked by ShareAccessFilter.
+        mockMvc.perform(get("/api/albums/share/{id}/days", otherAlbumId).session(established))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/albums/share/{id}/photos/day/{day}", otherAlbumId, "2024-01-01").session(established))
+                .andExpect(status().isForbidden());
+    }
+
+    private UUID createAlbumWithPhoto(MockHttpSession adminSession, String name, UUID photoId) throws Exception {
+        MvcResult albumResult = mockMvc.perform(post("/api/albums")
+                        .session(adminSession)
+                        .contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new AlbumCreateRequest(name, null, null))))
+                .andExpect(status().isCreated())
+                .andReturn();
+        UUID albumId = UUID.fromString(objectMapper.readTree(albumResult.getResponse().getContentAsString()).get("id").asText());
+        mockMvc.perform(post("/api/albums/{id}/photos", albumId)
+                        .session(adminSession)
+                        .contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new AlbumPhotoRequest(List.of(photoId)))))
+                .andExpect(status().isOk());
+        return albumId;
     }
 }

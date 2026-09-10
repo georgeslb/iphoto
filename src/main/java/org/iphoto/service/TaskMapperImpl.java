@@ -27,7 +27,7 @@ public class TaskMapperImpl implements TaskMapper {
     public Set<TaskEntity> updateTasksToAction(Action action, UUID photoId) {
         switch (action) {
             case UPLOADED_PHOTO_TO_MAIN  -> {
-
+                //TODO no duplication nor face detection on adding to no main space.
             }
             case ON_EDIT_PHOTO_ACTION, ON_CREATE_PHOTO_ACTION  -> {
                 taskManagerService.createTaskEntity(TaskType.HASH_IMAGE, photoId, null,  null);

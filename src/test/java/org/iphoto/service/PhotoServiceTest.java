@@ -5,8 +5,6 @@ import org.iphoto.AbstractIntegrationTest;
 import org.iphoto.entities.*;
 import org.iphoto.model.Photo;
 import org.iphoto.model.request.CheckHashesRequest;
-import org.iphoto.model.request.MenuSelectionRequest;
-import org.iphoto.model.request.PhotoSelectionRequest;
 import org.iphoto.model.request.UpdatePhotoDateRequest;
 import org.iphoto.repository.*;
 import org.iphoto.util.EmbeddingCodec;
@@ -93,7 +91,8 @@ class PhotoServiceTest extends AbstractIntegrationTest {
         mockMvc.perform(post("/api/photos/main").session(session).contentType(APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(List.of(photoId))))
                 .andExpect(status().isOk());
-        photoService.updatePhotoDate(photoId, LocalDateTime.now().minusMonths(1));
+        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
+        photoService.updatePhotoDate(admin, photoId, LocalDateTime.now().minusMonths(1));
 
         MvcResult result = mockMvc.perform(get("/api/photos/memories").session(session))
                 .andExpect(status().isOk())
@@ -217,7 +216,7 @@ class PhotoServiceTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void getAlbumsByPhotoAndGetSelectionAndCheckExistingHashesWorkThroughTheirEndpoints() throws Exception {
+    void getAlbumsByPhotoAndCheckExistingHashesWorkThroughTheirEndpoints() throws Exception {
         MockHttpSession session = loginAsAdmin();
         UUID spaceId = createSpace(session, "Misc-" + UUID.randomUUID());
         UUID photoId = uploadPhoto(session, spaceId);
@@ -234,15 +233,6 @@ class PhotoServiceTest extends AbstractIntegrationTest {
                 .andReturn();
         assertThat(objectMapper.readTree(albumsResult.getResponse().getContentAsString()))
                 .anyMatch(a -> a.get("id").asText().equals(albumId.toString()));
-
-        MvcResult selectionResult = mockMvc.perform(post("/api/photos/selected").session(session).contentType(APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(new PhotoSelectionRequest(new MenuSelectionRequest("lightbox", List.of(), List.of()), List.of(photoId)))))
-                .andExpect(status().isOk())
-                .andReturn();
-        JsonNode selection = objectMapper.readTree(selectionResult.getResponse().getContentAsString());
-        assertThat(selection.get("canBeModified").asBoolean()).isTrue();
-        assertThat(selection.get("canEditDate").asBoolean()).isTrue();
-        assertThat(selection.get("canDownload").asBoolean()).isTrue();
 
         String hash = photoRepository.findById(photoId).orElseThrow().getFileHash();
         MvcResult hashesResult = mockMvc.perform(post("/api/photos/check-hashes").session(session).contentType(APPLICATION_JSON)
@@ -285,7 +275,7 @@ class PhotoServiceTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void findByPersonAndPersonDailyPhotoCountsAndPersonPhotosForDayFindThePhotoThroughItsFace() {
+    void findByPersonAndPersonDailyPhotoCountsAndPersonPhotosForDayFindThePhotoThroughItsFace() throws Exception {
         UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
         SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
         String seed = UUID.randomUUID().toString();
@@ -304,7 +294,11 @@ class PhotoServiceTest extends AbstractIntegrationTest {
 
         assertThat(photoService.getPersonDailyPhotoCounts(person)).anyMatch(d -> d.day().equals(java.time.LocalDate.of(2024, 8, 1)));
 
-        Page<Photo> photosForDay = photoService.getPersonPhotosForDay(person, java.time.LocalDate.of(2024, 8, 1), Pageable.ofSize(10));
+        // getPersonPhotosForDay -> PhotoRepository.findByFacesPersonAndGroupedDay is @MainSpaceLimited
+        // now; a direct call from this bare test thread needs a principal to resolve a space from.
+        // The fixture person lives in admin's own MAIN space, so runAsAdmin filters to the right set.
+        Page<Photo> photosForDay = runAsAdmin(() ->
+                photoService.getPersonPhotosForDay(person, java.time.LocalDate.of(2024, 8, 1), Pageable.ofSize(10)));
         assertThat(photosForDay.getContent()).anyMatch(p -> p.id().equals(photo.getId().toString()));
     }
 

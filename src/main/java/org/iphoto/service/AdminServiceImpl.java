@@ -11,10 +11,12 @@ import org.iphoto.model.StorageMigrationSummaryDTO;
 import org.iphoto.model.TaskAdminDTO;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.TaskType;
+import org.iphoto.repository.DuplicateRepository;
 import org.iphoto.repository.FaceRepository;
 import org.iphoto.repository.PersonEmbeddingBucketRepository;
 import org.iphoto.repository.PersonMergeSuggestionRepository;
 import org.iphoto.repository.PersonRepository;
+import org.iphoto.repository.PhotoDuplicateRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.repository.TaskRepository;
 import org.springframework.data.domain.Page;
@@ -47,6 +49,8 @@ public class AdminServiceImpl implements AdminService {
     private final PersonRepository personRepository;
     private final PersonEmbeddingBucketRepository personEmbeddingBucketRepository;
     private final PersonMergeSuggestionRepository personMergeSuggestionRepository;
+    private final PhotoDuplicateRepository photoDuplicateRepository;
+    private final DuplicateRepository duplicateRepository;
 
     // Exactly one ACTIVATE_HEAVY_TASKS row ever exists - updated in place on every toggle, not a
     // new row per click, so isHeavyTasksActivated never has to reason about "which one is current."
@@ -164,6 +168,14 @@ public class AdminServiceImpl implements AdminService {
     @Override
     @Transactional
     public int restartDuplicationDetection() {
+        // DuplicationService#checkDuplication short-circuits (task -> COMPLETED, no scan) the moment
+        // a photo already has any duplicate_photos row, so without tearing the groups down first a
+        // re-queued CHECK_DUPLICATION would only ever re-examine photos that currently have NO
+        // duplicates. Wipe children (duplicate_photos) then parents (duplicates) so every re-queued
+        // task rebuilds from scratch. Both deletes are global and unscoped - same "admin rebuilds
+        // everything for every user" intent as restartPersonRecognition's deleteAllInBatch calls.
+        photoDuplicateRepository.deleteAllInBatch();
+        duplicateRepository.deleteAllInBatch();
         return taskRepository.resetAllToPendingByTaskType(TaskType.CHECK_DUPLICATION, LocalDateTime.now());
     }
 

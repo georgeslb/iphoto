@@ -2,13 +2,11 @@ package org.iphoto.service;
 
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.collections4.CollectionUtils;
 import org.iphoto.entities.*;
 import org.iphoto.exception.*;
 import org.iphoto.mappers.PhotoMapper;
 import org.iphoto.model.*;
 import org.iphoto.model.request.PhotoEditRequest;
-import org.iphoto.model.request.PhotoSelectionRequest;
 import org.iphoto.properties.IPhotoProperties;
 import org.iphoto.repository.AlbumRepository;
 import org.iphoto.repository.PhotoRepository;
@@ -49,7 +47,6 @@ public class PhotoServiceImpl implements PhotoService {
     private final EditPhotoService editPhotoService;
     private final AlbumRepository albumRepository;
     private final SpaceService spaceService;
-    private final MenuService menuService;
     private final PhotoUploadService photoUploadService;
     private final UserService userService;
     private final DayIndexCache dayIndexCache;
@@ -247,8 +244,9 @@ public class PhotoServiceImpl implements PhotoService {
 
     @Override
     @Transactional
-    public Photo updatePhotoDate(UUID id, LocalDateTime newDate) {
+    public Photo updatePhotoDate(UserEntity user, UUID id, LocalDateTime newDate) {
         PhotoEntity photoEntity = photoRepository.findById(id)
+                .filter(p -> p.getSpace().getUser().getId().equals(user.getId()))
                 .orElseThrow(() -> new NoSuchElementException("Photo not found with ID: " + id));
         photoEntity.setDateTaken(newDate);
         photoRepository.save(photoEntity);
@@ -306,6 +304,10 @@ public class PhotoServiceImpl implements PhotoService {
     public void moveAssetsToMain(UserEntity user, List<UUID> ids) throws Exception {
         SpaceEntity mainUserSpace = spaceService.getDefaultSpaceForUser(user);
         photoRepository.findByIdIn(ids).forEach(photo -> {
+            // findByIdIn isn't user-scoped - skip anything the caller doesn't own rather than
+            // relocating another user's photo into the caller's main space (same guard
+            // moveAssetsToGarbage/restoreAssetsFromGarbage already apply).
+            if (!photo.getSpace().getUser().getId().equals(user.getId())) return;
             UUID originalSpaceId = photo.getSpace().getId();
             try {
                 photo.setSpace(mainUserSpace);
@@ -335,74 +337,6 @@ public class PhotoServiceImpl implements PhotoService {
         } while (photosSlice.hasNext());
     }
 
-
-    @Override
-    public PhotoSelectionDTO getSelection(PhotoSelectionRequest photoSelectionRequest, UserEntity user) {
-        boolean canBeDeleted = false, canBePermanentlyDeleted = false, canBeMovedToMain = false,
-                canBeMovedToAlbum = false, canBeRemovedFromAlbum = false, canBeModified = false,
-                canBeSetAsCover = false, canBeRestored = false;
-        Set<PhotoEntity> selectedPhotos = photoRepository.findByIdIn(photoSelectionRequest.photosId());
-        if (selectedPhotos.isEmpty()) {
-            return new PhotoSelectionDTO(menuService.getSelection(photoSelectionRequest.menuSelectionRequest()), false, false, false, false, false, false, false, false, false, false);
-        } else {
-            // Bulk "Edit Date Taken"/"Download" - no menu/garbage restriction (a garbage photo
-            // still has a real dateTaken and a real file on disk), true for any non-empty
-            // selection.
-            boolean canEditDate = true;
-            boolean canDownload = true;
-            Set<SpaceEntity> spaces = new HashSet<>();
-            boolean isGarbageMenu = photoSelectionRequest.menuSelectionRequest().menu().contains("garbage");
-            if (CollectionUtils.isNotEmpty(photoSelectionRequest.menuSelectionRequest().spaceIds())) {
-                spaces = photoSelectionRequest.menuSelectionRequest().spaceIds().stream()
-                        .map(spaceService::getSpaceById)
-                        .filter(Optional::isPresent)
-                        .map(Optional::get)
-                        .filter(spaceEntity -> spaceEntity.getUser().getId().equals(user.getId())).collect(Collectors.toSet());
-            }
-
-            if (!isGarbageMenu) {
-                canBeDeleted = true;
-            }
-
-            boolean isAlbumMenu = photoSelectionRequest.menuSelectionRequest().menu().contains("album");
-            if (!isGarbageMenu &&
-                    (spaces.size() == 1
-                    && spaces.stream().findAny().get().getType() == SpaceType.MAIN) || photoSelectionRequest.menuSelectionRequest().menu().equals("library")) {
-                canBeMovedToAlbum = true;
-                if (isAlbumMenu & isAlbumSelected(photoSelectionRequest)) {
-                    canBeRemovedFromAlbum = true;
-                }
-            }
-            if (photoSelectionRequest.menuSelectionRequest().menu().equals("lightbox")) {
-                canBeModified = true;
-                canBeMovedToAlbum = true;
-                canBeRemovedFromAlbum = true;
-                if (CollectionUtils.isNotEmpty(selectedPhotos) && selectedPhotos.size() == 1 && selectedPhotos.stream().anyMatch(photoEntity -> photoEntity.getSpace().getType() != SpaceType.MAIN)) {
-                    canBeMovedToMain = true;
-                }
-            }
-            if (spaces.size() == 1
-                    && spaces.stream().findAny().get().getType() != SpaceType.MAIN
-                    && !isGarbageMenu) {
-                canBeMovedToMain = true;
-            }
-            if (isGarbageMenu && CollectionUtils.isNotEmpty(photoSelectionRequest.photosId())) {
-                canBePermanentlyDeleted = true;
-                canBeRestored = true;
-            }
-            if (isAlbumMenu
-                    && isAlbumSelected(photoSelectionRequest)) {
-                canBeSetAsCover = true;
-            }
-            return new PhotoSelectionDTO(menuService.getSelection(photoSelectionRequest.menuSelectionRequest()), canBeDeleted, canBePermanentlyDeleted, canBeMovedToMain, canBeMovedToAlbum, canBeRemovedFromAlbum, canBeModified, canBeSetAsCover, canBeRestored, canEditDate, canDownload);
-        }
-    }
-
-    private boolean isAlbumSelected(PhotoSelectionRequest photoSelectionRequest) {
-        return photoSelectionRequest.menuSelectionRequest().albumIds() != null
-                && photoSelectionRequest.menuSelectionRequest().albumIds().size() == 1
-                && albumRepository.existsById(photoSelectionRequest.menuSelectionRequest().albumIds().get(0));
-    }
 
     @Override
     public List<String> checkExistingHashes(List<String> hashes) {

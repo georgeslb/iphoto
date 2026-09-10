@@ -1,116 +1,128 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { describe, it, expect } from 'vitest';
+import { renderHook } from '@testing-library/react';
 import { useMenuSelection } from './useMenuSelection';
 
+// useMenuSelection is now a pure derivation (no fetch) - it maps the current route + selection
+// onto the same capability-flag object POST /api/photos/selected used to return. The exhaustive
+// rule matrix lives in selectionCapabilities.test.js; this file just checks the hook wires the
+// route/selection inputs through correctly. Argument objects are hoisted out of the renderHook
+// callback per CLAUDE.md (a fresh literal every render never stabilises the useMemo deps).
+
+const NONE = [];
+
 describe('useMenuSelection', () => {
-  beforeEach(() => {
-    global.fetch = vi.fn(() =>
-      Promise.resolve({
-        json: () => Promise.resolve({ menuSelection: {} }),
-      })
-    );
+  it('derives the "album" menu (and its menu-level flags) for an album detail route', () => {
+    const args = {
+      pathname: '/albums/abc', currentSpaceId: null, currentAlbumId: 'abc', isLightboxOpen: false,
+      selectedAlbumIds: NONE, selectedSpaceIds: NONE, selectedIds: NONE, selectedPhoto: null, spaces: NONE,
+    };
+    const { result } = renderHook(() => useMenuSelection(args));
+    expect(result.current.menuSelection.canUpload).toBe(true);
+    expect(result.current.menuSelection.canAddAAShareLinkToAlbum).toBe(true);
   });
 
-  // Regression: /api/photos/selected was always sent the grid multi-selection
-  // (selectedIds), even while viewing a single photo in the Lightbox with nothing
-  // checkbox-selected — so the backend had no way to know which photo was open and
-  // returned wrong capability flags for the Lightbox's own action buttons.
-  it('sends the viewed photo id when a single photo is selected (Lightbox open)', async () => {
-    const setPhotoSelection = vi.fn();
-    const selectedPhoto = { id: 'photo-123' };
-
-    renderHook(() =>
-      useMenuSelection('/', null, null, true, [], [], [], selectedPhoto, setPhotoSelection)
-    );
-
-    await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
-
-    const [, options] = global.fetch.mock.calls[0];
-    const body = JSON.parse(options.body);
-    expect(body.photosId).toEqual(['photo-123']);
+  it('an open Lightbox overrides the underlying page menu', () => {
+    const selectedPhoto = { id: 'photo-123', inMainSpace: true };
+    const args = {
+      pathname: '/albums/abc', currentSpaceId: null, currentAlbumId: 'abc', isLightboxOpen: true,
+      selectedAlbumIds: NONE, selectedSpaceIds: NONE, selectedIds: NONE, selectedPhoto, spaces: NONE,
+    };
+    const { result } = renderHook(() => useMenuSelection(args));
+    // canBeModified is only ever set by the 'lightbox' branch.
+    expect(result.current.canBeModified).toBe(true);
   });
 
-  it('falls back to the grid multi-selection when no single photo is being viewed', async () => {
-    const setPhotoSelection = vi.fn();
-
-    renderHook(() =>
-      useMenuSelection('/', null, null, false, [], [], ['a', 'b'], null, setPhotoSelection)
-    );
-
-    await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
-
-    const [, options] = global.fetch.mock.calls[0];
-    const body = JSON.parse(options.body);
-    expect(body.photosId).toEqual(['a', 'b']);
+  it('treats the open Lightbox photo as the selection when nothing is checkbox-selected', () => {
+    const selectedPhoto = { id: 'photo-999', inMainSpace: true };
+    const args = {
+      pathname: '/', currentSpaceId: null, currentAlbumId: null, isLightboxOpen: true,
+      selectedAlbumIds: NONE, selectedSpaceIds: NONE, selectedIds: NONE, selectedPhoto, spaces: NONE,
+    };
+    const { result } = renderHook(() => useMenuSelection(args));
+    expect(result.current.canDownload).toBe(true); // true for any non-empty selection
   });
 
-  it('prefers the viewed photo over a stale grid selection', async () => {
-    const setPhotoSelection = vi.fn();
-    const selectedPhoto = { id: 'photo-999' };
-
-    renderHook(() =>
-      useMenuSelection('/', null, null, true, [], [], ['stale-1', 'stale-2'], selectedPhoto, setPhotoSelection)
-    );
-
-    await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
-
-    const [, options] = global.fetch.mock.calls[0];
-    const body = JSON.parse(options.body);
-    expect(body.photosId).toEqual(['photo-999']);
+  it('uses the grid multi-selection when no photo is open in the Lightbox', () => {
+    const args = {
+      pathname: '/', currentSpaceId: null, currentAlbumId: null, isLightboxOpen: false,
+      selectedAlbumIds: NONE, selectedSpaceIds: NONE, selectedIds: ['a', 'b'], selectedPhoto: null, spaces: NONE,
+    };
+    const { result } = renderHook(() => useMenuSelection(args));
+    expect(result.current.canDownload).toBe(true);
+    expect(result.current.canBeDeleted).toBe(true); // library menu, not garbage
   });
 
-  it('derives the correct menu for an album detail page', async () => {
-    const setPhotoSelection = vi.fn();
+  it('drives "Move to Main" from the open photo\'s inMainSpace flag', () => {
+    const base = {
+      pathname: '/', currentSpaceId: null, currentAlbumId: null, isLightboxOpen: true,
+      selectedAlbumIds: NONE, selectedSpaceIds: NONE, selectedIds: NONE, spaces: NONE,
+    };
+    const inSpace = renderHook(() => useMenuSelection({ ...base, selectedPhoto: { id: 'p', inMainSpace: false } }));
+    expect(inSpace.result.current.canBeMovedToMain).toBe(true);
 
-    renderHook(() =>
-      useMenuSelection('/albums/abc', null, 'abc', false, [], [], [], null, setPhotoSelection)
-    );
-
-    await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
-
-    const [, options] = global.fetch.mock.calls[0];
-    const body = JSON.parse(options.body);
-    expect(body.menuSelectionRequest.menu).toBe('album');
-    expect(body.menuSelectionRequest.albumIds).toEqual(['abc']);
+    const inMain = renderHook(() => useMenuSelection({ ...base, selectedPhoto: { id: 'p', inMainSpace: true } }));
+    expect(inMain.result.current.canBeMovedToMain).toBe(false);
   });
 
-  // Regression: the request body used to send `spaceId`/`albumId` (singular), but the
-  // backend's MenuSelectionRequest record fields are `spaceIds`/`albumIds` (plural) — a
-  // silent key mismatch that left them null server-side (Jackson doesn't fail on this by
-  // default), permanently breaking canBeSetAsCover/canBeRemovedFromAlbum/canBeMovedToAlbum/
-  // canBeMovedToMain. Confirmed live against the real backend before fixing.
-  it('sends spaceIds/albumIds (plural, matching the backend record fields) not spaceId/albumId', async () => {
-    const setPhotoSelection = vi.fn();
-
-    renderHook(() =>
-      useMenuSelection('/albums/abc', null, 'abc', false, [], [], [], null, setPhotoSelection)
-    );
-
-    await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
-
-    const [, options] = global.fetch.mock.calls[0];
-    const body = JSON.parse(options.body);
-    expect(body.menuSelectionRequest).not.toHaveProperty('albumId');
-    expect(body.menuSelectionRequest).not.toHaveProperty('spaceId');
-    expect(body.menuSelectionRequest.albumIds).toEqual(['abc']);
-    expect(body.menuSelectionRequest.spaceIds).toEqual([]);
+  it('resolves the current space\'s MAIN-or-not from the spaces list on a space detail route', () => {
+    const spaces = [{ id: 'sp-1', albumAllowed: false }]; // not MAIN
+    const args = {
+      pathname: '/spaces/sp-1', currentSpaceId: 'sp-1', currentAlbumId: null, isLightboxOpen: false,
+      selectedAlbumIds: NONE, selectedSpaceIds: NONE, selectedIds: ['x'], selectedPhoto: null, spaces,
+    };
+    const { result } = renderHook(() => useMenuSelection(args));
+    expect(result.current.canBeMovedToMain).toBe(true); // non-MAIN space -> can move its photos to Main
+    expect(result.current.canBeMovedToAlbum).toBe(false); // ... but not straight to an album
   });
 
-  // Simplification: the backend now infers "Lightbox is open" purely from menu === 'lightbox'
-  // instead of a separate boolean flag, so the request should carry no `lightbox` property at all.
-  it('sends menu "lightbox" (and no separate lightbox property) when the Lightbox is open, overriding the underlying page menu', async () => {
-    const setPhotoSelection = vi.fn();
-    const selectedPhoto = { id: 'photo-123' };
+  it('shows "Delete Album(s)" only once an album row is selected on the /albums list', () => {
+    const base = {
+      pathname: '/albums', currentSpaceId: null, currentAlbumId: null, isLightboxOpen: false,
+      selectedSpaceIds: NONE, selectedIds: NONE, selectedPhoto: null, spaces: NONE,
+    };
+    expect(renderHook(() => useMenuSelection({ ...base, selectedAlbumIds: NONE }))
+      .result.current.menuSelection.canDeleteAlbum).toBe(false);
+    expect(renderHook(() => useMenuSelection({ ...base, selectedAlbumIds: ['al-1'] }))
+      .result.current.menuSelection.canDeleteAlbum).toBe(true);
+  });
 
-    renderHook(() =>
-      useMenuSelection('/albums/abc', null, 'abc', true, [], [], [], selectedPhoto, setPhotoSelection)
-    );
+  it('shows "Delete Selected Spaces" for a non-MAIN selection, never for the MAIN space', () => {
+    const spaces = [{ id: 'main-1', albumAllowed: true }, { id: 'sp-2', albumAllowed: false }];
+    const base = {
+      pathname: '/spaces', currentSpaceId: null, currentAlbumId: null, isLightboxOpen: false,
+      selectedAlbumIds: NONE, selectedIds: NONE, selectedPhoto: null, spaces,
+    };
+    expect(renderHook(() => useMenuSelection({ ...base, selectedSpaceIds: NONE }))
+      .result.current.menuSelection.canDeleteSpace).toBe(false);
+    expect(renderHook(() => useMenuSelection({ ...base, selectedSpaceIds: ['main-1'] }))
+      .result.current.menuSelection.canDeleteSpace).toBe(false); // MAIN space can't be removed
+    expect(renderHook(() => useMenuSelection({ ...base, selectedSpaceIds: ['sp-2'] }))
+      .result.current.menuSelection.canDeleteSpace).toBe(true);
+    expect(renderHook(() => useMenuSelection({ ...base, selectedSpaceIds: ['main-1', 'sp-2'] }))
+      .result.current.menuSelection.canDeleteSpace).toBe(true); // has a removable one
+  });
 
-    await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
+  it('shows garbage space restore/purge only once a trashed space is selected', () => {
+    const base = {
+      pathname: '/garbage', currentSpaceId: null, currentAlbumId: null, isLightboxOpen: false,
+      selectedAlbumIds: NONE, selectedIds: NONE, selectedPhoto: null, spaces: NONE,
+    };
+    const none = renderHook(() => useMenuSelection({ ...base, selectedSpaceIds: NONE })).result.current.menuSelection;
+    expect(none.canRestoreSpace).toBe(false);
+    expect(none.canPermanentlyDeleteSpace).toBe(false);
+    const one = renderHook(() => useMenuSelection({ ...base, selectedSpaceIds: ['gs-1'] })).result.current.menuSelection;
+    expect(one.canRestoreSpace).toBe(true);
+    expect(one.canPermanentlyDeleteSpace).toBe(true);
+  });
 
-    const [, options] = global.fetch.mock.calls[0];
-    const body = JSON.parse(options.body);
-    expect(body.menuSelectionRequest.menu).toBe('lightbox');
-    expect(body.menuSelectionRequest).not.toHaveProperty('lightbox');
+  it('returns all-false photo flags (menu flags still computed) when nothing is selected', () => {
+    const args = {
+      pathname: '/', currentSpaceId: null, currentAlbumId: null, isLightboxOpen: false,
+      selectedAlbumIds: NONE, selectedSpaceIds: NONE, selectedIds: NONE, selectedPhoto: null, spaces: NONE,
+    };
+    const { result } = renderHook(() => useMenuSelection(args));
+    expect(result.current.canBeDeleted).toBe(false);
+    expect(result.current.canDownload).toBe(false);
+    expect(result.current.menuSelection.canUpload).toBe(true); // library menu still allows upload
   });
 });

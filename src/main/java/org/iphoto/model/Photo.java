@@ -20,5 +20,9 @@ public record Photo(
     Integer width,
     Integer height,
     LocalDateTime fileSystemCreationDate,
+    // Whether the photo currently lives in its owner's MAIN space (vs. a regular Space). Drives
+    // the Lightbox "Move to Main" button's visibility client-side, since capability flags moved
+    // off the backend (was POST /api/photos/selected).
+    Boolean inMainSpace,
     Set<Photo> duplicates
 ) {}

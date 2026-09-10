@@ -51,7 +51,7 @@ public class PersonRecognitionServiceImpl implements PersonRecognitionService {
         // misbehaves. Re-fetching by id (a cheap first-level-cache hit for callers already running
         // inside a wider transaction that loaded the exact same row, and a fresh, correctly-managed
         // instance for callers that aren't) makes this safe either way.
-        PersonEntity managedPerson = personRepository.findById(person.getId())
+        PersonEntity managedPerson = personRepository.findByIdInMainSpace(person.getId())
                 .orElseThrow(() -> new NoSuchElementException("no person found with id " + person.getId()));
         FaceEntity managedFace = faceRepository.findById(face.getId())
                 .orElseThrow(() -> new NoSuchElementException("no face found with id " + face.getId()));
@@ -102,9 +102,9 @@ public class PersonRecognitionServiceImpl implements PersonRecognitionService {
     @Override
     @Transactional
     public PersonEntity mergePersons(UUID personId1, UUID personId2) {
-        PersonEntity person1 = personRepository.findById(personId1)
+        PersonEntity person1 = personRepository.findByIdInMainSpace(personId1)
                 .orElseThrow(() -> new NoSuchElementException("no person found with id " + personId1));
-        PersonEntity person2 = personRepository.findById(personId2)
+        PersonEntity person2 = personRepository.findByIdInMainSpace(personId2)
                 .orElseThrow(() -> new NoSuchElementException("no person found with id " + personId2));
 
         PersonEntity source = person1.getFaces().size() <= person2.getFaces().size() ? person1 : person2;
@@ -116,9 +116,9 @@ public class PersonRecognitionServiceImpl implements PersonRecognitionService {
     @Override
     @Transactional
     public PersonEntity mergeInto(UUID targetPersonId, UUID sourcePersonId) {
-        PersonEntity target = personRepository.findById(targetPersonId)
+        PersonEntity target = personRepository.findByIdInMainSpace(targetPersonId)
                 .orElseThrow(() -> new NoSuchElementException("no person found with id " + targetPersonId));
-        PersonEntity source = personRepository.findById(sourcePersonId)
+        PersonEntity source = personRepository.findByIdInMainSpace(sourcePersonId)
                 .orElseThrow(() -> new NoSuchElementException("no person found with id " + sourcePersonId));
 
         return mergeFacesIntoTarget(source, target);

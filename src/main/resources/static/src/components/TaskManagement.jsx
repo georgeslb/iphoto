@@ -155,6 +155,7 @@ export default function TaskManagement() {
                 <th>{messages["tableHeaderError"]}</th>
                 <th>{messages["tableHeaderCreatedAt"]}</th>
                 <th>{messages["tableHeaderUpdatedAt"]}</th>
+                <th>{messages["tableHeaderDuration"]}</th>
                 <th>{messages["tableHeaderActions"]}</th>
               </tr>
             </thead>
@@ -185,6 +186,7 @@ export default function TaskManagement() {
                     </td>
                     <td>{formatTimestamp(task.createdAt)}</td>
                     <td>{formatTimestamp(task.updatedAt)}</td>
+                    <td>{task.durationMs != null ? `${task.durationMs.toLocaleString()} ms` : '-'}</td>
                     <td>
                       <button
                         type="button"

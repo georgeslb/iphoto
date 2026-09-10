@@ -1,6 +1,7 @@
 package org.iphoto.mappers;
 
 import org.iphoto.entities.PhotoEntity;
+import org.iphoto.entities.SpaceType;
 import org.iphoto.model.Photo;
 import org.mapstruct.Mapper;
 
@@ -35,6 +36,10 @@ public interface PhotoMapper {
             thumbnailUrl += "?v=" + entity.getFileHash();
         }
 
+        Boolean inMainSpace = entity.getSpace() != null
+                ? entity.getSpace().getType() == SpaceType.MAIN
+                : null;
+
         return new Photo(
                 entity.getId().toString(),
                 entity.getFileName(),
@@ -51,6 +56,8 @@ public interface PhotoMapper {
                 entity.getFileHash(),
                 entity.getWidth(),
                 entity.getHeight(),
-                entity.getFileSystemCreationDate(),duplicates) ;
+                entity.getFileSystemCreationDate(),
+                inMainSpace,
+                duplicates) ;
     }
 }
