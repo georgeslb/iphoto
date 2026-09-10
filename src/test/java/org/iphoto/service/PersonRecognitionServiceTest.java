@@ -174,6 +174,39 @@ class PersonRecognitionServiceTest extends AbstractIntegrationTest {
         assertThat(faceRepository.findById(smallerFace.getId()).orElseThrow().getPerson().getId()).isEqualTo(biggerPersonId);
     }
 
+    // Regression test for a real bug: merging used to violate uk_people_cover_face_id whenever the
+    // source person's face was the one recalculateCoverFace picked as the TARGET's new cover face
+    // (e.g. because it's more recently dated than anything the target already had) - target's save
+    // ran while source (not yet deleted) still had its own cover_face_id pointing at that exact
+    // same, now-shared face. mergeFacesIntoTarget must null out source's cover face before target
+    // claims it.
+    @Test
+    void mergePersonsSucceedsWhenSourcesCoverFaceBecomesTheTargetsNewCoverFace() {
+        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
+
+        PhotoEntity olderPhoto = savePhoto(space, admin, LocalDateTime.of(2020, 1, 1, 0, 0));
+        FaceEntity biggerFace1 = saveFace(olderPhoto, 8.0f);
+        FaceEntity biggerFace2 = saveFace(olderPhoto, 8.1f);
+        personRecognitionService.addPerson(List.of(biggerFace1, biggerFace2));
+        UUID biggerPersonId = faceRepository.findById(biggerFace1.getId()).orElseThrow().getPerson().getId();
+
+        // Only face this (smaller) person has, so addPerson makes it that person's own cover face -
+        // and its later dateTaken makes it the bigger person's new cover face too once merged in.
+        PhotoEntity newerPhoto = savePhoto(space, admin, LocalDateTime.of(2024, 1, 1, 0, 0));
+        FaceEntity smallerFace = saveFace(newerPhoto, 8.2f);
+        personRecognitionService.addPerson(List.of(smallerFace));
+        UUID smallerPersonId = faceRepository.findById(smallerFace.getId()).orElseThrow().getPerson().getId();
+        assertThat(personRepository.findById(smallerPersonId).orElseThrow().getCoverFace().getId())
+                .isEqualTo(smallerFace.getId());
+
+        PersonEntity target = personRecognitionService.mergePersons(biggerPersonId, smallerPersonId);
+
+        assertThat(target.getId()).isEqualTo(biggerPersonId);
+        assertThat(target.getCoverFace().getId()).isEqualTo(smallerFace.getId());
+        assertThat(personRepository.findById(smallerPersonId)).isEmpty();
+    }
+
     @Test
     void mergeIntoAlwaysKeepsTheExplicitTargetRegardlessOfFaceCount() {
         UserEntity admin = userRepository.findByUsername("admin").orElseThrow();

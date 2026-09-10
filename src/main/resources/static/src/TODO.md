@@ -230,6 +230,15 @@ matters again; `specification.md` is the source of truth for current behavior.
     `/persons/merge` two-person flow, unchanged), Next, and Close. A merge discards any suggestion
     naming either person (the deleted source via FK cascade, the surviving target explicitly,
     since its embedding just changed) so the next run recomputes it fresh.
+  - Fixed a real production bug: merging two people (`PersonRecognitionServiceImpl.
+    mergeFacesIntoTarget`, both the Persons-page merge and the suggestion-banner's Merge button)
+    could throw a `uk_people_cover_face_id` unique-constraint violation. `recalculateCoverFace`
+    picks the target's new cover face from ALL its faces, including the ones just moved over from
+    `source` — if the pick landed on the exact face that was `source`'s own cover face, saving
+    `target` collided with `source`'s still-in-place `cover_face_id` (source wasn't deleted until
+    afterward). Fixed by nulling and flushing `source`'s cover face right after its faces move,
+    before `target`'s new one is computed/saved. Regression test:
+    `PersonRecognitionServiceTest.mergePersonsSucceedsWhenSourcesCoverFaceBecomesTheTargetsNewCoverFace`.
   - Added `FaceEntity.status` (`NEW`/`OLD`, migration `V3__add_face_status.sql`) so
     `groupFacesForUser` stops re-running the expensive existing-person match against every person
     for the same known-unmatched face on every ~30s run forever. See `specification.md` §4.3 for
