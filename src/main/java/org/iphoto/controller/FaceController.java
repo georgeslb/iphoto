@@ -9,6 +9,7 @@ import org.iphoto.model.FaceDTO;
 import org.iphoto.model.PageResponse;
 import org.iphoto.model.PersonDTO;
 import org.iphoto.model.PersonMergeSuggestionDTO;
+import org.iphoto.model.PersonSummaryDTO;
 import org.iphoto.model.Photo;
 import org.iphoto.model.request.FaceRenameRequest;
 import org.iphoto.model.request.PersonMergeRequest;
@@ -66,7 +67,7 @@ public class FaceController extends AbstractBaseController {
     // FaceServiceImpl.getPersons strips any Sort off this Pageable before querying, so a caller
     // can't override it via ?sort=; only page/size are honored from here.
     @GetMapping("/persons")
-    public ResponseEntity<Page<PersonDTO>> getPersons(@PageableDefault(size = 50) Pageable pageable) {
+    public ResponseEntity<Page<PersonSummaryDTO>> getPersons(@PageableDefault(size = 50) Pageable pageable) {
         UserEntity currentUser = getCurrentUser();
         return ResponseEntity.ok(faceService.getPersons(currentUser, pageable));
     }

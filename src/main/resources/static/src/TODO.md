@@ -27,16 +27,6 @@ and a compressed record of how we got here, not a second copy of the spec.
   shift a photo taken shortly before local midnight by more than one day depending on the server's
   configured timezone vs. the photo's own). Reproduce with a photo timestamped close to midnight and
   confirm which day it actually lands in before assuming this specific mechanism.
-- **Persons page (`/persons`) is slow to load** (reported 2026-09-11) — not yet root-caused.
-  `FaceServiceImpl.getPersons`/`mapToPerson` already looks reasonably lean (persisted `photoCount`
-  column, no N+1 per-person queries, cover face is a single joined `FaceEntity`), so the likely
-  cost is elsewhere: check whether it's the initial `?page=0&size=50` request itself being slow
-  server-side (e.g. `findAllBySpaceIdOrderByNamedFirstThenPhotoCountDesc`'s query plan/missing
-  index on a space with many people), or a frontend issue — `usePersons.js`'s
-  `IntersectionObserver` (`rootMargin: '400px'`) firing `loadMore()` repeatedly before `loading`
-  state settles, or each page's 50 base64-encoded cover-face thumbnails simply being a lot of
-  payload/decode work per page. Start by checking Network tab timing (request duration vs.
-  render/decode time) and how many people/pages a real affected account actually has.
 - **Mobile/Android photo grid shows a variable column count** (commonly 5) instead of a fixed 4 —
   both use "auto-fill by minimum tile size" grids. Fix: web — `App.css`'s `.photo-grid` under the
   `≤768px`/`≤480px` media queries, change `grid-template-columns: repeat(auto-fill, minmax(...))`
@@ -287,6 +277,24 @@ matters again; `specification.md` is the source of truth for current behavior.
     clustering pass leaves it an unresolved singleton. `CandidateClusterer` itself is untouched —
     `OLD` faces are still fed into it every run so a later `NEW` face can still complete a cluster
     with earlier runs' leftovers (regression-tested in `FaceRecognitionServiceImplTest`).
+  - Fixed the Persons page (`GET /api/faces/persons`) ballooning to ~70MB/7s to load (reported
+    2026-09-11). Root cause: `FaceDetectionServiceImpl` saved each detected face's UI thumbnail at
+    its full original-photo crop resolution (detection runs against the full-res photo, not the
+    resized-for-hashing copy) as a lossless PNG, mismatched with the "data:image/jpeg;base64,"
+    prefix `FaceServiceImpl.mapToDTO` already labeled it with — a single crop could be 1+MB, times
+    ~50 people/page. Fixed going forward by resizing to `FACE_THUMBNAIL_MAX_SIZE` (300px, this
+    thumbnail is only ever shown at ~100px CSS size) and encoding as a real compressed JPEG via
+    Thumbnailator (`FaceDetectionServiceImpl.generateFaceThumbnail`, unit-tested in
+    `FaceDetectionServiceImplTest` against a synthetic crop — no test exercises the real ONNX
+    pipeline). Also fixed a real N+1 (`PersonRepository`'s list query now `left join fetch`es
+    `coverFace` instead of lazy-loading it once per person) and, per explicit user request, split
+    the list endpoint's response down to a new lean `PersonSummaryDTO` (id/name/coverPhoto only) —
+    `photoCount` stays on the fuller `PersonDTO` used by the Person detail page and the merge-
+    suggestion/rename-collision pickers, which do render it. **Not yet done**: already-stored face
+    thumbnails from before this fix remain oversized PNGs until re-processed — no migration/
+    regeneration path exists yet (would need to re-crop from each `FaceEntity`'s stored photo +
+    x/y/width/height and re-save via the same `generateFaceThumbnail`, without touching embeddings/
+    clustering) — worth doing if the reported account still sees a large response after this ships.
 
 ### Sharing
 - Full design in `specification.md` §4.4. Originally broken end-to-end (wrong URI parsing, guest

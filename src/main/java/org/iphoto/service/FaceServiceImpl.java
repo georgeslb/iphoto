@@ -14,6 +14,7 @@ import org.iphoto.model.DayBucketDTO;
 import org.iphoto.model.FaceDTO;
 import org.iphoto.model.PersonDTO;
 import org.iphoto.model.PersonMergeSuggestionDTO;
+import org.iphoto.model.PersonSummaryDTO;
 import org.iphoto.model.Photo;
 import org.iphoto.repository.FaceLinkExclusionRepository;
 import org.iphoto.repository.FaceRepository;
@@ -79,7 +80,7 @@ public class FaceServiceImpl implements FaceService {
     }
 
     @Override
-    public Page<PersonDTO> getPersons(UserEntity currentUser, Pageable pageable) {
+    public Page<PersonSummaryDTO> getPersons(UserEntity currentUser, Pageable pageable) {
         // Named-first/photoCount-DESC is the fixed, non-negotiable default (see
         // PersonRepository.findAllBySpaceIdOrderByNamedFirstThenPhotoCountDesc) - strip any Sort
         // the caller asked for via ?sort= so there's nothing for Spring Data to append after that
@@ -88,7 +89,7 @@ public class FaceServiceImpl implements FaceService {
         Pageable pageSizeOnly = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize());
         SpaceEntity defaultSpaceForUser = spaceService.getDefaultSpaceForUser(currentUser);
         return personRepository.findAllBySpaceIdOrderByNamedFirstThenPhotoCountDesc(defaultSpaceForUser.getId(), pageSizeOnly)
-                .map(this::mapToPerson); // Pass user to mapToPerson
+                .map(this::mapToPersonSummary);
     }
 
     @Override
@@ -106,6 +107,12 @@ public class FaceServiceImpl implements FaceService {
         // Persons-page fetch.
         int photoCount = personEntity.getPhotoCount() == null ? 0 : personEntity.getPhotoCount();
         return new PersonDTO(personEntity.getId(), personEntity.getName(), coverPhoto, photoCount);
+    }
+
+    // Persons grid list only - see PersonSummaryDTO for why this drops photoCount.
+    private PersonSummaryDTO mapToPersonSummary(PersonEntity personEntity) {
+        FaceDTO coverPhoto = personEntity.getCoverFace() != null ? mapToDTO(personEntity.getCoverFace()) : null;
+        return new PersonSummaryDTO(personEntity.getId(), personEntity.getName(), coverPhoto);
     }
 
     @Override

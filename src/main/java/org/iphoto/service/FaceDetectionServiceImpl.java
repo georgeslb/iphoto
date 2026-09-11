@@ -12,6 +12,7 @@ import ai.djl.modality.cv.output.Rectangle;
 import ai.djl.repository.zoo.ZooModel;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import net.coobird.thumbnailator.Thumbnails;
 import org.iphoto.configuration.BlurDetector;
 import org.iphoto.configuration.FaceAligner;
 import org.iphoto.entities.FaceEntity;
@@ -75,6 +76,10 @@ public class FaceDetectionServiceImpl implements FaceDetectionService {
     // synthetic image from a genuinely blurred version of itself, and a flat/solid-color image
     // scores near zero).
     private static final double BLUR_VARIANCE_THRESHOLD = 100.0;
+
+    // Bounding box (px) the saved face thumbnail is scaled to fit within, preserving aspect ratio -
+    // see the thumbnail-generation comment below for why this matters.
+    private static final int FACE_THUMBNAIL_MAX_SIZE = 300;
 
 
     @Override
@@ -209,10 +214,7 @@ public class FaceDetectionServiceImpl implements FaceDetectionService {
 
                         byte[] embeddingBytes = EmbeddingCodec.toBytes(embedding);
 
-                        // Generate JPEG thumbnail for UI from the original crop
-                        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                        subImage.save(baos, "png");
-                        byte[] thumbnailBytes = baos.toByteArray();
+                        byte[] thumbnailBytes = generateFaceThumbnail((BufferedImage) subImage.getWrappedImage());
 
                         FaceEntity faceEntity =
                                 FaceEntity.builder().width(w).height(h).x(x).y(y).photo(photo).build();
@@ -228,6 +230,26 @@ public class FaceDetectionServiceImpl implements FaceDetectionService {
         } catch (Exception e) {
             throw new RuntimeException("Failed to detect or embed faces for photo " + photo.getId(), e);
         }
+    }
+
+    // Small JPEG thumbnail for UI display (Persons.jsx cover photos, Lightbox's "Faces Detected"
+    // strip - both only ever render this at ~100px CSS size, see App.css's `.person-item img`).
+    // This used to save the crop as-is - at its full original-photo pixel size, since detection
+    // runs against the full-resolution photo, not the resized-for-hashing copy DuplicationService
+    // uses - as a lossless PNG, mismatched with the "data:image/jpeg;base64," prefix
+    // FaceServiceImpl.mapToDTO already labels it with. A single crop could be several hundred KB to
+    // 1+MB that way, and the Persons page fetches one of these per person per page
+    // (~50/page - FaceController#getPersons), which is what made that endpoint's response balloon
+    // to tens of MB and take several seconds to load (reported 2026-09-11). Package-private (not
+    // private) so FaceDetectionServiceImplTest can exercise it directly without needing the full
+    // ONNX detection/embedding pipeline.
+    static byte[] generateFaceThumbnail(BufferedImage faceCrop) throws IOException {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        Thumbnails.of(faceCrop)
+                .size(FACE_THUMBNAIL_MAX_SIZE, FACE_THUMBNAIL_MAX_SIZE)
+                .outputFormat("jpg")
+                .toOutputStream(baos);
+        return baos.toByteArray();
     }
 
 }
