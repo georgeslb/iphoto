@@ -38,6 +38,16 @@ public interface AdminService {
     // reset.
     int restartTasks(List<UUID> taskIds);
 
+    // Per-row "Park"/"Unpark" buttons on the Tasks page. Parking just flips the status to PARKED
+    // (every other field - error, payload, executeAt - is left untouched) so an admin can pull a
+    // task out of the pending queue without losing its history; every poll*PendingTasks query only
+    // ever selects PENDING, so a PARKED task is naturally never picked up. Unparking puts it
+    // straight back to PENDING. Both are unconditional on the task's current status, same
+    // reasoning as restartTask below.
+    TaskAdminDTO parkTask(UUID taskId);
+
+    TaskAdminDTO unparkTask(UUID taskId);
+
     // Admin > Tasks page "Reprocessing" panel. Each resets a whole stage so it runs again from
     // scratch:
     //  - restartFaceExtraction: every ISOLATE_FACES task back to PENDING (FaceDetectionService

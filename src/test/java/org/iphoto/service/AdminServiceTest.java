@@ -208,6 +208,54 @@ class AdminServiceTest extends AbstractIntegrationTest {
     }
 
     @Test
+    void parkTaskSwitchesItToParkedWithoutTouchingItsError() throws Exception {
+        MockHttpSession session = loginAsAdmin();
+        TaskEntity failed = saveTask(TaskType.HASH_IMAGE, TaskStatus.FAILED, "boom");
+
+        MvcResult result = mockMvc.perform(post("/api/admin/tasks/{id}/park", failed.getId()).session(session))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
+        assertThat(body.get("status").asText()).isEqualTo("PARKED");
+        assertThat(body.get("errorMessage").asText()).isEqualTo("boom");
+        TaskEntity reloaded = taskRepository.findById(failed.getId()).orElseThrow();
+        assertThat(reloaded.getStatus()).isEqualTo(TaskStatus.PARKED);
+        assertThat(reloaded.getErrorMessage()).isEqualTo("boom");
+    }
+
+    @Test
+    void parkTaskReturnsNotFoundForAnUnknownId() throws Exception {
+        MockHttpSession session = loginAsAdmin();
+
+        mockMvc.perform(post("/api/admin/tasks/{id}/park", UUID.randomUUID()).session(session))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void unparkTaskSwitchesAParkedTaskBackToPending() throws Exception {
+        MockHttpSession session = loginAsAdmin();
+        TaskEntity parked = saveTask(TaskType.HASH_IMAGE, TaskStatus.PARKED, null);
+
+        MvcResult result = mockMvc.perform(post("/api/admin/tasks/{id}/unpark", parked.getId()).session(session))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
+        assertThat(body.get("status").asText()).isEqualTo("PENDING");
+        TaskEntity reloaded = taskRepository.findById(parked.getId()).orElseThrow();
+        assertThat(reloaded.getStatus()).isEqualTo(TaskStatus.PENDING);
+    }
+
+    @Test
+    void unparkTaskReturnsNotFoundForAnUnknownId() throws Exception {
+        MockHttpSession session = loginAsAdmin();
+
+        mockMvc.perform(post("/api/admin/tasks/{id}/unpark", UUID.randomUUID()).session(session))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
     void bulkRestartResetsEveryRequestedTaskAndReportsHowManyWereRestarted() throws Exception {
         MockHttpSession session = loginAsAdmin();
         TaskEntity failed = saveTask(TaskType.HASH_IMAGE, TaskStatus.FAILED, "boom");

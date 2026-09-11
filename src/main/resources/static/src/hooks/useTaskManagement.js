@@ -77,6 +77,48 @@ export function useTaskManagement() {
     }
   }, [messages]);
 
+  const parkTask = useCallback(async (taskId) => {
+    setError(null);
+    setMessage(null);
+    setRestartingIds(prev => new Set(prev).add(taskId));
+    try {
+      const res = await fetch(`/api/admin/tasks/${taskId}/park`, { method: 'POST' });
+      if (!res.ok) throw new Error(messages["failedToParkTask"]);
+      const updated = await res.json();
+      setTasks(prev => prev.map(t => t.id === taskId ? updated : t));
+      setMessage(messages["taskParked"]);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setRestartingIds(prev => {
+        const next = new Set(prev);
+        next.delete(taskId);
+        return next;
+      });
+    }
+  }, [messages]);
+
+  const unparkTask = useCallback(async (taskId) => {
+    setError(null);
+    setMessage(null);
+    setRestartingIds(prev => new Set(prev).add(taskId));
+    try {
+      const res = await fetch(`/api/admin/tasks/${taskId}/unpark`, { method: 'POST' });
+      if (!res.ok) throw new Error(messages["failedToUnparkTask"]);
+      const updated = await res.json();
+      setTasks(prev => prev.map(t => t.id === taskId ? updated : t));
+      setMessage(messages["taskUnparked"]);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setRestartingIds(prev => {
+        const next = new Set(prev);
+        next.delete(taskId);
+        return next;
+      });
+    }
+  }, [messages]);
+
   const restartTasks = useCallback(async (taskIds) => {
     setError(null);
     setMessage(null);
@@ -134,7 +176,7 @@ export function useTaskManagement() {
     tasks, pageNumber, totalPages, totalElements,
     statusFilter, setStatusFilter, taskTypeFilter, setTaskTypeFilter,
     loading, error, message, restartingIds, reprocessing,
-    goToPage, restartTask, restartTasks,
+    goToPage, restartTask, restartTasks, parkTask, unparkTask,
     reprocessFaces, reprocessDuplicates, reprocessPersons,
   };
 }

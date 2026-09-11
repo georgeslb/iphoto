@@ -66,8 +66,11 @@ This document outlines the functionality and behavior of the IPHOTO web applicat
     every `TaskEntity` row (paginated, filterable by status/type; each row also shows how long its
     last run took, `TaskEntity.durationMs`, set start-to-finish by `TaskWorkerManagerImpl`) and
     lets an admin manually restart one or many tasks — resetting them back to `PENDING` (clearing
-    any error) regardless of their current status. It also has a **Reprocessing** panel to re-run
-    a whole pipeline stage:
+    any error) regardless of their current status. Each row also has a **Park**/**Unpark** toggle:
+    Park sets the task's status to `PARKED` (every other field is left untouched) so it's simply
+    never selected by any `poll*PendingTasks` query — every one of them filters on `PENDING`, so
+    `PARKED` needs no extra exclusion anywhere; Unpark sets it straight back to `PENDING`. It also
+    has a **Reprocessing** panel to re-run a whole pipeline stage:
     *Restart face extraction* / *Restart duplicate detection* reset every `ISOLATE_FACES` /
     `CHECK_DUPLICATION` task to `PENDING`; *Restart person recognition* (confirmed first, it's
     destructive) deletes every `PersonEntity` (plus their embedding buckets and merge suggestions),
@@ -753,6 +756,9 @@ Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
     no human judgment involved at all).
 *   `POST /api/admin/tasks/restart` (`{taskIds: [...]}`): Bulk counterpart for the Tasks page's
     mass-selection action — one round trip instead of one per row; returns `{restarted: n}`.
+*   `POST /api/admin/tasks/{id}/park` / `.../unpark`: Flip a task's status to `PARKED` (pull it out
+    of the pending queue without touching `errorMessage`/`payload`/`executeAt`) or back to
+    `PENDING`. Unconditional on the task's current status, same trust reasoning as restart above.
 *   `POST /api/admin/reprocess/faces` / `.../duplicates`: reset every `ISOLATE_FACES` /
     `CHECK_DUPLICATION` task to `PENDING` in one statement; returns `{tasksReset: n}`.
     `FaceDetectionService`/`DuplicationService` both delete a photo's prior results before

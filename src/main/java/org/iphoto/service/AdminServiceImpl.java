@@ -160,6 +160,22 @@ public class AdminServiceImpl implements AdminService {
     }
 
     @Override
+    public TaskAdminDTO parkTask(UUID taskId) {
+        TaskEntity task = taskRepository.findById(taskId)
+                .orElseThrow(() -> new NoSuchElementException("no task found with id " + taskId));
+        task.setStatus(TaskStatus.PARKED);
+        return TaskAdminDTO.from(taskRepository.save(task));
+    }
+
+    @Override
+    public TaskAdminDTO unparkTask(UUID taskId) {
+        TaskEntity task = taskRepository.findById(taskId)
+                .orElseThrow(() -> new NoSuchElementException("no task found with id " + taskId));
+        task.setStatus(TaskStatus.PENDING);
+        return TaskAdminDTO.from(taskRepository.save(task));
+    }
+
+    @Override
     @Transactional
     public int restartFaceExtraction() {
         return taskRepository.resetAllToPendingByTaskType(TaskType.ISOLATE_FACES, LocalDateTime.now());
