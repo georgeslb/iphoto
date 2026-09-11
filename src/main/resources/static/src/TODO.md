@@ -18,12 +18,6 @@ and a compressed record of how we got here, not a second copy of the spec.
   `PersonRecognitionServiceImpl.mergeFacesIntoTarget` merge itself, which has its own passing
   regression test) — start by reproducing from the Library banner and checking the browser network
   tab/backend logs for the actual request/response on click.
-- **Mobile/Android photo grid shows a variable column count** (commonly 5) instead of a fixed 4 —
-  both use "auto-fill by minimum tile size" grids. Fix: web — `App.css`'s `.photo-grid` under the
-  `≤768px`/`≤480px` media queries, change `grid-template-columns: repeat(auto-fill, minmax(...))`
-  to `repeat(4, 1fr)` (leave `.album-grid` alone). Android — `PhotoGridContent.kt`'s
-  `GridCells.Adaptive(minSize = 100.dp)` → `GridCells.Fixed(4)`. Pure layout change, not verified
-  on a real device/emulator.
 - **Flaky backend test**: `PhotoServiceTest.downloadSingleAndMultiplePhotosSetContentDispositionAndZipEntries`
   fails intermittently in a full `mvn test` run (wrong zip entry count) but passes reliably in
   isolation. `AbstractIntegrationTest#generateTestJpeg()`'s per-call random solid-color fill has a
@@ -44,13 +38,10 @@ and a compressed record of how we got here, not a second copy of the spec.
   separately-paginated endpoints together client-side. Frontend needs the same
   original-resolution-to-thumbnail-size scaling math `Lightbox.jsx`'s `recalculateImageSize`
   already does, reusable if extracted.
-- **Duplicate-cluster badge: icon + count only on mobile/Android**, no "similar" text label —
-  follows from the fixed-4-column mobile grid above needing more room. Web: split the combined
-  `similarPhotosBadge` i18n template so the count can render standalone and the label can be
-  CSS-hidden at the mobile breakpoint (same pattern as `.lightbox-action-label`) — do not delete
-  the combined key, `DuplicateClusterModal.jsx`'s own title badge still uses it and should keep
-  the full text. Android: no duplicate badge exists in the native app yet at all — just a design
-  note for whenever that's built (icon + count from day one, no label).
+- **Duplicate-cluster badge on Android**: the native app has no duplicate-cluster UI at all yet
+  (`PhotoGridContent.kt`/`PhotoThumbnail.kt` just render plain thumbnails) — a design note for
+  whenever that's built: icon + count only from day one, no "similar" text label, matching the
+  web version's mobile styling (see compressed history below).
 
 ### Known gaps / cleanup
 - **`App.jsx` selection state**: `selectedIds`/`selectedAlbumIds`/`selectedSpaceIds` and their
@@ -152,6 +143,16 @@ matters again; `specification.md` is the source of truth for current behavior.
   the existing pixel margin. Regression-tested in `PhotoGrid.test.jsx` (a local
   capturing-`IntersectionObserver` stub, since the shared jsdom one in `test/setup.js` never fires
   its callback) — covers both the look-ahead call and not looking past the end of the day list.
+- Confirmed already implemented (check-in, 2026-09-11 — no code change needed, TODO description
+  was stale): fixed 4-column mobile/Android photo grid. Web already used `grid-template-columns:
+  repeat(4, 1fr)` (not `auto-fill`/`minmax`) at both the `≤768px` and `≤480px` breakpoints in
+  `App.css`; Android's `PhotoGridContent.kt` already used `GridCells.Fixed(4)` (not `Adaptive`).
+  Also already implemented as part of the same mobile-grid work: the duplicate-cluster badge's web
+  version already shows icon + count only on mobile (`PhotoGrid.jsx`'s `.duplicate-badge-label`
+  span, CSS-hidden at the mobile breakpoint; `messages["similarLabel"]` instead of the combined
+  `similarPhotosBadge` template, which `DuplicateClusterModal.jsx`'s own title badge still uses
+  unchanged) — only the Android side of that item (no duplicate-cluster UI there at all yet)
+  remains open.
 
 ### Duplicate detection
 - Two-tier detection: a tight global pHash/averageHash Hamming-distance match confirms directly;
