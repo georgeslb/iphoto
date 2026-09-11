@@ -106,6 +106,13 @@ matters again; `specification.md` is the source of truth for current behavior.
   auto-cycling `photosPerBlock` photos per offset. Clicking a memory scrolls to its day in the
   grid (via the same `seekToDay` mechanism the timeline scrubber uses) rather than opening the
   Lightbox.
+- Fixed a real bug (reported 2026-09-11): opening the Lightbox left `MemoriesBar` mounted
+  underneath it (only visually covered, App.jsx's `libraryPhotoGrid` doesn't gate it on
+  `isLightboxOpen` the way it does `PhotoGrid`), and its own `MemoryItem` auto-cycle `setInterval`
+  kept running regardless - every ~3s it advanced to a different, unrelated photo and fetched that
+  photo's thumbnail, showing up in the Network tab as thumbnail requests for photos that have
+  nothing to do with the asset actually open in the Lightbox. Fixed by threading `isLightboxOpen`
+  down to `MemoryItem` and skipping the interval entirely while it's true (`MemoriesBar.test.jsx`).
 - **Timeline scrubber**: a right-edge vertical strip (one label per year) that jumps instantly
   (no smooth-scroll, so nothing in between gets fetched) to any day, loaded or not, via
   `PhotoGrid.jsx`'s per-day `data-day-group` markers.

@@ -21,17 +21,21 @@ function dayOf(photo) {
 // IPhotoProperties.Memories.photosPerBlock on the backend, fewer if that day has less) instead of
 // showing a single static photo. Its own component (not inline in the map below) so each block's
 // rotation timer/state is independent and cleaned up correctly per block.
-function MemoryItem({ memory, label, onSeekToDay }) {
+function MemoryItem({ memory, label, onSeekToDay, isLightboxOpen }) {
   const [index, setIndex] = useState(0);
   const photos = memory.photos;
 
+  // Paused while the Lightbox is open: this bar sits underneath the fullscreen overlay (still
+  // mounted, just visually covered), so left running it kept silently fetching a new, unrelated
+  // photo's thumbnail every tick - the auto-cycle has no reason to advance (and fetch) while
+  // nobody can see it.
   useEffect(() => {
-    if (photos.length < 2) return undefined;
+    if (photos.length < 2 || isLightboxOpen) return undefined;
     const interval = setInterval(() => {
       setIndex(i => (i + 1) % photos.length);
     }, AUTO_SWITCH_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [photos.length]);
+  }, [photos.length, isLightboxOpen]);
 
   const current = photos[index];
 
@@ -47,7 +51,7 @@ function MemoryItem({ memory, label, onSeekToDay }) {
 // Library-only horizontal strip: one block per configured "N months/years ago" offset (see
 // IPhotoProperties.Memories.monthsAgo on the backend) that actually has a photo that day. Mirrors
 // PersonStrip.jsx's arrow-scrollable layout.
-export default function MemoriesBar({ onSeekToDay }) {
+export default function MemoriesBar({ onSeekToDay, isLightboxOpen }) {
   const { messages } = useLocale();
   const { memories, loading } = useMemories();
   const trackRef = useRef(null);
@@ -81,6 +85,7 @@ export default function MemoriesBar({ onSeekToDay }) {
             memory={memory}
             label={labelFor(memory.monthsAgo)}
             onSeekToDay={onSeekToDay}
+            isLightboxOpen={isLightboxOpen}
           />
         ))}
       </div>
