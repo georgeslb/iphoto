@@ -18,12 +18,16 @@ and a compressed record of how we got here, not a second copy of the spec.
   `PersonRecognitionServiceImpl.mergeFacesIntoTarget` merge itself, which has its own passing
   regression test) — start by reproducing from the Library banner and checking the browser network
   tab/backend logs for the actual request/response on click.
-- **`GET /api/faces/persons` has no working pagination on the frontend.** It's a real
-  `Page<PersonDTO>` (`FaceController#getPersons`, default page size 50), but
-  `hooks/usePersons.js` fetches with no `page`/`size` params and no load-more mechanism — anyone
-  with more than 50 people can never see the rest. Needs `usePersons.js` to track page/hasMore
-  state and append pages (infinite-scroll, consistent with `PhotoGrid.jsx`'s day-indexed grid, is
-  probably the better fit than classic page controls for this photo-grid-styled page).
+- **Persons page (`/persons`) is slow to load** (reported 2026-09-11) — not yet root-caused.
+  `FaceServiceImpl.getPersons`/`mapToPerson` already looks reasonably lean (persisted `photoCount`
+  column, no N+1 per-person queries, cover face is a single joined `FaceEntity`), so the likely
+  cost is elsewhere: check whether it's the initial `?page=0&size=50` request itself being slow
+  server-side (e.g. `findAllBySpaceIdOrderByNamedFirstThenPhotoCountDesc`'s query plan/missing
+  index on a space with many people), or a frontend issue — `usePersons.js`'s
+  `IntersectionObserver` (`rootMargin: '400px'`) firing `loadMore()` repeatedly before `loading`
+  state settles, or each page's 50 base64-encoded cover-face thumbnails simply being a lot of
+  payload/decode work per page. Start by checking Network tab timing (request duration vs.
+  render/decode time) and how many people/pages a real affected account actually has.
 - **Mobile/Android photo grid shows a variable column count** (commonly 5) instead of a fixed 4 —
   both use "auto-fill by minimum tile size" grids. Fix: web — `App.css`'s `.photo-grid` under the
   `≤768px`/`≤480px` media queries, change `grid-template-columns: repeat(auto-fill, minmax(...))`
@@ -248,6 +252,10 @@ matters again; `specification.md` is the source of truth for current behavior.
     `PersonMergeSuggestionRepository.findBySpaceIdOrderBySimilarityDesc` and
     `PersonMergeSuggestionServiceImpl` now take a `Pageable`; `usePersonMergeSuggestions.js` fetches
     one suggestion at a time instead of holding the whole list client-side.
+  - `GET /api/faces/persons` pagination fixed on the frontend: `usePersons.js` now tracks
+    page/hasMore state and appends pages via `loadMore()`, driven by an `IntersectionObserver`
+    sentinel in `Persons.jsx` (same infinite-scroll idiom as `PhotoGrid.jsx`'s day-indexed grid) —
+    no more silent 50-person cap.
   - Fixed a real production bug: merging two people (`PersonRecognitionServiceImpl.
     mergeFacesIntoTarget`, both the Persons-page merge and the suggestion-banner's Merge button)
     could throw a `uk_people_cover_face_id` unique-constraint violation. `recalculateCoverFace`
