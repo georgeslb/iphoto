@@ -304,7 +304,7 @@ function App() {
   const libraryPhotoGrid = (
     <>
       {selectedMenu === 'library' && <PersonMergeSuggestionBanner />}
-      {selectedMenu === 'library' && <MemoriesBar onSeekToDay={seekToMemoryDay} />}
+      {selectedMenu === 'library' && <MemoriesBar onSeekToDay={seekToMemoryDay} isLightboxOpen={isLightboxOpen} />}
       <PhotoGrid
           dayIndex={dayIndexed}
           type={selectedMenu}
