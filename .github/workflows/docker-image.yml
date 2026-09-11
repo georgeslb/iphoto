@@ -1,10 +1,11 @@
 name: Docker image
 
-# Builds the backend/frontend, runs the test suite, then builds and pushes the Docker image to
-# GitHub Container Registry (ghcr.io) as a private package - only on pushes to master (not PRs),
-# plus a manual trigger for one-off rebuilds.
+# Runs the backend test suite on every PR into master (the required check that blocks merging on
+# failure - configure this as a required status check under Settings > Branches once this workflow
+# exists on master). The Docker image itself is no longer built automatically on a push to master -
+# only via a manual workflow_dispatch run, which re-runs the tests first as its own build gate.
 on:
-  push:
+  pull_request:
     branches: [ master ]
   workflow_dispatch:
 
@@ -42,6 +43,9 @@ jobs:
 
   build-and-push:
     needs: test
+    # Manual only: a workflow_dispatch run builds and pushes the image (after the test job above
+    # passes); a pull_request event never reaches this job, so PRs only ever run the test gate.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read

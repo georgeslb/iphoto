@@ -125,9 +125,14 @@ and a compressed record of how we got here, not a second copy of the spec.
   `UploadManager.jsx` (unnecessary `effectivePath`/`refreshAndMaintainScroll`),
   `useAlbumManagement.js` (unnecessary `fetchAlbums`, x2), `UserManagement.jsx` (missing
   `fetchUsers`), `Lightbox.jsx` (missing `handleNext`/`handlePrevious`).
-- **No CI workflow runs `npm test`/`npm run lint`/`mvn test` automatically** — both suites are
-  currently local-only (`.github/workflows/docker-image.yml` only builds/pushes the image). Worth
-  wiring up if regressions matter enough to gate merges on.
+- **No CI workflow runs `npm test`/`npm run lint` automatically** — the frontend suite is still
+  local-only. (`mvn test` now runs on every PR into master via
+  `.github/workflows/docker-image.yml`'s `test` job, and is required to pass before the Docker
+  image job — which itself is now `workflow_dispatch`-only, not automatic on push to master.) Worth
+  wiring up the frontend suite too if regressions matter enough to gate merges on it as well.
+  Reminder: once this workflow exists on master, its `test` job still needs to be added as a
+  required status check under Settings > Branches for master (branch protection isn't something a
+  workflow file alone can set) for PRs to actually be blocked on failure.
 - **Regression tests worth adding, not yet written**: `UploadManager.jsx`'s "PENDING keeps
   polling" fix (needs fake timers + mocking the chunk-upload flow); a root `App.jsx` smoke test
   (would need mocking every on-mount endpoint: `/api/user/me`, `/api/photos`,
