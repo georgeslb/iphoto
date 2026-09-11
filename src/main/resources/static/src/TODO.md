@@ -10,6 +10,14 @@ and a compressed record of how we got here, not a second copy of the spec.
 ## 1. Open / Not Yet Done
 
 ### Bugs
+- **Merging persons from the merge-suggestion review flow still not working** (reported
+  2026-09-11). `PersonMergeSuggestionBanner.jsx`/`PersonMergeSuggestionModal.jsx`'s Merge button is
+  supposed to reuse the existing `/persons/merge` two-person flow unchanged (see "Persons & faces"
+  history below), but the user reports it's not working — not yet reproduced/root-caused. Check
+  whether this is a regression in the suggestion popup's call path specifically (vs. the underlying
+  `PersonRecognitionServiceImpl.mergeFacesIntoTarget` merge itself, which has its own passing
+  regression test) — start by reproducing from the Library banner and checking the browser network
+  tab/backend logs for the actual request/response on click.
 - **`GET /api/faces/persons` has no working pagination on the frontend.** It's a real
   `Page<PersonDTO>` (`FaceController#getPersons`, default page size 50), but
   `hooks/usePersons.js` fetches with no `page`/`size` params and no load-more mechanism — anyone
