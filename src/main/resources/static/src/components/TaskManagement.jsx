@@ -5,7 +5,7 @@ import { useTaskManagement } from '../hooks/useTaskManagement';
 
 // Mirrors org.iphoto.model.TaskStatus - kept in sync manually since the frontend has no build-time
 // link to the backend enum (same convention as ImmichImportManagement.jsx's own STATUS_FILTER_VALUES).
-const TASK_STATUS_VALUES = ['ALL', 'PENDING', 'QUEUED', 'PROCESSING', 'COMPLETED', 'FAILED', 'IGNORED', 'TRASHED'];
+const TASK_STATUS_VALUES = ['ALL', 'PENDING', 'PARKED', 'QUEUED', 'PROCESSING', 'COMPLETED', 'FAILED', 'IGNORED', 'TRASHED'];
 
 // Mirrors org.iphoto.model.TaskType.
 const TASK_TYPE_VALUES = [
@@ -16,6 +16,7 @@ const TASK_TYPE_VALUES = [
 
 const STATUS_MESSAGE_KEYS = {
   PENDING: 'taskStatusPending',
+  PARKED: 'taskStatusParked',
   QUEUED: 'taskStatusQueued',
   PROCESSING: 'taskStatusProcessing',
   COMPLETED: 'taskStatusCompleted',
@@ -37,7 +38,7 @@ export default function TaskManagement() {
     tasks, pageNumber, totalPages, totalElements,
     statusFilter, setStatusFilter, taskTypeFilter, setTaskTypeFilter,
     loading, error, message, restartingIds, reprocessing,
-    goToPage, restartTask, restartTasks,
+    goToPage, restartTask, restartTasks, parkTask, unparkTask,
     reprocessFaces, reprocessDuplicates, reprocessPersons,
   } = useTaskManagement();
 
@@ -195,6 +196,23 @@ export default function TaskManagement() {
                       >
                         {restarting ? messages["restartingButton"] : messages["restartButton"]}
                       </button>
+                      {task.status === 'PARKED' ? (
+                        <button
+                          type="button"
+                          disabled={restarting}
+                          onClick={() => unparkTask(task.id)}
+                        >
+                          {restarting ? messages["unparkingButton"] : messages["unparkButton"]}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={restarting}
+                          onClick={() => parkTask(task.id)}
+                        >
+                          {restarting ? messages["parkingButton"] : messages["parkButton"]}
+                        </button>
+                      )}
                     </td>
                   </tr>
                 );

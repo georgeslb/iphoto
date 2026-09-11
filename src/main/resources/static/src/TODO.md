@@ -376,3 +376,8 @@ matters again; `specification.md` is the source of truth for current behavior.
   `getTasks`/`restartTask`/`restartTasks`, `TaskRepository.findByOptionalStatusAndTaskType`
   (optional status/type filters, no hardcoded `ORDER BY` — sorting is left entirely to the
   caller's `Pageable` instead), `TaskAdminDTO`. See specification.md §5.7.
+- Added a `PARKED` `TaskStatus` plus per-row Park/Unpark buttons on the Tasks page: Park flips a
+  task to `PARKED` (every other field untouched, so it's simply never selected by any
+  `poll*PendingTasks` query, all of which filter on `PENDING`); Unpark sets it straight back to
+  `PENDING`. Backend: `AdminService`/`AdminServiceImpl.parkTask`/`unparkTask`,
+  `AdminController`'s `POST /api/admin/tasks/{id}/park` / `.../unpark`.

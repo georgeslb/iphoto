@@ -88,6 +88,26 @@ public class AdminController extends AbstractBaseController {
         return Map.of("restarted", adminService.restartTasks(request.taskIds()));
     }
 
+    // Per-row "Park"/"Unpark" buttons - pause a task (take it out of the pending queue) or put it
+    // back to PENDING. See AdminService for exactly what each one changes.
+    @PostMapping("/tasks/{id}/park")
+    public ResponseEntity<TaskAdminDTO> parkTask(@PathVariable UUID id) {
+        try {
+            return ResponseEntity.ok(adminService.parkTask(id));
+        } catch (NoSuchElementException e) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    @PostMapping("/tasks/{id}/unpark")
+    public ResponseEntity<TaskAdminDTO> unparkTask(@PathVariable UUID id) {
+        try {
+            return ResponseEntity.ok(adminService.unparkTask(id));
+        } catch (NoSuchElementException e) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
     // Admin > Tasks page "Reprocessing" panel - re-run a whole pipeline stage from scratch. See
     // AdminService for exactly what each one resets.
     @PostMapping("/reprocess/faces")

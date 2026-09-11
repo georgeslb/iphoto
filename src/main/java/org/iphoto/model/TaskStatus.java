@@ -11,5 +11,10 @@ public enum TaskStatus {
     PROCESSING,
     COMPLETED,
     FAILED,
-    IGNORED, TRASHED
+    IGNORED, TRASHED,
+    // Admin-only pause: an admin explicitly took this task out of the pending queue from the Tasks
+    // page (see AdminService#parkTask). Every poll*PendingTasks query filters on PENDING, so a
+    // PARKED task is simply never selected - no extra exclusion needed anywhere else. Unparking
+    // (AdminService#unparkTask) puts it straight back to PENDING.
+    PARKED
 }
