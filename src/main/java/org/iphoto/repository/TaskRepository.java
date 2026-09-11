@@ -6,6 +6,7 @@ import org.iphoto.model.TaskType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -72,4 +73,13 @@ public interface TaskRepository extends JpaRepository<TaskEntity, UUID> {
     // here already uses.
     @Query("SELECT t FROM TaskEntity t WHERE (:status IS NULL OR t.status = :status) AND (:taskType IS NULL OR t.taskType = :taskType)")
     Page<TaskEntity> findByOptionalStatusAndTaskType(@Param("status") String status, @Param("taskType") TaskType taskType, Pageable pageable);
+
+    // Admin > Tasks page "Restart <X> extraction" buttons (AdminService#restartFaceExtraction/
+    // restartDuplicationDetection): resets every task of one type straight back to PENDING in one
+    // statement, no matter its current status - same reset resetToPending applies per row, just
+    // wholesale. clearAutomatically so any already-loaded TaskEntity in the persistence context
+    // doesn't shadow the new status on a later read in the same transaction. Returns the row count.
+    @Modifying(clearAutomatically = true)
+    @Query("UPDATE TaskEntity t SET t.status = 'PENDING', t.errorMessage = null, t.stackTrace = null, t.executeAt = :now WHERE t.taskType = :taskType")
+    int resetAllToPendingByTaskType(@Param("taskType") TaskType taskType, @Param("now") LocalDateTime now);
 }

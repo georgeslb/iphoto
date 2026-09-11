@@ -351,6 +351,7 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
                 // deliberately generic and uniform across every task type, including the ones that
                 // don't have their own, and is the only place that logs the FINAL status explicitly.
                 log.info("Task {} ({}) started", task.getId(), task.getTaskType());
+                long startNanos = System.nanoTime();
                 try {
                     if (PROCESS_UPLOAD.equals(task.getTaskType())) {
                         processUpload(task);
@@ -419,7 +420,9 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
                         immichImportService.recordAssetTaskFailure(task);
                     }
                 }
-                log.info("Task {} ({}) finished with status {}", task.getId(), task.getTaskType(), task.getStatus());
+                long durationMs = (System.nanoTime() - startNanos) / 1_000_000;
+                task.setDurationMs(durationMs);
+                log.info("Task {} ({}) finished with status {} in {}ms", task.getId(), task.getTaskType(), task.getStatus(), durationMs);
                 taskRepository.save(task);
             });
         } finally {

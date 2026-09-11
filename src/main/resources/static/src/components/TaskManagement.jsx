@@ -36,8 +36,9 @@ export default function TaskManagement() {
   const {
     tasks, pageNumber, totalPages, totalElements,
     statusFilter, setStatusFilter, taskTypeFilter, setTaskTypeFilter,
-    loading, error, message, restartingIds,
+    loading, error, message, restartingIds, reprocessing,
     goToPage, restartTask, restartTasks,
+    reprocessFaces, reprocessDuplicates, reprocessPersons,
   } = useTaskManagement();
 
   const [selectedIds, setSelectedIds] = useState(() => new Set());
@@ -80,6 +81,27 @@ export default function TaskManagement() {
       {error && <p className="error-message">{error}</p>}
       {message && <p className="success-message">{message}</p>}
 
+      <div className="task-reprocess-panel">
+        <h3>{messages["reprocessTitle"]}</h3>
+        <p className="task-reprocess-hint">{messages["reprocessHint"]}</p>
+        <div className="task-reprocess-buttons">
+          <button type="button" disabled={reprocessing !== null} onClick={reprocessFaces}>
+            {reprocessing === 'faces' ? messages["reprocessRunning"] : messages["reprocessFacesButton"]}
+          </button>
+          <button type="button" disabled={reprocessing !== null} onClick={reprocessDuplicates}>
+            {reprocessing === 'duplicates' ? messages["reprocessRunning"] : messages["reprocessDuplicatesButton"]}
+          </button>
+          <button
+            type="button"
+            className="reprocess-danger"
+            disabled={reprocessing !== null}
+            onClick={reprocessPersons}
+          >
+            {reprocessing === 'persons' ? messages["reprocessRunning"] : messages["reprocessPersonsButton"]}
+          </button>
+        </div>
+      </div>
+
       <div className="task-management-toolbar">
         <label>
           {messages["taskStatusFilterLabel"]}
@@ -114,7 +136,7 @@ export default function TaskManagement() {
         <p>{messages["noTasksMessage"]}</p>
       ) : (
         <>
-          <table className="users-table">
+          <table className="users-table task-table">
             <thead>
               <tr>
                 <th>
@@ -133,6 +155,7 @@ export default function TaskManagement() {
                 <th>{messages["tableHeaderError"]}</th>
                 <th>{messages["tableHeaderCreatedAt"]}</th>
                 <th>{messages["tableHeaderUpdatedAt"]}</th>
+                <th>{messages["tableHeaderDuration"]}</th>
                 <th>{messages["tableHeaderActions"]}</th>
               </tr>
             </thead>
@@ -163,6 +186,7 @@ export default function TaskManagement() {
                     </td>
                     <td>{formatTimestamp(task.createdAt)}</td>
                     <td>{formatTimestamp(task.updatedAt)}</td>
+                    <td>{task.durationMs != null ? `${task.durationMs.toLocaleString()} ms` : '-'}</td>
                     <td>
                       <button
                         type="button"

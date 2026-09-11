@@ -7,6 +7,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -22,9 +23,9 @@ public interface PersonRepository extends JpaRepository<PersonEntity, UUID> {
     // override this - FaceServiceImpl.getPersons strips any Sort off the Pageable it passes in here
     // before calling this, so there's nothing for Spring Data to append after this query's own
     // ORDER BY.
-    @Query(value = "SELECT p FROM PersonEntity p ORDER BY CASE WHEN p.name IS NULL OR p.name = '' THEN 1 ELSE 0 END, p.photoCount DESC",
-            countQuery = "SELECT COUNT(p) FROM PersonEntity p")
-    Page<PersonEntity> findAllOrderByNamedFirstThenPhotoCountDesc(Pageable pageable);
+    @Query(value = "SELECT p FROM PersonEntity p inner join p.space s where s.id = :spaceId ORDER BY CASE WHEN p.name IS NULL OR p.name = '' THEN 1 ELSE 0 END, p.photoCount DESC",
+            countQuery = "SELECT COUNT(p) FROM PersonEntity p inner join p.space s where s.id = :spaceId")
+    Page<PersonEntity> findAllBySpaceIdOrderByNamedFirstThenPhotoCountDesc(@Param("spaceId") UUID spaceId, Pageable pageable);
     // Explicit space_id filter, NOT @MainSpaceLimited: FaceRecognitionServiceImpl.groupFacesForUser
     // (the only caller) runs on TaskWorkerManager's own dedicated heavy-task thread pool, where
     // MainSpaceAspectConfiguration deliberately treats @MainSpaceLimited as a no-op (see its own
@@ -48,4 +49,8 @@ public interface PersonRepository extends JpaRepository<PersonEntity, UUID> {
     // can legitimately already share a name by the time a rename runs into it.
     @MainSpaceLimited
     List<PersonEntity> findByNameIgnoreCaseAndIdNot(String name, UUID excludeId);
+
+    @MainSpaceLimited
+    @Query("select p from PersonEntity p where p.id = :id")
+    Optional<PersonEntity> findByIdInMainSpace(UUID id);
 }

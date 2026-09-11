@@ -21,6 +21,9 @@ import org.iphoto.util.EmbeddingCodec;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.mock.web.MockHttpSession;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.time.LocalDateTime;
@@ -29,18 +32,23 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-// Driven through FaceController's real endpoints - FaceRepository/PersonRepository's plain CRUD
-// methods used by FaceServiceImpl aren't @MainSpaceLimited, but renamePerson/setFacePerson hit
-// PersonRepository.findByNameIgnoreCase(AndIdNot) which IS, so a real authenticated request is
-// used throughout for consistency. Faces are inserted directly via FaceRepository rather than
-// through real face detection (FaceDetectionService is out of scope for this suite, and a
-// synthetic solid-color test JPEG has no detectable face anyway).
+// Driven through FaceController's real endpoints. Faces and people are per-user, scoped to each
+// user's own MAIN space (PersonEntity.space / FaceServiceImpl.getPersons(user) /
+// PersonRepository.findById is @MainSpaceLimited) - the admin account is an ops account that
+// deliberately never touches this feature, so every test here runs as a FRESH, dedicated
+// non-admin user (newUser()) and puts its fixtures in THAT user's own MAIN space. Direct
+// repository reads made from the bare test thread for assertions go through runAs(user, ...) so
+// the @MainSpaceLimited aspect has a principal to resolve a space from (the same reason
+// AbstractIntegrationTest.runAsAdmin exists). Faces are inserted directly via FaceRepository
+// rather than through real face detection (FaceDetectionService is out of scope for this suite,
+// and a synthetic solid-color test JPEG has no detectable face anyway).
 class FaceServiceTest extends AbstractIntegrationTest {
 
     @Autowired
@@ -54,9 +62,42 @@ class FaceServiceTest extends AbstractIntegrationTest {
     @Autowired
     private UserRepository userRepository;
     @Autowired
+    private UserService userService;
+    @Autowired
     private FaceService faceService;
     @Autowired
     private PersonMergeSuggestionRepository personMergeSuggestionRepository;
+
+    // A fresh regular user, with its own private MAIN space (userService.createUser creates one) -
+    // brand new, so its people/faces are fully isolated from every other test class's leftovers in
+    // the shared test database.
+    private UserEntity newUser() {
+        return userService.createUser("face-test-" + UUID.randomUUID(), "password", "USER");
+    }
+
+    private MockHttpSession sessionFor(UserEntity user) throws Exception {
+        MvcResult result = mockMvc.perform(post("/api/login")
+                        .param("username", user.getUsername())
+                        .param("password", "password"))
+                .andExpect(status().isOk())
+                .andReturn();
+        return (MockHttpSession) result.getRequest().getSession(false);
+    }
+
+    // Pushes `user` as the current principal for the duration of `action`, then restores whatever
+    // was there - lets a direct call to a @MainSpaceLimited repository method (which reads the
+    // principal off SecurityContextHolder to pick a space) work from the bare test thread, where
+    // no security filter chain has run. Mirrors AbstractIntegrationTest.runAsAdmin.
+    private <T> T runAs(UserEntity user, Callable<T> action) throws Exception {
+        Authentication previous = SecurityContextHolder.getContext().getAuthentication();
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(user.getUsername(), null, List.of()));
+        try {
+            return action.call();
+        } finally {
+            SecurityContextHolder.getContext().setAuthentication(previous);
+        }
+    }
 
     private PhotoEntity savePhoto(SpaceEntity space, UserEntity user) {
         String seed = UUID.randomUUID().toString();
@@ -83,10 +124,10 @@ class FaceServiceTest extends AbstractIntegrationTest {
 
     @Test
     void getFacesForPhotoAndDeleteFaceWorkThroughTheirEndpoints() throws Exception {
-        MockHttpSession session = loginAsAdmin();
-        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
-        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
-        PhotoEntity photo = savePhoto(space, admin);
+        UserEntity user = newUser();
+        MockHttpSession session = sessionFor(user);
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
+        PhotoEntity photo = savePhoto(space, user);
         FaceEntity face = saveFace(photo);
 
         MvcResult listResult = mockMvc.perform(get("/api/faces/photo/{id}", photo.getId()).session(session))
@@ -102,10 +143,10 @@ class FaceServiceTest extends AbstractIntegrationTest {
 
     @Test
     void getPersonsGetPersonAndRenamePersonWorkThroughTheirEndpoints() throws Exception {
-        MockHttpSession session = loginAsAdmin();
-        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
-        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
-        PhotoEntity photo = savePhoto(space, admin);
+        UserEntity user = newUser();
+        MockHttpSession session = sessionFor(user);
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
+        PhotoEntity photo = savePhoto(space, user);
         FaceEntity face = saveFace(photo);
         PersonEntity person = personRepository.save(PersonEntity.builder().space(space).name("Alice").faces(new ArrayList<>(List.of(face))).build());
         face.setPerson(person);
@@ -129,10 +170,9 @@ class FaceServiceTest extends AbstractIntegrationTest {
 
     @Test
     void renamePersonToACollidingNameReturns409WithTheCandidates() throws Exception {
-        MockHttpSession session = loginAsAdmin();
-        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
-        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
-        PhotoEntity photo = savePhoto(space, admin);
+        UserEntity user = newUser();
+        MockHttpSession session = sessionFor(user);
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
         PersonEntity existing = personRepository.save(PersonEntity.builder().space(space).name("Bob").faces(new ArrayList<>()).build());
         PersonEntity toRename = personRepository.save(PersonEntity.builder().space(space).name("Carl").faces(new ArrayList<>()).build());
 
@@ -147,16 +187,16 @@ class FaceServiceTest extends AbstractIntegrationTest {
         mockMvc.perform(put("/api/faces/person/{id}", toRename.getId()).session(session).contentType(APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(new PersonRenameRequest("Bob", true, List.of(existing.getId())))))
                 .andExpect(status().isOk());
-        assertThat(personRepository.findById(existing.getId())).isEmpty();
-        assertThat(personRepository.findById(toRename.getId())).isPresent();
+        assertThat(runAs(user, () -> personRepository.findByIdInMainSpace(existing.getId()))).isEmpty();
+        assertThat(runAs(user, () -> personRepository.findByIdInMainSpace(toRename.getId()))).isPresent();
     }
 
     @Test
     void personDaysAndPhotosForDayWorkThroughTheirEndpoints() throws Exception {
-        MockHttpSession session = loginAsAdmin();
-        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
-        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
-        PhotoEntity photo = savePhoto(space, admin);
+        UserEntity user = newUser();
+        MockHttpSession session = sessionFor(user);
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
+        PhotoEntity photo = savePhoto(space, user);
         FaceEntity face = saveFace(photo);
         PersonEntity person = personRepository.save(PersonEntity.builder().space(space).name("Dana").faces(new ArrayList<>(List.of(face))).build());
         face.setPerson(person);
@@ -181,10 +221,10 @@ class FaceServiceTest extends AbstractIntegrationTest {
 
     @Test
     void unlinkPersonFromPhotoAndUnlinkFaceFromPersonDetachWithoutDeletingTheFace() throws Exception {
-        MockHttpSession session = loginAsAdmin();
-        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
-        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
-        PhotoEntity photo = savePhoto(space, admin);
+        UserEntity user = newUser();
+        MockHttpSession session = sessionFor(user);
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
+        PhotoEntity photo = savePhoto(space, user);
         FaceEntity face = saveFace(photo);
         PersonEntity person = personRepository.save(PersonEntity.builder().space(space).name("Eve").faces(new ArrayList<>(List.of(face))).build());
         face.setPerson(person);
@@ -205,10 +245,10 @@ class FaceServiceTest extends AbstractIntegrationTest {
 
     @Test
     void setFacePersonRenamesOrMergesDependingOnCollision() throws Exception {
-        MockHttpSession session = loginAsAdmin();
-        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
-        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
-        PhotoEntity photo = savePhoto(space, admin);
+        UserEntity user = newUser();
+        MockHttpSession session = sessionFor(user);
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
+        PhotoEntity photo = savePhoto(space, user);
         FaceEntity face = saveFace(photo);
 
         // No existing person with this name yet - creates a brand-new one for just this face.
@@ -219,7 +259,7 @@ class FaceServiceTest extends AbstractIntegrationTest {
         assertThat(objectMapper.readTree(firstResult.getResponse().getContentAsString()).get("personName").asText()).isEqualTo("Frank");
 
         PersonEntity otherPerson = personRepository.save(PersonEntity.builder().space(space).name("Gina").faces(new ArrayList<>()).build());
-        FaceEntity secondFace = saveFace(savePhoto(space, admin));
+        FaceEntity secondFace = saveFace(savePhoto(space, user));
 
         mockMvc.perform(put("/api/faces/{id}/person", secondFace.getId()).session(session).contentType(APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(new FaceRenameRequest("Gina", false))))
@@ -233,10 +273,10 @@ class FaceServiceTest extends AbstractIntegrationTest {
 
     @Test
     void mergePersonsFoldsTheSmallerPersonIntoTheLarger() throws Exception {
-        MockHttpSession session = loginAsAdmin();
-        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
-        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
-        PhotoEntity photo = savePhoto(space, admin);
+        UserEntity user = newUser();
+        MockHttpSession session = sessionFor(user);
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
+        PhotoEntity photo = savePhoto(space, user);
         FaceEntity biggerFace1 = saveFace(photo);
         FaceEntity biggerFace2 = saveFace(photo);
         PersonEntity bigger = personRepository.save(PersonEntity.builder().space(space).name("Big").faces(new ArrayList<>(List.of(biggerFace1, biggerFace2))).build());
@@ -254,33 +294,33 @@ class FaceServiceTest extends AbstractIntegrationTest {
                 .andExpect(status().isOk())
                 .andReturn();
         assertThat(objectMapper.readTree(result.getResponse().getContentAsString()).get("id").asText()).isEqualTo(bigger.getId().toString());
-        assertThat(personRepository.findById(smaller.getId())).isEmpty();
+        assertThat(runAs(user, () -> personRepository.findByIdInMainSpace(smaller.getId()))).isEmpty();
         // All three faces (biggerFace1, biggerFace2, smallerFace) live on the same single `photo` -
         // photoCount counts DISTINCT photos, so the merged person should show 1, not 3.
-        assertThat(personRepository.findById(bigger.getId()).orElseThrow().getPhotoCount()).isEqualTo(1);
+        assertThat(runAs(user, () -> personRepository.findByIdInMainSpace(bigger.getId())).orElseThrow().getPhotoCount()).isEqualTo(1);
     }
 
     @Test
     void photoCountIsRecalculatedAsFacesAreAttachedAndDetached() throws Exception {
-        MockHttpSession session = loginAsAdmin();
-        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
-        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
-        PhotoEntity photo = savePhoto(space, admin);
+        UserEntity user = newUser();
+        MockHttpSession session = sessionFor(user);
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
+        PhotoEntity photo = savePhoto(space, user);
         FaceEntity face = saveFace(photo);
 
         // setFacePerson's new-person branch: photoCount starts at 1 (one photo, one face).
         mockMvc.perform(put("/api/faces/{id}/person", face.getId()).session(session).contentType(APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(new FaceRenameRequest("Hank", false))))
                 .andExpect(status().isOk());
-        // findByNameIgnoreCase is @MainSpaceLimited - needs an authenticated SecurityContextHolder
-        // principal even for a direct repository call, not just the real mockMvc requests above.
-        PersonEntity person = runAsAdmin(() -> personRepository.findByNameIgnoreCase("Hank").orElseThrow());
+        // findByNameIgnoreCase / findById are @MainSpaceLimited - a direct repository call from
+        // this bare test thread still needs a principal to resolve the space from.
+        PersonEntity person = runAs(user, () -> personRepository.findByNameIgnoreCase("Hank").orElseThrow());
         assertThat(person.getPhotoCount()).isEqualTo(1);
 
         // unlinkFaceFromPerson detaches the face - photoCount drops back to 0.
         mockMvc.perform(delete("/api/faces/{id}/person", face.getId()).session(session))
                 .andExpect(status().isNoContent());
-        assertThat(personRepository.findById(person.getId()).orElseThrow().getPhotoCount()).isEqualTo(0);
+        assertThat(runAs(user, () -> personRepository.findByIdInMainSpace(person.getId())).orElseThrow().getPhotoCount()).isEqualTo(0);
 
         // Re-attach via setFacePerson's existing-person branch (confirmMerge=true - "Hank" already
         // exists from above, and the face is currently unassigned, so this is the same
@@ -290,18 +330,18 @@ class FaceServiceTest extends AbstractIntegrationTest {
         mockMvc.perform(put("/api/faces/{id}/person", face.getId()).session(session).contentType(APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(new FaceRenameRequest("Hank", true))))
                 .andExpect(status().isOk());
-        assertThat(personRepository.findById(person.getId()).orElseThrow().getPhotoCount()).isEqualTo(1);
+        assertThat(runAs(user, () -> personRepository.findByIdInMainSpace(person.getId())).orElseThrow().getPhotoCount()).isEqualTo(1);
 
         mockMvc.perform(delete("/api/faces/{id}", face.getId()).session(session))
                 .andExpect(status().isNoContent());
-        assertThat(personRepository.findById(person.getId()).orElseThrow().getPhotoCount()).isEqualTo(0);
+        assertThat(runAs(user, () -> personRepository.findByIdInMainSpace(person.getId())).orElseThrow().getPhotoCount()).isEqualTo(0);
     }
 
     @Test
     void getPersonsSortsNamedFirstThenPhotoCountDescendingRegardlessOfRequestedSort() throws Exception {
-        MockHttpSession session = loginAsAdmin();
-        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
-        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
+        UserEntity user = newUser();
+        MockHttpSession session = sessionFor(user);
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
 
         PersonEntity unnamedHighCount = personRepository.save(PersonEntity.builder().space(space).faces(new ArrayList<>()).photoCount(100).build());
         PersonEntity namedLowCount = personRepository.save(PersonEntity.builder().space(space).name("Zed").faces(new ArrayList<>()).photoCount(1).build());
@@ -324,6 +364,9 @@ class FaceServiceTest extends AbstractIntegrationTest {
         assertThat(unnamedIdx).isGreaterThanOrEqualTo(0);
         assertThat(namedHighIdx).isLessThan(namedLowIdx); // named, higher photoCount first
         assertThat(namedLowIdx).isLessThan(unnamedIdx); // named (even low count) before unnamed
+        // Scoped to this user's own space: another test class's leftover people never leak in.
+        assertThat(orderedIds).containsExactlyInAnyOrder(
+                namedHighCount.getId().toString(), namedLowCount.getId().toString(), unnamedHighCount.getId().toString());
     }
 
     // Regression test for the merge-suggestions endpoint being changed from one flat, unpaginated
@@ -332,9 +375,9 @@ class FaceServiceTest extends AbstractIntegrationTest {
     // multi-second response) to a cheap count endpoint plus a real size=1-paginated list.
     @Test
     void mergeSuggestionsAreCountedSeparatelyAndPagedOneAtATimeMostSimilarFirst() throws Exception {
-        MockHttpSession session = loginAsAdmin();
-        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
-        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
+        UserEntity user = newUser();
+        MockHttpSession session = sessionFor(user);
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
         PersonEntity personA = personRepository.save(PersonEntity.builder().space(space).name("Ann").faces(new ArrayList<>()).build());
         PersonEntity personB = personRepository.save(PersonEntity.builder().space(space).name("Ben").faces(new ArrayList<>()).build());
         PersonEntity personC = personRepository.save(PersonEntity.builder().space(space).name("Cid").faces(new ArrayList<>()).build());
@@ -370,14 +413,14 @@ class FaceServiceTest extends AbstractIntegrationTest {
 
     @Test
     void findByIdFindsAFaceDirectly() {
-        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
-        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
-        FaceEntity face = saveFace(savePhoto(space, admin));
+        UserEntity user = newUser();
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
+        FaceEntity face = saveFace(savePhoto(space, user));
 
-        Optional<FaceEntity> found = faceService.findById(admin, face.getId());
+        Optional<FaceEntity> found = faceService.findById(user, face.getId());
 
         assertThat(found).isPresent();
         assertThat(found.get().getId()).isEqualTo(face.getId());
-        assertThat(faceService.findById(admin, UUID.randomUUID())).isEmpty();
+        assertThat(faceService.findById(user, UUID.randomUUID())).isEmpty();
     }
 }

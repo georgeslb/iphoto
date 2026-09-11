@@ -16,6 +16,8 @@ public record TaskAdminDTO(
         UUID photoId,
         UUID userId,
         String errorMessage,
+        // How long the task's last run took start-to-finish, in ms - null until it has run once.
+        Long durationMs,
         LocalDateTime executeAt,
         LocalDateTime createdAt,
         LocalDateTime updatedAt
@@ -28,6 +30,7 @@ public record TaskAdminDTO(
                 task.getPhotoId(),
                 task.getUserId(),
                 task.getErrorMessage(),
+                task.getDurationMs(),
                 task.getExecuteAt(),
                 task.getCreatedAt(),
                 task.getUpdatedAt()

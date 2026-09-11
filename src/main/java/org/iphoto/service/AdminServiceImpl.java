@@ -4,12 +4,19 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.SetUtils;
+import org.iphoto.entities.FaceStatus;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.TaskEntity;
 import org.iphoto.model.StorageMigrationSummaryDTO;
 import org.iphoto.model.TaskAdminDTO;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.TaskType;
+import org.iphoto.repository.DuplicateRepository;
+import org.iphoto.repository.FaceRepository;
+import org.iphoto.repository.PersonEmbeddingBucketRepository;
+import org.iphoto.repository.PersonMergeSuggestionRepository;
+import org.iphoto.repository.PersonRepository;
+import org.iphoto.repository.PhotoDuplicateRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.repository.TaskRepository;
 import org.springframework.data.domain.Page;
@@ -17,6 +24,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Slice;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -37,6 +45,12 @@ public class AdminServiceImpl implements AdminService {
     private final TaskRepository taskRepository;
     private final StorageMigrationService storageMigrationService;
     private final ObjectMapper objectMapper;
+    private final FaceRepository faceRepository;
+    private final PersonRepository personRepository;
+    private final PersonEmbeddingBucketRepository personEmbeddingBucketRepository;
+    private final PersonMergeSuggestionRepository personMergeSuggestionRepository;
+    private final PhotoDuplicateRepository photoDuplicateRepository;
+    private final DuplicateRepository duplicateRepository;
 
     // Exactly one ACTIVATE_HEAVY_TASKS row ever exists - updated in place on every toggle, not a
     // new row per click, so isHeavyTasksActivated never has to reason about "which one is current."
@@ -143,6 +157,53 @@ public class AdminServiceImpl implements AdminService {
         tasks.forEach(this::resetToPending);
         taskRepository.saveAll(tasks);
         return tasks.size();
+    }
+
+    @Override
+    @Transactional
+    public int restartFaceExtraction() {
+        return taskRepository.resetAllToPendingByTaskType(TaskType.ISOLATE_FACES, LocalDateTime.now());
+    }
+
+    @Override
+    @Transactional
+    public int restartDuplicationDetection() {
+        // DuplicationService#checkDuplication short-circuits (task -> COMPLETED, no scan) the moment
+        // a photo already has any duplicate_photos row, so without tearing the groups down first a
+        // re-queued CHECK_DUPLICATION would only ever re-examine photos that currently have NO
+        // duplicates. Wipe children (duplicate_photos) then parents (duplicates) so every re-queued
+        // task rebuilds from scratch. Both deletes are global and unscoped - same "admin rebuilds
+        // everything for every user" intent as restartPersonRecognition's deleteAllInBatch calls.
+        photoDuplicateRepository.deleteAllInBatch();
+        duplicateRepository.deleteAllInBatch();
+        return taskRepository.resetAllToPendingByTaskType(TaskType.CHECK_DUPLICATION, LocalDateTime.now());
+    }
+
+    @Override
+    @Transactional
+    public Map<String, Integer> restartPersonRecognition() {
+        // Order matters for FKs: detach faces (faces.person_id) and drop the person-owned caches
+        // (person_embedding_buckets.person_id, person_merge_suggestions.person_a/b_id) BEFORE the
+        // people rows themselves. deleteAllInBatch = one DELETE per table, no per-row lifecycle
+        // callbacks - PersonEntity's @PreRemove face-nulling is replaced by the bulk detach above.
+        int facesReset = faceRepository.detachAllFromPersonsAndResetStatus(FaceStatus.NEW);
+        personEmbeddingBucketRepository.deleteAllInBatch();
+        personMergeSuggestionRepository.deleteAllInBatch();
+        int personsDeleted = (int) personRepository.count();
+        personRepository.deleteAllInBatch();
+
+        // FACE_RECOGNITION is one perpetual, self-rescheduling row (see IPhotoApplication's
+        // bootstrap) - reset the existing one to run now, or bootstrap it if it somehow isn't there.
+        taskRepository.findFirstByTaskTypeOrderByCreatedAtDesc(TaskType.FACE_RECOGNITION)
+                .ifPresentOrElse(
+                        task -> {
+                            resetToPending(task);
+                            taskRepository.save(task);
+                        },
+                        () -> taskManagerService.createTaskEntity(TaskType.FACE_RECOGNITION, null, null, LocalDateTime.now()));
+
+        log.info("Person recognition restarted by admin: deleted {} people, detached {} faces", personsDeleted, facesReset);
+        return Map.of("personsDeleted", personsDeleted, "facesReset", facesReset);
     }
 
     // Manual admin override of a task's status - the same reset updateImageTaskToDo above and

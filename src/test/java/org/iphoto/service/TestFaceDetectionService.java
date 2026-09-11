@@ -23,8 +23,9 @@ class TestFaceDetectionService implements FaceDetectionService {
 
     @Override
     public void deleteFaces(PhotoEntity photo) {
-        // no-op - not called by any production code path today (see FaceDetectionService's own
-        // javadoc), and not exercised by any test either way.
+        // no-op - the real impl calls this from detectAndSaveFaces (replayed-ISOLATE_FACES cleanup),
+        // but that whole path is @Profile("!test") and unreachable here, and no test drives faces
+        // through this stub (they're inserted directly via FaceRepository - see FaceServiceTest).
     }
 
     @Override

@@ -53,6 +53,12 @@ public class TaskEntity{
     @Column(columnDefinition = "TEXT")
     private String stackTrace;
 
+    // Wall-clock time the last run of this task actually took, start-to-finish, in milliseconds -
+    // set by TaskWorkerManagerImpl#processTask around the type-specific work. Null until the task
+    // has run at least once; overwritten on every re-run (retry, or the self-rescheduling
+    // FACE_RECOGNITION task), so it always reflects the most recent execution.
+    private Long durationMs;
+
     private LocalDateTime executeAt;
 
     private LocalDateTime createdAt;

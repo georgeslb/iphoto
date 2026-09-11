@@ -22,6 +22,9 @@ export function useTaskManagement() {
   const [error, setError] = useState(null);
   const [message, setMessage] = useState(null);
   const [restartingIds, setRestartingIds] = useState(() => new Set());
+  // Which "Reprocessing" panel action is currently in flight ('faces' | 'persons' | 'duplicates'),
+  // or null - drives the panel's disabled/busy state so two can't be fired at once.
+  const [reprocessing, setReprocessing] = useState(null);
 
   const fetchTasks = useCallback(async (targetPage) => {
     setLoading(true);
@@ -92,10 +95,46 @@ export function useTaskManagement() {
     }
   }, [messages, fetchTasks, pageNumber]);
 
+  // "Reprocessing" panel - re-run a whole pipeline stage (AdminController's /reprocess/* routes).
+  // confirmMessage is shown via window.confirm first when set (the destructive persons one);
+  // successMessage takes the parsed response body. Refetches the task list from page 0 after,
+  // since every one of these leaves a batch of tasks freshly PENDING.
+  const runReprocess = useCallback(async (kind, confirmMessage, successMessage) => {
+    if (confirmMessage && !window.confirm(confirmMessage)) return;
+    setError(null);
+    setMessage(null);
+    setReprocessing(kind);
+    try {
+      const res = await fetch(`/api/admin/reprocess/${kind}`, { method: 'POST' });
+      if (!res.ok) throw new Error(messages["failedToReprocess"]);
+      const data = await res.json();
+      setMessage(successMessage(data));
+      await fetchTasks(0);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setReprocessing(null);
+    }
+  }, [messages, fetchTasks]);
+
+  const reprocessFaces = useCallback(
+    () => runReprocess('faces', null, data => messages["reprocessFacesDone"](data.tasksReset)),
+    [runReprocess, messages]);
+
+  const reprocessDuplicates = useCallback(
+    () => runReprocess('duplicates', null, data => messages["reprocessDuplicatesDone"](data.tasksReset)),
+    [runReprocess, messages]);
+
+  const reprocessPersons = useCallback(
+    () => runReprocess('persons', messages["reprocessPersonsConfirm"],
+      data => messages["reprocessPersonsDone"](data.personsDeleted, data.facesReset)),
+    [runReprocess, messages]);
+
   return {
     tasks, pageNumber, totalPages, totalElements,
     statusFilter, setStatusFilter, taskTypeFilter, setTaskTypeFilter,
-    loading, error, message, restartingIds,
+    loading, error, message, restartingIds, reprocessing,
     goToPage, restartTask, restartTasks,
+    reprocessFaces, reprocessDuplicates, reprocessPersons,
   };
 }

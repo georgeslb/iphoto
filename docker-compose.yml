@@ -57,6 +57,13 @@ services:
     container_name: iphoto-app
     image: ghcr.io/georgeslb/iphoto:${IPHOTO_TAG:-latest}
     restart: unless-stopped
+    # Hard cap on the container's RSS. Without it the JVM's ergonomics see the whole host (a WSL2
+    # VM with ~29GB in qualif) and size MaxHeapSize at MaxRAMPercentage=25% of that = ~7.3GB - G1
+    # then commits that entire heap under load and never uncommits it, which is most of the ~15GB
+    # RSS that was observed (the rest is metaspace/code cache + the OpenCV/FFmpeg/ONNX/DJL native
+    # libs). -Xmx below is the real control; this limit is the backstop and the value
+    # MaxRAMPercentage is measured against. Raise both together if the working set grows.
+    mem_limit: 5g
     depends_on:
       iphoto-db:
         condition: service_healthy
@@ -92,6 +99,24 @@ services:
       # purpose: logs are pruned by application.yml's own rolling policy (30 days / 500MB total), a
       # very different retention need than photo originals, which this app never deletes on its own.
       LOGGING_FILE_NAME: /data/iphoto-logs/iphoto.log
+      # Heap sizing + GC tuning, picked after finding the container at ~15GB RSS with only ~2.5GB
+      # of live heap (the rest was uncollected young-gen garbage sitting in an over-sized,
+      # fully-committed 7.3GB G1 heap - see mem_limit's comment above).
+      #   -Xmx3g / -Xms1g          explicit heap ceiling instead of the 25%-of-host ergonomic;
+      #                            live set is ~2.5GB, 3g leaves headroom for spikes.
+      #   G1PeriodicGCInterval     let G1 run a collection (and uncommit freed regions) during
+      #                            idle periods, not only under allocation pressure - this is what
+      #                            actually returns memory to the OS between bursts of work.
+      #   MaxRAMPercentage=60      only relevant as a fallback, bounded by mem_limit (5g) not the
+      #                            host, so it can never re-inflate past ~3g anyway.
+      #   NativeMemoryTracking     so `jcmd <pid> VM.native_memory summary` works after a restart
+      #                            (it can only be enabled at JVM start) - keep until the off-heap
+      #                            side is fully characterised, then drop it (small native cost).
+      JAVA_TOOL_OPTIONS: >-
+        -Xms1g -Xmx3g
+        -XX:MaxRAMPercentage=60
+        -XX:G1PeriodicGCInterval=300000
+        -XX:NativeMemoryTracking=summary
     volumes:
       # Bind mounts to known host paths under /data/iphoto, not Docker-managed named volumes - see
       # iphoto-db's own volumes comment above for why.

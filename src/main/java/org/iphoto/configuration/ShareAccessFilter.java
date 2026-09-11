@@ -42,8 +42,13 @@ public class ShareAccessFilter extends OncePerRequestFilter {
     private final ShareRepository shareRepository;
     private final PhotoRepository photoRepository;
 
+    // group(1) is always the album UUID (the only thing checked below). Allowed tails:
+    //   /days                         - day-index counts (AlbumShareController.getAlbumDays)
+    //   /photos                       - flat album page
+    //   /photos/{photoUuid}           - single photo (shared Lightbox)
+    //   /photos/day/{yyyy-MM-dd}      - one day's photos (day-index lazy load)
     private static final Pattern ALBUM_SHARE_PATTERN =
-            Pattern.compile("^/api/albums/share/([0-9a-fA-F-]{36})(?:/photos(?:/([0-9a-fA-F-]{36}))?)?$");
+            Pattern.compile("^/api/albums/share/([0-9a-fA-F-]{36})(?:/days|/photos(?:/[0-9a-fA-F-]{36}|/day/\\d{4}-\\d{2}-\\d{2})?)?$");
     private static final Pattern PHOTO_ASSET_PATTERN =
             Pattern.compile("^/api/photos/([0-9a-fA-F-]{36})(?:/.*)?$");
 

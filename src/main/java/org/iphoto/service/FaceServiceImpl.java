@@ -79,19 +79,21 @@ public class FaceServiceImpl implements FaceService {
     }
 
     @Override
-    public Page<PersonDTO> getPersons(Pageable pageable) {
+    public Page<PersonDTO> getPersons(UserEntity currentUser, Pageable pageable) {
         // Named-first/photoCount-DESC is the fixed, non-negotiable default (see
-        // PersonRepository.findAllOrderByNamedFirstThenPhotoCountDesc) - strip any Sort the caller
-        // asked for via ?sort= so there's nothing for Spring Data to append after that query's own
-        // ORDER BY, only page/size survive here.
+        // PersonRepository.findAllBySpaceIdOrderByNamedFirstThenPhotoCountDesc) - strip any Sort
+        // the caller asked for via ?sort= so there's nothing for Spring Data to append after that
+        // query's own ORDER BY, only page/size survive here. Scoped to this user's own MAIN space:
+        // people are per-user, not shared.
         Pageable pageSizeOnly = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize());
-        return personRepository.findAllOrderByNamedFirstThenPhotoCountDesc(pageSizeOnly)
+        SpaceEntity defaultSpaceForUser = spaceService.getDefaultSpaceForUser(currentUser);
+        return personRepository.findAllBySpaceIdOrderByNamedFirstThenPhotoCountDesc(defaultSpaceForUser.getId(), pageSizeOnly)
                 .map(this::mapToPerson); // Pass user to mapToPerson
     }
 
     @Override
     public PersonDTO getPerson(UUID id) {
-        return personRepository.findById(id)
+        return personRepository.findByIdInMainSpace(id)
                 .map(this::mapToPerson)
                 .orElseThrow(() -> new NoSuchElementException("no person found with id " + id));
     }
@@ -108,26 +110,31 @@ public class FaceServiceImpl implements FaceService {
 
     @Override
     public Page<FaceDTO> getPersonFaces(UUID id, Pageable pageable) {
+        // Gate on the @MainSpaceLimited person lookup first (same as getPersonDays/
+        // getPersonPhotosForDay) - findByPersonId itself isn't space-scoped, so without this a
+        // caller could page another user's person's face thumbnails by guessing its id.
+        personRepository.findByIdInMainSpace(id)
+                .orElseThrow(() -> new NoSuchElementException("no person found with id " + id));
         return faceRepository.findByPersonId(id, pageable)
                 .map(this::mapToDTO);
     }
 
     @Override
     public List<DayBucketDTO> getPersonDays(UUID id) {
-        return personRepository.findById(id).map(photoService::getPersonDailyPhotoCounts)
+        return personRepository.findByIdInMainSpace(id).map(photoService::getPersonDailyPhotoCounts)
                 .orElseThrow(() -> new NoSuchElementException("no person found with id " + id));
     }
 
     @Override
     public Page<Photo> getPersonPhotosForDay(UUID id, LocalDate day, Pageable pageable) {
-        return personRepository.findById(id).map(personEntity -> photoService.getPersonPhotosForDay(personEntity, day, pageable))
+        return personRepository.findByIdInMainSpace(id).map(personEntity -> photoService.getPersonPhotosForDay(personEntity, day, pageable))
                 .orElseThrow(() -> new NoSuchElementException("no person found with id " + id));
     }
 
     @Override
     @Transactional
     public PersonDTO renamePerson(UUID personId, String name, boolean confirmed, List<UUID> mergeWithPersonIds) {
-        PersonEntity person = personRepository.findById(personId)
+        PersonEntity person = personRepository.findByIdInMainSpace(personId)
                 .orElseThrow(() -> new NoSuchElementException("no person found with id " + personId));
 
         if (!StringUtils.hasText(name)) {
@@ -156,7 +163,7 @@ public class FaceServiceImpl implements FaceService {
             }
         }
 
-        return mapToPerson(personRepository.findById(personId)
+        return mapToPerson(personRepository.findByIdInMainSpace(personId)
                 .orElseThrow(() -> new NoSuchElementException("no person found with id " + personId)));
     }
 
@@ -170,11 +177,22 @@ public class FaceServiceImpl implements FaceService {
         return faceRepository.findById(id);
     }
 
+    // FaceEntity has no space_id of its own (it doesn't extend BaseEntity), so faceRepository
+    // .findById can't be @MainSpaceLimited - ownership is checked through the face's photo's
+    // space instead. Throws NoSuchElementException (-> 404, indistinguishable from "no such
+    // face") rather than 403 so a caller can't probe which face ids exist.
+    private void assertFaceOwnedBy(FaceEntity face, UserEntity user) {
+        if (!face.getPhoto().getSpace().getUser().getId().equals(user.getId())) {
+            throw new NoSuchElementException("no face found with id " + face.getId());
+        }
+    }
+
     @Override
     @Transactional
-    public void deleteFace(UUID id) {
+    public void deleteFace(UserEntity user, UUID id) {
         FaceEntity face = faceRepository.findById(id)
                 .orElseThrow(() -> new NoSuchElementException("no face found with id " + id));
+        assertFaceOwnedBy(face, user);
 
         // If this was someone's cover face, pick a replacement immediately rather than leaving it
         // null — same pattern as FaceDetectionService.deleteFaces for a whole-photo deletion. The
@@ -207,7 +225,7 @@ public class FaceServiceImpl implements FaceService {
     @Override
     @Transactional
     public void unlinkPersonFromPhoto(UUID personId, UUID photoId) {
-        PersonEntity person = personRepository.findById(personId)
+        PersonEntity person = personRepository.findByIdInMainSpace(personId)
                 .orElseThrow(() -> new NoSuchElementException("no person found with id " + personId));
 
         List<FaceEntity> faces = faceRepository.findByPersonIdAndPhotoId(personId, photoId);
@@ -222,9 +240,10 @@ public class FaceServiceImpl implements FaceService {
 
     @Override
     @Transactional
-    public void unlinkFaceFromPerson(UUID faceId) {
+    public void unlinkFaceFromPerson(UserEntity user, UUID faceId) {
         FaceEntity face = faceRepository.findById(faceId)
                 .orElseThrow(() -> new NoSuchElementException("no face found with id " + faceId));
+        assertFaceOwnedBy(face, user);
 
         PersonEntity person = face.getPerson();
         if (person == null) {
@@ -238,9 +257,10 @@ public class FaceServiceImpl implements FaceService {
 
     @Override
     @Transactional
-    public FaceDTO setFacePerson(UUID faceId, String name, boolean confirmMerge) {
+    public FaceDTO setFacePerson(UserEntity user, UUID faceId, String name, boolean confirmMerge) {
         FaceEntity face = faceRepository.findById(faceId)
                 .orElseThrow(() -> new NoSuchElementException("no face found with id " + faceId));
+        assertFaceOwnedBy(face, user);
 
         if (!StringUtils.hasText(name)) {
             throw new IllegalArgumentException("name must not be blank");

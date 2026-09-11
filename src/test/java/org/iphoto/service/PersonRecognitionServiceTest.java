@@ -17,6 +17,9 @@ import org.iphoto.repository.UserRepository;
 import org.iphoto.util.EmbeddingCodec;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDateTime;
@@ -24,14 +27,18 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 // Direct service-level test - PersonRecognitionService has no HTTP endpoint of its own (it's
 // consumed internally by FaceRecognitionService/FaceService/FaceDetectionService, all excluded or
-// tested elsewhere). None of PersonRepository/FaceRepository/PersonEmbeddingBucketRepository's
-// methods used here are @MainSpaceLimited (only PersonRepository's findAll/findByNameIgnoreCase*
-// overloads are, not used by this service), so no authenticated context is needed.
+// tested elsewhere). Its person re-fetch (PersonRepository.findById) is now @MainSpaceLimited - a
+// no-op on the heavy-task thread pool it runs on in production, but on this bare JUnit thread it
+// needs a principal, so every direct personRecognitionService call and every direct
+// personRepository.findById read goes through runAs(user, ...). People/faces are per-user: each
+// test uses a fresh, dedicated non-admin user (newUser(), which gets its own MAIN space) - the
+// admin account is an ops account that never touches this feature.
 class PersonRecognitionServiceTest extends AbstractIntegrationTest {
 
     @Autowired
@@ -49,7 +56,31 @@ class PersonRecognitionServiceTest extends AbstractIntegrationTest {
     @Autowired
     private UserRepository userRepository;
     @Autowired
+    private UserService userService;
+    @Autowired
     private TransactionTemplate transactionTemplate;
+
+    private UserEntity newUser() {
+        return userService.createUser("person-recognition-" + UUID.randomUUID(), "password", "USER");
+    }
+
+    private <T> T runAs(UserEntity user, Callable<T> action) throws Exception {
+        Authentication previous = SecurityContextHolder.getContext().getAuthentication();
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(user.getUsername(), null, List.of()));
+        try {
+            return action.call();
+        } finally {
+            SecurityContextHolder.getContext().setAuthentication(previous);
+        }
+    }
+
+    private void runAs(UserEntity user, Runnable action) throws Exception {
+        runAs(user, () -> {
+            action.run();
+            return null;
+        });
+    }
 
     private PhotoEntity savePhoto(SpaceEntity space, UserEntity user, LocalDateTime dateTaken) {
         String seed = UUID.randomUUID().toString();
@@ -75,18 +106,18 @@ class PersonRecognitionServiceTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void updatePersonAttachesTheFaceAndCreatesAnEmbeddingBucket() {
-        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
-        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
-        PhotoEntity photo = savePhoto(space, admin, LocalDateTime.of(2024, 1, 1, 0, 0));
+    void updatePersonAttachesTheFaceAndCreatesAnEmbeddingBucket() throws Exception {
+        UserEntity user = newUser();
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
+        PhotoEntity photo = savePhoto(space, user, LocalDateTime.of(2024, 1, 1, 0, 0));
         FaceEntity face = saveFace(photo, 1.0f);
         PersonEntity person = personRepository.save(PersonEntity.builder().space(space).faces(new ArrayList<>()).build());
 
-        personRecognitionService.updatePerson(person, face);
+        runAs(user, () -> personRecognitionService.updatePerson(person, face));
 
         FaceEntity reloadedFace = faceRepository.findById(face.getId()).orElseThrow();
         assertThat(reloadedFace.getPerson().getId()).isEqualTo(person.getId());
-        PersonEntity reloadedPerson = personRepository.findById(person.getId()).orElseThrow();
+        PersonEntity reloadedPerson = runAs(user, () -> personRepository.findByIdInMainSpace(person.getId()).orElseThrow());
         assertThat(reloadedPerson.getCoverFace()).isNotNull();
         List<PersonEmbeddingBucketEntity> buckets = personEmbeddingBucketRepository.findByPersonId(person.getId());
         assertThat(buckets).hasSize(1);
@@ -106,10 +137,10 @@ class PersonRecognitionServiceTest extends AbstractIntegrationTest {
     // person.getFaces().add(face) inside updatePerson would have thrown
     // LazyInitializationException on, had its own re-fetch-by-id fix not been in place.
     @Test
-    void updatePersonStillWorksWhenGivenAGenuinelyDetachedPersonAndFace() {
-        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
-        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
-        PhotoEntity existingPhoto = savePhoto(space, admin, LocalDateTime.of(2023, 1, 1, 0, 0));
+    void updatePersonStillWorksWhenGivenAGenuinelyDetachedPersonAndFace() throws Exception {
+        UserEntity user = newUser();
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
+        PhotoEntity existingPhoto = savePhoto(space, user, LocalDateTime.of(2023, 1, 1, 0, 0));
         FaceEntity existingFace = saveFace(existingPhoto, 7.0f);
         PersonEntity person = personRepository.save(
                 PersonEntity.builder().space(space).faces(new ArrayList<>(List.of(existingFace))).build());
@@ -117,15 +148,15 @@ class PersonRecognitionServiceTest extends AbstractIntegrationTest {
         faceRepository.save(existingFace);
         personRecognitionService.addFaceToBucket(person, existingFace);
 
-        PhotoEntity newPhoto = savePhoto(space, admin, LocalDateTime.of(2023, 6, 1, 0, 0));
+        PhotoEntity newPhoto = savePhoto(space, user, LocalDateTime.of(2023, 6, 1, 0, 0));
         FaceEntity newFace = saveFace(newPhoto, 7.1f);
 
         // Fresh loads, not the objects just built above - `faces` on this specific instance is a
         // real Hibernate-managed lazy proxy, not yet initialized.
-        PersonEntity detachedPerson = personRepository.findById(person.getId()).orElseThrow();
+        PersonEntity detachedPerson = runAs(user, () -> personRepository.findByIdInMainSpace(person.getId()).orElseThrow());
         FaceEntity detachedFace = faceRepository.findById(newFace.getId()).orElseThrow();
 
-        personRecognitionService.updatePerson(detachedPerson, detachedFace);
+        runAs(user, () -> personRecognitionService.updatePerson(detachedPerson, detachedFace));
 
         FaceEntity reloadedNewFace = faceRepository.findById(newFace.getId()).orElseThrow();
         assertThat(reloadedNewFace.getPerson()).isNotNull();
@@ -137,9 +168,9 @@ class PersonRecognitionServiceTest extends AbstractIntegrationTest {
 
     @Test
     void addPersonCreatesABrandNewPersonOwningEveryGivenFace() {
-        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
-        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
-        PhotoEntity photo = savePhoto(space, admin, LocalDateTime.of(2024, 2, 2, 0, 0));
+        UserEntity user = newUser();
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
+        PhotoEntity photo = savePhoto(space, user, LocalDateTime.of(2024, 2, 2, 0, 0));
         FaceEntity face1 = saveFace(photo, 2.0f);
         FaceEntity face2 = saveFace(photo, 2.1f);
 
@@ -153,10 +184,10 @@ class PersonRecognitionServiceTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void mergePersonsFoldsTheSmallerIntoTheLargerAndDeletesTheSource() {
-        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
-        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
-        PhotoEntity photo = savePhoto(space, admin, LocalDateTime.of(2024, 3, 1, 0, 0));
+    void mergePersonsFoldsTheSmallerIntoTheLargerAndDeletesTheSource() throws Exception {
+        UserEntity user = newUser();
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
+        PhotoEntity photo = savePhoto(space, user, LocalDateTime.of(2024, 3, 1, 0, 0));
 
         FaceEntity biggerFace1 = saveFace(photo, 3.0f);
         FaceEntity biggerFace2 = saveFace(photo, 3.1f);
@@ -167,10 +198,10 @@ class PersonRecognitionServiceTest extends AbstractIntegrationTest {
         personRecognitionService.addPerson(List.of(smallerFace));
         UUID smallerPersonId = faceRepository.findById(smallerFace.getId()).orElseThrow().getPerson().getId();
 
-        PersonEntity target = personRecognitionService.mergePersons(biggerPersonId, smallerPersonId);
+        PersonEntity target = runAs(user, () -> personRecognitionService.mergePersons(biggerPersonId, smallerPersonId));
 
         assertThat(target.getId()).isEqualTo(biggerPersonId);
-        assertThat(personRepository.findById(smallerPersonId)).isEmpty();
+        assertThat(runAs(user, () -> personRepository.findByIdInMainSpace(smallerPersonId))).isEmpty();
         assertThat(faceRepository.findById(smallerFace.getId()).orElseThrow().getPerson().getId()).isEqualTo(biggerPersonId);
     }
 
@@ -181,11 +212,11 @@ class PersonRecognitionServiceTest extends AbstractIntegrationTest {
     // same, now-shared face. mergeFacesIntoTarget must null out source's cover face before target
     // claims it.
     @Test
-    void mergePersonsSucceedsWhenSourcesCoverFaceBecomesTheTargetsNewCoverFace() {
-        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
-        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
+    void mergePersonsSucceedsWhenSourcesCoverFaceBecomesTheTargetsNewCoverFace() throws Exception {
+        UserEntity user = newUser();
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
 
-        PhotoEntity olderPhoto = savePhoto(space, admin, LocalDateTime.of(2020, 1, 1, 0, 0));
+        PhotoEntity olderPhoto = savePhoto(space, user, LocalDateTime.of(2020, 1, 1, 0, 0));
         FaceEntity biggerFace1 = saveFace(olderPhoto, 8.0f);
         FaceEntity biggerFace2 = saveFace(olderPhoto, 8.1f);
         personRecognitionService.addPerson(List.of(biggerFace1, biggerFace2));
@@ -193,25 +224,25 @@ class PersonRecognitionServiceTest extends AbstractIntegrationTest {
 
         // Only face this (smaller) person has, so addPerson makes it that person's own cover face -
         // and its later dateTaken makes it the bigger person's new cover face too once merged in.
-        PhotoEntity newerPhoto = savePhoto(space, admin, LocalDateTime.of(2024, 1, 1, 0, 0));
+        PhotoEntity newerPhoto = savePhoto(space, user, LocalDateTime.of(2024, 1, 1, 0, 0));
         FaceEntity smallerFace = saveFace(newerPhoto, 8.2f);
         personRecognitionService.addPerson(List.of(smallerFace));
         UUID smallerPersonId = faceRepository.findById(smallerFace.getId()).orElseThrow().getPerson().getId();
-        assertThat(personRepository.findById(smallerPersonId).orElseThrow().getCoverFace().getId())
+        assertThat(runAs(user, () -> personRepository.findByIdInMainSpace(smallerPersonId)).orElseThrow().getCoverFace().getId())
                 .isEqualTo(smallerFace.getId());
 
-        PersonEntity target = personRecognitionService.mergePersons(biggerPersonId, smallerPersonId);
+        PersonEntity target = runAs(user, () -> personRecognitionService.mergePersons(biggerPersonId, smallerPersonId));
 
         assertThat(target.getId()).isEqualTo(biggerPersonId);
         assertThat(target.getCoverFace().getId()).isEqualTo(smallerFace.getId());
-        assertThat(personRepository.findById(smallerPersonId)).isEmpty();
+        assertThat(runAs(user, () -> personRepository.findByIdInMainSpace(smallerPersonId))).isEmpty();
     }
 
     @Test
-    void mergeIntoAlwaysKeepsTheExplicitTargetRegardlessOfFaceCount() {
-        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
-        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
-        PhotoEntity photo = savePhoto(space, admin, LocalDateTime.of(2024, 4, 1, 0, 0));
+    void mergeIntoAlwaysKeepsTheExplicitTargetRegardlessOfFaceCount() throws Exception {
+        UserEntity user = newUser();
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
+        PhotoEntity photo = savePhoto(space, user, LocalDateTime.of(2024, 4, 1, 0, 0));
 
         FaceEntity targetFace = saveFace(photo, 4.0f);
         personRecognitionService.addPerson(List.of(targetFace));
@@ -223,18 +254,18 @@ class PersonRecognitionServiceTest extends AbstractIntegrationTest {
         UUID sourceId = faceRepository.findById(sourceFace1.getId()).orElseThrow().getPerson().getId();
 
         // Source has MORE faces than target here - mergeInto must still keep target as the keeper.
-        PersonEntity result = personRecognitionService.mergeInto(targetId, sourceId);
+        PersonEntity result = runAs(user, () -> personRecognitionService.mergeInto(targetId, sourceId));
 
         assertThat(result.getId()).isEqualTo(targetId);
-        assertThat(personRepository.findById(sourceId)).isEmpty();
+        assertThat(runAs(user, () -> personRepository.findByIdInMainSpace(sourceId))).isEmpty();
     }
 
     @Test
-    void recalculateCoverFacePicksTheMostRecentDatedFaceAndNeverOverridesAManualChoice() {
-        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
-        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
-        PhotoEntity olderPhoto = savePhoto(space, admin, LocalDateTime.of(2020, 1, 1, 0, 0));
-        PhotoEntity newerPhoto = savePhoto(space, admin, LocalDateTime.of(2023, 1, 1, 0, 0));
+    void recalculateCoverFacePicksTheMostRecentDatedFaceAndNeverOverridesAManualChoice() throws Exception {
+        UserEntity user = newUser();
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
+        PhotoEntity olderPhoto = savePhoto(space, user, LocalDateTime.of(2020, 1, 1, 0, 0));
+        PhotoEntity newerPhoto = savePhoto(space, user, LocalDateTime.of(2023, 1, 1, 0, 0));
         FaceEntity olderFace = saveFace(olderPhoto, 5.0f);
         FaceEntity newerFace = saveFace(newerPhoto, 5.1f);
         PersonEntity person = personRepository.save(PersonEntity.builder()
@@ -248,9 +279,10 @@ class PersonRecognitionServiceTest extends AbstractIntegrationTest {
         // face.getPhoto().getDateTaken() off each of the person's faces, and those `photo`
         // references come back as lazy proxies once reloaded fresh here, so this whole check
         // needs one real transaction/session spanning the reload + the call, the same role
-        // open-in-view plays around a real request.
-        transactionTemplate.executeWithoutResult(status -> {
-            PersonEntity reloaded = personRepository.findById(person.getId()).orElseThrow();
+        // open-in-view plays around a real request. runAs supplies the principal the
+        // @MainSpaceLimited personRepository.findById re-fetch inside recalculateCoverFace needs.
+        runAs(user, () -> transactionTemplate.executeWithoutResult(status -> {
+            PersonEntity reloaded = personRepository.findByIdInMainSpace(person.getId()).orElseThrow();
             personRecognitionService.recalculateCoverFace(reloaded);
             assertThat(reloaded.getCoverFace().getId()).isEqualTo(newerFace.getId());
             assertThat(reloaded.getCoverFaceOrigin()).isEqualTo(CoverFaceOrigin.CALCULATED);
@@ -260,14 +292,14 @@ class PersonRecognitionServiceTest extends AbstractIntegrationTest {
             reloaded.setCoverFaceOrigin(CoverFaceOrigin.MANUAL);
             personRecognitionService.recalculateCoverFace(reloaded);
             assertThat(reloaded.getCoverFace().getId()).isEqualTo(olderFace.getId());
-        });
+        }));
     }
 
     @Test
     void addAndRemoveFaceToBucketMaintainTheRunningAverageAndCleanUpWhenEmpty() {
-        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
-        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
-        PhotoEntity photo = savePhoto(space, admin, LocalDateTime.of(2024, 5, 1, 0, 0));
+        UserEntity user = newUser();
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
+        PhotoEntity photo = savePhoto(space, user, LocalDateTime.of(2024, 5, 1, 0, 0));
         FaceEntity face = saveFace(photo, 6.0f);
         PersonEntity person = personRepository.save(PersonEntity.builder().space(space).faces(new ArrayList<>()).build());
 

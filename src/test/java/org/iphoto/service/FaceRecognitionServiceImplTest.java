@@ -11,11 +11,15 @@ import org.iphoto.repository.PhotoRepository;
 import org.iphoto.util.EmbeddingCodec;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 import java.time.LocalDateTime;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -24,21 +28,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 // groupFaces()/groupFacesForUser() entry point end-to-end (unlike CandidateClustererTest, which
 // covers the extracted matching/promotion logic in isolation without a database).
 //
-// EARLIER attempts at this exact kind of test ran into a real, now-FIXED bug this test itself
-// caught: FaceRepository.findByPersonIsNullFetchPhoto/PersonRepository.findAll() used to be
-// @MainSpaceLimited, an annotation that needs an authenticated SecurityContextHolder principal to
-// scope its query - but groupFacesForUser runs on TaskWorkerManager's own heavy-task thread pool in
-// production, where MainSpaceAspectConfiguration deliberately treats @MainSpaceLimited as a no-op
-// (see its own comment), meaning matching was GENUINELY GLOBAL/unfiltered there, not just in a test
-// simulating it - a real cluster could end up mixing faces from completely different user accounts
-// together. Fixed by having groupFacesForUser resolve and pass its own `user` parameter's space
-// EXPLICITLY to FaceRepository.findByPersonIsNullAndSpaceIdFetchPhoto/
-// PersonRepository.findAllBySpaceId instead of relying on @MainSpaceLimited/SecurityContextHolder
-// at all - so this test needs no SecurityContext trick (no thread-rename bypass, no pushed
-// Authentication) to get real isolation either: a freshly-created, uniquely-named NON-ADMIN user's
-// own default space (see userService.createUser below) is brand new and private to it regardless of
-// which thread or principal calls groupFaces(), fully isolated from other test classes' leftover
-// data purely because the query itself is scoped by space id now.
+// groupFacesForUser's own fetches (ungrouped faces / existing people) are space-scoped by an
+// explicit :spaceId parameter, NOT @MainSpaceLimited (that's a no-op on the heavy-task thread pool
+// this runs on in production - see FaceRepository.findByPersonIsNullAndSpaceIdFetchPhoto's comment),
+// so isolation from other test classes' data comes purely from each test using a freshly-created,
+// uniquely-named non-admin user's brand-new default space.
+//
+// The grouping engine underneath it (PersonRecognitionServiceImpl.updatePerson/addPerson) does
+// re-fetch a person via the now-@MainSpaceLimited PersonRepository.findById - a no-op on a real
+// heavy-task thread in production, but on this bare JUnit thread it needs a principal to resolve a
+// space from, so groupFaces() and the direct personRecognitionService calls here run inside
+// runAs(testUser, ...). The test user's own space is where every fixture lives, so this filters to
+// exactly the right set.
 class FaceRecognitionServiceImplTest extends AbstractIntegrationTest {
 
     @Autowired
@@ -56,6 +57,27 @@ class FaceRecognitionServiceImplTest extends AbstractIntegrationTest {
 
     private UserEntity createTestUser() {
         return userService.createUser("face-grouping-" + UUID.randomUUID(), "password", "USER");
+    }
+
+    // Pushes `user` as the current principal for the duration of `action` - the grouping engine's
+    // PersonRepository.findById re-fetch is @MainSpaceLimited and reads the principal off
+    // SecurityContextHolder, which no security filter chain has populated on this bare test thread.
+    private <T> T runAs(UserEntity user, Callable<T> action) throws Exception {
+        Authentication previous = SecurityContextHolder.getContext().getAuthentication();
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(user.getUsername(), null, List.of()));
+        try {
+            return action.call();
+        } finally {
+            SecurityContextHolder.getContext().setAuthentication(previous);
+        }
+    }
+
+    private void runAs(UserEntity user, Runnable action) throws Exception {
+        runAs(user, () -> {
+            action.run();
+            return null;
+        });
     }
 
     private PhotoEntity savePhoto(SpaceEntity space, UserEntity user, LocalDateTime dateTaken) {
@@ -85,7 +107,7 @@ class FaceRecognitionServiceImplTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void aRealPersonAppearsOnlyOnceAThirdMatchingFaceExistsAndPicksUpTheBacklogOnALaterRun() {
+    void aRealPersonAppearsOnlyOnceAThirdMatchingFaceExistsAndPicksUpTheBacklogOnALaterRun() throws Exception {
         UserEntity testUser = createTestUser();
         SpaceEntity space = spaceService.getDefaultSpaceForUser(testUser);
         LocalDateTime t = LocalDateTime.of(2024, 6, 1, 12, 0);
@@ -96,14 +118,14 @@ class FaceRecognitionServiceImplTest extends AbstractIntegrationTest {
 
         // Only 2 matching faces exist so far - MIN_NEW_PERSON_CLUSTER_SIZE (3) isn't reached, so
         // neither should get a person yet.
-        faceRecognitionService.groupFaces();
+        runAs(testUser, () -> faceRecognitionService.groupFaces());
         assertThat(faceRepository.findById(face1.getId()).orElseThrow().getPerson()).isNull();
         assertThat(faceRepository.findById(face2.getId()).orElseThrow().getPerson()).isNull();
 
         // A later run (MAX_UNGROUPED_FACES_PER_RUN's own comment: "a backlog beyond this is simply
         // picked up by later runs") picks up the backlog once a 3rd matching face exists.
         FaceEntity face3 = saveFace(savePhoto(space, testUser, t.plusMinutes(2)), direction);
-        faceRecognitionService.groupFaces();
+        runAs(testUser, () -> faceRecognitionService.groupFaces());
 
         UUID personId = faceRepository.findById(face1.getId()).orElseThrow().getPerson().getId();
         assertThat(personId).isNotNull();
@@ -122,7 +144,7 @@ class FaceRecognitionServiceImplTest extends AbstractIntegrationTest {
     // which physical DB page a later matching face's row happens to land in - only the page boundary
     // would differ, not the logic this test exercises.
     @Test
-    void aFaceMatchingAPersonPromotedEarlierInTheSameRunAttachesToItInsteadOfSeedingADuplicate() {
+    void aFaceMatchingAPersonPromotedEarlierInTheSameRunAttachesToItInsteadOfSeedingADuplicate() throws Exception {
         UserEntity testUser = createTestUser();
         SpaceEntity space = spaceService.getDefaultSpaceForUser(testUser);
         LocalDateTime t = LocalDateTime.of(2024, 7, 1, 12, 0);
@@ -133,7 +155,7 @@ class FaceRecognitionServiceImplTest extends AbstractIntegrationTest {
         FaceEntity face3 = saveFace(savePhoto(space, testUser, t.plusMinutes(2)), direction); // triggers promotion
         FaceEntity face4 = saveFace(savePhoto(space, testUser, t.plusMinutes(3)), direction); // must join the SAME person
 
-        faceRecognitionService.groupFaces();
+        runAs(testUser, () -> faceRecognitionService.groupFaces());
 
         UUID personId = faceRepository.findById(face1.getId()).orElseThrow().getPerson().getId();
         assertThat(personId).isNotNull();
@@ -157,7 +179,7 @@ class FaceRecognitionServiceImplTest extends AbstractIntegrationTest {
     // aRealPersonAppearsOnlyOnceAThirdMatchingFaceExistsAndPicksUpTheBacklogOnALaterRun above for
     // that half of the contract) - this test only exercises the existing-person-matching skip.
     @Test
-    void anOldFaceIsNeverReMatchedAgainstAnExistingPersonButANewOneStillIs() {
+    void anOldFaceIsNeverReMatchedAgainstAnExistingPersonButANewOneStillIs() throws Exception {
         UserEntity testUser = createTestUser();
         SpaceEntity space = spaceService.getDefaultSpaceForUser(testUser);
         LocalDateTime t = LocalDateTime.of(2024, 8, 1, 12, 0);
@@ -166,7 +188,7 @@ class FaceRecognitionServiceImplTest extends AbstractIntegrationTest {
         // A real person, built directly (not via groupFaces()) so it already exists before either
         // face below is ever analysed.
         FaceEntity personFace = saveFace(savePhoto(space, testUser, t), direction);
-        personRecognitionService.addPerson(List.of(personFace));
+        runAs(testUser, () -> personRecognitionService.addPerson(List.of(personFace)));
         UUID personId = faceRepository.findById(personFace.getId()).orElseThrow().getPerson().getId();
 
         // Same direction as personFace - would clear THRESHOLD easily - but marked OLD up front, as
@@ -178,7 +200,7 @@ class FaceRecognitionServiceImplTest extends AbstractIntegrationTest {
         // Genuinely NEW, same direction, same person to match against.
         FaceEntity newFace = saveFace(savePhoto(space, testUser, t.plusMinutes(2)), direction);
 
-        faceRecognitionService.groupFaces();
+        runAs(testUser, () -> faceRecognitionService.groupFaces());
 
         assertThat(faceRepository.findById(oldFace.getId()).orElseThrow().getPerson())
                 .as("an OLD face must not be re-matched against an existing person")

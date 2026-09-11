@@ -21,7 +21,8 @@ public interface ShareRepository extends JpaRepository<ShareEntity, UUID> {
     List<ShareEntity> findAll();
 
     @MainSpaceLimited
-    Optional<ShareEntity> findById(UUID id);
+    @Query("SELECT p FROM ShareEntity p WHERE p.id = :id")
+    Optional<ShareEntity> findByIdInMainSpace(UUID id);
 
     // Idempotency lookup for the Immich shared-link import - see AlbumRepository's equivalent.
     @MainSpaceLimited

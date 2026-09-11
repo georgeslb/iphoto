@@ -9,10 +9,8 @@ import org.iphoto.model.DayBucketDTO;
 import org.iphoto.model.MemoryDTO;
 import org.iphoto.model.PageResponse;
 import org.iphoto.model.Photo;
-import org.iphoto.model.PhotoSelectionDTO;
 import org.iphoto.model.UploadStatus;
 import org.iphoto.model.request.PhotoEditRequest;
-import org.iphoto.model.request.PhotoSelectionRequest;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.web.multipart.MultipartFile;
@@ -71,7 +69,7 @@ public interface PhotoService {
      */
     void permanentDeleteAssets(UserEntity user, List<UUID> ids);
 
-    Photo updatePhotoDate(UUID id, LocalDateTime newDate);
+    Photo updatePhotoDate(UserEntity user, UUID id, LocalDateTime newDate);
 
     /**
      * Returns final saved image path.
@@ -101,8 +99,6 @@ public interface PhotoService {
     void moveAssetsToMain(UserEntity user, List<UUID> ids) throws Exception;
 
     void deletePhotoInSpace(UserEntity userEntity, UUID spaceId);
-
-    PhotoSelectionDTO getSelection(PhotoSelectionRequest photoSelectionRequest, UserEntity user);
 
     // Backs POST /api/photos/check-hashes - lets a client (mobile camera-sync) skip re-uploading
     // files the server already has, cheaply, before spending bandwidth on them.

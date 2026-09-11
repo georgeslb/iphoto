@@ -37,8 +37,8 @@ This document outlines the functionality and behavior of the IPHOTO web applicat
         deleted**. Permanently deleting a space cascades — all photos still inside it are
         permanently deleted too. The **Main space can never be deleted** (enforced by the
         backend; the frontend does not special-case "Main" itself, it simply respects the
-        `canDeleteSpace` capability flag from `/api/photos/selected`, which the backend sets to
-        `false` for Main).
+        `canDeleteSpace` capability flag from `utils/selectionCapabilities.js`, which is `false`
+        for Main).
     *   **Deleted Photos/Videos section:** Individual photos/videos that were deleted on their
         own (moved to garbage while their space was untouched).
     *   **Important distinction:** if a whole space is deleted, the photos that were inside it
@@ -63,16 +63,24 @@ This document outlines the functionality and behavior of the IPHOTO web applicat
     *   `ADMIN`: Has access to additional features, such as the User Management panel.
 *   **User Management (Admin):** An admin-only section (`/admin/users`) exists for managing user accounts.
 *   **Task Management (Admin):** An admin-only section (`/admin/tasks`, `TaskManagement.jsx`) lists
-    every `TaskEntity` row (paginated, filterable by status/type) and lets an admin manually
-    restart one or many tasks — resetting them back to `PENDING` (clearing any error) regardless of
-    their current status. See §5.7.
+    every `TaskEntity` row (paginated, filterable by status/type; each row also shows how long its
+    last run took, `TaskEntity.durationMs`, set start-to-finish by `TaskWorkerManagerImpl`) and
+    lets an admin manually restart one or many tasks — resetting them back to `PENDING` (clearing
+    any error) regardless of their current status. It also has a **Reprocessing** panel to re-run
+    a whole pipeline stage:
+    *Restart face extraction* / *Restart duplicate detection* reset every `ISOLATE_FACES` /
+    `CHECK_DUPLICATION` task to `PENDING`; *Restart person recognition* (confirmed first, it's
+    destructive) deletes every `PersonEntity` (plus their embedding buckets and merge suggestions),
+    detaches every face and marks it `NEW`, then kicks the perpetual `FACE_RECOGNITION` task to
+    run now — the detected faces themselves (detection + embeddings) are kept, only the grouping is
+    thrown away. See §5.7.
 
 ## 3. Main Application Layout
 
 The application is a Single Page Application (SPA) with a consistent layout:
 
 *   **Sidebar:** A persistent navigation sidebar on the left, providing access to the main sections of the application (Library, Albums, Spaces, Map, etc.) and the logout button. **Responsive:** on screens ≤768px it becomes a collapsible drawer (`components/Sidebar.jsx` owns its own open/closed state) with a fixed hamburger toggle button, closing automatically on navigation.
-*   **Header:** A context-aware header that appears above the main content. It displays actions relevant to the current view and selection (e.g., "Delete", "Add to Album", "Upload"). **Button visibility is backend-driven, not computed client-side**: the frontend POSTs the current menu context (`menu`, `spaceIds`, `albumIds` — no separate `lightbox` flag; when the Lightbox is open, `menu` is simply `"lightbox"`, overriding whatever the underlying page's menu would otherwise be) and selected photo IDs to `/api/photos/selected`, and the backend returns capability flags (e.g. `canBeRestored`, `canBeDeleted`, `canBeMovedToMain`, `canBeMovedToAlbum`, `canBeRemovedFromAlbum`, `canBeSetAsCover`, `canBePermanentlyDeleted`, `canEditDate`, `canDownload`) plus a nested `menuSelection` object with menu-level flags (`canUpload`, `canCreateAlbum`, `canDeleteAlbum`, `canCreateSpace`, `canDeleteSpace`, `canRestoreSpace`, `canPermanentlyDeleteSpace`, `canAddAAShareLinkToAlbum`). `Header.jsx` renders buttons purely by reading these flags — it does not decide on its own whether an action is allowed for a given menu/selection combination.
+*   **Header:** A context-aware header that appears above the main content. It displays actions relevant to the current view and selection (e.g., "Delete", "Add to Album", "Upload"). **Button visibility is computed client-side** by `utils/selectionCapabilities.js` (a pure function; `hooks/useMenuSelection.js` maps the current route + selection onto its inputs). Given the current menu (`"library"`/`"album"`/`"albums"`/`"space"`/`"spaces"`/`"garbage"`, or `"lightbox"` whenever the Lightbox is open, overriding the underlying page's menu), which space/album the view is scoped to, and the selection, it returns capability flags (`canBeRestored`, `canBeDeleted`, `canBeMovedToMain`, `canBeMovedToAlbum`, `canBeRemovedFromAlbum`, `canBeSetAsCover`, `canBePermanentlyDeleted`, `canEditDate`, `canDownload`, `canBeModified`) plus a nested `menuSelection` object with menu-level flags (`canUpload`, `canCreateAlbum`, `canDeleteAlbum`, `canCreateSpace`, `canDeleteSpace`, `canRestoreSpace`, `canPermanentlyDeleteSpace`, `canAddAAShareLinkToAlbum`). `Header.jsx` renders buttons purely by reading these flags. These are cosmetic — every mutating endpoint enforces its own authorization server-side (there used to be a `POST /api/photos/selected` + `POST /api/menu/selected` round-trip for this; removed, since the flags never were a security boundary). The one server-provided input is `Photo.inMainSpace` (drives the Lightbox "Move to Main" button). The "delete/restore selected" menu flags (`canDeleteAlbum`/`canDeleteSpace`/`canRestoreSpace`/`canPermanentlyDeleteSpace`) are true exactly when the current list has ≥1 selected row the bulk action can act on — `canDeleteSpace` additionally excludes the MAIN space, which can never be removed (the old `POST /api/menu/selected` had these inverted, so the buttons never actually appeared for a real selection).
 *   **Main Content Area:** The central part of the screen that displays the primary content, such as photo grids, album details, or maps.
 *   **Lightbox:** A full-screen modal view for inspecting a single photo in detail. It provides navigation to the previous/next photo and access to actions for that specific photo. **Responsive:** the photo and the metadata sidebar sit side-by-side on desktop, but stack vertically on screens ≤768px (metadata panel becomes a scrollable panel below the photo, capped at 45vh).
 *   **Responsive design:** the app targets full phone support (breakpoints at 768px and 480px),
@@ -153,8 +161,8 @@ This section describes the application's features. For the corresponding backend
     endpoint. Only primaries participate (a duplicate cluster's non-primary members aren't
     independently reorderable); desktop-only (no touch polyfill).
 *   **Actions:** Every action below is gated by its own `photoSelection` capability flag from
-    `POST /api/photos/selected` (Section 3) and, where noted, is available both as a Header
-    bulk-action (multi-select) and from a single photo's own context (Lightbox).
+    `utils/selectionCapabilities.js` (Section 3, Header) and, where noted, is available both as a
+    Header bulk-action (multi-select) and from a single photo's own context (Lightbox).
     *   **Move to Garbage:** Soft-deletes selected photos (`canBeDeleted`).
     *   **Move to Main Space:** Moves selected photos from their current space to the default
         "Main" space (`canBeMovedToMain`).
@@ -192,8 +200,8 @@ This section describes the application's features. For the corresponding backend
     *   Allows navigation between photos in the current collection (e.g., album, search results).
     *   Provides access to individual photo actions (delete, add to album, move to Main Space,
         etc.), each gated by its own `photoSelection` capability flag (e.g. "Move to Main Space"
-        only shows when `canBeMovedToMain` is true — same backend-driven pattern as the Header,
-        see Section 3).
+        only shows when `canBeMovedToMain` is true — same client-side `selectionCapabilities.js`
+        pattern as the Header, see Section 3).
     *   **Image editing (crop/rotate/zoom):** available when `photoSelection.canBeModified` is
         true. Uses `react-cropper` (`cropperjs`, `components/Lightbox.jsx`), not a full annotation
         suite — only crop, rotate (90° buttons, or drag Cropper.js's own rotate handle), and zoom
@@ -600,11 +608,17 @@ delete the link or remove its password at any time.
         (no separate route/page for this — folded into the same component for simplicity).
     2.  `POST /api/share/{shareId}/login` with `{ password }` — verifies the (BCrypt-hashed)
         password, then establishes the same `ROLE_SHARE` session and returns the album id.
-    3.  Once "ready", `SharedAlbumView.jsx` fetches photos from `GET
-        /api/albums/share/{albumId}/photos?page={n}` (paginated, same `Page<Photo>` shape as
-        every other photo list) and renders them via the same `PhotoGrid.jsx` used everywhere
-        else (read-only here: no selection actions are wired up, just browsing/opening a photo).
-        Clicking a photo navigates to `/share/{userMd5}/{name}/p/{photoId}`, which additionally
+    3.  Once "ready", `SharedAlbumView.jsx` drives the **same day-indexed timeline** as every
+        authenticated photo-listing view — it calls `hooks/useDayIndexedPhotos.js` with an
+        explicit `{ type: 'shareAlbum', albumId }` target (the album id isn't in the route path,
+        so it can't be path-derived), which points the hook at `GET
+        /api/albums/share/{albumId}/days` (day counts up front) + `GET
+        /api/albums/share/{albumId}/photos/day/{day}?page={n}` (each day's photos, lazily as its
+        section scrolls in). Rendered via the same `PhotoGrid.jsx` used everywhere else (read-only
+        here: no selection actions are wired up, just browsing/opening a photo). The `App.jsx`-level
+        `useDayIndexedPhotos(effectivePath)` call still runs on `/share/**` routes but resolves to
+        a no-fetch `share` target (its output is unused there — `SharedAlbumView` owns its own
+        instance). Clicking a photo navigates to `/share/{userMd5}/{name}/p/{photoId}`, which additionally
         renders `SharedLightbox.jsx` — a deliberately minimal full-screen viewer (prev/next/close
         only; none of the main `Lightbox.jsx`'s zoom/pan/date-editing/face-detection/delete
         controls make sense for a guest with no account). It fetches the single photo via `GET
@@ -634,8 +648,10 @@ delete the link or remove its password at any time.
     codebase), but to add unfiltered, guest-safe lookups used only by the share flow:
     `ShareRepository.findByIdIgnoringSpace`/`findByUserMd5AndName`,
     `AlbumRepository.findByIdIgnoringSpace`, and `AlbumService.getAlbumPhotosForShare`/
-    `getAlbumPhotoForShare` (kept separate from the existing, still-filtered
-    `getAlbumPhotos`/`getAlbum`, which the *authenticated* album-detail view still uses — reusing
+    `getAlbumPhotoForShare`/`getAlbumDailyPhotoCountsForShare`/`getAlbumPhotosForDayForShare` (kept
+    separate from the existing, still-filtered
+    `getAlbumPhotos`/`getAlbumDailyPhotoCounts`/`getAlbumPhotosForDay`/`getAlbum`, which the
+    *authenticated* album-detail view still uses — reusing
     the filtered version for guests would 500 them; reusing the unfiltered version for real users
     would remove their space isolation entirely).
 
@@ -678,12 +694,10 @@ This section lists the primary API endpoints the frontend application calls to i
     boundary here, mirroring the ownership check bulk-delete already does), with filename
     collisions within one zip de-duplicated by appending a suffix from the photo's own id.
 *   `GET /api/map-assets?path={effectivePath}`: Fetches assets to be displayed on the map view.
-*   `POST /api/photos/selected`: Given the current menu context (`menu`, `spaceIds`, `albumIds`)
-    and a list of selected photo IDs, returns which actions/buttons should be shown (see Section 3,
-    Header). `menu` is `"lightbox"` whenever the Lightbox is open, overriding the underlying
-    page's menu (`"library"`/`"album"`/`"space"`/`"garbage"`/etc.) — there is no separate boolean
-    flag for it. This is the backend authority for UI capability flags — the frontend does not
-    derive these itself.
+*   *(removed)* `POST /api/photos/selected` and `POST /api/menu/selected` — the toolbar/Lightbox
+    button-visibility flags they returned are now computed client-side in
+    `utils/selectionCapabilities.js` (see Section 3, Header). They were never an authorization
+    boundary; the mutating endpoints each enforce ownership themselves.
 
 ### 5.3. Album Management
 *   `GET /api/albums`: Fetches the list of all albums visible to the user.
@@ -716,6 +730,8 @@ Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
 *   `GET /api/share/{userMd5}/{name}`: Resolves a share link; 404/410/`{protected, albumId|shareId}`.
 *   `POST /api/share/{shareId}/login`: Verifies a share's password and establishes the guest session.
 *   `GET /api/albums/share/{albumId}/photos?page={n}`: Paginated photos for the album a guest's share grants access to (`ShareAccessFilter`-gated).
+*   `GET /api/albums/share/{albumId}/days`: Day-index counts for the shared album — guest-scoped mirror of `GET /api/albums/{id}/days` (`ShareAccessFilter`-gated).
+*   `GET /api/albums/share/{albumId}/photos/day/{day}?page={n}`: One day's photos for the shared album (`day` = ISO `yyyy-MM-dd`); guest-scoped mirror of `GET /api/albums/{id}/photos/day/{day}`.
 *   `GET /api/albums/share/{albumId}/photos/{photoId}`: A single photo, only if it belongs to that album (backs the shared Lightbox).
 *   `GET /api/photos/{id}/thumbnail` / `/original` / `/stream`: Same asset endpoints real users use — guests can only reach the photo their `ShareAccessFilter`-checked album contains.
 
@@ -737,6 +753,14 @@ Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
     no human judgment involved at all).
 *   `POST /api/admin/tasks/restart` (`{taskIds: [...]}`): Bulk counterpart for the Tasks page's
     mass-selection action — one round trip instead of one per row; returns `{restarted: n}`.
+*   `POST /api/admin/reprocess/faces` / `.../duplicates`: reset every `ISOLATE_FACES` /
+    `CHECK_DUPLICATION` task to `PENDING` in one statement; returns `{tasksReset: n}`.
+    `FaceDetectionService`/`DuplicationService` both delete a photo's prior results before
+    re-running, so this is a clean re-extraction, not a duplicating one.
+*   `POST /api/admin/reprocess/persons`: destructive — deletes every person (+ embedding buckets +
+    merge suggestions), detaches every face (`person_id = null`, `status = NEW`), and resets the
+    single perpetual `FACE_RECOGNITION` task to run now. Returns `{personsDeleted, facesReset}`.
+    The frontend confirms before calling it.
 
 ### 5.8. Immich import (per-user, not admin-only — see §6)
 *   `GET /api/immich/settings`: Current user's Immich connection (`{baseUrl, connected}` — the

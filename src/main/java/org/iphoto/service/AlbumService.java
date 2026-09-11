@@ -49,6 +49,14 @@ public interface AlbumService {
 
     Photo getAlbumPhotoForShare(UUID albumId, UUID photoId);
 
+    // Day-index browsing for the guest/share view - same grouping as getAlbumDailyPhotoCounts /
+    // getAlbumPhotosForDay above, but through the unfiltered album lookup (see the ...ForShare
+    // note above). Lets SharedAlbumView reuse the same lazy per-day timeline as every
+    // authenticated photo-listing view instead of a flat page-by-page scroll.
+    List<DayBucketDTO> getAlbumDailyPhotoCountsForShare(UUID albumId);
+
+    Page<Photo> getAlbumPhotosForDayForShare(UUID albumId, LocalDate day, Pageable pageable);
+
     AlbumDTO convertToDto(AlbumEntity album);
 
     AlbumEntity updateAlbum(AlbumEntity albumEntity);

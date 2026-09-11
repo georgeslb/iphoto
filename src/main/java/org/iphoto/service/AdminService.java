@@ -8,6 +8,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 public interface AdminService {
@@ -36,4 +37,20 @@ public interface AdminService {
     // are silently skipped (same as TaskRepository#findAllById), returns how many were actually
     // reset.
     int restartTasks(List<UUID> taskIds);
+
+    // Admin > Tasks page "Reprocessing" panel. Each resets a whole stage so it runs again from
+    // scratch:
+    //  - restartFaceExtraction: every ISOLATE_FACES task back to PENDING (FaceDetectionService
+    //    deletes+re-detects a photo's faces on each run, so this is a clean re-extraction).
+    //  - restartDuplicationDetection: every CHECK_DUPLICATION task back to PENDING.
+    // Both return how many task rows were reset.
+    int restartFaceExtraction();
+
+    int restartDuplicationDetection();
+
+    // restartPersonRecognition: wipes all grouping - deletes every person (+ their embedding
+    // buckets + merge suggestions), detaches every face and marks it NEW, and kicks the perpetual
+    // FACE_RECOGNITION task to run now so it re-groups from nothing. The faces themselves (the
+    // expensive detection/embedding work) are kept. Returns {"personsDeleted", "facesReset"}.
+    Map<String, Integer> restartPersonRecognition();
 }

@@ -266,6 +266,12 @@ matters again; `specification.md` is the source of truth for current behavior.
   session with its own `ShareAccessFilter` authorization boundary, guest-safe unfiltered lookups
   kept separate from the authenticated app's space-filtered ones, and a guard against clobbering
   an owner's real session when previewing their own link.
+- `SharedAlbumView` later moved off its own flat page-by-page fetch (`useSharedAlbumPhotos`,
+  deleted) onto the shared `useDayIndexedPhotos` day-index timeline, via a new explicit
+  `{ type: 'shareAlbum', albumId }` target and two guest-scoped endpoints
+  (`GET /api/albums/share/{id}/days` + `/photos/day/{day}`, `ShareAccessFilter` regex widened to
+  allow those tails). Fixes the App-level `useDayIndexedPhotos` firing `/api/photos/days` (a
+  library endpoint no `ROLE_SHARE` guest can call) on every share-link page load.
 
 ### Uploads
 - Fixed: a client-rejected (wrong type) file losing its Retry button; a `FAILED` task with no

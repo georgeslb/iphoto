@@ -10,7 +10,6 @@ import org.iphoto.mappers.PhotoMetadataMapper;
 import org.iphoto.model.*;
 import org.iphoto.model.request.CheckHashesRequest;
 import org.iphoto.model.request.PhotoEditRequest;
-import org.iphoto.model.request.PhotoSelectionRequest;
 import org.iphoto.model.request.UpdatePhotoDateRequest;
 import org.apache.commons.io.FilenameUtils;
 import org.iphoto.repository.PhotoMetadataRepository;
@@ -74,6 +73,25 @@ public class PhotoController {
         String username = authentication.getName();
         return userRepository.findByUsername(username)
                 .orElseThrow(() -> new NoSuchElementException("User not found: " + username));
+    }
+
+    // A guest browsing a public share link (ROLE_SHARE, established by ShareController) has no
+    // UserEntity of its own - ShareAccessFilter has already vetted that the specific photo id
+    // being requested belongs to the album that share link grants, so nothing more to check here.
+    private boolean isShareGuest() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        return authentication != null && authentication.getAuthorities().stream()
+                .anyMatch(a -> "ROLE_SHARE".equals(a.getAuthority()));
+    }
+
+    // Ownership gate for the raw file endpoints (thumbnail/original/stream) - a real logged-in
+    // user may only fetch their own photos' bytes; a share guest is already scoped to one album
+    // by ShareAccessFilter. getThumbnail/getOriginal/streamVideo used to serve any photo by id.
+    private boolean callerMayAccess(PhotoEntity photo) {
+        if (isShareGuest()) {
+            return true;
+        }
+        return photo.getSpace().getUser().getId().equals(getCurrentUser().getId());
     }
 
     @GetMapping
@@ -149,7 +167,7 @@ public class PhotoController {
     @PatchMapping("/{id}/date")
     public ResponseEntity<Photo> updatePhotoDate(@PathVariable UUID id, @RequestBody UpdatePhotoDateRequest request) {
         try {
-            Photo photo = photoService.updatePhotoDate(id, LocalDateTime.parse(request.newDate(), df));
+            Photo photo = photoService.updatePhotoDate(getCurrentUser(), id, LocalDateTime.parse(request.newDate(), df));
             return ResponseEntity.ok(photo);
         } catch (NoSuchElementException e) {
             return ResponseEntity.notFound().build();
@@ -187,11 +205,6 @@ public class PhotoController {
         return PageResponse.from(photoService.getGarbagePhotosForDay(currentUser, LocalDate.parse(day), pageable));
     }
 
-    @PostMapping("/selected")
-    public PhotoSelectionDTO getSelection(@RequestBody PhotoSelectionRequest photoSelectionRequest) {
-        UserEntity currentUser = getCurrentUser();
-        return photoService.getSelection(photoSelectionRequest, currentUser);
-    }
 
     // Mobile camera-sync: "which of these do you already have" before spending bandwidth
     // uploading them. See PhotoRepository.findExistingFileHashes for why this is a deliberately
@@ -271,12 +284,12 @@ public class PhotoController {
 
     @GetMapping("/{id}/thumbnail")
     public ResponseEntity<Resource> getThumbnail(@PathVariable UUID id) {
-        return photoService.findById(id).map(photo -> this.serveFile(photo, true)).orElse(ResponseEntity.notFound().build());
+        return photoService.findById(id).filter(this::callerMayAccess).map(photo -> this.serveFile(photo, true)).orElse(ResponseEntity.notFound().build());
     }
 
     @GetMapping("/{id}/original")
     public ResponseEntity<Resource> getOriginal(@PathVariable UUID id) {
-        return photoService.findById(id).map(photo -> this.serveFile(photo, false)).orElse(ResponseEntity.notFound().build());
+        return photoService.findById(id).filter(this::callerMayAccess).map(photo -> this.serveFile(photo, false)).orElse(ResponseEntity.notFound().build());
     }
 
     // Deliberately a separate route from /original above, not that same endpoint with a header
@@ -365,7 +378,7 @@ public class PhotoController {
 
     @GetMapping("/{id}/stream")
     public ResponseEntity<ResourceRegion> streamVideo(@PathVariable UUID id, @RequestHeader HttpHeaders headers) throws IOException {
-        PhotoEntity photo = photoService.findById(id).orElse(null);
+        PhotoEntity photo = photoService.findById(id).filter(this::callerMayAccess).orElse(null);
         if (photo == null || photo.getOriginalPath() == null) return ResponseEntity.notFound().build();
         Path path = Paths.get(photo.getOriginalPath());
         Resource video = new FileSystemResource(path);

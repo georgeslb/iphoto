@@ -210,6 +210,103 @@
     color: #555;
 }
 
+/* Reprocessing panel (TaskManagement.jsx) - re-run a whole pipeline stage. */
+.task-reprocess-panel {
+    border: 1px solid #eee;
+    border-radius: 8px;
+    background-color: #f9f9f9;
+    padding: 16px;
+    margin-bottom: 24px;
+}
+
+.task-reprocess-panel h3 {
+    margin: 0 0 6px;
+    border-bottom: none;
+    padding-bottom: 0;
+}
+
+.task-reprocess-hint {
+    margin: 0 0 12px;
+    font-size: 13px;
+    color: #777;
+}
+
+.task-reprocess-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.task-reprocess-buttons button {
+    padding: 8px 14px;
+    border: none;
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: pointer;
+    background-color: var(--primary-color);
+    color: white;
+    transition: background-color 0.3s ease, opacity 0.2s ease;
+}
+
+.task-reprocess-buttons button:hover:not(:disabled) {
+    opacity: 0.9;
+}
+
+.task-reprocess-buttons button:disabled {
+    background-color: #cccccc;
+    cursor: not-allowed;
+}
+
+.task-reprocess-buttons button.reprocess-danger {
+    background-color: #dc3545;
+}
+
+.task-reprocess-buttons button.reprocess-danger:disabled {
+    background-color: #cccccc;
+}
+
+/* The tasks table has 9 columns of mostly-fixed-width data (ids, timestamps, a status chip) plus
+   one variable one (the error message). Without table-layout: fixed the browser sizes every
+   column to its widest cell - a full UUID in monospace, or a long stack-trace-y error line -
+   and the table blows well past .user-management-container's width. Fixed layout + percentage
+   widths + ellipsis on every cell keeps it inside the container; the full value is still on the
+   cell's title attribute for hover. One font-size for every cell and the action button, so the
+   row reads as one consistent line rather than three sizes. */
+.task-table {
+    table-layout: fixed;
+    width: 100%;
+}
+
+.task-table th,
+.task-table td {
+    font-size: 13px;
+    padding: 8px 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.task-table td button {
+    font-size: 13px;
+    padding: 6px 10px;
+    margin: 0;
+}
+
+.task-table .task-id-cell {
+    font-family: monospace;
+}
+
+.task-table th:nth-child(1), .task-table td:nth-child(1) { width: 34px; }   /* checkbox */
+.task-table th:nth-child(2), .task-table td:nth-child(2) { width: 12%; }    /* task id */
+.task-table th:nth-child(3), .task-table td:nth-child(3) { width: 11%; }    /* type */
+.task-table th:nth-child(4), .task-table td:nth-child(4) { width: 8%; }     /* status */
+.task-table th:nth-child(5), .task-table td:nth-child(5) { width: 12%; }    /* photo id */
+.task-table th:nth-child(6), .task-table td:nth-child(6) { width: 20%; }    /* error */
+.task-table th:nth-child(7), .task-table td:nth-child(7) { width: 11%; }    /* created */
+.task-table th:nth-child(8), .task-table td:nth-child(8) { width: 11%; }    /* updated */
+.task-table th:nth-child(9), .task-table td:nth-child(9) { width: 7%; }     /* duration */
+.task-table th:nth-child(10), .task-table td:nth-child(10) { width: 8%; }   /* actions */
+
 .task-id-cell {
     font-family: monospace;
     font-size: 12px;

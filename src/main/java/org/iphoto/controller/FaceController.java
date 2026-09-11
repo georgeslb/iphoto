@@ -55,7 +55,7 @@ public class FaceController extends AbstractBaseController {
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> deleteFace(@PathVariable UUID id) {
         try {
-            faceService.deleteFace(id);
+            faceService.deleteFace(getCurrentUser(), id);
             return ResponseEntity.noContent().build();
         } catch (NoSuchElementException e) {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
@@ -68,7 +68,7 @@ public class FaceController extends AbstractBaseController {
     @GetMapping("/persons")
     public ResponseEntity<Page<PersonDTO>> getPersons(@PageableDefault(size = 50) Pageable pageable) {
         UserEntity currentUser = getCurrentUser();
-        return ResponseEntity.ok(faceService.getPersons(pageable));
+        return ResponseEntity.ok(faceService.getPersons(currentUser, pageable));
     }
 
     // Library page banner/popup (see PersonMergeSuggestionService, specification.md's Persons
@@ -120,7 +120,11 @@ public class FaceController extends AbstractBaseController {
 
     @GetMapping("/person/{id}/faces")
     public ResponseEntity<Page<FaceDTO>> getPersonFaces(@PathVariable UUID id, @PageableDefault(size = 50, sort = "photo.dateTaken", direction = Sort.Direction.DESC)  Pageable pageable) {
-        return ResponseEntity.ok(faceService.getPersonFaces(id, pageable));
+        try {
+            return ResponseEntity.ok(faceService.getPersonFaces(id, pageable));
+        } catch (NoSuchElementException e) {
+            return ResponseEntity.notFound().build();
+        }
     }
 
     // Day-index browsing for Person (replaces the old flat GET /person/{id}/photos) - every day
@@ -164,7 +168,7 @@ public class FaceController extends AbstractBaseController {
     @PutMapping("/{id}/person")
     public ResponseEntity<?> setFacePerson(@PathVariable UUID id, @RequestBody FaceRenameRequest request) {
         try {
-            return ResponseEntity.ok(faceService.setFacePerson(id, request.name(), request.confirmMerge()));
+            return ResponseEntity.ok(faceService.setFacePerson(getCurrentUser(), id, request.name(), request.confirmMerge()));
         } catch (PersonNameCollisionException e) {
             try {
                 return ResponseEntity.status(HttpStatus.CONFLICT).body(faceService.getPerson(e.getExistingPersonId()));
@@ -184,7 +188,7 @@ public class FaceController extends AbstractBaseController {
     @DeleteMapping("/{id}/person")
     public ResponseEntity<Void> unlinkFaceFromPerson(@PathVariable UUID id) {
         try {
-            faceService.unlinkFaceFromPerson(id);
+            faceService.unlinkFaceFromPerson(getCurrentUser(), id);
             return ResponseEntity.noContent().build();
         } catch (NoSuchElementException e) {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);

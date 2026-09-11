@@ -19,6 +19,11 @@ describe('resolveDayIndexTarget', () => {
     expect(resolveDayIndexTarget('/garbage')).toEqual({ type: 'garbage', albumId: null, spaceId: null, personId: null });
   });
 
+  it('resolves a share-link path to a non-fetching share target', () => {
+    expect(resolveDayIndexTarget('/share/abcmd5/holiday')).toEqual({ type: 'share', albumId: null, spaceId: null, personId: null });
+    expect(resolveDayIndexTarget('/share/abcmd5/holiday/p/photo-1')).toEqual({ type: 'share', albumId: null, spaceId: null, personId: null });
+  });
+
   it('defaults to library for everything else', () => {
     expect(resolveDayIndexTarget('/')).toEqual({ type: 'library', albumId: null, spaceId: null, personId: null });
   });
@@ -75,6 +80,54 @@ describe('useDayIndexedPhotos', () => {
 
     await waitFor(() => expect(global.fetch).toHaveBeenCalled());
     expect(global.fetch.mock.calls[0][0]).toBe('/api/faces/person/abc123/days');
+  });
+
+  it('makes no request on a share-link path before its album id is known (the App-level call)', async () => {
+    global.fetch = vi.fn(() => Promise.resolve({ json: () => Promise.resolve([]) }));
+
+    const { result } = renderHook(() => useDayIndexedPhotos('/share/abcmd5/holiday'));
+
+    await waitFor(() => expect(result.current.loadingDays).toBe(false));
+    expect(result.current.days).toEqual([]);
+    expect(global.fetch).not.toHaveBeenCalled();
+
+    // loadDayPage is also inert here (no per-day endpoint), so it must not throw or fetch.
+    await act(async () => { await result.current.loadDayPage('2024-03-15'); });
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('hits the guest share endpoints when given an explicit shareAlbum target (SharedAlbumView)', async () => {
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce({ json: () => Promise.resolve([{ day: '2024-03-15', count: 2 }]) }) // days
+      .mockResolvedValueOnce({ json: () => Promise.resolve({ content: [{ id: 'a' }], page: { number: 0, totalPages: 1 } }) }); // page 0
+
+    const shareTarget = { type: 'shareAlbum', albumId: 'album-9', spaceId: null, personId: null };
+    const { result } = renderHook(() => useDayIndexedPhotos('/share/abcmd5/holiday', shareTarget));
+
+    await waitFor(() => expect(result.current.days).toHaveLength(1));
+    expect(global.fetch.mock.calls[0][0]).toBe('/api/albums/share/album-9/days');
+
+    await act(async () => { await result.current.loadDayPage('2024-03-15'); });
+    expect(global.fetch.mock.calls[1][0]).toBe('/api/albums/share/album-9/photos/day/2024-03-15?page=0&size=100');
+    expect(result.current.photosByDay['2024-03-15']).toEqual([{ id: 'a' }]);
+  });
+
+  it('refetches when a share target resolves its album id (share -> shareAlbum)', async () => {
+    global.fetch = vi.fn(() => Promise.resolve({ json: () => Promise.resolve([{ day: '2024-03-15', count: 1 }]) }));
+
+    const pending = { type: 'share', albumId: null, spaceId: null, personId: null };
+    const resolved = { type: 'shareAlbum', albumId: 'album-9', spaceId: null, personId: null };
+    const { result, rerender } = renderHook(
+      ({ target }) => useDayIndexedPhotos('/share/abcmd5/holiday', target),
+      { initialProps: { target: pending } }
+    );
+
+    await waitFor(() => expect(result.current.loadingDays).toBe(false));
+    expect(global.fetch).not.toHaveBeenCalled();
+
+    rerender({ target: resolved });
+    await waitFor(() => expect(result.current.days).toHaveLength(1));
+    expect(global.fetch.mock.calls[0][0]).toBe('/api/albums/share/album-9/days');
   });
 
   // loadDayPage's page-tracking and isLast come from the response itself (not purely a
