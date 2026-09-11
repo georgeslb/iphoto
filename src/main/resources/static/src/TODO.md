@@ -37,7 +37,21 @@ and a compressed record of how we got here, not a second copy of the spec.
 - **`App.jsx` selection state**: `selectedIds`/`selectedAlbumIds`/`selectedSpaceIds` and their
   setters are still threaded through as many individual props rather than one consolidated
   object. Deliberately deferred — touches the prop signature of most consumer components
-  (`Header`, grids, modals) — worth a dedicated pass if there's appetite.
+  (`Header`, grids, modals) — worth a dedicated pass if there's appetite. **Test-first, in this
+  order** (checked 2026-09-11 — do not start the refactor before this): existing coverage
+  (`utils/selectionCapabilities.test.js`, `hooks/useMenuSelection.test.js`,
+  `hooks/useAlbumManagement.test.jsx`, `components/PhotoGrid.test.jsx`) only exercises the
+  selection *logic* in isolated hook/component harnesses with their own local state — none of it
+  renders `App.jsx` or `Header.jsx`, so none of it would catch a wiring mistake (wrong field name,
+  a setter touching the wrong key) introduced by actually consolidating the state. `Header.jsx`
+  has zero tests of its own despite being the component most exposed by this change (it derives
+  `selectionCount`/`selectionMode`/bulk-action visibility directly from these three props).
+  1. Write the root `App.jsx` smoke test (mocking every on-mount endpoint is the real barrier:
+     `/api/user/me`, `/api/photos`, `/api/photos/selected`, `/api/albums`, `/api/spaces`) covering
+     at least: selecting photos in the Library grid updates Header's bulk-action visibility/count,
+     and switching menus (Library/Albums/Spaces) clears or recomputes the right selection.
+  2. Only then do the consolidation, using that smoke test (plus a closer look at whether it's
+     worth adding a dedicated `Header.jsx` test too) to catch wiring regressions as it lands.
 - **Large files not yet reviewed for internal duplication**: `Lightbox.jsx` (~520 lines),
   `UploadManager.jsx`, `useAlbumManagement.js` (largest hook — remember Album/Space are NOT
   interchangeable domain concepts; any shared logic factored out must stay presentation-only).
@@ -50,9 +64,9 @@ and a compressed record of how we got here, not a second copy of the spec.
   required status check under Settings > Branches for master (branch protection isn't something a
   workflow file alone can set) for PRs to actually be blocked on failure.
 - **Regression tests worth adding, not yet written**: `UploadManager.jsx`'s "PENDING keeps
-  polling" fix (needs fake timers + mocking the chunk-upload flow); a root `App.jsx` smoke test
-  (would need mocking every on-mount endpoint: `/api/user/me`, `/api/photos`,
-  `/api/photos/selected`, `/api/albums`, `/api/spaces`).
+  polling" fix (needs fake timers + mocking the chunk-upload flow). (The root `App.jsx` smoke test
+  that used to be listed here is now step 1 of the `App.jsx` selection-state item above, since
+  that refactor is what actually needs it.)
 - **CI build-time cache duplication**: the `test` job and `build-and-push` job each independently
   resolve the full (large, native-binary-heavy) Maven dependency tree via two cache namespaces
   that don't share bytes — every `pom.xml` change re-pulls the same artifacts twice. A real fix
