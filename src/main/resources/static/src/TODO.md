@@ -52,9 +52,23 @@ and a compressed record of how we got here, not a second copy of the spec.
      and switching menus (Library/Albums/Spaces) clears or recomputes the right selection.
   2. Only then do the consolidation, using that smoke test (plus a closer look at whether it's
      worth adding a dedicated `Header.jsx` test too) to catch wiring regressions as it lands.
-- **Large files not yet reviewed for internal duplication**: `Lightbox.jsx` (~520 lines),
+- **Large files not yet reviewed for internal duplication**: `Lightbox.jsx` (723 lines),
   `UploadManager.jsx`, `useAlbumManagement.js` (largest hook — remember Album/Space are NOT
   interchangeable domain concepts; any shared logic factored out must stay presentation-only).
+  **Test coverage checked (2026-09-11)**: `UploadManager.jsx` (`UploadManager.test.jsx`, ~7 cases —
+  retry-button logic, preview-popup open/close, clickability eligibility) and
+  `useAlbumManagement.js` (`useAlbumManagement.test.jsx`, 7 cases — add-to-album, cover photo,
+  create/delete album, remove-from-album fallback) both have real regression coverage tied to past
+  bugs — safe to review those two for duplication as-is. **`Lightbox.jsx` has zero test
+  coverage** — no test renders it at all, despite being both the largest of the three and the one
+  with the trickiest logic (drag/pan/zoom math, face-box overlay positioning — already the site of
+  one real past bug, see specification.md's "Face-box overlay positioning gotcha" — image crop/
+  rotate/zoom editing, keyboard nav, face rename/merge flows). **Do not review/refactor
+  `Lightbox.jsx` before writing targeted tests for at least**: the face-box overlay position
+  calculation (the `object-fit: contain` letterbox-gap math), prev/next keyboard navigation
+  (`handleNext`/`handlePrevious`, now memoized - see the lint-cleanup history entry below), and
+  pan/zoom clamping (`clampPan`). `UploadManager.jsx`/`useAlbumManagement.js` don't need to wait on
+  this.
 - **No CI workflow runs `npm test`/`npm run lint` automatically** — the frontend suite is still
   local-only. (`mvn test` now runs on every PR into master via
   `.github/workflows/docker-image.yml`'s `test` job, and is required to pass before the Docker
