@@ -107,6 +107,23 @@ This section describes the application's features. For the corresponding backend
     right before navigating to the Lightbox) — both hooks are called once in `App.jsx` and shared
     across all routes since they key off the shared `mainContentRef`/`photos` state, not
     per-menu state, so a fix here applies everywhere automatically.
+    *   **Day-index fetch is gated on auth confirmation:** `hooks/useDayIndexedPhotos.js` takes an
+        `enabled` param (App.jsx passes `isAuthenticated`) so its days-list fetch waits for
+        `useAuth.js`'s `/api/user/me` check to resolve before firing. Without this, the fetch used
+        to run unconditionally on mount, racing the auth check — on a cold load, or right after
+        logging in (the hook's reset effect keys on a `targetKey` string that doesn't change across
+        the `/login` → `/` navigation, so it never re-ran to retry), the days request could hit the
+        backend before the session was recognized, get a 401 with an empty body back, and fail
+        `res.json()` with "Unexpected end of JSON input" — with nothing ever retrying it until a
+        full page refresh reran everything from scratch against an already-valid session. Toggling
+        `enabled` false→true re-runs the fetch once auth is confirmed.
+    *   **Day-count look-ahead prefetch:** `PhotoGrid.jsx`'s day-sentinel `IntersectionObserver`
+        (one shared observer per grid, `rootMargin: '1500px 0px 1500px 0px'`) doesn't just load the
+        day whose sentinel intersects — it also eagerly calls `loadDayPage` for the day 2 positions
+        further down in `dayIndex.days`' order. This keeps a steady 2-day-ahead buffer regardless of
+        how many photos are actually in any given day (a pixel-only margin prefetches inconsistently
+        far ahead depending on day density — a day with hundreds of photos vs. a handful of days
+        with only a few each) — a plain UX/perf improvement, not a bug fix.
     *   **Duplicates is an intentional exception:** `/duplicates` (`DuplicatePhotoGrid.jsx`) shows
         one duplicate *group* at a time for manual comparison/decision, with explicit
         Prev/Next-group buttons rather than infinite scroll — this is a deliberate different UX
@@ -340,8 +357,15 @@ This section describes the application's features. For the corresponding backend
         embedding model — **ArcFace R50** (`w600k_r50.onnx`, same `buffalo_l` pack, 512-dim embeddings).
         Both `.onnx` files are vendored under `src/main/resources/models/` (committed via git-lfs, not
         downloaded at build/runtime) so the app has no external model-hosting dependency. Embeddings + a
-        PNG thumbnail are saved per `FaceEntity`; `FaceRecognitionService.groupFaces` clusters them into
-        `PersonEntity`s. (An earlier version of this pipeline used RetinaFace + PyTorch; replaced
+        JPEG thumbnail (`FaceDetectionServiceImpl.generateFaceThumbnail`, capped to
+        `FACE_THUMBNAIL_MAX_SIZE=300px`, since it's only ever displayed at ~100px CSS size — Persons.jsx's
+        `.person-item img`, Lightbox's "Faces Detected" strip) are saved per `FaceEntity`;
+        `FaceRecognitionService.groupFaces` clusters them into `PersonEntity`s. Before this was fixed
+        (2026-09-11), the thumbnail was saved uncropped-to-size as a lossless PNG at the crop's full
+        original-photo resolution — a single face could be 1+MB, and the Persons page fetches one per
+        person per page, which is what made `GET /api/faces/persons` balloon to ~70MB/7s to load; existing
+        already-stored thumbnails from before the fix remain oversized until re-processed (no migration
+        path yet — see `TODO.md`). (An earlier version of this pipeline used RetinaFace + PyTorch; replaced
         outright, no compatibility shim — old `FaceEntity`/`PersonEntity` rows are meaningless against
         the new embedding space and were truncated rather than migrated when this shipped.)
     *   **Small-face gating** (`FaceDetectionService`): faces under 60px (post-padding) are discarded
@@ -782,9 +806,17 @@ Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
     (run after day-imports — see §6).
 
 ### 5.9. Persons & Faces
-*   `GET /api/faces/persons`: Paginated list of every person (see §4.3 for sort/pagination gaps
-    tracked in `TODO.md`).
-*   `GET /api/faces/person/{id}`: A single person by id.
+*   `GET /api/faces/persons`: Paginated list of every person, returning the lean
+    `PersonSummaryDTO` (`id`, `name`, `coverPhoto` — no `photoCount`, unlike `PersonDTO` below),
+    since `Persons.jsx` only ever renders the cover thumbnail and name for this grid. Backed by
+    `PersonRepository.findAllBySpaceIdOrderByNamedFirstThenPhotoCountDesc`, which `left join
+    fetch`es `coverFace` to avoid an N+1 lazy load per person. See §4.3's Persons View section for
+    why this endpoint used to balloon to tens of MB and several seconds to load (fixed by resizing/
+    re-encoding the face thumbnail at detection time, not by this DTO trim, which only shaves a
+    few bytes of unused JSON).
+*   `GET /api/faces/person/{id}`: A single person by id, as the fuller `PersonDTO` (adds
+    `photoCount`) — used by the Person detail page and the merge-suggestion/rename-collision
+    pickers, which do render a photo count.
 *   `PUT /api/faces/person/{id}`: Rename a person (`{name, confirmed, mergeWithPersonIds}`) —
     409 + candidate `PersonDTO`s on a name collision unless `confirmed: true` (§4.3).
 *   `GET /api/faces/person/{id}/faces`: Every `FaceEntity` linked to a person.

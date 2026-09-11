@@ -76,7 +76,17 @@ function normalizePage(data) {
 // point at { type: 'shareAlbum', albumId } once it has resolved the share's album id (the id isn't
 // in the route path). Pass a value with a stable identity (useMemo it) - though the reset effect
 // keys on a derived string, not the object, so an unstable one won't loop.
-export function useDayIndexedPhotos(effectivePath, explicitTarget = null) {
+//
+// `enabled` (default true) gates the actual fetching. App.jsx passes its own `isAuthenticated`
+// here: without this, the days-fetch used to fire on mount regardless of auth state, racing
+// useAuth's own /api/user/me check - on a cold load (or right after logging in, since the
+// targetKey doesn't change across the /login -> / navigation and so the reset effect never
+// re-ran), that request could hit the backend before the session was recognized, get back a 401
+// with an empty body, and fail `res.json()` with "Unexpected end of JSON input" - permanently
+// (nothing ever retried it), until a full page refresh re-ran everything from scratch with the
+// session already valid. Toggling `enabled` false->true re-runs the reset effect below, so the
+// real fetch only ever happens once auth is confirmed.
+export function useDayIndexedPhotos(effectivePath, explicitTarget = null, enabled = true) {
   const [days, setDays] = useState([]);
   const [loadingDays, setLoadingDays] = useState(true);
   const [photosByDay, setPhotosByDay] = useState({});
@@ -122,11 +132,17 @@ export function useDayIndexedPhotos(effectivePath, explicitTarget = null) {
   useEffect(() => {
     setPhotosByDay({});
     setDayPageState({});
+    if (!enabled) {
+      setDays([]);
+      setLoadingDays(false);
+      return;
+    }
     refreshDays();
     // refreshDays is stable (reads targetRef, not a closure); this effect should only re-run when
-    // the target itself changes - path navigation or SharedAlbumView resolving its album id.
+    // the target itself changes (path navigation or SharedAlbumView resolving its album id) or
+    // `enabled` flips (e.g. auth finishes confirming).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targetKey]);
+  }, [targetKey, enabled]);
 
   const loadDayPage = useCallback(async (day) => {
     const current = dayPageStateRef.current[day];

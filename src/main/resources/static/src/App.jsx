@@ -79,7 +79,9 @@ function App() {
   // only technology every photo-listing view - Library/Album/Space/Garbage/Person - uses):
   // fetches every day up front, then lazily fetches each day's photos as its section scrolls
   // into view.
-  const dayIndexed = useDayIndexedPhotos(effectivePath);
+  // Gated on isAuthenticated so the days-fetch waits for the auth check to confirm the session
+  // instead of racing it (see useDayIndexedPhotos.js's `enabled` param doc).
+  const dayIndexed = useDayIndexedPhotos(effectivePath, null, isAuthenticated);
 
   // Flattened "reading order" view of the day-indexed data, in the same shape PhotoGrid.jsx's own
   // flatSelectionPhotos uses - needed anywhere something wants "the current view's whole photo

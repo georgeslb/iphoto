@@ -18,31 +18,6 @@ and a compressed record of how we got here, not a second copy of the spec.
   `PersonRecognitionServiceImpl.mergeFacesIntoTarget` merge itself, which has its own passing
   regression test) — start by reproducing from the Library banner and checking the browser network
   tab/backend logs for the actual request/response on click.
-- **Day-index fetch mis-buckets photos taken near the end of a day** — reported as "fetching days"
-  landing a late-night photo two days back (the day before the previous day) instead of its actual
-  day (reported 2026-09-11). Not yet reproduced/root-caused. Likely a timezone/date-boundary bug in
-  how a photo's day bucket is derived — check the `groupedDay` column on `PhotoEntity` (see
-  "Photo grid, selection & browsing" history below) for a double timezone conversion (e.g. storing
-  `dateTaken` in UTC but bucketing by local calendar day without normalizing first, which could
-  shift a photo taken shortly before local midnight by more than one day depending on the server's
-  configured timezone vs. the photo's own). Reproduce with a photo timestamped close to midnight and
-  confirm which day it actually lands in before assuming this specific mechanism.
-- **Persons page (`/persons`) is slow to load** (reported 2026-09-11) — not yet root-caused.
-  `FaceServiceImpl.getPersons`/`mapToPerson` already looks reasonably lean (persisted `photoCount`
-  column, no N+1 per-person queries, cover face is a single joined `FaceEntity`), so the likely
-  cost is elsewhere: check whether it's the initial `?page=0&size=50` request itself being slow
-  server-side (e.g. `findAllBySpaceIdOrderByNamedFirstThenPhotoCountDesc`'s query plan/missing
-  index on a space with many people), or a frontend issue — `usePersons.js`'s
-  `IntersectionObserver` (`rootMargin: '400px'`) firing `loadMore()` repeatedly before `loading`
-  state settles, or each page's 50 base64-encoded cover-face thumbnails simply being a lot of
-  payload/decode work per page. Start by checking Network tab timing (request duration vs.
-  render/decode time) and how many people/pages a real affected account actually has.
-- **Mobile/Android photo grid shows a variable column count** (commonly 5) instead of a fixed 4 —
-  both use "auto-fill by minimum tile size" grids. Fix: web — `App.css`'s `.photo-grid` under the
-  `≤768px`/`≤480px` media queries, change `grid-template-columns: repeat(auto-fill, minmax(...))`
-  to `repeat(4, 1fr)` (leave `.album-grid` alone). Android — `PhotoGridContent.kt`'s
-  `GridCells.Adaptive(minSize = 100.dp)` → `GridCells.Fixed(4)`. Pure layout change, not verified
-  on a real device/emulator.
 - **Flaky backend test**: `PhotoServiceTest.downloadSingleAndMultiplePhotosSetContentDispositionAndZipEntries`
   fails intermittently in a full `mvn test` run (wrong zip entry count) but passes reliably in
   isolation. `AbstractIntegrationTest#generateTestJpeg()`'s per-call random solid-color fill has a
@@ -55,17 +30,6 @@ and a compressed record of how we got here, not a second copy of the spec.
   with debug logging around `findOwnedByIds`/the zip-writing loop in `PhotoController#downloadMultiple`.
 
 ### Features
-- **Reject blurry faces at detection time** (confirmed 2026-09-09 — user: "we have too many
-  [faces] right now"). Technique: variance of the Laplacian (grayscale the face crop, run a
-  Laplacian edge filter, take the variance — low variance = blurry), via OpenCV's
-  `Imgproc.Laplacian`/`Core.meanStdDev` (already a dependency, no new library needed). Threshold
-  needs empirical tuning against this app's real photos (start near the commonly-cited ~100
-  cutoff, verify against real sharp/blurry crops before trusting it). Hooks into
-  `FaceDetectionService.detectAndSaveFaces`, same place the `MIN_FACE_SIZE`/
-  `SMALL_FACE_MIN_CONFIDENCE` checks already reject detections — a blurry crop simply never
-  becomes a `FaceEntity`, no new column/UI needed. Explicitly out of scope for this pass: cleaning
-  up already-saved blurry `FaceEntity`/`PersonEntity` rows from before this ships (destructive,
-  needs its own explicit go-ahead later if the Persons-page clutter is still bad afterward).
 - **Face-position overlay on a person's own photo grid** (`PersonDetail.jsx` → `PhotoGrid`):
   reuse the Lightbox's `.face-box` overlay style, scoped to just the viewed person's face per
   photo. Needs backend support first — neither `Photo` nor `getPersonPhotos` currently carries
@@ -74,33 +38,10 @@ and a compressed record of how we got here, not a second copy of the spec.
   separately-paginated endpoints together client-side. Frontend needs the same
   original-resolution-to-thumbnail-size scaling math `Lightbox.jsx`'s `recalculateImageSize`
   already does, reusable if extracted.
-- **Persons should sort named people before unnamed, then by photo count descending** (user
-  request, 2026-09-09). `FaceController#getPersons`'s current `@PageableDefault(sort="name")`
-  can't express "empty/null last" or sort by photo count — needs a real query with an explicit
-  `ORDER BY CASE WHEN name IS NULL OR name = '' THEN 1 ELSE 0 END, photoCount DESC`, applied
-  server-side unconditionally (not overridable via `?sort=`). Check first whether `PersonEntity`
-  actually has a persisted/queryable `photoCount` column to sort by — if not, that's the real
-  blocker (would need one maintained incrementally, the way `AlbumEntity`/`SpaceEntity.photoCount`
-  already are, not computed per-request). Do not fake this with client-side re-sorting of one
-  already-paginated page.
-- **Back button on the Person detail page** (`/persons/:personId` → `/persons`). Copy the
-  existing `Header.jsx` pattern used for Albums/Spaces (`pathname.startsWith('/albums/') &&
-  menuAlbumId` → back button) — check how that's actually threaded in before assuming the same
-  mechanism transfers as-is for Persons. New `backToPersons` i18n key.
-- **Search/sort input for the Albums grid** (`/albums`). `GET /api/albums` already returns the
-  full unpaginated list, so this is a client-side filter, no backend change — case-insensitive
-  substring match against `album.name`, probably also worth sorting the filtered result
-  alphabetically (check `AlbumServiceImpl.getAllAlbums`'s current order first). User asked for a
-  polished UI element (styled like `.modal-input`, a `lucide-react` `Search` icon), not a bare
-  `<input>`. No debounce needed for an in-memory filter, but check `albums.length` is small enough
-  for a plain `useMemo` re-filter per keystroke to stay smooth.
-- **Duplicate-cluster badge: icon + count only on mobile/Android**, no "similar" text label —
-  follows from the fixed-4-column mobile grid above needing more room. Web: split the combined
-  `similarPhotosBadge` i18n template so the count can render standalone and the label can be
-  CSS-hidden at the mobile breakpoint (same pattern as `.lightbox-action-label`) — do not delete
-  the combined key, `DuplicateClusterModal.jsx`'s own title badge still uses it and should keep
-  the full text. Android: no duplicate badge exists in the native app yet at all — just a design
-  note for whenever that's built (icon + count from day one, no label).
+- **Duplicate-cluster badge on Android**: the native app has no duplicate-cluster UI at all yet
+  (`PhotoGridContent.kt`/`PhotoThumbnail.kt` just render plain thumbnails) — a design note for
+  whenever that's built: icon + count only from day one, no "similar" text label, matching the
+  web version's mobile styling (see compressed history below).
 
 ### Known gaps / cleanup
 - **`App.jsx` selection state**: `selectedIds`/`selectedAlbumIds`/`selectedSpaceIds` and their
@@ -191,6 +132,27 @@ matters again; `specification.md` is the source of truth for current behavior.
   (the poller treated it as terminal); face bounding-box overlays drawn offset from the real face
   (missing `position: relative` on the overlay's parent, plus un-applied `object-fit: contain`
   letterbox-gap math already solved elsewhere in the same file for pan-clamping).
+- **Day-count look-ahead prefetch** (user request, 2026-09-11 — "I would like to fetch day, when
+  user reach the last assets two previous days", i.e. not a bug, a UX/perf ask): the day-sentinel
+  `IntersectionObserver` in `PhotoGrid.jsx` used to rely purely on a generous pixel `rootMargin`
+  (1500px) to prefetch an upcoming day's first page before it was reached, which meant how many
+  days actually got warmed up varied wildly with day density (a day with hundreds of photos vs. a
+  handful). Now, whenever a day's own sentinel intersects, the callback also explicitly calls
+  `loadDayPage` for the day 2 positions further down in `dayIndex.days`' order — a steady 2-day
+  look-ahead buffer regardless of how many photos are in any given day, on top of (not instead of)
+  the existing pixel margin. Regression-tested in `PhotoGrid.test.jsx` (a local
+  capturing-`IntersectionObserver` stub, since the shared jsdom one in `test/setup.js` never fires
+  its callback) — covers both the look-ahead call and not looking past the end of the day list.
+- Confirmed already implemented (check-in, 2026-09-11 — no code change needed, TODO description
+  was stale): fixed 4-column mobile/Android photo grid. Web already used `grid-template-columns:
+  repeat(4, 1fr)` (not `auto-fill`/`minmax`) at both the `≤768px` and `≤480px` breakpoints in
+  `App.css`; Android's `PhotoGridContent.kt` already used `GridCells.Fixed(4)` (not `Adaptive`).
+  Also already implemented as part of the same mobile-grid work: the duplicate-cluster badge's web
+  version already shows icon + count only on mobile (`PhotoGrid.jsx`'s `.duplicate-badge-label`
+  span, CSS-hidden at the mobile breakpoint; `messages["similarLabel"]` instead of the combined
+  `similarPhotosBadge` template, which `DuplicateClusterModal.jsx`'s own title badge still uses
+  unchanged) — only the Android side of that item (no duplicate-cluster UI there at all yet)
+  remains open.
 
 ### Duplicate detection
 - Two-tier detection: a tight global pHash/averageHash Hamming-distance match confirms directly;
@@ -287,6 +249,33 @@ matters again; `specification.md` is the source of truth for current behavior.
     clustering pass leaves it an unresolved singleton. `CandidateClusterer` itself is untouched —
     `OLD` faces are still fed into it every run so a later `NEW` face can still complete a cluster
     with earlier runs' leftovers (regression-tested in `FaceRecognitionServiceImplTest`).
+  - Fixed the Persons page (`GET /api/faces/persons`) ballooning to ~70MB/7s to load (reported
+    2026-09-11). Root cause: `FaceDetectionServiceImpl` saved each detected face's UI thumbnail at
+    its full original-photo crop resolution (detection runs against the full-res photo, not the
+    resized-for-hashing copy) as a lossless PNG, mismatched with the "data:image/jpeg;base64,"
+    prefix `FaceServiceImpl.mapToDTO` already labeled it with — a single crop could be 1+MB, times
+    ~50 people/page. Fixed going forward by resizing to `FACE_THUMBNAIL_MAX_SIZE` (300px, this
+    thumbnail is only ever shown at ~100px CSS size) and encoding as a real compressed JPEG via
+    Thumbnailator (`FaceDetectionServiceImpl.generateFaceThumbnail`, unit-tested in
+    `FaceDetectionServiceImplTest` against a synthetic crop — no test exercises the real ONNX
+    pipeline). Also fixed a real N+1 (`PersonRepository`'s list query now `left join fetch`es
+    `coverFace` instead of lazy-loading it once per person) and, per explicit user request, split
+    the list endpoint's response down to a new lean `PersonSummaryDTO` (id/name/coverPhoto only) —
+    `photoCount` stays on the fuller `PersonDTO` used by the Person detail page and the merge-
+    suggestion/rename-collision pickers, which do render it. **Not yet done**: already-stored face
+    thumbnails from before this fix remain oversized PNGs until re-processed — no migration/
+    regeneration path exists yet (would need to re-crop from each `FaceEntity`'s stored photo +
+    x/y/width/height and re-save via the same `generateFaceThumbnail`, without touching embeddings/
+    clustering) — worth doing if the reported account still sees a large response after this ships.
+  - Confirmed already implemented (user check-in, 2026-09-11 — these had been sitting as open TODO
+    items but the code already covers them): blurry-face rejection at detection time
+    (`FaceDetectionServiceImpl.BLUR_VARIANCE_THRESHOLD`, variance-of-Laplacian via `BlurDetector`,
+    regression-tested in `BlurDetectorTest`); Persons sort (named-first, then `photoCount DESC` —
+    `PersonRepository.findAllBySpaceIdOrderByNamedFirstThenPhotoCountDesc`'s explicit `ORDER BY
+    CASE...`); Person detail page back button (`Header.jsx`'s `pathname.startsWith('/persons/')` →
+    `backToPersons` button, same pattern as Albums/Spaces); Albums grid search
+    (`AlbumGridDisplay.jsx`'s case-insensitive client-side `filteredAlbums`, since `GET
+    /api/albums` already returns the full unpaginated list).
 
 ### Sharing
 - Full design in `specification.md` §4.4. Originally broken end-to-end (wrong URI parsing, guest

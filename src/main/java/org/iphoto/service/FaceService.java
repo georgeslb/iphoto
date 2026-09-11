@@ -6,6 +6,7 @@ import org.iphoto.model.DayBucketDTO;
 import org.iphoto.model.FaceDTO;
 import org.iphoto.model.PersonDTO;
 import org.iphoto.model.PersonMergeSuggestionDTO;
+import org.iphoto.model.PersonSummaryDTO;
 import org.iphoto.model.Photo;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -24,7 +25,10 @@ public interface FaceService {
     // any photo id, guessable or not.
     List<FaceDTO> getFacesForPhoto(UserEntity user, UUID photoId);
 
-    Page<PersonDTO> getPersons(UserEntity currentUser, Pageable pageable);
+    // Persons grid list - lean DTO (id/name/coverPhoto only, no photoCount) since that's all
+    // Persons.jsx renders per card. getPerson/getPersons(ids) below return the fuller PersonDTO for
+    // views that do need photoCount (Person detail page, merge-suggestion/rename-collision pickers).
+    Page<PersonSummaryDTO> getPersons(UserEntity currentUser, Pageable pageable);
 
     PersonDTO getPerson(UUID id);
 

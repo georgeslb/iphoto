@@ -196,6 +196,30 @@ describe('useDayIndexedPhotos', () => {
     expect(result.current.dayPageState['2024-03-15'].isLast).toBe(true);
   });
 
+  // Regression test: App.jsx used to call this hook unconditionally, so on a cold load (or right
+  // after logging in, since the targetKey doesn't change across the /login -> / navigation) the
+  // days-fetch could race useAuth's own session check and hit the backend before the session was
+  // recognized - with nothing ever retrying it afterwards. `enabled` fixes this by deferring the
+  // fetch until the caller says auth is confirmed, then firing once it flips true.
+  it('does not fetch while disabled, and fetches once enabled flips true', async () => {
+    global.fetch = vi.fn(() =>
+      Promise.resolve({ json: () => Promise.resolve([{ day: '2024-03-15', count: 1 }]) })
+    );
+
+    const { result, rerender } = renderHook(
+      ({ enabled }) => useDayIndexedPhotos('/', null, enabled),
+      { initialProps: { enabled: false } }
+    );
+
+    await waitFor(() => expect(result.current.loadingDays).toBe(false));
+    expect(result.current.days).toEqual([]);
+    expect(global.fetch).not.toHaveBeenCalled();
+
+    rerender({ enabled: true });
+    await waitFor(() => expect(result.current.days).toHaveLength(1));
+    expect(global.fetch.mock.calls[0][0]).toBe('/api/photos/days');
+  });
+
   it('resets photosByDay/dayPageState and refetches the day index when the path changes', async () => {
     global.fetch = vi.fn()
       .mockResolvedValueOnce({ json: () => Promise.resolve([{ day: '2024-03-15', count: 1 }]) })

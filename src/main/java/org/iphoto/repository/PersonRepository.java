@@ -23,7 +23,11 @@ public interface PersonRepository extends JpaRepository<PersonEntity, UUID> {
     // override this - FaceServiceImpl.getPersons strips any Sort off the Pageable it passes in here
     // before calling this, so there's nothing for Spring Data to append after this query's own
     // ORDER BY.
-    @Query(value = "SELECT p FROM PersonEntity p inner join p.space s where s.id = :spaceId ORDER BY CASE WHEN p.name IS NULL OR p.name = '' THEN 1 ELSE 0 END, p.photoCount DESC",
+    // `left join fetch p.coverFace` avoids an N+1 lazy load per person when mapping to the
+    // response DTO (mapToPersonSummary/mapToPerson both read personEntity.getCoverFace()) - safe to
+    // paginate alongside a to-one fetch join like this (unlike a to-many collection fetch join,
+    // it can't multiply rows, so Hibernate's SQL LIMIT/OFFSET still lines up with what's returned).
+    @Query(value = "SELECT p FROM PersonEntity p inner join p.space s left join fetch p.coverFace where s.id = :spaceId ORDER BY CASE WHEN p.name IS NULL OR p.name = '' THEN 1 ELSE 0 END, p.photoCount DESC",
             countQuery = "SELECT COUNT(p) FROM PersonEntity p inner join p.space s where s.id = :spaceId")
     Page<PersonEntity> findAllBySpaceIdOrderByNamedFirstThenPhotoCountDesc(@Param("spaceId") UUID spaceId, Pageable pageable);
     // Explicit space_id filter, NOT @MainSpaceLimited: FaceRecognitionServiceImpl.groupFacesForUser
