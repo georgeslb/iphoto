@@ -18,6 +18,15 @@ and a compressed record of how we got here, not a second copy of the spec.
   `PersonRecognitionServiceImpl.mergeFacesIntoTarget` merge itself, which has its own passing
   regression test) — start by reproducing from the Library banner and checking the browser network
   tab/backend logs for the actual request/response on click.
+- **Day-index fetch mis-buckets photos taken near the end of a day** — reported as "fetching days"
+  landing a late-night photo two days back (the day before the previous day) instead of its actual
+  day (reported 2026-09-11). Not yet reproduced/root-caused. Likely a timezone/date-boundary bug in
+  how a photo's day bucket is derived — check the `groupedDay` column on `PhotoEntity` (see
+  "Photo grid, selection & browsing" history below) for a double timezone conversion (e.g. storing
+  `dateTaken` in UTC but bucketing by local calendar day without normalizing first, which could
+  shift a photo taken shortly before local midnight by more than one day depending on the server's
+  configured timezone vs. the photo's own). Reproduce with a photo timestamped close to midnight and
+  confirm which day it actually lands in before assuming this specific mechanism.
 - **Persons page (`/persons`) is slow to load** (reported 2026-09-11) — not yet root-caused.
   `FaceServiceImpl.getPersons`/`mapToPerson` already looks reasonably lean (persisted `photoCount`
   column, no N+1 per-person queries, cover face is a single joined `FaceEntity`), so the likely
