@@ -107,6 +107,16 @@ This section describes the application's features. For the corresponding backend
     right before navigating to the Lightbox) — both hooks are called once in `App.jsx` and shared
     across all routes since they key off the shared `mainContentRef`/`photos` state, not
     per-menu state, so a fix here applies everywhere automatically.
+    *   **Day-index fetch is gated on auth confirmation:** `hooks/useDayIndexedPhotos.js` takes an
+        `enabled` param (App.jsx passes `isAuthenticated`) so its days-list fetch waits for
+        `useAuth.js`'s `/api/user/me` check to resolve before firing. Without this, the fetch used
+        to run unconditionally on mount, racing the auth check — on a cold load, or right after
+        logging in (the hook's reset effect keys on a `targetKey` string that doesn't change across
+        the `/login` → `/` navigation, so it never re-ran to retry), the days request could hit the
+        backend before the session was recognized, get a 401 with an empty body back, and fail
+        `res.json()` with "Unexpected end of JSON input" — with nothing ever retrying it until a
+        full page refresh reran everything from scratch against an already-valid session. Toggling
+        `enabled` false→true re-runs the fetch once auth is confirmed.
     *   **Duplicates is an intentional exception:** `/duplicates` (`DuplicatePhotoGrid.jsx`) shows
         one duplicate *group* at a time for manual comparison/decision, with explicit
         Prev/Next-group buttons rather than infinite scroll — this is a deliberate different UX
