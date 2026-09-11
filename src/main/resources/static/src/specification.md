@@ -117,6 +117,13 @@ This section describes the application's features. For the corresponding backend
         `res.json()` with "Unexpected end of JSON input" — with nothing ever retrying it until a
         full page refresh reran everything from scratch against an already-valid session. Toggling
         `enabled` false→true re-runs the fetch once auth is confirmed.
+    *   **Day-count look-ahead prefetch:** `PhotoGrid.jsx`'s day-sentinel `IntersectionObserver`
+        (one shared observer per grid, `rootMargin: '1500px 0px 1500px 0px'`) doesn't just load the
+        day whose sentinel intersects — it also eagerly calls `loadDayPage` for the day 2 positions
+        further down in `dayIndex.days`' order. This keeps a steady 2-day-ahead buffer regardless of
+        how many photos are actually in any given day (a pixel-only margin prefetches inconsistently
+        far ahead depending on day density — a day with hundreds of photos vs. a handful of days
+        with only a few each) — a plain UX/perf improvement, not a bug fix.
     *   **Duplicates is an intentional exception:** `/duplicates` (`DuplicatePhotoGrid.jsx`) shows
         one duplicate *group* at a time for manual comparison/decision, with explicit
         Prev/Next-group buttons rather than infinite scroll — this is a deliberate different UX

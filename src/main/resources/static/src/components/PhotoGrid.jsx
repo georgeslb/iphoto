@@ -253,12 +253,26 @@ export default function PhotoGrid({
   // next page) loading well before it's actually reached.
   useEffect(() => {
     if (isLightboxOpen) return undefined;
+    // Ordered day keys, matching top-to-bottom display order - used below to prefetch by day
+    // COUNT rather than relying on pixel rootMargin alone (see the look-ahead comment).
+    const dayOrder = dayIndex.days.map(d => d.day);
     const observer = new IntersectionObserver(
       entries => {
         entries.forEach(entry => {
           if (!entry.isIntersecting) return;
           const day = entry.target.getAttribute('data-day-sentinel');
-          if (day) dayIndex.loadDayPage(day);
+          if (!day) return;
+          dayIndex.loadDayPage(day);
+          // Look-ahead prefetch (user request, 2026-09-11): start loading the day TWO positions
+          // further down as soon as the user reaches this day's last currently-loaded assets,
+          // instead of only reacting once that later day's OWN sentinel scrolls into range. An
+          // unloaded day's sentinel sits right at the end of its own (empty, until loaded) group,
+          // i.e. right after the previous day's content - so without this, how many days ahead
+          // actually got warmed up was really governed by the rootMargin's pixel distance, which
+          // varies wildly with how many photos/how tall each day's content happens to be. Fetching
+          // 2 days ahead explicitly keeps a steady day-count buffer regardless of day density.
+          const aheadDay = dayOrder[dayOrder.indexOf(day) + 2];
+          if (aheadDay) dayIndex.loadDayPage(aheadDay);
         });
       },
       // Symmetric top/bottom margin - every not-yet-loaded day (regardless of position) already

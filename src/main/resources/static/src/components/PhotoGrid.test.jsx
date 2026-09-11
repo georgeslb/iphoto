@@ -258,3 +258,102 @@ describe('PhotoGrid duplicate grouping', () => {
     expect(container.querySelector('.flicker-stage img[src="/api/photos/p1-dup/original"]')).toBeTruthy();
   });
 });
+
+// Regression/feature test for the day-count look-ahead prefetch (user request, 2026-09-11):
+// reaching a day's sentinel should also eagerly start loading the day 2 positions further down,
+// not just that day's own next page - see PhotoGrid.jsx's IntersectionObserver callback comment.
+// The shared jsdom IntersectionObserver stub (test/setup.js) never actually fires its callback, so
+// this test swaps in a local one that captures it for manual, synchronous invocation.
+describe('PhotoGrid day-index prefetch look-ahead', () => {
+  it('eagerly loads the day 2 positions ahead when a day\'s sentinel intersects', () => {
+    const loadDayPage = vi.fn();
+    const dayIndex = {
+      days: [{ day: 'd1' }, { day: 'd2' }, { day: 'd3' }, { day: 'd4' }],
+      loadingDays: false,
+      photosByDay: {},
+      dayPageState: {},
+      loadDayPage,
+    };
+
+    let capturedCallback;
+    class CapturingObserver {
+      constructor(callback) { capturedCallback = callback; }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    const OriginalIntersectionObserver = global.IntersectionObserver;
+    global.IntersectionObserver = CapturingObserver;
+
+    try {
+      render(
+        <PhotoGrid
+          dayIndex={dayIndex}
+          selectedIds={[]}
+          setSelectedIds={() => {}}
+          setSelectedPhoto={() => {}}
+          isLightboxOpen={false}
+          handleMoveToGarbage={() => {}}
+          handleUnlinkDuplicate={() => {}}
+        />,
+        { wrapper: localeWrapper }
+      );
+
+      const sentinel = document.createElement('div');
+      sentinel.setAttribute('data-day-sentinel', 'd1');
+      capturedCallback([{ isIntersecting: true, target: sentinel }]);
+
+      expect(loadDayPage).toHaveBeenCalledWith('d1'); // the reached day's own (first) page
+      expect(loadDayPage).toHaveBeenCalledWith('d3'); // look-ahead: 2 positions past d1
+      expect(loadDayPage).not.toHaveBeenCalledWith('d2');
+      expect(loadDayPage).not.toHaveBeenCalledWith('d4');
+    } finally {
+      global.IntersectionObserver = OriginalIntersectionObserver;
+    }
+  });
+
+  it('does not look ahead past the end of the day list', () => {
+    const loadDayPage = vi.fn();
+    const dayIndex = {
+      days: [{ day: 'd1' }, { day: 'd2' }],
+      loadingDays: false,
+      photosByDay: {},
+      dayPageState: {},
+      loadDayPage,
+    };
+
+    let capturedCallback;
+    class CapturingObserver {
+      constructor(callback) { capturedCallback = callback; }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    const OriginalIntersectionObserver = global.IntersectionObserver;
+    global.IntersectionObserver = CapturingObserver;
+
+    try {
+      render(
+        <PhotoGrid
+          dayIndex={dayIndex}
+          selectedIds={[]}
+          setSelectedIds={() => {}}
+          setSelectedPhoto={() => {}}
+          isLightboxOpen={false}
+          handleMoveToGarbage={() => {}}
+          handleUnlinkDuplicate={() => {}}
+        />,
+        { wrapper: localeWrapper }
+      );
+
+      const sentinel = document.createElement('div');
+      sentinel.setAttribute('data-day-sentinel', 'd2'); // last day - nothing 2 positions past it
+      capturedCallback([{ isIntersecting: true, target: sentinel }]);
+
+      expect(loadDayPage).toHaveBeenCalledTimes(1);
+      expect(loadDayPage).toHaveBeenCalledWith('d2');
+    } finally {
+      global.IntersectionObserver = OriginalIntersectionObserver;
+    }
+  });
+});
