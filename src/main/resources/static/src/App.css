@@ -1,28 +1,43 @@
-/* Modern Layout & Variables */
+/* "Darkroom" theme — warm charcoal chrome instead of a bright iOS-blue-on-white shell, so photos
+   (not the UI around them) read as the brightest thing on screen. Extends the app's own
+   pre-existing dark Lightbox palette (--surface-color below matches its old hardcoded #1c1c1e)
+   out to the rest of the chrome, rather than inventing a second, unrelated dark palette. */
 :root {
-  --primary-color: #007aff;
-  --bg-color: #ffffff;
-  --sidebar-bg: #f5f5f7;
-  --text-main: #1d1d1f;
-  --text-secondary: #86868b;
-  --border-color: #d2d2d7;
+  --primary-color: #e8a33d;
+  --primary-hover: #d4922e;
+  --primary-tint: rgba(232, 163, 61, 0.16);
+  --on-primary: #2b1c04; /* text/icon color for anything sitting on --primary-color - amber is too light for white text to pass contrast */
+  --bg-color: #131316;
+  --sidebar-bg: #0e0e10;
+  --surface-color: #1c1c1e;
+  --surface-hover: #29292c;
+  --text-main: #f2f1ee;
+  --text-secondary: #a1a1a6;
+  --border-color: #333338;
+  --danger-color: #ff6b6b;
+  --danger-tint: rgba(255, 107, 107, 0.16);
+  --success-color: #4cd97b;
+  --success-tint: rgba(76, 217, 123, 0.16);
+  --warning-color: #ffb648;
+  --warning-tint: rgba(255, 182, 72, 0.16);
   --sidebar-width: 260px;
   --card-radius: 4px;
 }
 
-body { margin: 0; background: var(--bg-color); color: var(--text-main); font-family: -apple-system, sans-serif; overflow: hidden; }
+body { margin: 0; background: var(--bg-color); color: var(--text-main); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; overflow: hidden; }
 .app-container { display: flex; height: 100vh; width: 100vw; }
 
 /* Sidebar */
 .sidebar { width: var(--sidebar-width); background: var(--sidebar-bg); border-right: 1px solid var(--border-color); display: flex; flex-direction: column; padding: 20px 0; }
-.sidebar-logo { display: flex; align-items: center; gap: 12px; padding: 0 24px 24px 24px; }
+.sidebar-logo { display: flex; align-items: center; gap: 12px; padding: 0 24px 24px 24px; color: var(--text-main); }
 .sidebar-logo h2 { margin: 0; font-size: 22px; font-weight: 700; }
 .nav-section { flex: 1; padding: 0 12px; }
-.nav-item { display: flex; align-items: center; gap: 12px; padding: 10px 16px; margin-bottom: 4px; cursor: pointer; border-radius: 10px; font-weight: 500; }
-.nav-item.active { background: var(--primary-color); color: white; }
+.nav-item { display: flex; align-items: center; gap: 12px; padding: 10px 16px; margin-bottom: 4px; cursor: pointer; border-radius: 10px; font-weight: 500; color: var(--text-secondary); transition: background 0.2s ease, color 0.2s ease; }
+.nav-item:hover { background: var(--surface-hover); color: var(--text-main); }
+.nav-item.active { background: var(--primary-color); color: var(--on-primary); }
 .sidebar-footer { padding: 12px; border-top: 1px solid var(--border-color); }
-.logout-button { width: 100%; text-align: left; background: none; border: none; color: var(--text-main); font-size: 16px; font-weight: 500; cursor: pointer; padding: 10px 16px; border-radius: 10px; transition: background 0.2s ease; }
-.logout-button:hover { background: #e0e0e5; }
+.logout-button { width: 100%; text-align: left; background: none; border: none; color: var(--text-secondary); font-size: 16px; font-weight: 500; cursor: pointer; padding: 10px 16px; border-radius: 10px; transition: background 0.2s ease, color 0.2s ease; }
+.logout-button:hover { background: var(--surface-hover); color: var(--text-main); }
 
 .sidebar-toggle {
   display: none;
@@ -34,11 +49,12 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   height: 40px;
   align-items: center;
   justify-content: center;
-  background: white;
+  background: var(--surface-color);
   border: 1px solid var(--border-color);
+  color: var(--text-main);
   border-radius: 10px;
   cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
 }
 
 .sidebar-backdrop {
@@ -47,8 +63,8 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 
 
 /* Main Area */
-.main-content { flex: 1; overflow-y: auto; background: white; }
-.header { position: sticky; top: 0; background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(20px); padding: 16px 40px; display: flex; justify-content: space-between; align-items: center; z-index: 50; border-bottom: 1px solid rgba(0,0,0,0.05); }
+.main-content { flex: 1; overflow-y: auto; background: var(--bg-color); }
+.header { position: sticky; top: 0; background: rgba(19, 19, 22, 0.8); backdrop-filter: blur(20px); padding: 16px 40px; display: flex; justify-content: space-between; align-items: center; z-index: 50; border-bottom: 1px solid var(--border-color); }
 .content-body { padding: 0 40px 40px 40px; }
 
 /* Top-of-Albums-page search bar (AlbumGridDisplay.jsx) — rendered as a sibling directly ahead of
@@ -63,7 +79,7 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 
 /* Masonry-style Grid */
 .day-group { margin-top: 32px; }
-.day-header { position: sticky; top: 73px; background: white; padding: 12px 0; z-index: 40; display: flex; align-items: baseline; gap: 12px; }
+.day-header { position: sticky; top: 73px; background: var(--bg-color); padding: 12px 0; z-index: 40; display: flex; align-items: baseline; gap: 12px; color: var(--text-main); }
 
 .day-check {
   opacity: 0;
@@ -91,7 +107,7 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   position: relative;
   height: 220px; /* Fixed height for rows */
   flex-grow: 1; /* Allow stretching only for justification */
-  background: #f2f2f7;
+  background: var(--surface-color);
   cursor: pointer;
   overflow: hidden;
   /* flex-basis/height animate too, not just transform - PhotoGrid.jsx sets both inline, shrunk a
@@ -163,15 +179,15 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   flex: 0 0 36px;
   height: 220px;
   align-self: stretch;
-  background: rgba(0,0,0,0.04);
-  border-left: 2px dashed rgba(0,0,0,0.25);
-  border-right: 2px dashed rgba(0,0,0,0.25);
+  background: rgba(255,255,255,0.05);
+  border-left: 2px dashed rgba(255,255,255,0.25);
+  border-right: 2px dashed rgba(255,255,255,0.25);
   border-radius: 6px;
   margin: 0 2px;
   transition: background 0.15s ease;
 }
 .drop-zone:hover {
-  background: rgba(0,0,0,0.08);
+  background: rgba(255,255,255,0.1);
 }
 .drop-zone-preview {
   position: absolute;
@@ -181,7 +197,7 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   height: 220px; /* fallback - see .drop-zone's own comment, overridden inline alongside its width */
   border: 2px dashed var(--primary-color);
   border-radius: 8px;
-  background: rgba(0,0,0,0.03);
+  background: var(--primary-tint);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -222,9 +238,9 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
    which is fixed at 400px/max-width 90%; this one needs more room for the flicker stage, the
    metadata diff table, and the member chip row underneath. */
 .duplicate-modal-content {
-  background: white;
+  background: var(--surface-color);
   border-radius: 12px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
   width: min(820px, 92vw);
   max-height: 85vh;
   display: flex;
@@ -256,11 +272,11 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   height: 32px;
   border: none;
   border-radius: 50%;
-  background: #f0f0f5;
+  background: var(--surface-hover);
   color: var(--text-main);
   cursor: pointer;
 }
-.duplicate-modal-close:hover { background: #e0e0e5; }
+.duplicate-modal-close:hover { background: var(--border-color); }
 
 /* Scrollable body: the flicker stage + its controls/metadata in .duplicate-main-col, the member
    thumbnail rail (.duplicate-chip-rail) alongside it — .duplicate-modal-header stays fixed above
@@ -290,7 +306,7 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   color: white;
   cursor: pointer;
 }
-.duplicate-remove-btn:hover { background: #ff3b30; }
+.duplicate-remove-btn:hover { background: var(--danger-color); }
 
 /* DuplicateClusterModal.jsx. A "keeper" (highest-resolution member, .rail-keeper-badge) starts
    shown; clicking any thumb in the side rail (.duplicate-chip-rail) shows that member instead —
@@ -306,7 +322,7 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   aspect-ratio: 4 / 3;
   border-radius: 12px;
   overflow: hidden;
-  background: #1c1c1e;
+  background: var(--surface-color);
   outline-offset: 3px;
 }
 .flicker-stage:focus-visible { outline: 2px solid var(--primary-color); }
@@ -324,7 +340,7 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   border-radius: 100px;
   pointer-events: none;
 }
-.flicker-readout.is-compare { background: rgba(0,122,255,0.75); }
+.flicker-readout.is-compare { background: rgba(232,163,61,0.85); color: var(--on-primary); }
 
 .flicker-icon-btn {
   width: 30px;
@@ -339,7 +355,7 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   cursor: pointer;
 }
 .flicker-icon-btn:hover { background: rgba(0,0,0,0.75); }
-.flicker-icon-btn-danger:hover { background: #ff3b30; }
+.flicker-icon-btn-danger:hover { background: var(--danger-color); }
 
 .flicker-expand-btn { position: absolute; top: 10px; right: 10px; }
 
@@ -456,15 +472,15 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   color: white;
   cursor: pointer;
 }
-.unlink-person-btn:hover { background: #ff3b30; }
+.unlink-person-btn:hover { background: var(--danger-color); }
 
 /* UI Components */
-.btn { display: inline-flex; align-items: center; gap: 8px; padding: 8px 16px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; border: 1px solid var(--border-color); background: white; transition: all 0.2s ease; }
-.btn:hover { background: #f5f5f7; }
-.btn:disabled { background-color: #6c757d; color: #adb5bd; cursor: not-allowed; opacity: 0.6; }
-.btn-primary { background: var(--primary-color); color: white; border: none; }
-.btn-primary:hover { background: #006ee6; }
-.btn-primary:disabled { background-color: #0056b3; opacity: 0.6; }
+.btn { display: inline-flex; align-items: center; gap: 8px; padding: 8px 16px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; border: 1px solid var(--border-color); background: var(--surface-color); color: var(--text-main); transition: all 0.2s ease; }
+.btn:hover { background: var(--surface-hover); }
+.btn:disabled { background-color: var(--surface-color); color: var(--text-secondary); cursor: not-allowed; opacity: 0.5; }
+.btn-primary { background: var(--primary-color); color: var(--on-primary); border: none; }
+.btn-primary:hover { background: var(--primary-hover); }
+.btn-primary:disabled { background-color: var(--primary-color); color: var(--on-primary); opacity: 0.4; }
 
 /* Lightbox */
 .lightbox-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: black; display: flex; z-index: 2000; }
@@ -474,9 +490,9 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 
 .metadata-sidebar {
   width: 360px; /* Slightly wider */
-  background: #1c1c1e;
-  color: #e0e0e5; /* Lighter text for better contrast */
-  border-left: 1px solid #333;
+  background: var(--surface-color);
+  color: var(--text-secondary); /* Lighter text for better contrast */
+  border-left: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
   padding: 20px; /* Added padding */
@@ -489,7 +505,7 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   align-items: center;
   padding-bottom: 20px;
   margin-bottom: 20px;
-  border-bottom: 1px solid #333;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .metadata-sidebar .sidebar-header h3 {
@@ -548,7 +564,7 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   margin-bottom: 10px;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.14);
-  color: #e0e0e5;
+  color: var(--text-secondary);
 }
 .lightbox-action-btn:hover {
   background: rgba(255, 255, 255, 0.12);
@@ -556,15 +572,15 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 .lightbox-action-btn.primary {
   background: var(--primary-color);
   border-color: var(--primary-color);
-  color: white;
+  color: var(--on-primary);
 }
 .lightbox-action-btn.primary:hover {
-  background: #006ee6;
+  background: var(--primary-hover);
 }
 .lightbox-action-btn.success {
   background: rgba(52, 199, 89, 0.14);
   border-color: rgba(52, 199, 89, 0.4);
-  color: #34c759;
+  color: var(--success-color);
 }
 .lightbox-action-btn.success:hover {
   background: rgba(52, 199, 89, 0.24);
@@ -572,7 +588,7 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 .lightbox-action-btn.danger {
   background: rgba(255, 59, 48, 0.14);
   border-color: rgba(255, 59, 48, 0.4);
-  color: #ff6961;
+  color: var(--danger-color);
 }
 .lightbox-action-btn.danger:hover {
   background: rgba(255, 59, 48, 0.24);
@@ -595,7 +611,7 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   align-items: center;
   gap: 8px;
   font-weight: 600;
-  color: #86868b; /* Matches .meta-divider's label color for a consistent field-name style */
+  color: var(--text-secondary); /* Matches .meta-divider's label color for a consistent field-name style */
   margin-bottom: 6px;
   font-size: 11px;
   text-transform: uppercase;
@@ -620,21 +636,21 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 }
 
 .metadata-group .modal-input {
-  background: #333;
-  border-color: #555;
+  background: var(--surface-hover);
+  border-color: var(--border-color);
   color: white;
 }
 
 .extended-meta {
   margin-top: 20px;
   padding-top: 20px;
-  border-top: 1px solid #333;
+  border-top: 1px solid var(--border-color);
 }
 
 .meta-divider {
   font-size: 12px;
   font-weight: 600;
-  color: #86868b;
+  color: var(--text-secondary);
   text-transform: uppercase;
   margin-bottom: 15px;
   letter-spacing: 0.5px;
@@ -672,10 +688,10 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 }
 
 /* Progress Queue */
-.upload-queue { position: fixed; bottom: 20px; right: 20px; width: 320px; background: white; border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.15); z-index: 2100; overflow: hidden; }
-.upload-queue-header { padding: 12px; background: #f8f8f8; display: flex; justify-content: space-between; font-weight: 700; }
+.upload-queue { position: fixed; bottom: 20px; right: 20px; width: 320px; background: var(--surface-color); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.5); z-index: 2100; overflow: hidden; }
+.upload-queue-header { padding: 12px; background: var(--surface-hover); display: flex; justify-content: space-between; font-weight: 700; }
 .upload-list { padding: 8px; max-height: 200px; overflow-y: auto; }
-.upload-item { font-size: 11px; padding: 6px 0; border-bottom: 1px solid #f9f9f9; }
+.upload-item { font-size: 11px; padding: 6px 0; border-bottom: 1px solid var(--border-color); }
 .upload-item-info { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
 .upload-item-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
 button.upload-item-name.upload-item-name-link {
@@ -692,18 +708,18 @@ button.upload-item-name.upload-item-name-link:hover {
   text-decoration: underline;
 }
 .status-text { font-weight: 700; text-transform: uppercase; font-size: 10px; padding-left: 4px; }
-.status-text.COMPLETED { color: #34c759; }
-.status-text.FAILED, .status-text.IGNORED, .status-text.TRASHED { color: #ff3b30; }
+.status-text.COMPLETED { color: var(--success-color); }
+.status-text.FAILED, .status-text.IGNORED, .status-text.TRASHED { color: var(--danger-color); }
 /* Immich import day statuses (components/ImmichImportManagement.jsx) - reuses the same
    .status-text convention as the upload queue above. */
-.status-text.IN_PROGRESS { color: #007aff; }
-.status-text.PARTIAL { color: #ff9500; }
-.status-text.NOT_IMPORTED { color: var(--text-secondary, #888); }
+.status-text.IN_PROGRESS { color: var(--primary-color); }
+.status-text.PARTIAL { color: var(--warning-color); }
+.status-text.NOT_IMPORTED { color: var(--text-secondary, var(--text-secondary)); }
 /* Admin > Tasks page (components/TaskManagement.jsx) - the raw TaskStatus values not already
    covered above (COMPLETED/FAILED/IGNORED/TRASHED). */
-.status-text.PENDING { color: var(--text-secondary, #888); }
-.status-text.QUEUED { color: #ff9500; }
-.status-text.PROCESSING { color: #007aff; }
+.status-text.PENDING { color: var(--text-secondary, var(--text-secondary)); }
+.status-text.QUEUED { color: var(--warning-color); }
+.status-text.PROCESSING { color: var(--primary-color); }
 
 .immich-coverage-banner {
   margin: 12px 0;
@@ -711,8 +727,8 @@ button.upload-item-name.upload-item-name-link:hover {
   border-radius: 8px;
   font-size: 14px;
 }
-.immich-coverage-banner.ok { background: #eafaf0; color: #1a7a3d; }
-.immich-coverage-banner.warning { background: #fff4e5; color: #b4530a; }
+.immich-coverage-banner.ok { background: var(--success-tint); color: var(--success-color); }
+.immich-coverage-banner.warning { background: var(--warning-tint); color: var(--warning-color); }
 
 /* PersonMergeSuggestionBanner.jsx - Library-only notice that face recognition's extra
    person-vs-person comparison step found people who might be the same. Same box shape as
@@ -722,8 +738,8 @@ button.upload-item-name.upload-item-name-link:hover {
   padding: 10px 16px;
   border-radius: 8px;
   font-size: 14px;
-  background: #eef4ff;
-  color: #0a4fa8;
+  background: var(--primary-tint);
+  color: var(--primary-color);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -764,7 +780,7 @@ button.upload-item-name.upload-item-name-link:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  background-color: #e0e0e5;
+  background-color: var(--surface-hover);
   color: var(--text-secondary);
 }
 
@@ -786,7 +802,7 @@ button.upload-item-name.upload-item-name-link:hover {
   white-space: nowrap;
 }
 .upload-item-error {
-  color: #ff3b30;
+  color: var(--danger-color);
   font-size: 10px;
   margin-top: 4px;
   display: flex;
@@ -795,7 +811,7 @@ button.upload-item-name.upload-item-name-link:hover {
 }
 .retry-button {
   background-color: var(--primary-color);
-  color: white;
+  color: var(--on-primary);
   border: none;
   padding: 4px 8px;
   border-radius: 4px;
@@ -804,7 +820,7 @@ button.upload-item-name.upload-item-name-link:hover {
   margin-left: 8px;
 }
 .retry-button:hover {
-  background-color: #006ee6;
+  background-color: var(--primary-hover);
 }
 .upload-preview-overlay {
   position: fixed;
@@ -819,7 +835,7 @@ button.upload-item-name.upload-item-name-link:hover {
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  background: #1c1c1e;
+  background: var(--surface-color);
   border-radius: 12px;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
   padding: 12px;
@@ -862,17 +878,17 @@ button.upload-item-name.upload-item-name-link:hover {
 
 .album-card {
   position: relative;
-  background: #f9f9fb;
+  background: var(--surface-color);
   border-radius: 12px;
   overflow: hidden;
-  box-shadow: 0 4px 15px rgba(0,0,0,0.05);
+  box-shadow: 0 4px 15px rgba(0,0,0,0.3);
   transition: transform 0.2s ease, box-shadow 0.2s ease;
   cursor: pointer;
 }
 
 .album-card:hover {
   transform: translateY(-5px);
-  box-shadow: 0 8px 25px rgba(0,0,0,0.1);
+  box-shadow: 0 8px 25px rgba(0,0,0,0.45);
 }
 
 .album-card.selected {
@@ -892,7 +908,7 @@ button.upload-item-name.upload-item-name-link:hover {
 .album-cover {
   width: 100%;
   height: 180px;
-  background: #e0e0e5;
+  background: var(--surface-hover);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -906,7 +922,7 @@ button.upload-item-name.upload-item-name-link:hover {
 }
 
 .album-placeholder {
-  color: #a0a0a5;
+  color: var(--text-secondary);
 }
 
 .album-info {
@@ -941,10 +957,10 @@ button.upload-item-name.upload-item-name-link:hover {
 }
 
 .modal-content {
-  background: white;
+  background: var(--surface-color);
   padding: 30px;
   border-radius: 12px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
   width: 400px;
   max-width: 90%;
   display: flex;
@@ -980,6 +996,13 @@ button.upload-item-name.upload-item-name-link:hover {
   border-radius: 8px;
   font-size: 15px;
   box-sizing: border-box;
+  background: var(--bg-color);
+  color: var(--text-main);
+  font-family: inherit;
+}
+.modal-input:focus, .modal-textarea:focus {
+  outline: none;
+  border-color: var(--primary-color);
 }
 
 .modal-textarea {
@@ -995,10 +1018,10 @@ button.upload-item-name.upload-item-name-link:hover {
 }
 
 .error-message {
-  color: #ff3b30;
+  color: var(--danger-color);
   font-size: 13px;
-  background: #fff5f5;
-  border: 1px solid #ffebeb;
+  background: var(--danger-tint);
+  border: 1px solid rgba(255, 107, 107, 0.3);
   padding: 10px;
   border-radius: 8px;
 }
@@ -1019,17 +1042,17 @@ button.upload-item-name.upload-item-name-link:hover {
 }
 
 .album-list-selection::-webkit-scrollbar-track {
-  background: #f1f1f1;
+  background: var(--surface-color);
   border-radius: 4px;
 }
 
 .album-list-selection::-webkit-scrollbar-thumb {
-  background: #d2d2d7;
+  background: var(--border-color);
   border-radius: 4px;
 }
 
 .album-list-selection::-webkit-scrollbar-thumb:hover {
-  background: #a1a1a6;
+  background: var(--text-secondary);
 }
 
 .album-select-item {
@@ -1038,44 +1061,44 @@ button.upload-item-name.upload-item-name-link:hover {
   gap: 16px;
   padding: 12px;
   border-radius: 10px;
-  background: #f9f9fb;
+  background: var(--surface-color);
   border: 1px solid transparent;
   cursor: pointer;
   transition: all 0.2s ease;
 }
 
 .album-select-item:hover {
-  background: white;
+  background: var(--surface-hover);
   border-color: var(--primary-color);
-  box-shadow: 0 4px 12px rgba(0, 122, 255, 0.1);
+  box-shadow: 0 4px 12px var(--primary-tint);
   transform: translateY(-2px);
 }
 
 .album-select-item.selected {
-  background: #eef5ff;
+  background: var(--primary-tint);
   border-color: var(--primary-color);
-  box-shadow: 0 4px 12px rgba(0, 122, 255, 0.1);
+  box-shadow: 0 4px 12px var(--primary-tint);
 }
 
 /* New style for remove mode selection */
 .album-select-item.remove-selected {
-  background: #ffeef0; /* Light red background */
-  border-color: #ff3b30; /* Red border */
-  box-shadow: 0 4px 12px rgba(255, 59, 48, 0.1); /* Red shadow */
+  background: var(--danger-tint); /* Light red background */
+  border-color: var(--danger-color); /* Red border */
+  box-shadow: 0 4px 12px var(--danger-tint); /* Red shadow */
 }
 
 .album-select-item.locked {
   cursor: not-allowed;
   opacity: 0.7;
-  background: #f0f0f0; /* Slightly darker background for locked items */
-  border-color: #d0d0d0;
+  background: var(--bg-color); /* Slightly darker background for locked items */
+  border-color: var(--border-color);
 }
 
 .album-cover-small {
   width: 50px;
   height: 50px;
   border-radius: 8px;
-  background: #e0e0e5;
+  background: var(--surface-hover);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1090,7 +1113,7 @@ button.upload-item-name.upload-item-name-link:hover {
 }
 
 .album-placeholder-small {
-  color: #a0a0a5;
+  color: var(--text-secondary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1294,7 +1317,7 @@ button.upload-item-name.upload-item-name-link:hover {
   gap: 16px;
   margin: 0 20px 16px;
   padding: 12px 16px;
-  background: #f0f0f5;
+  background: var(--surface-hover);
   border-radius: 10px;
 }
 
@@ -1309,12 +1332,12 @@ button.upload-item-name.upload-item-name-link:hover {
   border-radius: 50%;
   object-fit: cover;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
-  box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+  box-shadow: 0 4px 15px rgba(0,0,0,0.35);
 }
 
 .person-item:hover img {
   transform: scale(1.05);
-  box-shadow: 0 8px 25px rgba(0,0,0,0.15);
+  box-shadow: 0 8px 25px rgba(0,0,0,0.5);
 }
 
 .person-item-placeholder {
@@ -1324,15 +1347,15 @@ button.upload-item-name.upload-item-name-link:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  background-color: #e0e0e5;
+  background-color: var(--surface-hover);
   color: var(--text-secondary);
   transition: transform 0.2s ease, box-shadow 0.2s ease;
-  box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+  box-shadow: 0 4px 15px rgba(0,0,0,0.35);
 }
 
 .person-item:hover .person-item-placeholder {
   transform: scale(1.05);
-  box-shadow: 0 8px 25px rgba(0,0,0,0.15);
+  box-shadow: 0 8px 25px rgba(0,0,0,0.5);
 }
 
 /* PersonMergePrompt.jsx — the rename-collision picker (usePersonRename.js). Each candidate
@@ -1362,11 +1385,11 @@ button.upload-item-name.upload-item-name-link:hover {
   transition: border-color 0.2s ease, background 0.2s ease;
 }
 
-.merge-candidate-item:hover { background: #f5f5f7; }
+.merge-candidate-item:hover { background: var(--surface-hover); }
 
 .merge-candidate-item.selected {
   border-color: var(--primary-color);
-  background: #f0f6ff;
+  background: var(--primary-tint);
 }
 
 .merge-candidate-item .check-circle {
@@ -1387,7 +1410,7 @@ button.upload-item-name.upload-item-name-link:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  background-color: #e0e0e5;
+  background-color: var(--surface-hover);
   color: var(--text-secondary);
 }
 
@@ -1408,7 +1431,7 @@ button.upload-item-name.upload-item-name-link:hover {
 }
 
 .person-item:hover .person-name {
-  background-color: #f0f0f5;
+  background-color: var(--surface-hover);
 }
 
 .person-name-placeholder {
@@ -1428,14 +1451,14 @@ button.upload-item-name.upload-item-name-link:hover {
   text-align: center;
   box-sizing: border-box;
   outline: none;
-  background-color: #fff;
+  background-color: var(--bg-color);
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
   font-family: inherit;
 }
 
 .person-name-input:focus {
   border-color: var(--primary-color);
-  box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.2);
+  box-shadow: 0 0 0 2px var(--primary-tint);
 }
 
 /* Person Strip (horizontal, arrow-scrollable list shown above a selected person's photos).
@@ -1449,7 +1472,7 @@ button.upload-item-name.upload-item-name-link:hover {
   align-items: center;
   gap: 8px;
   padding: 12px 20px;
-  background: white;
+  background: var(--surface-color);
   border-bottom: 1px solid var(--border-color);
 }
 
@@ -1471,13 +1494,13 @@ button.upload-item-name.upload-item-name-link:hover {
   height: 32px;
   border: none;
   border-radius: 50%;
-  background: #f0f0f5;
+  background: var(--surface-hover);
   color: var(--text-main);
   cursor: pointer;
 }
 
 .person-strip-arrow:hover {
-  background: #e0e0e5;
+  background: var(--surface-hover);
 }
 
 .person-strip-track {
@@ -1516,7 +1539,7 @@ button.upload-item-name.upload-item-name-link:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  background-color: #e0e0e5;
+  background-color: var(--surface-hover);
   color: var(--text-secondary);
 }
 
@@ -1527,7 +1550,7 @@ button.upload-item-name.upload-item-name-link:hover {
      clearly instead. box-shadow (not border-color) so the ring traces the circular avatar
      exactly, with a hairline gap instead of just recoloring the existing 2px border in place. */
   border-color: transparent;
-  box-shadow: 0 0 0 4px #ff3b30;
+  box-shadow: 0 0 0 4px var(--danger-color);
 }
 
 .person-strip-item span {
@@ -1552,7 +1575,7 @@ button.upload-item-name.upload-item-name-link:hover {
   align-items: center;
   gap: 8px;
   padding: 12px 20px;
-  background: white;
+  background: var(--surface-color);
   border-bottom: 1px solid var(--border-color);
 }
 
@@ -1573,13 +1596,13 @@ button.upload-item-name.upload-item-name-link:hover {
   height: 32px;
   border: none;
   border-radius: 50%;
-  background: #f0f0f5;
+  background: var(--surface-hover);
   color: var(--text-main);
   cursor: pointer;
 }
 
 .memories-strip-arrow:hover {
-  background: #e0e0e5;
+  background: var(--surface-hover);
 }
 
 .memories-strip-track {
@@ -1654,7 +1677,7 @@ button.upload-item-name.upload-item-name-link:hover {
   transform: translateY(-50%);
   font-size: 9px;
   color: var(--text-secondary);
-  background: white;
+  background: var(--surface-color);
   padding: 0 2px;
   pointer-events: none;
 }
@@ -1663,7 +1686,7 @@ button.upload-item-name.upload-item-name-link:hover {
   position: absolute;
   right: 32px;
   transform: translateY(-50%);
-  background: #333;
+  background: var(--border-color);
   color: white;
   padding: 2px 6px;
   border-radius: 4px;
@@ -1786,7 +1809,7 @@ button.upload-item-name.upload-item-name-link:hover {
     width: 100%;
     max-height: 45vh;
     border-left: none;
-    border-top: 1px solid #333;
+    border-top: 1px solid var(--border-color);
     padding: 16px;
   }
 
@@ -1878,7 +1901,7 @@ button.upload-item-name.upload-item-name-link:hover {
 }
 
 .shared-lightbox-message {
-  color: #ccc;
+  color: var(--text-secondary);
   font-size: 16px;
 }
 
