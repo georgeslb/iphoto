@@ -37,38 +37,35 @@ and a compressed record of how we got here, not a second copy of the spec.
 - **`App.jsx` selection state**: `selectedIds`/`selectedAlbumIds`/`selectedSpaceIds` and their
   setters are still threaded through as many individual props rather than one consolidated
   object. Deliberately deferred — touches the prop signature of most consumer components
-  (`Header`, grids, modals) — worth a dedicated pass if there's appetite. **Test-first, in this
-  order** (checked 2026-09-11 — do not start the refactor before this): existing coverage
-  (`utils/selectionCapabilities.test.js`, `hooks/useMenuSelection.test.js`,
-  `hooks/useAlbumManagement.test.jsx`, `components/PhotoGrid.test.jsx`) only exercises the
-  selection *logic* in isolated hook/component harnesses with their own local state — none of it
-  renders `App.jsx` or `Header.jsx`, so none of it would catch a wiring mistake (wrong field name,
-  a setter touching the wrong key) introduced by actually consolidating the state. `Header.jsx`
-  has zero tests of its own despite being the component most exposed by this change (it derives
-  `selectionCount`/`selectionMode`/bulk-action visibility directly from these three props).
-  1. Write the root `App.jsx` smoke test (mocking every on-mount endpoint is the real barrier:
-     `/api/user/me`, `/api/photos`, `/api/photos/selected`, `/api/albums`, `/api/spaces`) covering
-     at least: selecting photos in the Library grid updates Header's bulk-action visibility/count,
-     and switching menus (Library/Albums/Spaces) clears or recomputes the right selection.
-  2. Only then do the consolidation, using that smoke test (plus a closer look at whether it's
-     worth adding a dedicated `Header.jsx` test too) to catch wiring regressions as it lands.
+  (`Header`, grids, modals) — worth a dedicated pass if there's appetite. **Step 1 (the regression
+  safety net) is done (2026-09-11) — the refactor itself is still open.** `App.test.jsx` is a real
+  root smoke test (renders the actual `<App/>` inside a `MemoryRouter`/`LocaleProvider`, mocking
+  every mount-time endpoint the Library route hits: `/api/user/me`, `/api/photos/days`,
+  `/api/photos/day/{day}`, `/api/faces/persons/merge-suggestions/count`, `/api/photos/memories`,
+  plus `/api/albums` for the menu-switch case — a capturing-`IntersectionObserver` stub fires
+  `PhotoGrid.jsx`'s day-sentinel manually, same technique as `PhotoGrid.test.jsx`'s own look-ahead
+  tests, since jsdom's shared stub never calls back on its own). Covers exactly the two scenarios
+  named below: selecting a photo shows "N selected" and the right bulk-action button in `Header`
+  (proving `selectedIds` AND the derived `photoSelection` both reach it correctly), and navigating
+  Library → Albums clears the selection (`App.jsx`'s path-change effect). Next: do the
+  consolidation, using this smoke test to catch wiring regressions as it lands — still worth a
+  dedicated `Header.jsx` test too if the refactor touches its prop shape directly.
 - **Large files not yet reviewed for internal duplication**: `Lightbox.jsx` (723 lines),
   `UploadManager.jsx`, `useAlbumManagement.js` (largest hook — remember Album/Space are NOT
   interchangeable domain concepts; any shared logic factored out must stay presentation-only).
-  **Test coverage checked (2026-09-11)**: `UploadManager.jsx` (`UploadManager.test.jsx`, ~7 cases —
-  retry-button logic, preview-popup open/close, clickability eligibility) and
-  `useAlbumManagement.js` (`useAlbumManagement.test.jsx`, 7 cases — add-to-album, cover photo,
-  create/delete album, remove-from-album fallback) both have real regression coverage tied to past
-  bugs — safe to review those two for duplication as-is. **`Lightbox.jsx` has zero test
-  coverage** — no test renders it at all, despite being both the largest of the three and the one
-  with the trickiest logic (drag/pan/zoom math, face-box overlay positioning — already the site of
-  one real past bug, see specification.md's "Face-box overlay positioning gotcha" — image crop/
-  rotate/zoom editing, keyboard nav, face rename/merge flows). **Do not review/refactor
-  `Lightbox.jsx` before writing targeted tests for at least**: the face-box overlay position
-  calculation (the `object-fit: contain` letterbox-gap math), prev/next keyboard navigation
-  (`handleNext`/`handlePrevious`, now memoized - see the lint-cleanup history entry below), and
-  pan/zoom clamping (`clampPan`). `UploadManager.jsx`/`useAlbumManagement.js` don't need to wait on
-  this.
+  `UploadManager.jsx`/`useAlbumManagement.js` already had real regression coverage (checked
+  2026-09-11) and are safe to review as-is. **`Lightbox.jsx`'s test gap is now closed too
+  (2026-09-11)** — `Lightbox.test.jsx` covers the three areas flagged as prerequisites: the
+  face-box overlay position calculation (asserts exact `.face-box` `left`/`top`/`width`/`height`
+  against a stubbed letterboxed image+container, since jsdom does no real layout - naturalWidth/
+  Height and clientWidth/Height are stubbed directly on the DOM nodes via `Object.defineProperty`),
+  prev/next/Escape keyboard navigation (including not overflowing/underflowing past either end of
+  the photo list), and pan/zoom clamping (`clampPan`, verified by dragging far past the actual
+  overscroll range for a given zoom and asserting the rendered `transform`'s `translate()` stays
+  within it, plus confirming no pan at all is possible at the default 1x zoom). None of image
+  editing (crop/rotate/zoom via `react-cropper`), face rename/merge, or the wheel-zoom math itself
+  beyond one step are covered — worth another pass if the refactor ends up touching those. Ready
+  for the actual duplication review across all three files now.
 - **No CI workflow runs `npm test`/`npm run lint` automatically** — the frontend suite is still
   local-only. (`mvn test` now runs on every PR into master via
   `.github/workflows/docker-image.yml`'s `test` job, and is required to pass before the Docker
