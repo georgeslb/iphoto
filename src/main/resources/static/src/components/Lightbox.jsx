@@ -80,10 +80,6 @@ export default function Lightbox({
     // { faceId, name, existingPerson } — drives the merge-confirmation popup.
     const [mergePrompt, setMergePrompt] = useState(null);
 
-    // State for albumAllowed from SpaceDTO
-    const [albumAllowed, setAlbumAllowed] = useState(false);
-
-
     const formatDateTime = (dateTimeString) => {
         if (!dateTimeString) return '';
         try {
@@ -121,15 +117,6 @@ export default function Lightbox({
                 .then(response => response.ok ? response.json() : [])
                 .then(data => setFaces(data))
                 .catch(error => console.error(messages["errorFetchingFaces"], error));
-
-            // Fetch SpaceDTO for albumAllowed property
-            fetch(`/api/photos/${selectedPhoto.id}/space`)
-                .then(response => response.ok ? response.json() : { albumAllowed: false })
-                .then(data => setAlbumAllowed(data.albumAllowed))
-                .catch(error => {
-                    console.error(messages["errorFetchingSpaceInfo"], error);
-                    setAlbumAllowed(false); // Default to false on error
-                });
         }
     }, [selectedPhoto, messages]);
 
@@ -236,15 +223,15 @@ export default function Lightbox({
     const hasPrevious = currentIndex > 0;
     const hasNext = currentIndex !== -1 && currentIndex < photos.length - 1;
 
-    const handlePrevious = (e) => {
+    const handlePrevious = useCallback((e) => {
         if (e) e.stopPropagation();
         if (hasPrevious && !isEditingImage) onNavigate(photos[currentIndex - 1]);
-    };
+    }, [hasPrevious, isEditingImage, onNavigate, photos, currentIndex]);
 
-    const handleNext = (e) => {
+    const handleNext = useCallback((e) => {
         if (e) e.stopPropagation();
         if (hasNext && !isEditingImage) onNavigate(photos[currentIndex + 1]);
-    };
+    }, [hasNext, isEditingImage, onNavigate, photos, currentIndex]);
 
     const handleSaveDate = () => {
         onUpdateDate(selectedPhoto.id, newDate);
@@ -486,7 +473,7 @@ export default function Lightbox({
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [hasPrevious, hasNext, currentIndex, isEditingImage, onClose, mergePrompt]);
+    }, [hasPrevious, hasNext, currentIndex, isEditingImage, onClose, mergePrompt, handleNext, handlePrevious]);
 
     const startImageEditing = useCallback(() => setIsEditingImage(true), []);
 

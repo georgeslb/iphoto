@@ -30,8 +30,7 @@ function AlbumGridDisplay({
   return (
     <>
       {/* Rendered as a sibling directly ahead of EntityGridDisplay's own .content-body (not nested
-          inside one), carrying its own matching side padding - same established pattern as
-          LibraryTimeline.jsx's .library-timeline. */}
+          inside one), carrying its own matching side padding via .album-search-bar in App.css. */}
       <div className="album-search-bar">
         <Search size={18} className="album-search-icon" />
         <input

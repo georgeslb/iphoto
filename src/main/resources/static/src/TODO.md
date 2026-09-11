@@ -41,21 +41,6 @@ and a compressed record of how we got here, not a second copy of the spec.
 - **Large files not yet reviewed for internal duplication**: `Lightbox.jsx` (~520 lines),
   `UploadManager.jsx`, `useAlbumManagement.js` (largest hook — remember Album/Space are NOT
   interchangeable domain concepts; any shared logic factored out must stay presentation-only).
-- **Unused npm packages**: `react-advanced-cropper`, `react-photo-album` — confirmed unused
-  anywhere in `src/`, candidates for `npm uninstall` absent a near-term plan to use them.
-- **Dead state, `Lightbox.jsx`**: `albumAllowed`/`setAlbumAllowed` — set but never read. Worth
-  checking git history before deleting in case it's a half-finished feature rather than leftover.
-- **Dead CSS, `App.css`**: `.library-timeline`/`.memory-card` and a first, duplicate `.memories-strip`
-  rule (around line 54-67) look like leftovers from the old `LibraryTimeline.jsx`/month-timeline
-  design that was fully replaced by the day-indexed Memories bar (a second, real `.memories-strip`
-  block exists further down and is what `MemoriesBar.jsx` actually uses) — confirm nothing still
-  references the first block before deleting it.
-- **`react-hooks/exhaustive-deps` warnings not yet individually triaged** (each needs judgment,
-  not a blind auto-fix — some omissions are intentional): `useMenuSelection.js` (missing
-  `setPhotoSelection`), `App.jsx` (missing `currentAlbumId`/`currentSpaceId`/`selectedMenu`),
-  `UploadManager.jsx` (unnecessary `effectivePath`/`refreshAndMaintainScroll`),
-  `useAlbumManagement.js` (unnecessary `fetchAlbums`, x2), `UserManagement.jsx` (missing
-  `fetchUsers`), `Lightbox.jsx` (missing `handleNext`/`handlePrevious`).
 - **No CI workflow runs `npm test`/`npm run lint` automatically** — the frontend suite is still
   local-only. (`mvn test` now runs on every PR into master via
   `.github/workflows/docker-image.yml`'s `test` job, and is required to pass before the Docker
@@ -394,3 +379,41 @@ matters again; `specification.md` is the source of truth for current behavior.
   `poll*PendingTasks` query, all of which filter on `PENDING`); Unpark sets it straight back to
   `PENDING`. Backend: `AdminService`/`AdminServiceImpl.parkTask`/`unparkTask`,
   `AdminController`'s `POST /api/admin/tasks/{id}/park` / `.../unpark`.
+
+### Frontend lint/dead-code cleanup (2026-09-11)
+- Removed two confirmed-unused npm packages (`react-advanced-cropper`, `react-photo-album`).
+- `Lightbox.jsx`: deleted the entirely dead `albumAllowed`/`setAlbumAllowed` state and its
+  `GET /api/photos/{id}/space` fetch (set but never read anywhere in the file — git history traced
+  it to a since-superseded early attempt at gating something the centralized
+  `selectionCapabilities.js` capability-flag system now handles instead). This leaves
+  `PhotoController#getPhotoSpace` backend-orphaned (no other frontend/Android caller) — not removed
+  here, flagged as a possible following backend cleanup. Also dropped the now-unused
+  `errorFetchingSpaceInfo` i18n key (both locales).
+- `App.css`: deleted the dead `.library-timeline`/`.memory-card*`/`.timeline-browse`/
+  `.timeline-year*`/`.timeline-month*` rules (confirmed zero JSX references) — leftovers from the
+  deleted `LibraryTimeline.jsx` month-timeline UI, larger in extent than originally scoped (the
+  whole contiguous block, not just the two classes first flagged) — plus the stale duplicate
+  `.memories-strip` rule superseded by the real one `MemoriesBar.jsx` uses. Updated
+  `AlbumGridDisplay.jsx`'s comment, which referenced the now-deleted `.library-timeline` by name.
+- Triaged every `react-hooks/exhaustive-deps` warning (`npm run lint` is `--max-warnings 0`, so
+  these were failing it outright): `App.jsx`'s three `dayIndexed`-object omissions and
+  `UserManagement.jsx`'s mount-only `fetchUsers`/`fetchHeavyTasksActivated` omission were correct,
+  intentional patterns already used elsewhere in the codebase, just missing the documenting
+  `eslint-disable-next-line` comment (added). `UploadManager.jsx`'s `effectivePath`/
+  `refreshAndMaintainScroll` in `handleUploadFiles`'s deps were genuinely unused inside that
+  callback — removed. `PersonStrip.jsx` had a real, subtle bug: its explanatory comment before an
+  `eslint-disable-next-line` pushed the actual disable onto the wrong line (a blank/comment line,
+  not the dependency array two lines below), so the intended suppression silently did nothing and
+  the real warning re-appeared elsewhere — fixed by moving the directive immediately above the
+  array. `DuplicateClusterModal.jsx` had a stale, no-longer-needed disable directive (removed) and
+  a real perf issue the linter caught: `members = item?.members ?? []` allocated a fresh empty
+  array every render when `item?.members` was nullish, defeating `keeperIndex`'s own `useMemo` -
+  fixed by memoizing `members` itself. `Lightbox.jsx`'s `handleNext`/`handlePrevious` were plain,
+  non-memoized functions omitted from a keydown-listener `useEffect`'s deps despite closing over
+  `photos`/`onNavigate` - a genuine stale-closure risk, not just a lint nitpick (the listener could
+  keep firing against outdated photos/callback if those props changed without also changing one of
+  the effect's other listed deps) - fixed by wrapping both in their own `useCallback` and adding
+  them to the effect's deps. Also removed an unrelated, confirmed-unused `isDuplicatesPage` var in
+  `Header.jsx` (`no-unused-vars`) found while running the same lint pass. `npm run lint` is now
+  clean except one unrelated, out-of-scope `react-refresh/only-export-components` warning on
+  `LocaleContext.jsx` (would need splitting that file's exports, not attempted here).

@@ -39,7 +39,6 @@ export default function Header({
 }) {
   const { messages } = useLocale(); // Use the useLocale hook
   const selectionMode = selectedIds.length > 0 || selectedSpaceIds.length > 0 || selectedAlbumIds.length > 0;
-  const isDuplicatesPage = pathname.startsWith('/duplicates');
   const selectionCount = pathname === '/spaces' ? selectedSpaceIds.length : pathname === '/albums' ? selectedAlbumIds.length : selectedIds.length
   const isSpacesPage = pathname.startsWith('/spaces/') && menuSpaceId;
   const menuSelection = photoSelection.menuSelection

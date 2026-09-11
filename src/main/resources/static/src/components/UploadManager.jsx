@@ -165,7 +165,7 @@ function UploadManager({ refreshAndMaintainScroll, effectivePath, children, file
     if (fileInputRef.current) {
       fileInputRef.current.value = null;
     }
-  }, [effectivePath, pollTaskStatus, refreshAndMaintainScroll, fileInputRef, messages]); // Add messages to dependencies
+  }, [pollTaskStatus, fileInputRef, messages]);
 
   // Original handleUpload for initial file selection
   const handleInitialUpload = useCallback((e) => {

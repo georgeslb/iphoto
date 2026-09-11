@@ -13,6 +13,10 @@ function UserManagement() {
     useEffect(() => {
         fetchUsers();
         fetchHeavyTasksActivated();
+        // fetchUsers/fetchHeavyTasksActivated intentionally omitted: they're plain functions
+        // recreated every render, so listing them here would turn this mount-only fetch into a
+        // fetch-on-every-render loop.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const fetchHeavyTasksActivated = async () => {
