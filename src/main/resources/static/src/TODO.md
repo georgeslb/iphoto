@@ -18,16 +18,6 @@ and a compressed record of how we got here, not a second copy of the spec.
   `PersonRecognitionServiceImpl.mergeFacesIntoTarget` merge itself, which has its own passing
   regression test) — start by reproducing from the Library banner and checking the browser network
   tab/backend logs for the actual request/response on click.
-- **Flaky backend test**: `PhotoServiceTest.downloadSingleAndMultiplePhotosSetContentDispositionAndZipEntries`
-  fails intermittently in a full `mvn test` run (wrong zip entry count) but passes reliably in
-  isolation. `AbstractIntegrationTest#generateTestJpeg()`'s per-call random solid-color fill has a
-  real, higher-than-expected MD5 collision rate (JPEG quantization likely maps many solid colors
-  to identical bytes), which can make `PhotoRepository.findByFileHash`'s global uniqueness treat a
-  fresh upload as a duplicate — but that alone would surface as a `waitForTaskCompletion` timeout,
-  not this test's own "zip size" assertion, so there's likely a second, still-unidentified
-  mechanism (possibly a stale/reused `photoId` from a collision elsewhere in the same suite run
-  interacting with this test's fixtures). Not yet root-caused — needs a repeated full-suite run
-  with debug logging around `findOwnedByIds`/the zip-writing loop in `PhotoController#downloadMultiple`.
 
 ### Features
 - **Face-position overlay on a person's own photo grid** (`PersonDetail.jsx` → `PhotoGrid`):
@@ -358,6 +348,28 @@ matters again; `specification.md` is the source of truth for current behavior.
   maintenance, an invalid default sort property).
 - Schema management moved from Hibernate `ddl-auto: update` to Flyway-versioned migrations
   (`ddl-auto: validate` now only checks the schema matches, never changes it).
+- **Root-caused the flaky `PhotoServiceTest.downloadSingleAndMultiplePhotosSetContentDispositionAndZipEntries`**
+  (reported 2026-09-09, investigated once already and left open — see that commit's notes; picked
+  back up 2026-09-11 on a hunch this was related to real `@Scheduled` background task execution
+  racing the test). Two earlier hypotheses were ruled out on re-examination: (1) `generateTestJpeg`'s
+  MD5-collision risk on `PhotoRepository.findByFileHash` routes a duplicate upload to `TaskStatus
+  .IGNORED`/`TRASHED`, which `waitForTaskCompletion` doesn't treat as terminal, so a real collision
+  would time out, not produce a wrong zip size; (2) `TaskWorkerManagerConcurrentPollTest`'s stress
+  test (64 threads hammering `pollLightPendingTasks()`) never reproduced the pre-existing
+  `queuedTasks` double-submission race either, even against the unfixed code. **Actual cause: a test
+  bug, not an application bug.** `PhotoController#downloadMultiple` returns
+  `ResponseEntity<StreamingResponseBody>`, which Spring MVC processes as an ASYNC request —
+  `MockMvc.perform()` returns once that async processing STARTS, not once the streaming body has
+  actually finished writing (the standard fix is the `asyncDispatch()` round-trip, which this test
+  was missing entirely). Confirmed by reproducing on demand: a throwaway test hammering the exact
+  same request pattern under artificial busy-thread CPU load reliably got an EMPTY zip (0 entries)
+  without `asyncDispatch()`, and 0 failures across 40 iterations once it was added — this is also
+  why it "passed reliably in isolation" (an idle CPU lets the async write finish before the test
+  thread reads the response almost every time) but flaked under a full suite's CPU contention (many
+  other tests'/schedulers' background threads delaying that same race). Fixed by adding the
+  `andExpect(request().asyncStarted())` + `asyncDispatch()` pair before reading the zip's content -
+  the only endpoint in the app returning `StreamingResponseBody`, so no other test needed the same
+  fix.
 
 ### Admin & misc backend
 - `AdminController` moved under the `/api` prefix (it was the one controller not following that
