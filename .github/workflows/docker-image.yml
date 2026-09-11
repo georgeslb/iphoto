@@ -1,12 +1,12 @@
 name: Docker image
 
-# Runs the backend test suite on every PR into master (the required check that blocks merging on
-# failure - configure this as a required status check under Settings > Branches once this workflow
-# exists on master). The Docker image itself is no longer built automatically on a push to master -
-# only via a manual workflow_dispatch run, which re-runs the tests first as its own build gate.
+# Runs the backend test suite on every branch push (feature branches and master alike) - this is
+# what a required status check on the PR's merge button gates on. Building and pushing the Docker
+# image to GitHub Container Registry (ghcr.io) never happens automatically (not even on a push to
+# master) - it only runs from a manual "Run workflow" dispatch, since there's no way to build/push
+# the image outside CI here.
 on:
-  pull_request:
-    branches: [ master ]
+  push:
   workflow_dispatch:
 
 env:
