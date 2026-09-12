@@ -10,7 +10,7 @@
     </parent>
     <groupId>org.iphoto</groupId>
     <artifactId>iphoto</artifactId>
-    <version>1.0</version>
+    <version>1.1-SNAPHOST</version>
     <name>iphoto</name>
     <description>Standalone Photo Management</description>
 
