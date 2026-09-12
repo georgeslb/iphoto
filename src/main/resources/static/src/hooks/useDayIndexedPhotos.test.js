@@ -220,6 +220,34 @@ describe('useDayIndexedPhotos', () => {
     expect(global.fetch.mock.calls[0][0]).toBe('/api/photos/days');
   });
 
+  // Regression test for a real production report (2026-09-12): a person's Photos tab firing
+  // several identical GET .../photos/day/{day} requests per day. Root cause: PhotoGrid's
+  // day-sentinel IntersectionObserver can call loadDayPage for the SAME day more than once in one
+  // synchronous burst (its own look-ahead prefetch landing on a day that's also directly
+  // intersecting, and/or the observer recreating on every OTHER day's fetch completing and
+  // re-evaluating still-visible sentinels) - all before a render has happened to sync
+  // dayPageStateRef via its own effect, so the old ref-only guard couldn't see a fetch as
+  // "in flight" until one render later. Every other test above always awaits one loadDayPage call
+  // before making the next, which is exactly why this never surfaced there.
+  it('does not double-fetch when loadDayPage is called twice for the same day before the first resolves', async () => {
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce({ json: () => Promise.resolve([{ day: '2024-03-15', count: 1 }]) })
+      .mockResolvedValue({ json: () => Promise.resolve({ content: [{ id: 'a' }], last: true }) });
+
+    const { result } = renderHook(() => useDayIndexedPhotos('/persons/abc123'));
+    await waitFor(() => expect(result.current.days).toHaveLength(1));
+
+    await act(async () => {
+      const first = result.current.loadDayPage('2024-03-15');
+      const second = result.current.loadDayPage('2024-03-15'); // same synchronous burst, no await between them
+      await Promise.all([first, second]);
+    });
+
+    const dayPhotoCalls = global.fetch.mock.calls.filter(call => call[0].includes('/photos/day/2024-03-15'));
+    expect(dayPhotoCalls).toHaveLength(1);
+    expect(result.current.photosByDay['2024-03-15']).toEqual([{ id: 'a' }]);
+  });
+
   it('resets photosByDay/dayPageState and refetches the day index when the path changes', async () => {
     global.fetch = vi.fn()
       .mockResolvedValueOnce({ json: () => Promise.resolve([{ day: '2024-03-15', count: 1 }]) })

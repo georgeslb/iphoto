@@ -108,6 +108,18 @@ export function useDayIndexedPhotos(effectivePath, explicitTarget = null, enable
   const dayPageStateRef = useRef(dayPageState);
   useEffect(() => { dayPageStateRef.current = dayPageState; }, [dayPageState]);
 
+  // Separate from dayPageStateRef above on purpose: that ref only catches up to React state via
+  // this OWN effect, one render behind - fine for a single caller, but PhotoGrid's day-sentinel
+  // IntersectionObserver can call loadDayPage for the SAME day more than once in the same
+  // synchronous burst (its own "look-ahead" prefetch landing on a day that's also directly
+  // intersecting, and/or the observer tearing down/recreating on every OTHER day's fetch
+  // completing and re-evaluating still-visible sentinels) - all before a render has happened to
+  // sync dayPageStateRef. Real production symptom: a person's Photos tab firing several identical
+  // GET .../photos/day/{day} requests per day (2026-09-12, user report). A plain Set mutated
+  // synchronously the instant a fetch starts closes that window completely - no render/effect
+  // round-trip needed for the very next call to see it.
+  const inFlightDaysRef = useRef(new Set());
+
   const refreshDays = useCallback(async () => {
     const url = daysUrl(targetRef.current);
     if (!url) {
@@ -145,6 +157,10 @@ export function useDayIndexedPhotos(effectivePath, explicitTarget = null, enable
   }, [targetKey, enabled]);
 
   const loadDayPage = useCallback(async (day) => {
+    // inFlightDaysRef check-and-add first, and synchronously - see its own field comment. The
+    // dayPageStateRef checks below still matter (a day already fully loaded, or mid-load from a
+    // call outside this same synchronous burst, both need to keep being skipped).
+    if (inFlightDaysRef.current.has(day)) return;
     const current = dayPageStateRef.current[day];
     if (current?.loading || current?.isLast) return;
     const page = current?.nextPage ?? 0;
@@ -152,6 +168,7 @@ export function useDayIndexedPhotos(effectivePath, explicitTarget = null, enable
     const url = dayPhotosUrl(targetRef.current, day, page);
     if (!url) return; // share-link route - no per-day endpoint here (see resolveDayIndexTarget)
 
+    inFlightDaysRef.current.add(day);
     setDayPageState(prev => ({ ...prev, [day]: { ...prev[day], loading: true } }));
     try {
       const res = await fetch(url);
@@ -162,6 +179,8 @@ export function useDayIndexedPhotos(effectivePath, explicitTarget = null, enable
     } catch (err) {
       console.error('Failed to load photos for day', day, err);
       setDayPageState(prev => ({ ...prev, [day]: { ...prev[day], loading: false } }));
+    } finally {
+      inFlightDaysRef.current.delete(day);
     }
   }, []);
 
