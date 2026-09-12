@@ -103,6 +103,26 @@ iphoto:
     face-recognition-threads: 1
     queue-capacity: 30
 
+# Actuator - kept on the same port as everything else (no management.server.port override) so
+# SecurityConfig's normal filter chain actually covers it; a separate management port runs its own
+# embedded server context that Spring Security's servlet filter chain never sees, which would leave
+# these endpoints (threaddump, heapdump, env, ...) completely unauthenticated. See SecurityConfig's
+# own "/actuator/**" -> hasRole("ADMIN") rule, the same pattern already used for "/api/admin/**".
+# Deliberately a narrow allow-list (not "*"): threaddump/heapdump/loggers/metrics/health/info cover
+# everything an incident actually needs (see TODO.md's 2026-09-12 production-incident entry - this
+# whole thing exists because diagnosing that hang required manual jhsdb/ptrace gymnastics instead of
+# one curl call) without exposing endpoints like env/beans/configprops that dump more internal
+# detail (secrets included, if ever misconfigured) than an admin curling this during an incident
+# needs.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,threaddump,heapdump,loggers
+  endpoint:
+    health:
+      show-details: always
+
 server:
   port: 8080
   # docker-compose.yml runs this app behind an external nginx reverse proxy (upload.attieh.uk) -

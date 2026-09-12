@@ -328,6 +328,40 @@ matters again; `specification.md` is the source of truth for current behavior.
     delete-as-similarity-changes across repeated `refreshSuggestions` runs). Immediate mitigation
     while this shipped: `POST /api/admin/heavyTasks {"activate": false}` to stop face
     recognition/duplication from resubmitting until the fix was deployed.
+  - **Admin > Tasks page: Park/Unpark button silently hidden behind Restart** (2026-09-12,
+    reported right after the incident above). Not a regression in the Park/Unpark feature itself
+    (`AdminServiceImpl`/`AdminController` unchanged, worked as designed) - `.task-table`'s Actions
+    column was 8% wide with the shared nowrap/`overflow: hidden` cell rule (needed elsewhere for
+    long UUIDs/error text), which silently clipped the second button out of view once a row also
+    had a Restart button, rather than erroring or visibly truncating. Fixed in
+    `UserManagement.css` (reused by `TaskManagement.jsx`): widened the Actions column (8% → 14%,
+    taken from the error column) and let that one cell wrap its buttons onto a second line instead
+    of hiding overflow. Confirmed visually (Playwright screenshot of a standalone harness using the
+    real CSS file) before pushing, since this app's dev server needs a running backend to actually
+    reach the Tasks page.
+  - **Added Spring Boot Actuator for incident observability** (2026-09-12, direct follow-up to the
+    hang above - diagnosing it required borrowing a JDK image for `jhsdb jstack` over a shared PID
+    namespace and hand-rolled `/proc` CPU-tick scraping, since this app had zero
+    Actuator/Micrometer before). `spring-boot-starter-actuator` added; `management.endpoints.web
+    .exposure.include` deliberately curated (health/info/metrics/threaddump/heapdump/loggers, not
+    `env`/`beans`/`configprops`); gated behind `hasRole("ADMIN")` in `SecurityConfig`, same pattern
+    as `/api/admin/**`, and deliberately left on the same port as everything else (a separate
+    `management.server.port` would run outside Spring Security's filter chain entirely -
+    unauthenticated thread/heap dumps). New `HeavyTaskHealthIndicator`
+    (`org.iphoto.health`) flips `/actuator/health` `DOWN` the moment a `FACE_RECOGNITION`/
+    `CHECK_DUPLICATION` task has been `PROCESSING` for over 15 minutes - fast-alerting complement
+    to `reclaimStuckProcessingTasks`' hourly, unconditional sweep. See specification.md §5.10.
+    **Not done**: nothing is actually scraping `/actuator/metrics` yet (no Prometheus/Grafana wired
+    up) - these are on-demand-only for now, and `/actuator/health`'s new DOWN signal isn't hooked
+    to any alerting channel (email/Slack/etc.) either, just visible to whoever/whatever polls it.
+    Also considered and deliberately not done: killing an individual stuck thread from outside the
+    JVM - `Thread.stop()` always throws `UnsupportedOperationException` on JDK 20+,
+    `Thread.interrupt()`/`shutdownNow()` is a no-op against non-cooperative code (exactly what this
+    incident's stuck thread was, deep in Hibernate's flush internals), and sending `SIGKILL` to one
+    OS thread of a multithreaded process kills the whole process on Linux regardless. The two real
+    levers stay (1) bounding the algorithm itself (the batch-prefetch fix above) and (2) fast
+    detection via this health indicator; true per-task kill-ability would need running heavy tasks
+    in an isolated child process, a bigger change not attempted here.
 
 ### Sharing
 - Full design in `specification.md` §4.4. Originally broken end-to-end (wrong URI parsing, guest

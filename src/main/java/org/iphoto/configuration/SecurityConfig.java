@@ -41,6 +41,13 @@ public class SecurityConfig {
                         // Admin operations
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
 
+                        // Actuator (see application.yml's own comment on the endpoint allow-list) -
+                        // same gating as /api/admin/** above. Without this, Spring Security's
+                        // default (every request authenticated - see anyRequest() below) would
+                        // still block anonymous access, but ANY logged-in user (not just ADMIN)
+                        // would otherwise be able to pull a thread/heap dump.
+                        .requestMatchers("/actuator/**").hasRole("ADMIN")
+
                         // React SPA
                         .requestMatchers(
                                 "/",
