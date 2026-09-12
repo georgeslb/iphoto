@@ -3,6 +3,7 @@ package org.iphoto.service;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.iphoto.AbstractIntegrationTest;
 import org.iphoto.entities.FaceEntity;
+import org.iphoto.entities.FaceStatus;
 import org.iphoto.entities.PersonEntity;
 import org.iphoto.entities.PersonMergeSuggestionEntity;
 import org.iphoto.entities.PhotoEntity;
@@ -11,6 +12,7 @@ import org.iphoto.entities.UserEntity;
 import org.iphoto.model.request.FaceRenameRequest;
 import org.iphoto.model.request.PersonMergeRequest;
 import org.iphoto.model.request.PersonRenameRequest;
+import org.iphoto.repository.FaceLinkExclusionRepository;
 import org.iphoto.repository.FaceRepository;
 import org.iphoto.repository.PersonMergeSuggestionRepository;
 import org.iphoto.repository.PersonRepository;
@@ -67,6 +69,8 @@ class FaceServiceTest extends AbstractIntegrationTest {
     private FaceService faceService;
     @Autowired
     private PersonMergeSuggestionRepository personMergeSuggestionRepository;
+    @Autowired
+    private FaceLinkExclusionRepository faceLinkExclusionRepository;
 
     // A fresh regular user, with its own private MAIN space (userService.createUser creates one) -
     // brand new, so its people/faces are fully isolated from every other test class's leftovers in
@@ -173,8 +177,18 @@ class FaceServiceTest extends AbstractIntegrationTest {
         UserEntity user = newUser();
         MockHttpSession session = sessionFor(user);
         SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
+        PhotoEntity photo = savePhoto(space, user);
         PersonEntity existing = personRepository.save(PersonEntity.builder().space(space).name("Bob").faces(new ArrayList<>()).build());
-        PersonEntity toRename = personRepository.save(PersonEntity.builder().space(space).name("Carl").faces(new ArrayList<>()).build());
+        // toRename has MORE faces than existing - mergeInto keeps whichever side has more faces
+        // (see its own comment), so giving it the higher count here is what makes it the keeper,
+        // not simply being the one the caller renamed (see the sibling test below for the
+        // opposite case).
+        FaceEntity toRenameFace1 = saveFace(photo);
+        FaceEntity toRenameFace2 = saveFace(photo);
+        PersonEntity toRename = personRepository.save(PersonEntity.builder().space(space).name("Carl").faces(new ArrayList<>(List.of(toRenameFace1, toRenameFace2))).build());
+        toRenameFace1.setPerson(toRename);
+        toRenameFace2.setPerson(toRename);
+        faceRepository.saveAll(List.of(toRenameFace1, toRenameFace2));
 
         MvcResult result = mockMvc.perform(put("/api/faces/person/{id}", toRename.getId()).session(session).contentType(APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(new PersonRenameRequest("Bob", false, null))))
@@ -183,12 +197,46 @@ class FaceServiceTest extends AbstractIntegrationTest {
         JsonNode candidates = objectMapper.readTree(result.getResponse().getContentAsString());
         assertThat(candidates).anyMatch(c -> c.get("id").asText().equals(existing.getId().toString()));
 
-        // Confirmed retry, folding the candidate in - fixed direction (toRename is always kept).
+        // Confirmed retry, folding the candidate in - toRename has more faces, so it stays the
+        // keeper here.
         mockMvc.perform(put("/api/faces/person/{id}", toRename.getId()).session(session).contentType(APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(new PersonRenameRequest("Bob", true, List.of(existing.getId())))))
                 .andExpect(status().isOk());
         assertThat(runAs(user, () -> personRepository.findByIdInMainSpace(existing.getId()))).isEmpty();
         assertThat(runAs(user, () -> personRepository.findByIdInMainSpace(toRename.getId()))).isPresent();
+    }
+
+    // Regression test: mergeInto keeps whichever side has MORE faces (see its own comment), not
+    // necessarily the person the caller renamed. If renamePerson blindly re-fetched the original
+    // personId afterward, this would 404 (that id was just deleted as the merge's "source") and
+    // silently drop the confirmed name change on the actual survivor.
+    @Test
+    void renamingAPersonThatMergesIntoABiggerCandidateStillAppliesTheNewNameToTheActualSurvivor() throws Exception {
+        UserEntity user = newUser();
+        MockHttpSession session = sessionFor(user);
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
+        PhotoEntity photo = savePhoto(space, user);
+
+        PersonEntity toRename = personRepository.save(PersonEntity.builder().space(space).name("Carl").faces(new ArrayList<>()).build());
+        FaceEntity existingFace1 = saveFace(photo);
+        FaceEntity existingFace2 = saveFace(photo);
+        PersonEntity existing = personRepository.save(PersonEntity.builder().space(space).name("Bob").faces(new ArrayList<>(List.of(existingFace1, existingFace2))).build());
+        existingFace1.setPerson(existing);
+        existingFace2.setPerson(existing);
+        faceRepository.saveAll(List.of(existingFace1, existingFace2));
+
+        MvcResult result = mockMvc.perform(put("/api/faces/person/{id}", toRename.getId()).session(session).contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new PersonRenameRequest("Bob", true, List.of(existing.getId())))))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        // toRename (fewer faces) is the one deleted; existing (more faces) is the real survivor -
+        // the response must reflect that, not 404 or a stale reference to the deleted id.
+        assertThat(objectMapper.readTree(result.getResponse().getContentAsString()).get("id").asText())
+                .isEqualTo(existing.getId().toString());
+        assertThat(runAs(user, () -> personRepository.findByIdInMainSpace(toRename.getId()))).isEmpty();
+        PersonEntity survivor = runAs(user, () -> personRepository.findByIdInMainSpace(existing.getId())).orElseThrow();
+        assertThat(survivor.getName()).isEqualTo("Bob");
     }
 
     @Test
@@ -226,21 +274,31 @@ class FaceServiceTest extends AbstractIntegrationTest {
         SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
         PhotoEntity photo = savePhoto(space, user);
         FaceEntity face = saveFace(photo);
+        face.setStatus(FaceStatus.OLD); // as a linked face normally would be - see the assertion below
         PersonEntity person = personRepository.save(PersonEntity.builder().space(space).name("Eve").faces(new ArrayList<>(List.of(face))).build());
         face.setPerson(person);
         faceRepository.save(face);
 
         mockMvc.perform(delete("/api/faces/person/{personId}/photo/{photoId}", person.getId(), photo.getId()).session(session))
                 .andExpect(status().isNoContent());
-        assertThat(faceRepository.findById(face.getId()).orElseThrow().getPerson()).isNull();
+        FaceEntity afterUnlinkFromPhoto = faceRepository.findById(face.getId()).orElseThrow();
+        assertThat(afterUnlinkFromPhoto.getPerson()).isNull();
+        // Both unlink paths go through the same detachFaceFromPerson helper - an unlinked face must
+        // flip back to NEW (see its own comment) or FaceRecognitionServiceImpl's exclusion check
+        // (which only runs for NEW faces) would never actually get a chance to fire again.
+        assertThat(afterUnlinkFromPhoto.getStatus()).isEqualTo(FaceStatus.NEW);
+        assertThat(faceLinkExclusionRepository.existsByFaceIdAndExcludedPersonId(face.getId(), person.getId())).isTrue();
 
-        // Re-link, then unlinkFaceFromPerson (single-face variant).
+        // Re-link (as if a later run/manual action matched it again), then unlinkFaceFromPerson
+        // (single-face variant) - same status-reset contract applies here too.
         face.setPerson(person);
+        face.setStatus(FaceStatus.OLD);
         faceRepository.save(face);
         mockMvc.perform(delete("/api/faces/{id}/person", face.getId()).session(session))
                 .andExpect(status().isNoContent());
-        assertThat(faceRepository.findById(face.getId())).isPresent();
-        assertThat(faceRepository.findById(face.getId()).orElseThrow().getPerson()).isNull();
+        FaceEntity afterUnlinkFace = faceRepository.findById(face.getId()).orElseThrow();
+        assertThat(afterUnlinkFace.getPerson()).isNull();
+        assertThat(afterUnlinkFace.getStatus()).isEqualTo(FaceStatus.NEW);
     }
 
     @Test

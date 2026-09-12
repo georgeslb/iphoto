@@ -283,6 +283,30 @@ matters again; `specification.md` is the source of truth for current behavior.
     `backToPersons` button, same pattern as Albums/Spaces); Albums grid search
     (`AlbumGridDisplay.jsx`'s case-insensitive client-side `filteredAlbums`, since `GET
     /api/albums` already returns the full unpaginated list).
+  - **Person detail "Faces" tab** (2026-09-12): `PersonDetail.jsx` now has Photos/Faces tabs -
+    Photos is the existing day-indexed `PhotoGrid`; Faces is a new paginated grid
+    (`PersonFacesGrid.jsx`/`hooks/usePersonFaces.js`) of the person's own distinct face crops,
+    newest-first, each unlinkable in place - reused the already-existing
+    `GET /api/faces/person/{id}/faces` + `DELETE /api/faces/{id}/person` endpoints as-is, no new
+    backend surface needed. Found and fixed a real bug surfaced while checking that unlink
+    correctly respects `FaceLinkExclusionEntity`: `FaceServiceImpl.detachFaceFromPerson` recorded
+    the exclusion but never reset the face's `status` back to `NEW`, and a linked face is
+    essentially always `OLD` by the time it's unlinked - `groupFacesForUser` only ever checks
+    exclusions for a `NEW` face, so unlinking silently orphaned the face forever (exclusion
+    recorded but never consulted, and never eligible for automatic re-matching to a different
+    person either). Fixed + regression-tested end-to-end
+    (`FaceRecognitionServiceImplTest#aFaceUnlinkedFromAPersonNeverReattachesThereButCanStillMatchADifferentPerson`).
+  - **`mergeInto` direction changed to face-count-based** (2026-09-12, product decision): used to
+    be fixed-direction (the explicitly-renamed/`targetPersonId` person always survived); now
+    mirrors `mergePersons` and keeps whichever side has more faces, regardless of which id was
+    passed as target vs. source. Tests updated (`PersonRecognitionServiceTest
+    #mergeIntoKeepsThePersonWithMoreFacesRegardlessOfWhichIdWasPassedAsTarget`). This surfaced a
+    real bug in the caller: `FaceServiceImpl.renamePerson` used to assume the person it renamed
+    would always be the survivor and re-fetched that same id afterward - when a merge candidate
+    turned out to have more faces and "won" instead, that re-fetch 404'd and the confirmed rename
+    was silently lost. Fixed to track whichever id actually survives across the whole
+    fold-in-candidates loop and apply the new name to it, whichever person that ends up being
+    (`FaceServiceTest#renamingAPersonThatMergesIntoABiggerCandidateStillAppliesTheNewNameToTheActualSurvivor`).
 
 ### Sharing
 - Full design in `specification.md` §4.4. Originally broken end-to-end (wrong URI parsing, guest

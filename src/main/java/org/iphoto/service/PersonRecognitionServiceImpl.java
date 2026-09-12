@@ -116,10 +116,13 @@ public class PersonRecognitionServiceImpl implements PersonRecognitionService {
     @Override
     @Transactional
     public PersonEntity mergeInto(UUID targetPersonId, UUID sourcePersonId) {
-        PersonEntity target = personRepository.findByIdInMainSpace(targetPersonId)
+        PersonEntity person1 = personRepository.findByIdInMainSpace(targetPersonId)
                 .orElseThrow(() -> new NoSuchElementException("no person found with id " + targetPersonId));
-        PersonEntity source = personRepository.findByIdInMainSpace(sourcePersonId)
+        PersonEntity person2 = personRepository.findByIdInMainSpace(sourcePersonId)
                 .orElseThrow(() -> new NoSuchElementException("no person found with id " + sourcePersonId));
+
+        PersonEntity source = person1.getFaces().size() <= person2.getFaces().size() ? person1 : person2;
+        PersonEntity target = source == person1 ? person2 : person1;
 
         return mergeFacesIntoTarget(source, target);
     }

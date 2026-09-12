@@ -30,6 +30,11 @@ import java.util.UUID;
 @Entity
 @Table(name = "person_embedding_buckets", uniqueConstraints = {
         @UniqueConstraint(name = "uk_person_embedding_buckets_person_id_bucket_year", columnNames = {"person_id", "bucket_year"})
+}, indexes = {
+        // Dedicated index for findByPersonId/findByPersonIdIn (see the repository) - the unique
+        // constraint above already covers person_id as a leftmost prefix, this is a narrower index
+        // for that hot read path (see V6 migration's own comment).
+        @Index(name = "idx_person_embedding_buckets_person_id", columnList = "person_id")
 })
 @Getter
 @Setter
