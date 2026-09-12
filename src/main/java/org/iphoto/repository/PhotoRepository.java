@@ -34,9 +34,17 @@ public interface PhotoRepository extends JpaRepository<PhotoEntity, UUID> {
     // one page of a single day's photos, for Library/Space (groupedDay is kept in sync with
     // dateTaken via PhotoEntity's onCreate/onUpdate) and Album (joined through the albums
     // collection) respectively.
-    Page<PhotoEntity> findBySpaceIdAndIsGarbageFalseAndGroupedDay(UUID spaceId, LocalDate groupedDay, Pageable pageable);
+    //
+    // isVideo is the photo/video type filter (null = every type, matching the pre-filter
+    // behavior) - a plain derived-name method can't express "ignore this predicate when null", so
+    // these are explicit JPQL instead.
+    @Query("SELECT p FROM PhotoEntity p WHERE p.space.id = :spaceId AND p.isGarbage = false " +
+            "AND p.groupedDay = :groupedDay AND (:isVideo IS NULL OR p.isVideo = :isVideo)")
+    Page<PhotoEntity> findBySpaceIdAndIsGarbageFalseAndGroupedDay(@Param("spaceId") UUID spaceId, @Param("groupedDay") LocalDate groupedDay, @Param("isVideo") Boolean isVideo, Pageable pageable);
 
-    Page<PhotoEntity> findByIsGarbageFalseAndAlbumsAndGroupedDay(Set<AlbumEntity> albums, LocalDate groupedDay, Pageable pageable);
+    @Query("SELECT p FROM PhotoEntity p JOIN p.albums a WHERE a IN :albums AND p.isGarbage = false " +
+            "AND p.groupedDay = :groupedDay AND (:isVideo IS NULL OR p.isVideo = :isVideo)")
+    Page<PhotoEntity> findByIsGarbageFalseAndAlbumsAndGroupedDay(@Param("albums") Set<AlbumEntity> albums, @Param("groupedDay") LocalDate groupedDay, @Param("isVideo") Boolean isVideo, Pageable pageable);
 
     // --- Day-index counts (see model/DayBucketDTO) ---
     // Plain GROUP BY count query - index-friendly on idx_photos_space_grouped_day, no sort needed.
@@ -46,21 +54,27 @@ public interface PhotoRepository extends JpaRepository<PhotoEntity, UUID> {
     // windows (see findRandomPhotosBySpaceIdAndGroupedDayBetween below), not for every day in the
     // index.
 
+    // isVideo is the photo/video type filter (null = every type, matching the pre-filter
+    // behavior) - see findBySpaceIdAndIsGarbageFalseAndGroupedDay above for why this is an
+    // explicit predicate rather than a derived method name.
     @Query("SELECT p.groupedDay as day, COUNT(p) as count FROM PhotoEntity p " +
             "WHERE p.space.id = :spaceId AND p.isGarbage = false AND p.groupedDay IS NOT NULL " +
+            "AND (:isVideo IS NULL OR p.isVideo = :isVideo) " +
             "GROUP BY p.groupedDay ORDER BY p.groupedDay DESC")
-    List<DayCountProjection> countDailyPhotosBySpaceId(@Param("spaceId") UUID spaceId);
+    List<DayCountProjection> countDailyPhotosBySpaceId(@Param("spaceId") UUID spaceId, @Param("isVideo") Boolean isVideo);
 
     @Query("SELECT p.groupedDay as day, COUNT(p) as count FROM PhotoEntity p JOIN p.albums a " +
             "WHERE a IN :albums AND p.isGarbage = false AND p.groupedDay IS NOT NULL " +
+            "AND (:isVideo IS NULL OR p.isVideo = :isVideo) " +
             "GROUP BY p.groupedDay ORDER BY p.groupedDay DESC")
-    List<DayCountProjection> countDailyPhotosByAlbums(@Param("albums") Set<AlbumEntity> albums);
+    List<DayCountProjection> countDailyPhotosByAlbums(@Param("albums") Set<AlbumEntity> albums, @Param("isVideo") Boolean isVideo);
 
     // Garbage: cross-space (spaceIdIn), matching the flat endpoint this replaced.
     @Query("SELECT p.groupedDay as day, COUNT(p) as count FROM PhotoEntity p " +
             "WHERE p.space.id IN :spaceIds AND p.isGarbage = true AND p.groupedDay IS NOT NULL " +
+            "AND (:isVideo IS NULL OR p.isVideo = :isVideo) " +
             "GROUP BY p.groupedDay ORDER BY p.groupedDay DESC")
-    List<DayCountProjection> countDailyGarbagePhotosBySpaceIds(@Param("spaceIds") Set<UUID> spaceIds);
+    List<DayCountProjection> countDailyGarbagePhotosBySpaceIds(@Param("spaceIds") Set<UUID> spaceIds, @Param("isVideo") Boolean isVideo);
 
     // Person: joined through faces instead of space_id/album_photos - deliberately no isGarbage
     // filter, matching findByFacesPerson's existing (no-filter) semantics.
@@ -85,8 +99,11 @@ public interface PhotoRepository extends JpaRepository<PhotoEntity, UUID> {
     List<PhotoEntity> findRandomPhotosBySpaceIdAndGroupedDayBetween(@Param("spaceId") UUID spaceId, @Param("startDay") LocalDate startDay, @Param("endDay") LocalDate endDay, @Param("limit") int limit);
 
     // Garbage's day-index equivalent - cross-space (spaceIdIn), matching the flat endpoint this
-    // replaced, since a user's garbage isn't scoped to one space.
-    Page<PhotoEntity> findBySpaceIdInAndIsGarbageTrueAndGroupedDay(Set<UUID> spaceIds, LocalDate groupedDay, Pageable pageable);
+    // replaced, since a user's garbage isn't scoped to one space. isVideo: see
+    // findBySpaceIdAndIsGarbageFalseAndGroupedDay above.
+    @Query("SELECT p FROM PhotoEntity p WHERE p.space.id IN :spaceIds AND p.isGarbage = true " +
+            "AND p.groupedDay = :groupedDay AND (:isVideo IS NULL OR p.isVideo = :isVideo)")
+    Page<PhotoEntity> findBySpaceIdInAndIsGarbageTrueAndGroupedDay(@Param("spaceIds") Set<UUID> spaceIds, @Param("groupedDay") LocalDate groupedDay, @Param("isVideo") Boolean isVideo, Pageable pageable);
 
     Page<PhotoEntity> findByFacesPerson(PersonEntity person, Pageable pageable);
 

@@ -9,6 +9,7 @@ import org.iphoto.model.request.AlbumUpdateRequest;
 import org.iphoto.repository.UserRepository;
 import org.iphoto.service.AlbumService;
 import org.iphoto.service.SpaceService;
+import org.iphoto.util.MediaTypeFilter;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
@@ -117,9 +118,9 @@ public class AlbumController extends AbstractBaseController {
     // Library/Space equivalent) for the overall design. Kept as a plain Page<Photo> envelope
     // (not PageResponse) to match this controller's existing /{id}/photos above.
     @GetMapping("/{id}/days")
-    public ResponseEntity<List<DayBucketDTO>> getAlbumDays(@PathVariable UUID id) {
+    public ResponseEntity<List<DayBucketDTO>> getAlbumDays(@PathVariable UUID id, @RequestParam(required = false) String type) {
         try {
-            return ResponseEntity.ok(albumService.getAlbumDailyPhotoCounts(id));
+            return ResponseEntity.ok(albumService.getAlbumDailyPhotoCounts(id, MediaTypeFilter.resolveIsVideo(type)));
         } catch (NoSuchElementException e) {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
         }
@@ -127,9 +128,10 @@ public class AlbumController extends AbstractBaseController {
 
     @GetMapping("/{id}/photos/day/{day}")
     public ResponseEntity<Page<Photo>> getAlbumPhotosForDay(@PathVariable UUID id, @PathVariable String day,
+                                                             @RequestParam(required = false) String type,
                                                              @PageableDefault(size = 100, sort = "dateTaken", direction = Sort.Direction.DESC) Pageable pageable) {
         try {
-            Page<Photo> photos = albumService.getAlbumPhotosForDay(id, LocalDate.parse(day), pageable);
+            Page<Photo> photos = albumService.getAlbumPhotosForDay(id, LocalDate.parse(day), pageable, MediaTypeFilter.resolveIsVideo(type));
             return ResponseEntity.ok(photos);
         } catch (NoSuchElementException e) {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);

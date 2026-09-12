@@ -16,11 +16,13 @@ import org.iphoto.repository.PhotoMetadataRepository;
 import org.iphoto.repository.UserRepository;
 import org.iphoto.service.PhotoService;
 import org.iphoto.service.SpaceService;
+import org.iphoto.util.MediaTypeFilter;
 
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.ResourceRegion;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
@@ -107,18 +109,19 @@ public class PhotoController {
     // (getPhotosForDay below) as its section scrolls into view. Main Space only, same scope as
     // GET /api/photos.
     @GetMapping("/days")
-    public List<DayBucketDTO> getDays() {
+    public List<DayBucketDTO> getDays(@RequestParam(required = false) String type) {
         UserEntity currentUser = getCurrentUser();
         SpaceEntity space = spaceService.getDefaultSpaceForUser(currentUser);
-        return photoService.getDailyPhotoCounts(space.getId());
+        return photoService.getDailyPhotoCounts(space.getId(), MediaTypeFilter.resolveIsVideo(type));
     }
 
     @GetMapping("/day/{day}")
     public PageResponse<Photo> getPhotosForDay(@PathVariable String day,
+                                                @RequestParam(required = false) String type,
                                                 @PageableDefault(size = 100, sort = "dateTaken", direction = Sort.Direction.DESC) Pageable pageable) {
         UserEntity currentUser = getCurrentUser();
         SpaceEntity space = spaceService.getDefaultSpaceForUser(currentUser);
-        return photoService.getPhotosForDay(space.getId(), LocalDate.parse(day), pageable);
+        return photoService.getPhotosForDay(space.getId(), LocalDate.parse(day), pageable, MediaTypeFilter.resolveIsVideo(type));
     }
 
     @GetMapping("/space/{spaceId}")
@@ -137,20 +140,51 @@ public class PhotoController {
         return photoService.getMemories(space.getId());
     }
 
-    @GetMapping("/space/{spaceId}/days")
-    public List<DayBucketDTO> getSpaceDays(@PathVariable UUID spaceId) {
+    // "Recently Added" strip (RecentlyAddedSection.jsx) - deliberately separate from day-index
+    // browsing: flat, most-recently-*uploaded*-first (createdAt, not dateTaken), no day grouping.
+    // Reuses the existing plain getPhotos service method (already deduped via buildDedupedPage) -
+    // only the Pageable's sort/size differs from the flat GET /api/photos above, so no new
+    // repository/service method is needed. Collapsed and unfetched by default on the frontend; the
+    // fixed 20/page size matches that lazy, opt-in usage rather than the 50/100 the eager
+    // day-index endpoints use.
+    private static final int RECENT_PAGE_SIZE = 20;
+
+    private static Pageable recentPageable(int page) {
+        return PageRequest.of(page, RECENT_PAGE_SIZE, Sort.by(Sort.Direction.DESC, "createdAt"));
+    }
+
+    @GetMapping("/recent")
+    public PageResponse<Photo> getRecentPhotos(@RequestParam(defaultValue = "0") int page) {
+        UserEntity currentUser = getCurrentUser();
+        SpaceEntity space = spaceService.getDefaultSpaceForUser(currentUser);
+        return PageResponse.from(photoService.getPhotos(space.getId(), recentPageable(page)));
+    }
+
+    @GetMapping("/space/{spaceId}/recent")
+    public PageResponse<Photo> getRecentSpacePhotos(@PathVariable UUID spaceId, @RequestParam(defaultValue = "0") int page) {
         UserEntity currentUser = getCurrentUser();
         return spaceService.getSpaceByIdForUser(spaceId, currentUser)
-                .map(space -> photoService.getDailyPhotoCounts(space.id()))
+                .map(space -> PageResponse.from(photoService.getPhotos(space.id(), recentPageable(page))))
+                .orElseGet(() -> PageResponse.from(Page.empty()));
+    }
+
+    @GetMapping("/space/{spaceId}/days")
+    public List<DayBucketDTO> getSpaceDays(@PathVariable UUID spaceId, @RequestParam(required = false) String type) {
+        UserEntity currentUser = getCurrentUser();
+        Boolean isVideo = MediaTypeFilter.resolveIsVideo(type);
+        return spaceService.getSpaceByIdForUser(spaceId, currentUser)
+                .map(space -> photoService.getDailyPhotoCounts(space.id(), isVideo))
                 .orElseGet(List::of);
     }
 
     @GetMapping("/space/{spaceId}/day/{day}")
     public PageResponse<Photo> getSpacePhotosForDay(@PathVariable UUID spaceId, @PathVariable String day,
+                                                     @RequestParam(required = false) String type,
                                                      @PageableDefault(size = 100, sort = "dateTaken", direction = Sort.Direction.DESC) Pageable pageable) {
         UserEntity currentUser = getCurrentUser();
+        Boolean isVideo = MediaTypeFilter.resolveIsVideo(type);
         return spaceService.getSpaceByIdForUser(spaceId, currentUser)
-                .map(space -> photoService.getPhotosForDay(space.id(), LocalDate.parse(day), pageable))
+                .map(space -> photoService.getPhotosForDay(space.id(), LocalDate.parse(day), pageable, isVideo))
                 .orElseGet(() -> PageResponse.from(Page.empty()));
     }
 
@@ -193,16 +227,17 @@ public class PhotoController {
     // Garbage's day-index browsing (replaces the old flat GET /api/photos/garbage) - cross-space,
     // same scope the old endpoint had.
     @GetMapping("/garbage/days")
-    public List<DayBucketDTO> getGarbageDays() {
+    public List<DayBucketDTO> getGarbageDays(@RequestParam(required = false) String type) {
         UserEntity currentUser = getCurrentUser();
-        return photoService.getGarbageDailyPhotoCounts(currentUser);
+        return photoService.getGarbageDailyPhotoCounts(currentUser, MediaTypeFilter.resolveIsVideo(type));
     }
 
     @GetMapping("/garbage/day/{day}")
     public PageResponse<Photo> getGarbagePhotosForDay(@PathVariable String day,
+                                                       @RequestParam(required = false) String type,
                                                        @PageableDefault(size = 100, sort = "dateTaken", direction = Sort.Direction.DESC) Pageable pageable) {
         UserEntity currentUser = getCurrentUser();
-        return PageResponse.from(photoService.getGarbagePhotosForDay(currentUser, LocalDate.parse(day), pageable));
+        return PageResponse.from(photoService.getGarbagePhotosForDay(currentUser, LocalDate.parse(day), pageable, MediaTypeFilter.resolveIsVideo(type)));
     }
 
 

@@ -22,11 +22,14 @@ import java.util.function.Supplier;
 // edit), AlbumService (add/remove photos to/from an album).
 public interface DayIndexCache {
 
-    List<DayBucketDTO> getSpaceDayCounts(UUID spaceId, Supplier<List<DayBucketDTO>> loader);
+    // isVideo is the photo/video type filter (null = every type) - counts differ per filter value,
+    // so each (id, isVideo) pair gets its own cache entry; evictSpace/evictAlbum below still evict
+    // every filter variant for that id at once, since any mutation invalidates all of them together.
+    List<DayBucketDTO> getSpaceDayCounts(UUID spaceId, Boolean isVideo, Supplier<List<DayBucketDTO>> loader);
 
     void evictSpace(UUID spaceId);
 
-    List<DayBucketDTO> getAlbumDayCounts(UUID albumId, Supplier<List<DayBucketDTO>> loader);
+    List<DayBucketDTO> getAlbumDayCounts(UUID albumId, Boolean isVideo, Supplier<List<DayBucketDTO>> loader);
 
     void evictAlbum(UUID albumId);
 }

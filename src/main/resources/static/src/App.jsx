@@ -31,6 +31,7 @@ import TaskManagement from './components/TaskManagement';
 import SpaceGridDisplay from './components/SpaceGridDisplay'; // Import SpaceGridDisplay
 import SpaceDetail from './components/SpaceDetail'; // Import SpaceDetail
 import MemoriesBar from './components/MemoriesBar';
+import RecentlyAddedSection from './components/RecentlyAddedSection';
 import PersonMergeSuggestionBanner from './components/PersonMergeSuggestionBanner';
 import { useDayIndexedPhotos } from './hooks/useDayIndexedPhotos';
 import { removeFromPhotosByDay } from './utils/photoListUpdates';
@@ -75,13 +76,18 @@ function App() {
   const [selectedIds, setSelectedIds] = useState([]);
   const [selectedAlbumIds, setSelectedAlbumIds] = useState([]);
   const [selectedSpaceIds, setSelectedSpaceIds] = useState([]); // For deleting multiple spaces
+  // Photo/video type filter for Library/Space/Album/Garbage (Header's MediaTypeFilter control) -
+  // 'all' | 'photo' | 'video'. Lives here, not in Header, since useDayIndexedPhotos (also here)
+  // needs it to build its request URLs.
+  const [mediaTypeFilter, setMediaTypeFilter] = useState('all');
+
   // Day-index browsing (replaces the old month-timeline/jumpToMonth cursor system, and now the
   // only technology every photo-listing view - Library/Album/Space/Garbage/Person - uses):
   // fetches every day up front, then lazily fetches each day's photos as its section scrolls
   // into view.
   // Gated on isAuthenticated so the days-fetch waits for the auth check to confirm the session
   // instead of racing it (see useDayIndexedPhotos.js's `enabled` param doc).
-  const dayIndexed = useDayIndexedPhotos(effectivePath, null, isAuthenticated);
+  const dayIndexed = useDayIndexedPhotos(effectivePath, null, isAuthenticated, mediaTypeFilter);
 
   // Flattened "reading order" view of the day-indexed data, in the same shape PhotoGrid.jsx's own
   // flatSelectionPhotos uses - needed anywhere something wants "the current view's whole photo
@@ -314,6 +320,9 @@ function App() {
     <>
       {selectedMenu === 'library' && <PersonMergeSuggestionBanner />}
       {selectedMenu === 'library' && <MemoriesBar onSeekToDay={seekToMemoryDay} isLightboxOpen={isLightboxOpen} />}
+      {selectedMenu === 'library' && (
+        <RecentlyAddedSection baseUrl="/api/photos/recent" onPhotoClick={handlePhotoClick} isLightboxOpen={isLightboxOpen} />
+      )}
       <PhotoGrid
           dayIndex={dayIndexed}
           type={selectedMenu}
@@ -404,6 +413,8 @@ function App() {
                       refreshAndMaintainScroll={refreshAndMaintainScroll}
                       setShowEditDateModal={setShowEditDateModal}
                       handleDownload={handleDownload}
+                      mediaTypeFilter={mediaTypeFilter}
+                      setMediaTypeFilter={setMediaTypeFilter}
                   />
               )}
             </UploadManager>
