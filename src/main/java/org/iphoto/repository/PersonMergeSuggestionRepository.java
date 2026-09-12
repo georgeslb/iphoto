@@ -6,7 +6,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
-import java.util.Optional;
+import java.util.List;
 import java.util.UUID;
 
 @Repository
@@ -23,10 +23,16 @@ public interface PersonMergeSuggestionRepository extends JpaRepository<PersonMer
     // so it never pays for the face thumbnails a real page fetch above would.
     long countBySpaceId(UUID spaceId);
 
-    // Upsert lookup - PersonMergeSuggestionServiceImpl always canonicalizes a pair so the smaller
-    // id is personA/the larger is personB before calling this, so a pair is only ever looked up
-    // one way regardless of comparison order.
-    Optional<PersonMergeSuggestionEntity> findByPersonAIdAndPersonBId(UUID personAId, UUID personBId);
+    // PersonMergeSuggestionServiceImpl#refreshSuggestions' one upfront batch load of this space's
+    // existing suggestions - replaces what used to be one findByPersonAIdAndPersonBId query PER
+    // comparison pair (a space with even a few hundred people means tens of thousands of pairs).
+    // Every one of those ran inside the same long @Transactional method, so Hibernate's auto-flush
+    // fired before each one, re-checking an ever-growing persistence context (every suggestion
+    // saved earlier in the run stayed managed) - effectively quadratic on top of the already
+    // quadratic pair count. That turned a run that should take seconds into a multi-hour,
+    // CPU-pegged hang that starved the whole JVM (production incident, see TODO.md). One query
+    // here plus an in-memory Map lookup per pair fixes both the query count and the flush growth.
+    List<PersonMergeSuggestionEntity> findBySpaceId(UUID spaceId);
 
     // Called when a person is merged away or its similarity to another person drops back below
     // the suggestion threshold - passing the same id for both params matches any row mentioning
