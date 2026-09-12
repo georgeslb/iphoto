@@ -318,11 +318,25 @@
 .task-table th:nth-child(3), .task-table td:nth-child(3) { width: 11%; }    /* type */
 .task-table th:nth-child(4), .task-table td:nth-child(4) { width: 8%; }     /* status */
 .task-table th:nth-child(5), .task-table td:nth-child(5) { width: 12%; }    /* photo id */
-.task-table th:nth-child(6), .task-table td:nth-child(6) { width: 20%; }    /* error */
+.task-table th:nth-child(6), .task-table td:nth-child(6) { width: 14%; }    /* error */
 .task-table th:nth-child(7), .task-table td:nth-child(7) { width: 11%; }    /* created */
 .task-table th:nth-child(8), .task-table td:nth-child(8) { width: 11%; }    /* updated */
 .task-table th:nth-child(9), .task-table td:nth-child(9) { width: 7%; }     /* duration */
-.task-table th:nth-child(10), .task-table td:nth-child(10) { width: 8%; }   /* actions */
+.task-table th:nth-child(10), .task-table td:nth-child(10) { width: 14%; }  /* actions */
+
+/* Actions cell holds two buttons (Restart + Park/Unpark) - the shared nowrap/ellipsis/hidden-
+   overflow rule above is right for every other column (long UUIDs, error text) but was silently
+   clipping the second button out of view instead of wrapping it, even after widening the column
+   above (a user's real production report: "Park button disappeared" - it was never removed, just
+   invisible). Let this one cell wrap its buttons onto a second line instead of hiding them. */
+.task-table td:nth-child(10) {
+    white-space: normal;
+    overflow: visible;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
 
 .task-id-cell {
     font-family: monospace;
