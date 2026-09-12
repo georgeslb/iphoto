@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 @Slf4j
@@ -49,6 +50,16 @@ public class PersonMergeSuggestionServiceImpl implements PersonMergeSuggestionSe
                     .ifPresent(vector -> overallByPerson.put(person.getId(), vector));
         }
 
+        // Loaded once, up front, instead of one findByPersonAIdAndPersonBId query per pair below
+        // (see PersonMergeSuggestionRepository.findBySpaceId's own comment for why that was a real
+        // production incident) - keyed by the same canonicalized (lower id, higher id) pairing
+        // upsertOrDiscard below already uses, so every pair below is a plain Map lookup.
+        Map<PairKey, PersonMergeSuggestionEntity> existingByPair = personMergeSuggestionRepository
+                .findBySpaceId(space.getId()).stream()
+                .collect(Collectors.toMap(
+                        s -> new PairKey(s.getPersonA().getId(), s.getPersonB().getId()),
+                        s -> s));
+
         for (int i = 0; i < persons.size(); i++) {
             PersonEntity personI = persons.get(i);
             float[] vectorI = overallByPerson.get(personI.getId());
@@ -66,7 +77,7 @@ public class PersonMergeSuggestionServiceImpl implements PersonMergeSuggestionSe
                 }
                 double similarity = cosineSimilarity(vectorI, vectorJ);
                 try {
-                    upsertOrDiscard(space.getId(), personI, personJ, similarity);
+                    upsertOrDiscard(existingByPair, space.getId(), personI, personJ, similarity);
                 } catch (Exception e) {
                     log.error("could not refresh merge suggestion between persons {} and {}",
                             personI.getId(), personJ.getId(), e);
@@ -76,28 +87,36 @@ public class PersonMergeSuggestionServiceImpl implements PersonMergeSuggestionSe
     }
 
     // Canonicalizes the pair (smaller id always personA) so a pair is only ever stored/looked up
-    // one way regardless of which order the caller happened to compare them in.
-    private void upsertOrDiscard(UUID spaceId, PersonEntity a, PersonEntity b, double similarity) {
+    // one way regardless of which order the caller happened to compare them in - also the key
+    // shape existingByPair above is built with.
+    private void upsertOrDiscard(Map<PairKey, PersonMergeSuggestionEntity> existingByPair, UUID spaceId,
+                                  PersonEntity a, PersonEntity b, double similarity) {
         PersonEntity lower = a.getId().compareTo(b.getId()) <= 0 ? a : b;
         PersonEntity higher = lower == a ? b : a;
-        Optional<PersonMergeSuggestionEntity> existing =
-                personMergeSuggestionRepository.findByPersonAIdAndPersonBId(lower.getId(), higher.getId());
+        PersonMergeSuggestionEntity existing = existingByPair.get(new PairKey(lower.getId(), higher.getId()));
 
         if (similarity < SUGGESTION_THRESHOLD) {
             // No longer similar enough (e.g. a face was unlinked/moved since the last run) - drop
             // a previously-suggested pair rather than leave a stale suggestion sitting around.
-            existing.ifPresent(personMergeSuggestionRepository::delete);
+            if (existing != null) {
+                personMergeSuggestionRepository.delete(existing);
+            }
             return;
         }
 
-        PersonMergeSuggestionEntity suggestion = existing.orElseGet(() -> PersonMergeSuggestionEntity.builder()
+        PersonMergeSuggestionEntity suggestion = existing != null ? existing : PersonMergeSuggestionEntity.builder()
                 .personA(lower)
                 .personB(higher)
-                .build());
+                .build();
         suggestion.setSpaceId(spaceId);
         suggestion.setSimilarity(similarity);
         personMergeSuggestionRepository.save(suggestion);
     }
+
+    // Plain pair-of-ids key for existingByPair above - PersonEntity itself isn't a suitable Map key
+    // (no id-based equals/hashCode), and this also documents that the pair is always looked up
+    // canonicalized (lower id first), same as the DB's own unique constraint.
+    private record PairKey(UUID personAId, UUID personBId) {}
 
     @Override
     public Page<PersonMergeSuggestionEntity> getSuggestionsForSpace(UUID spaceId, Pageable pageable) {

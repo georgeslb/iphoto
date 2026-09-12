@@ -307,6 +307,27 @@ matters again; `specification.md` is the source of truth for current behavior.
     was silently lost. Fixed to track whichever id actually survives across the whole
     fold-in-candidates loop and apply the new name to it, whichever person that ends up being
     (`FaceServiceTest#renamingAPersonThatMergesIntoABiggerCandidateStillAppliesTheNewNameToTheActualSurvivor`).
+  - **Production incident (2026-09-12): `PersonMergeSuggestionServiceImpl.refreshSuggestions` hung
+    the whole app for hours, taking prod down completely.** Root cause: it ran one
+    `findByPersonAIdAndPersonBId` query PER comparison pair inside a single long `@Transactional`
+    method - fine for a handful of people, but a space with just 406 people is already
+    `406×405/2 ≈ 82,200` pairs, and Hibernate's default auto-flush fires before every query,
+    re-checking a persistence context that only ever grew (every suggestion saved earlier in the
+    same run stayed managed). Effectively quadratic on top of the already-quadratic pair count -
+    confirmed via a forced (`jhsdb jstack`, ptrace-based - the JVM couldn't reach an ordinary
+    safepoint) thread dump showing the single dedicated `heavy-tasks.face-recognition-threads: 1`
+    thread pinned at ~100% CPU for 3.5+ hours inside `SessionImpl.autoFlushIfRequired` on that one
+    space's 83,836-ungrouped-face/406-person backlog, `TaskWorkerManager` re-submitting it every
+    30s (`in-flight` never clearing). That one thread pegging a core starved the rest of the JVM
+    (GC, then Tomcat) badly enough that even loopback TCP connections stopped completing -
+    "container up, CPU/RAM graphs fine" masked a single-process 99% CPU spike until `docker compose
+    top` was checked directly. Fixed by batch-loading this space's existing suggestions in ONE
+    query up front (`PersonMergeSuggestionRepository.findBySpaceId`) into an in-memory `Map`
+    instead of querying per pair - turns the per-pair auto-flush churn into a single flush at
+    commit. Regression-tested (`PersonMergeSuggestionServiceImplTest`: create/update-in-place/
+    delete-as-similarity-changes across repeated `refreshSuggestions` runs). Immediate mitigation
+    while this shipped: `POST /api/admin/heavyTasks {"activate": false}` to stop face
+    recognition/duplication from resubmitting until the fix was deployed.
 
 ### Sharing
 - Full design in `specification.md` §4.4. Originally broken end-to-end (wrong URI parsing, guest
