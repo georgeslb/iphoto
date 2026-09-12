@@ -447,6 +447,50 @@ matters again; `specification.md` is the source of truth for current behavior.
     levers stay (1) bounding the algorithm itself (the batch-prefetch fix above) and (2) fast
     detection via this health indicator; true per-task kill-ability would need running heavy tasks
     in an isolated child process, a bigger change not attempted here.
+  - **Face recognition algorithm rework: cross-run persistence for candidate clusters**
+    (2026-09-12, user complaint: "too much time, recursive calls to same face again and again, no
+    good logic"). Root cause: `CandidateClusterer`'s open (not-yet-promoted) cluster state lived
+    only in memory, rebuilt from scratch by `groupFacesForUser` on every ~30s run - a face already
+    examined and found not to match any existing person stayed `OLD` but still `person IS NULL`,
+    so it kept getting refetched (`FaceRepository.findByPersonIsNullAndSpaceIdFetchPhoto`, up to
+    `MAX_UNGROUPED_FACES_PER_RUN`=2000 per run) and re-compared against a brand-new clusterer's
+    candidate groupings, over and over, for as long as a real person's faces took to accumulate
+    the 3 needed to promote - for a large backlog this was genuinely O(backlog) work repeated every
+    run indefinitely, not just once.
+    Fixed with a new `candidate_clusters` table (`V7__add_candidate_clusters.sql`) +
+    `CandidateClusterEntity` + `faces.candidate_cluster_id`: a face joins/seeds an open cluster AT
+    MOST ONCE, ever. `CandidateClusterer` itself stays a pure, dependency-free, unit-testable class
+    (its `add()` now returns a `ClusterAddResult` - `clusterId`/`isNewCluster`/
+    `promotedRepresentatives` - instead of a bare `Optional<List<FaceEntity>>`, and gained
+    `seed(clusterId, existingMembers)` to pre-populate from a prior run) - all persistence lives in
+    `FaceRecognitionServiceImpl`: `seedOpenClusters` loads every still-open cluster for the space at
+    the start of each run (seeding the clusterer, or expiring it - see below), and the main query
+    changed to `FaceRepository.findNewBySpaceIdFetchPhoto` (`status = 'NEW'` only, replacing the old
+    "person IS NULL" query) - the "wasNew" gate is gone entirely since every fetched face is now
+    NEW by construction. A one-time migration backfill resets any pre-existing `OLD`+unmatched face
+    back to `NEW` so nothing already-stranded is silently lost.
+    New `CANDIDATE_CLUSTER_MAX_AGE` (90 days, matching `MAX_NEW_PERSON_CLUSTER_GAP`) expiry: a
+    cluster that's gone that long without its 3rd member resets its member face(s) to `NEW` (one
+    more fresh pass) and is deleted - bounds how many open clusters a space accumulates over its
+    whole lifetime instead of growing forever with every one-off/background face. Real bugs hit and
+    fixed while building this (both would have shipped silently broken without the persistence
+    itself being directly tested, not just the final matched/promoted outcome - see
+    `FaceRecognitionServiceImplTest`'s new `anOpenClusterIsActuallyPersistedBetweenRunsAndNever
+    ReprocessesItsOwnMemberFaces`/`anOpenClusterOlderThanTheMaxAgeExpiresAndGivesItsMemberFace
+    AFreshChance`, both caught this the hard way during development): (1) a referential-integrity
+    violation from `merge()` (not `persist()`) being used for a brand-new `CandidateClusterEntity`
+    whose id Spring Data's default `isNew()` check saw as non-null and assumed already-existing -
+    fixed by implementing `Persistable<UUID>` (same pattern as `PersonEntity`/`BaseEntity`); (2)
+    once that was fixed, `persist()` itself then failed with "detached entity passed to persist" -
+    a `@GeneratedValue` id strategy combined with a pre-populated id confuses Hibernate regardless
+    of Spring Data's own persist-vs-merge choice, fixed by dropping `@GeneratedValue` entirely
+    (matching `PhotoEntity`'s own plain client-assigned `@Id`, since this id is always pre-assigned
+    by `CandidateClusterer.add()` anyway). `AdminServiceImpl#restartPersonRecognition` also now
+    wipes `candidate_clusters` alongside people/buckets/suggestions.
+    **Considered and deliberately not done**: a smarter representative-selection strategy within a
+    cluster (still just "first N in arrival order," per `CandidateClusterer`'s own long-standing
+    comment); an ANN/vector-index approach to existing-person matching (the bucket-based approach
+    is still a linear scan over persons, just a cheap one - not the bottleneck this rework targeted).
 
 - **Face thumbnail storage moved from a DB `BYTEA` blob to a file on disk** (reported 2026-09-13:
   base64-inlining `faces.face_thumbnail` into every `FaceDTO` made the Persons grid/Lightbox/merge-

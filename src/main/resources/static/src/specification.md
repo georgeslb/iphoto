@@ -502,19 +502,35 @@ This section describes the application's features. For the corresponding backend
           person are picked up as the timeline progresses rather than compared all-at-once. A person
           with only two photos taken decades apart, with nothing in between, still won't cluster
           together — an inherent limitation of any temporally-windowed approach, not a bug.
+        - **Cross-run persistence (bug fixed 2026-09-12, `CandidateClusterEntity`/
+          `faces.candidate_cluster_id`)**: an open (1-2 member) cluster used to exist only in
+          `CandidateClusterer`'s own in-memory state, rebuilt from scratch on every ~30s run by
+          re-feeding every still-unmatched face through it again — for a large backlog, the same
+          faces got re-compared against the same candidate groupings over and over for as long as a
+          real person's faces took to accumulate the 3 needed to promote. A face now joins a cluster
+          (or seeds one) at most ONCE, ever: `FaceEntity.candidateCluster` records which open cluster
+          it belongs to, `groupFacesForUser` seeds `CandidateClusterer` from every persisted open
+          cluster for the space at the start of each run, and its main query only ever selects
+          `status = NEW` faces (never-before-examined ones) — a face already sitting inside a
+          persisted cluster is never refetched/reprocessed itself again. An open cluster that goes
+          `CANDIDATE_CLUSTER_MAX_AGE` (90 days, matching `MAX_NEW_PERSON_CLUSTER_GAP`) without
+          reaching 3 members is expired: its member face(s) reset to `NEW` for one fresh pass rather
+          than being silently stranded, and the cluster row deleted — bounding how many open clusters
+          a space can accumulate over its whole lifetime instead of growing forever with every
+          one-off/background face a library ever sees. `AdminServiceImpl#restartPersonRecognition`
+          wipes every `candidate_clusters` row alongside people/buckets/suggestions, for the same
+          "rebuild everything from scratch" reason.
     *   **`FaceEntity.status` (`NEW`/`OLD`)**: every face starts `NEW` (`FaceDetectionServiceImpl`).
-        `groupFacesForUser` only runs the expensive existing-person analysis (`findBestMatchForFace`,
-        checked against every person's buckets) for `NEW` faces - an `OLD` one already went through
-        that check in a past run and found nothing, and skipping it is what stops a large,
-        permanently-unmatched backlog (faces that will never cluster into anyone) from being
-        re-analysed against every person on every ~30s run forever. A face flips to `OLD` once
-        analysed this way, regardless of outcome (matched, promoted into a brand-new person via
-        `CandidateClusterer`, or still an unclustered singleton) - see `PersonRecognitionService
-        .updatePerson`/`addPerson` (matched/promoted cases) and `groupFacesForUser`'s own explicit
-        flip (unresolved case). `OLD` faces are still fed into `CandidateClusterer` every run exactly
-        like `NEW` ones, though - clustering itself is unaffected by status, since a brand-new person
-        can only be discovered once enough of their faces exist, old and new alike, and a face that
-        completes a cluster stays valid evidence regardless of when it was first seen.
+        `groupFacesForUser`'s main query (`FaceRepository.findNewBySpaceIdFetchPhoto`) only ever
+        selects `NEW` faces — an `OLD` one has already been examined exactly once (matched an
+        existing person, joined/seeded an open `CandidateClusterEntity`, or been promoted into a
+        brand-new person) and is never reconsidered again; its outcome is what's remembered (a
+        person, or a candidate-cluster row), not the face being refetched. A face flips to `OLD` the
+        moment that first (and only) examination completes, regardless of outcome — see
+        `PersonRecognitionService.updatePerson`/`addPerson` (matched/promoted cases) and
+        `groupFacesForUser`'s own explicit flip (joined/seeded-a-cluster case). The one exception:
+        an expired candidate cluster (see above) resets its member face(s) back to `NEW` for a
+        second, genuinely fresh pass.
     *   **Space scoping during face grouping**: `MainSpaceAspectConfiguration.enableSpaceFilter`
         skips enabling the per-user `spaceFilter` Hibernate filter for any thread named
         `backend-task*`/`heavy-task*`, and `FACE_RECOGNITION` (like all `TaskWorkerManager`
@@ -525,9 +541,9 @@ This section describes the application's features. For the corresponding backend
         production run, letting a cluster mix faces from different accounts into one `PersonEntity`).
         Fixed by resolving the target user's space explicitly once (`SpaceService
         .getDefaultSpaceForUser`) and querying with it directly — `PersonRepository.findAllBySpaceId`/
-        `FaceRepository.findByPersonIsNullAndSpaceIdFetchPhoto` — instead of relying on
-        `@MainSpaceLimited`/`SecurityContextHolder` at all, which is correct regardless of which
-        thread the query runs on.
+        `FaceRepository.findNewBySpaceIdFetchPhoto`/`CandidateClusterRepository.findBySpaceId` —
+        instead of relying on `@MainSpaceLimited`/`SecurityContextHolder` at all, which is correct
+        regardless of which thread the query runs on.
     *   **Cover photo (`Persons.jsx`)**: each person's icon on `/persons` is their `coverFace` —
         `PersonRecognitionService.recalculateCoverFace` picks the face whose photo has the most
         recent valid `dateTaken` (i.e. "latest known photo of them"), recalculated whenever a face

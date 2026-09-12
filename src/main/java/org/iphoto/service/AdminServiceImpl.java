@@ -12,6 +12,7 @@ import org.iphoto.model.StorageMigrationSummaryDTO;
 import org.iphoto.model.TaskAdminDTO;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.TaskType;
+import org.iphoto.repository.CandidateClusterRepository;
 import org.iphoto.repository.DuplicateRepository;
 import org.iphoto.repository.FaceRepository;
 import org.iphoto.repository.PersonEmbeddingBucketRepository;
@@ -53,6 +54,7 @@ public class AdminServiceImpl implements AdminService {
     private final PersonMergeSuggestionRepository personMergeSuggestionRepository;
     private final PhotoDuplicateRepository photoDuplicateRepository;
     private final DuplicateRepository duplicateRepository;
+    private final CandidateClusterRepository candidateClusterRepository;
 
     // Exactly one ACTIVATE_HEAVY_TASKS row ever exists - updated in place on every toggle, not a
     // new row per click, so isHeavyTasksActivated never has to reason about "which one is current."
@@ -205,11 +207,16 @@ public class AdminServiceImpl implements AdminService {
     @Override
     @Transactional
     public Map<String, Integer> restartPersonRecognition() {
-        // Order matters for FKs: detach faces (faces.person_id) and drop the person-owned caches
-        // (person_embedding_buckets.person_id, person_merge_suggestions.person_a/b_id) BEFORE the
-        // people rows themselves. deleteAllInBatch = one DELETE per table, no per-row lifecycle
-        // callbacks - PersonEntity's @PreRemove face-nulling is replaced by the bulk detach above.
+        // Order matters for FKs: detach faces (faces.person_id/candidate_cluster_id) and drop the
+        // person-owned caches (person_embedding_buckets.person_id, person_merge_suggestions.
+        // person_a/b_id) and open candidate_clusters rows BEFORE the people rows themselves.
+        // deleteAllInBatch = one DELETE per table, no per-row lifecycle callbacks - PersonEntity's
+        // @PreRemove face-nulling is replaced by the bulk detach above. candidate_clusters has no
+        // person of its own to lose (it's the OTHER kind of grouping, not-yet-a-person), but must
+        // still be wiped here - otherwise a stale cluster would get seeded back into
+        // CandidateClusterer next run referencing faces that were just reset to NEW/unclustered.
         int facesReset = faceRepository.detachAllFromPersonsAndResetStatus(FaceStatus.NEW);
+        candidateClusterRepository.deleteAllInBatch();
         personEmbeddingBucketRepository.deleteAllInBatch();
         personMergeSuggestionRepository.deleteAllInBatch();
         int personsDeleted = (int) personRepository.count();

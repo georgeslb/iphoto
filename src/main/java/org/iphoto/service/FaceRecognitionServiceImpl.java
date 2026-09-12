@@ -5,6 +5,7 @@ import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.*;
+import org.iphoto.repository.CandidateClusterRepository;
 import org.iphoto.repository.FaceLinkExclusionRepository;
 import org.iphoto.repository.FaceRepository;
 import org.iphoto.repository.PersonEmbeddingBucketRepository;
@@ -16,6 +17,7 @@ import org.springframework.data.domain.Slice;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -43,6 +45,7 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
     private final FaceLinkExclusionRepository faceLinkExclusionRepository;
     private final PersonEmbeddingBucketRepository personEmbeddingBucketRepository;
     private final PersonMergeSuggestionService personMergeSuggestionService;
+    private final CandidateClusterRepository candidateClusterRepository;
 
     // Threshold for Cosine Similarity: A higher value means a stricter match. Kept strict and
     // never loosened for "same person, different age" cases — a face at 5 and the same face at
@@ -82,6 +85,21 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
     // window.
     private static final Duration MAX_NEW_PERSON_CLUSTER_GAP = Duration.ofDays(90);
 
+    // How long (real, wall-clock time - not photo dateTaken) an open CandidateClusterEntity can
+    // sit with fewer than MIN_NEW_PERSON_CLUSTER_SIZE members before this run gives up on it and
+    // expires it (see seedOpenClusters/expireCluster below). Same order of magnitude as
+    // MAX_NEW_PERSON_CLUSTER_GAP above rather than a fresh, unrelated number - reasoning: two faces
+    // more than 90 days apart (by dateTaken) can never match each other anyway (withinGap), so a
+    // cluster that's gone 90 real days without its 3rd member is already very unlikely to ever
+    // complete, whether because this person is genuinely rare in the library or because dateTaken
+    // processing has simply moved on past their era. Expiring it resets its member faces to NEW
+    // (see expireCluster) so they get one more fresh pass rather than being silently lost -
+    // most likely they'll either match a real person that exists by then, or seed a brand-new
+    // cluster again and, if still genuinely rare, expire again later. This bounds how many open
+    // clusters a space can accumulate over its whole lifetime (recently-seeded and still-plausible
+    // only) instead of growing forever with every one-off/background face a library ever sees.
+    private static final Duration CANDIDATE_CLUSTER_MAX_AGE = Duration.ofDays(90);
+
     @Override
     public void groupFaces() { // Added UserEntity parameter
         // Ids only, not the entities themselves - findById below re-fetches each fresh right
@@ -116,7 +134,7 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
             // bypass, so the filter never actually got bound to any space there - meaning every
             // user's people/faces were being pooled together globally, and a real cluster could
             // end up mixing faces that belong to completely different accounts into one person.
-            // Passing the space explicitly (findAllBySpaceId/findByPersonIsNullAndSpaceIdFetchPhoto)
+            // Passing the space explicitly (findAllBySpaceId/findNewBySpaceIdFetchPhoto)
             // is correct regardless of which thread this runs on.
             SpaceEntity space = spaceService.getDefaultSpaceForUser(user);
             // Still snapshotted once per run, same as before this rework - but now MUTATED as
@@ -132,8 +150,14 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
             // One instance per user run, fed faces across every slice below in chronological
             // (photo.dateTaken ascending) order - see CandidateClusterer's own class comment for
             // why that ordering matters and how its ≤3-representative cap bounds memory regardless
-            // of how large the real person behind any one cluster turns out to be.
+            // of how large the real person behind any one cluster turns out to be. Seeded below
+            // with every still-open cluster from PRIOR runs (see expireStaleClusters/seedOpenClusters)
+            // instead of starting empty - this is the actual fix for the old "recursive calls to the
+            // same face again and again" cost: a face already absorbed into an open cluster in a
+            // past run is never refetched/reprocessed itself again, only its cluster's compact
+            // representative set is - see CandidateClusterer's own class comment.
             CandidateClusterer candidateClusterer = new CandidateClusterer(THRESHOLD, MAX_NEW_PERSON_CLUSTER_GAP, MIN_NEW_PERSON_CLUSTER_SIZE);
+            seedOpenClusters(space, candidateClusterer);
 
             int processedTotal = 0;
             int pageNumber = 0;
@@ -143,7 +167,14 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
                 // transaction), and both the logging line below and CandidateClusterer read
                 // face.getPhoto() well after that point - needs to already be loaded, not a lazy
                 // proxy with no session left to resolve it on demand.
-                Slice<FaceEntity> slice = faceRepository.findByPersonIsNullAndSpaceIdFetchPhoto(space.getId(), PageRequest.of(pageNumber, CLUSTERING_SLICE_SIZE));
+                //
+                // status = NEW only (not "person IS NULL" - see FaceRepository.findNewBySpaceIdFetchPhoto's
+                // own comment): every face returned here is, by construction, one this run's
+                // clustering logic has never seen before - an OLD one already went through the
+                // existing-person check in a past run and either matched, or is already sitting
+                // inside an open cluster seeded above (or a brand-new cluster it started itself,
+                // also seeded above). There is no more "still-unmatched OLD backlog" to re-scan.
+                Slice<FaceEntity> slice = faceRepository.findNewBySpaceIdFetchPhoto(space.getId(), PageRequest.of(pageNumber, CLUSTERING_SLICE_SIZE));
                 List<FaceEntity> faces = slice.getContent();
                 if (faces.isEmpty()) {
                     break;
@@ -164,83 +195,73 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
 
                 for (FaceEntity face : faces) {
                     log.info("Working on face in photo {}", face.getPhoto().getId());
-                    // Only a NEW face gets the expensive existing-person analysis below (checked
-                    // against every eligible person's buckets) - an OLD one already went through
-                    // this exact check in a past run and found no match, and nothing about the
-                    // face itself changes between runs. Re-running it every ~30s forever for a
-                    // face that will never match anyone is exactly the "loop undefinitely on old
-                    // no-related faces" this status flag exists to avoid. It's still handed to
-                    // candidateClusterer.add() below regardless of status though - a NEW face must
-                    // still be compared against every OLD, still-unmatched (person IS NULL) face
-                    // for clustering purposes, since a genuinely new person can only be discovered
-                    // once at least MIN_NEW_PERSON_CLUSTER_SIZE faces of theirs exist, old and new
-                    // alike (see the regression test in FaceRecognitionServiceImplTest covering
-                    // exactly this: a person completed by a later run's NEW face joining two
-                    // earlier runs' now-OLD leftover faces).
-                    boolean wasNew = face.getStatus() == FaceStatus.NEW;
-                    if (wasNew) {
-                        Set<UUID> excludedPersonIds = excludedPersonIdsByFace.getOrDefault(face.getId(), Set.of());
-                        List<PersonEntity> eligiblePersons = excludedPersonIds.isEmpty()
-                                ? persons
-                                : persons.stream().filter(person -> !excludedPersonIds.contains(person.getId())).toList();
+                    // Every face here is NEW (see the query above) - always worth the existing-person
+                    // check, unlike the old design's wasNew gate (nothing to gate against anymore).
+                    Set<UUID> excludedPersonIds = excludedPersonIdsByFace.getOrDefault(face.getId(), Set.of());
+                    List<PersonEntity> eligiblePersons = excludedPersonIds.isEmpty()
+                            ? persons
+                            : persons.stream().filter(person -> !excludedPersonIds.contains(person.getId())).toList();
 
-                        // Decoded/normalized once per face rather than once per (face, person) pair below -
-                        // findBestMatchForFace checks every eligible person, and each check used to re-decode
-                        // and re-normalize this SAME face's embedding from scratch.
-                        NormalizedEmbedding faceEmbedding = NormalizedEmbedding.of(EmbeddingCodec.toFloats(face.getEmbedding()));
-                        int targetYear = PersonEmbeddingBucketEntity.bucketYearFor(face);
-                        Optional<PersonWithScore> bestMatch = findBestMatchForFace(faceEmbedding, targetYear, eligiblePersons, bucketsByPerson);
-                        if (bestMatch.isPresent()) {
-                            // Each match is now its own independent transaction (see class comment) - a
-                            // failure on one face must not stop the rest of this user's faces (or the
-                            // new-person clustering below) from being attempted in this same run, the way
-                            // it used to when this whole method shared one transaction and one uncaught
-                            // exception aborted everything after it. updatePerson also flips this face's
-                            // status to OLD as part of the same save - see its own comment.
-                            try {
-                                personRecognitionService.updatePerson(bestMatch.get().getPerson(), face);
-                            } catch (Exception e) {
-                                log.error("could not update person {} for face {}", bestMatch.get().getPerson().getId(), face.getId(), e);
-                            }
-                            continue;
-                        }
-                    }
-
-                    // No existing person matched (or this is an OLD face that already knows it
-                    // won't) - hand it to the memory-bounded candidate clusterer instead of
-                    // accumulating it into a full-run leftover list.
-                    Optional<List<FaceEntity>> promotedClusterFaces = candidateClusterer.add(face);
-                    if (promotedClusterFaces.isEmpty()) {
-                        if (wasNew) {
-                            // Analysed this run (matching + clustering) and still didn't resolve to
-                            // a person - mark it OLD so future runs skip the matching step for it,
-                            // while it stays a person-null clustering candidate for later NEW faces.
-                            face.setStatus(FaceStatus.OLD);
-                            faceRepository.save(face);
+                    // Decoded/normalized once per face rather than once per (face, person) pair below -
+                    // findBestMatchForFace checks every eligible person, and each check used to re-decode
+                    // and re-normalize this SAME face's embedding from scratch.
+                    NormalizedEmbedding faceEmbedding = NormalizedEmbedding.of(EmbeddingCodec.toFloats(face.getEmbedding()));
+                    int targetYear = PersonEmbeddingBucketEntity.bucketYearFor(face);
+                    Optional<PersonWithScore> bestMatch = findBestMatchForFace(faceEmbedding, targetYear, eligiblePersons, bucketsByPerson);
+                    if (bestMatch.isPresent()) {
+                        // Each match is now its own independent transaction (see class comment) - a
+                        // failure on one face must not stop the rest of this user's faces (or the
+                        // new-person clustering below) from being attempted in this same run, the way
+                        // it used to when this whole method shared one transaction and one uncaught
+                        // exception aborted everything after it. updatePerson also flips this face's
+                        // status to OLD as part of the same save - see its own comment.
+                        try {
+                            personRecognitionService.updatePerson(bestMatch.get().getPerson(), face);
+                        } catch (Exception e) {
+                            log.error("could not update person {} for face {}", bestMatch.get().getPerson().getId(), face.getId(), e);
                         }
                         continue;
                     }
-                    // A promoted cluster's own faces (possibly a mix of OLD leftovers and the NEW
-                    // face that just completed it) get person + OLD status together via
-                    // personRecognitionService.addPerson below - no separate save needed here even
-                    // for the wasNew case.
-                    // Same reasoning as the per-face try/catch above - one bad cluster (each its
-                    // own independent transaction) shouldn't stop the rest of this user's new-person
-                    // clusters from being created in this run.
+
+                    // No existing person matched - hand it to the memory-bounded, cross-run-persisted
+                    // candidate clusterer instead of accumulating it into a full-run leftover list.
+                    CandidateClusterer.ClusterAddResult result = candidateClusterer.add(face);
+                    if (result.isPromotion()) {
+                        // Same reasoning as the per-face try/catch above - one bad cluster (each its
+                        // own independent transaction) shouldn't stop the rest of this user's
+                        // new-person clusters from being created in this run.
+                        try {
+                            personRecognitionService.addPerson(result.promotedRepresentatives());
+                            candidateClusterRepository.deleteById(result.clusterId());
+                            // Mid-run visibility (see class-level field comment above): re-fetch the
+                            // brand-new person via one of the faces just handed to addPerson and fold
+                            // it into this run's own persons/bucketsByPerson, so every
+                            // later face - in this same slice or a later one - matches it via the
+                            // normal existing-person path instead of seeding a duplicate cluster.
+                            UUID newPersonId = faceRepository.findById(result.promotedRepresentatives().getFirst().getId())
+                                    .orElseThrow().getPerson().getId();
+                            personRepository.findByIdInMainSpace(newPersonId).ifPresent(persons::add);
+                            bucketsByPerson.put(newPersonId, personEmbeddingBucketRepository.findByPersonId(newPersonId));
+                        } catch (Exception e) {
+                            log.error("could not create a new person for user {} from a cluster of {} face(s)",
+                                    user.getId(), result.promotedRepresentatives().size(), e);
+                        }
+                        continue;
+                    }
+                    // Joined an existing open cluster, or seeded a brand-new one - either way this
+                    // face is now fully accounted for and must never be reconsidered again (see the
+                    // query comment above), so it's flipped to OLD here regardless of which case this
+                    // was, same as the promoted branch's addPerson already does for its own faces.
                     try {
-                        personRecognitionService.addPerson(promotedClusterFaces.get());
-                        // Mid-run visibility (see class-level field comment above): re-fetch the
-                        // brand-new person via one of the faces just handed to addPerson and fold
-                        // it into this run's own persons/bucketsByPerson, so every
-                        // later face - in this same slice or a later one - matches it via the
-                        // normal existing-person path instead of seeding a duplicate cluster.
-                        UUID newPersonId = faceRepository.findById(promotedClusterFaces.get().getFirst().getId())
-                                .orElseThrow().getPerson().getId();
-                        personRepository.findByIdInMainSpace(newPersonId).ifPresent(persons::add);
-                        bucketsByPerson.put(newPersonId, personEmbeddingBucketRepository.findByPersonId(newPersonId));
+                        CandidateClusterEntity clusterRef = result.isNewCluster()
+                                ? candidateClusterRepository.save(CandidateClusterEntity.builder()
+                                        .id(result.clusterId()).spaceId(space.getId()).build())
+                                : candidateClusterRepository.getReferenceById(result.clusterId());
+                        face.setCandidateCluster(clusterRef);
+                        face.setStatus(FaceStatus.OLD);
+                        faceRepository.save(face);
                     } catch (Exception e) {
-                        log.error("could not create a new person for user {} from a cluster of {} face(s)",
-                                user.getId(), promotedClusterFaces.get().size(), e);
+                        log.error("could not persist candidate cluster {} membership for face {}", result.clusterId(), face.getId(), e);
                     }
                 }
 
@@ -271,6 +292,37 @@ public class FaceRecognitionServiceImpl implements FaceRecognitionService {
             log.error("cant process face recognition for user {}", user.getId(), e);
         }
 
+    }
+
+    // Loads every still-open CandidateClusterEntity for this space (normally a small list - open
+    // clusters are the exception, not the rule: most faces either match an existing person
+    // outright or complete a cluster within a few runs of it being seeded) and either seeds the
+    // clusterer with it (still plausible) or expires it (see CANDIDATE_CLUSTER_MAX_AGE) - one
+    // query plus, per cluster, one small (≤2 rows) member-faces fetch. Runs once at the very start
+    // of a user's turn, before any NEW face is processed, so every face fed to candidateClusterer.add()
+    // below is compared against the FULL set of still-plausible open clusters, not a partial one.
+    private void seedOpenClusters(SpaceEntity space, CandidateClusterer candidateClusterer) {
+        LocalDateTime expiryThreshold = LocalDateTime.now().minus(CANDIDATE_CLUSTER_MAX_AGE);
+        for (CandidateClusterEntity cluster : candidateClusterRepository.findBySpaceId(space.getId())) {
+            if (cluster.getCreatedAt().isBefore(expiryThreshold)) {
+                expireCluster(cluster);
+            } else {
+                candidateClusterer.seed(cluster.getId(), faceRepository.findByCandidateClusterIdFetchPhoto(cluster.getId()));
+            }
+        }
+    }
+
+    // Gives an aged-out cluster's member faces one more fresh pass (see CANDIDATE_CLUSTER_MAX_AGE's
+    // own comment) instead of silently losing track of them, then removes the cluster itself.
+    private void expireCluster(CandidateClusterEntity cluster) {
+        List<FaceEntity> members = faceRepository.findByCandidateClusterIdFetchPhoto(cluster.getId());
+        for (FaceEntity member : members) {
+            member.setCandidateCluster(null);
+            member.setStatus(FaceStatus.NEW);
+        }
+        faceRepository.saveAll(members);
+        candidateClusterRepository.deleteById(cluster.getId());
+        log.info("expired candidate cluster {} ({} member face(s) reset to NEW)", cluster.getId(), members.size());
     }
 
     private Optional<PersonWithScore> findBestMatchForFace(NormalizedEmbedding faceEmbedding, int targetYear, List<PersonEntity> persons,

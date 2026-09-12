@@ -1,17 +1,20 @@
 package org.iphoto.service;
 
 import org.iphoto.AbstractIntegrationTest;
+import org.iphoto.entities.CandidateClusterEntity;
 import org.iphoto.entities.FaceEntity;
 import org.iphoto.entities.FaceStatus;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.SpaceEntity;
 import org.iphoto.entities.UserEntity;
+import org.iphoto.repository.CandidateClusterRepository;
 import org.iphoto.repository.FaceLinkExclusionRepository;
 import org.iphoto.repository.FaceRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.util.EmbeddingCodec;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -29,9 +32,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 // groupFaces()/groupFacesForUser() entry point end-to-end (unlike CandidateClustererTest, which
 // covers the extracted matching/promotion logic in isolation without a database).
 //
-// groupFacesForUser's own fetches (ungrouped faces / existing people) are space-scoped by an
+// groupFacesForUser's own fetches (new faces / existing people) are space-scoped by an
 // explicit :spaceId parameter, NOT @MainSpaceLimited (that's a no-op on the heavy-task thread pool
-// this runs on in production - see FaceRepository.findByPersonIsNullAndSpaceIdFetchPhoto's comment),
+// this runs on in production - see FaceRepository.findNewBySpaceIdFetchPhoto's comment),
 // so isolation from other test classes' data comes purely from each test using a freshly-created,
 // uniquely-named non-admin user's brand-new default space.
 //
@@ -59,6 +62,10 @@ class FaceRecognitionServiceImplTest extends AbstractIntegrationTest {
     private FaceService faceService;
     @Autowired
     private FaceLinkExclusionRepository faceLinkExclusionRepository;
+    @Autowired
+    private CandidateClusterRepository candidateClusterRepository;
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     private UserEntity createTestUser() {
         return userService.createUser("face-grouping-" + UUID.randomUUID(), "password", "USER");
@@ -264,5 +271,96 @@ class FaceRecognitionServiceImplTest extends AbstractIntegrationTest {
                 .as("must never silently reattach to the person it was manually unlinked from")
                 .isNotEqualTo(personAId)
                 .isEqualTo(personBId);
+    }
+
+    // --- 2026-09-12 face-recognition algorithm rework: candidate clusters must actually survive
+    // between runs (not just look like they do) - see CandidateClustererTest's own seed()-focused
+    // tests for the pure-logic side of this; these drive the real, persisted end-to-end path,
+    // which is what actually caught the "detached entity"/FK bugs during development (the OLD test
+    // above, aRealPersonAppearsOnlyOnceAThirdMatchingFaceExistsAndPicksUpTheBacklogOnALaterRun,
+    // still passed throughout those bugs - it only asserts on the FINAL outcome, and this method's
+    // own per-face try/catch was silently swallowing the persistence failure in between). ---
+
+    @Test
+    void anOpenClusterIsActuallyPersistedBetweenRunsAndNeverReprocessesItsOwnMemberFaces() throws Exception {
+        UserEntity testUser = createTestUser();
+        SpaceEntity space = spaceService.getDefaultSpaceForUser(testUser);
+        LocalDateTime t = LocalDateTime.of(2025, 1, 1, 12, 0);
+        float[] direction = {1f, 0f, 0f};
+
+        FaceEntity face1 = saveFace(savePhoto(space, testUser, t), direction);
+        FaceEntity face2 = saveFace(savePhoto(space, testUser, t.plusMinutes(1)), direction);
+
+        runAs(testUser, () -> faceRecognitionService.groupFaces());
+
+        // Not yet promoted (only 2 of the 3 needed) - but must be REAL, queryable persisted state,
+        // not just an in-memory fact that dies with this run's CandidateClusterer instance.
+        FaceEntity persistedFace1 = faceRepository.findById(face1.getId()).orElseThrow();
+        FaceEntity persistedFace2 = faceRepository.findById(face2.getId()).orElseThrow();
+        assertThat(persistedFace1.getPerson()).isNull();
+        assertThat(persistedFace1.getCandidateCluster()).isNotNull();
+        assertThat(persistedFace1.getStatus()).isEqualTo(FaceStatus.OLD);
+        assertThat(persistedFace2.getCandidateCluster().getId()).isEqualTo(persistedFace1.getCandidateCluster().getId());
+        UUID clusterId = persistedFace1.getCandidateCluster().getId();
+        assertThat(candidateClusterRepository.findById(clusterId)).isPresent();
+
+        // face1/face2 are now OLD - if the query driving groupFacesForUser's main loop still
+        // selected on "person IS NULL" (the pre-rework behavior) instead of "status = NEW", this
+        // next run would refetch and re-run them through candidateClusterer.add() a SECOND time,
+        // which - since they're no longer in openClusters as raw faces fed via add(), only as an
+        // already-seeded cluster's representatives - would seed a SEPARATE, duplicate cluster for
+        // each of them instead of correctly joining the existing one face3 is about to complete.
+        FaceEntity face3 = saveFace(savePhoto(space, testUser, t.plusMinutes(2)), direction);
+        runAs(testUser, () -> faceRecognitionService.groupFaces());
+
+        UUID personId = faceRepository.findById(face1.getId()).orElseThrow().getPerson().getId();
+        assertThat(personId).isNotNull();
+        assertThat(faceRepository.findById(face2.getId()).orElseThrow().getPerson().getId()).isEqualTo(personId);
+        assertThat(faceRepository.findById(face3.getId()).orElseThrow().getPerson().getId()).isEqualTo(personId);
+        // The resolved cluster must be gone, not left behind as orphaned/stale state.
+        assertThat(candidateClusterRepository.findById(clusterId)).isEmpty();
+    }
+
+    @Test
+    void anOpenClusterOlderThanTheMaxAgeExpiresAndGivesItsMemberFaceAFreshChance() throws Exception {
+        UserEntity testUser = createTestUser();
+        SpaceEntity space = spaceService.getDefaultSpaceForUser(testUser);
+        LocalDateTime t = LocalDateTime.of(2025, 2, 1, 12, 0);
+        float[] direction = {0f, 1f, 1f};
+
+        // Just this one face - forms a brand-new, never-completing 1-member cluster.
+        FaceEntity lonelyFace = saveFace(savePhoto(space, testUser, t), direction);
+        runAs(testUser, () -> faceRecognitionService.groupFaces());
+
+        FaceEntity afterFirstRun = faceRepository.findById(lonelyFace.getId()).orElseThrow();
+        assertThat(afterFirstRun.getCandidateCluster()).isNotNull();
+        UUID clusterId = afterFirstRun.getCandidateCluster().getId();
+
+        // Backdates the cluster past CANDIDATE_CLUSTER_MAX_AGE (90 days) - same technique
+        // TaskWorkerManagerTest already uses to simulate an old row, bypassing the entity's own
+        // @PrePersist (which only fires once, at creation, so a plain re-save wouldn't move it back).
+        jdbcTemplate.update("UPDATE candidate_clusters SET created_at = ? WHERE id = ?",
+                LocalDateTime.now().minusDays(91), clusterId);
+
+        runAs(testUser, () -> faceRecognitionService.groupFaces());
+
+        assertThat(candidateClusterRepository.findById(clusterId))
+                .as("the expired cluster itself must be removed, not left sitting around forever")
+                .isEmpty();
+        // The reset-to-NEW face is reprocessed within this SAME run (seedOpenClusters runs before
+        // the main loop, so the just-expired id was never seeded back in) - still lonely, with
+        // nothing else to match, it immediately seeds a FRESH cluster of its own, exactly as
+        // CANDIDATE_CLUSTER_MAX_AGE's own comment anticipates ("seed a brand-new cluster again and,
+        // if still genuinely rare, expire again later"). The invariant under test is that this is a
+        // genuinely NEW cluster, not the same expired one somehow reused/resurrected.
+        FaceEntity afterExpiry = faceRepository.findById(lonelyFace.getId()).orElseThrow();
+        assertThat(afterExpiry.getCandidateCluster())
+                .as("must have a fresh chance at clustering, not be left pointing at the deleted cluster")
+                .isNotNull();
+        assertThat(afterExpiry.getCandidateCluster().getId())
+                .as("must be a NEW cluster, not the expired one somehow resurrected")
+                .isNotEqualTo(clusterId);
+        assertThat(afterExpiry.getStatus()).isEqualTo(FaceStatus.OLD);
+        assertThat(afterExpiry.getPerson()).isNull();
     }
 }

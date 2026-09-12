@@ -28,13 +28,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 // whichever faces happen to come back first, narrowing the transitive-chaining loss inherent to a
 // capped representative set).
 //
-// findByPersonIsNullAndSpaceIdFetchPhoto takes an explicit space_id (not @MainSpaceLimited - see
-// its own comment on why: FaceRecognitionServiceImpl, its only real caller, runs on a thread where
-// that annotation is a deliberate no-op), so this uses admin's own main space directly rather than
+// findNewBySpaceIdFetchPhoto takes an explicit space_id (not @MainSpaceLimited - see its own
+// comment on why: FaceRecognitionServiceImpl, its only real caller, runs on a thread where that
+// annotation is a deliberate no-op), so this uses admin's own main space directly rather than
 // going through runAsAdmin/SecurityContextHolder at all. This shared H2 database also holds OTHER
-// test classes' own person-null faces in admin's space by the time this runs, so the assertion
-// below filters the returned content down to just this test's own 3 known face ids (by id, not by
-// list equality) rather than asserting on the full returned list - their RELATIVE order among each
+// test classes' own NEW faces in admin's space by the time this runs, so the assertion below
+// filters the returned content down to just this test's own 3 known face ids (by id, not by list
+// equality) rather than asserting on the full returned list - their RELATIVE order among each
 // other is what's under test here, regardless of interleaving.
 class FaceRepositoryTest extends AbstractIntegrationTest {
 
@@ -71,7 +71,7 @@ class FaceRepositoryTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void returnsUngroupedFacesOrderedByPhotoDateTakenAscendingRegardlessOfInsertionOrder() {
+    void returnsNewFacesOrderedByPhotoDateTakenAscendingRegardlessOfInsertionOrder() {
         UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
         SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
 
@@ -85,15 +85,15 @@ class FaceRepositoryTest extends AbstractIntegrationTest {
 
         Set<UUID> ourFaceIds = Set.of(oldestFace.getId(), middleFace.getId(), newestFace.getId());
 
-        // Pages through admin's whole person-null backlog (same page size groupFacesForUser itself
+        // Pages through admin's whole NEW-faces backlog (same page size groupFacesForUser itself
         // uses) until all 3 of our own faces have turned up, rather than guessing one big-enough
-        // page size for however many OTHER tests' leftover person-null faces already share this
-        // suite's database by the time this test runs.
+        // page size for however many OTHER tests' leftover NEW faces already share this suite's
+        // database by the time this test runs.
         List<UUID> ourFacesInReturnedOrder = new ArrayList<>();
         int pageNumber = 0;
         boolean hasNext;
         do {
-            Slice<FaceEntity> slice = faceRepository.findByPersonIsNullAndSpaceIdFetchPhoto(space.getId(), PageRequest.of(pageNumber, 200));
+            Slice<FaceEntity> slice = faceRepository.findNewBySpaceIdFetchPhoto(space.getId(), PageRequest.of(pageNumber, 200));
             slice.getContent().stream()
                     .filter(face -> ourFaceIds.contains(face.getId()))
                     .map(FaceEntity::getId)

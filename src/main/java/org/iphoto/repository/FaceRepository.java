@@ -25,6 +25,14 @@ public interface FaceRepository extends JpaRepository<FaceEntity, UUID> {
     // eager-fetching it here, that later access would throw LazyInitializationException - no
     // session left open to fetch it on demand at that point.
     //
+    // status = 'NEW', not "person IS NULL" (that was this method's filter before the 2026-09-12
+    // face-recognition rework - see TODO.md/CandidateClusterer's own class comment): a face already
+    // examined once - matched to a person, or already sitting in an open CandidateClusterEntity via
+    // candidate_cluster_id - is flipped to OLD and never needs reconsidering. Re-scanning every
+    // still-unmatched-but-already-seen face on every run (potentially thousands, every ~30s) was
+    // exactly the "recursive calls to the same face again and again" cost this rework fixes -
+    // openClusters below now carries that memory forward between runs instead.
+    //
     // ORDER BY f.photo.dateTaken ASC - groupFacesForUser now fetches/processes a user's whole
     // ungrouped-faces backlog in chronological order (not arbitrary DB order) across every slice of
     // one run, so CandidateClusterer's capped representative sets get picked up as the timeline
@@ -45,8 +53,16 @@ public interface FaceRepository extends JpaRepository<FaceEntity, UUID> {
     // candidate cluster/person during face grouping. Passing the space explicitly instead is
     // correct regardless of which thread this runs on (see PersonRepository.findAllBySpaceId's
     // matching comment).
-    @Query("SELECT f FROM FaceEntity f JOIN FETCH f.photo p WHERE f.person IS NULL AND p.space.id = :spaceId ORDER BY p.dateTaken ASC")
-    Slice<FaceEntity> findByPersonIsNullAndSpaceIdFetchPhoto(@Param("spaceId") UUID spaceId, Pageable pageable);
+    @Query("SELECT f FROM FaceEntity f JOIN FETCH f.photo p WHERE f.status = 'NEW' AND p.space.id = :spaceId ORDER BY p.dateTaken ASC")
+    Slice<FaceEntity> findNewBySpaceIdFetchPhoto(@Param("spaceId") UUID spaceId, Pageable pageable);
+
+    // One per still-open CandidateClusterEntity, at the start of each groupFacesForUser run - seeds
+    // CandidateClusterer with exactly the faces that already joined that cluster in a PRIOR run, so
+    // they can keep matching future faces without ever being refetched/reprocessed themselves. Same
+    // JOIN FETCH photo reasoning as findNewBySpaceIdFetchPhoto above - read well after this
+    // method's own short transaction closes.
+    @Query("SELECT f FROM FaceEntity f JOIN FETCH f.photo WHERE f.candidateCluster.id = :clusterId")
+    List<FaceEntity> findByCandidateClusterIdFetchPhoto(@Param("clusterId") UUID clusterId);
 
     List<FaceEntity> findByPhotoId(UUID photoId);
 
@@ -61,13 +77,15 @@ public interface FaceRepository extends JpaRepository<FaceEntity, UUID> {
     void deleteByPhoto(PhotoEntity photo);
 
     // Admin > Tasks page "Restart person extraction" button (AdminService#restartPersonRecognition):
-    // detaches every face from its person and flips it back to NEW so the next FACE_RECOGNITION run
-    // reconsiders the whole set from scratch - the faces themselves are kept (they're the expensive
-    // part: detection + embedding), only the grouping is thrown away. Must run BEFORE deleting the
-    // people rows (faces.person_id FK). clearAutomatically for the same reason as
-    // TaskRepository#resetAllToPendingByTaskType. Returns the row count.
+    // detaches every face from its person AND its candidate cluster (if any) and flips it back to
+    // NEW so the next FACE_RECOGNITION run reconsiders the whole set from scratch - the faces
+    // themselves are kept (they're the expensive part: detection + embedding), only the grouping is
+    // thrown away. Must run BEFORE deleting the people/candidate_clusters rows (both FKs) - explicit
+    // here rather than relying on an ON DELETE behavior, same as the person side always has been.
+    // clearAutomatically for the same reason as TaskRepository#resetAllToPendingByTaskType. Returns
+    // the row count.
     @Modifying(clearAutomatically = true)
-    @Query("UPDATE FaceEntity f SET f.person = null, f.status = :status")
+    @Query("UPDATE FaceEntity f SET f.person = null, f.candidateCluster = null, f.status = :status")
     int detachAllFromPersonsAndResetStatus(@Param("status") FaceStatus status);
 
     // FaceThumbnailMigrationService's backfill target - any row still holding the legacy DB-blob

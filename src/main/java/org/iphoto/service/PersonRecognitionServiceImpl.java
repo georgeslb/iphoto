@@ -73,7 +73,7 @@ public class PersonRecognitionServiceImpl implements PersonRecognitionService {
         // The new person's space comes from the faces actually being attached, not a separately-
         // passed "owner" - every face in a real cluster already belongs to the same space (a
         // person can't span spaces), and faces.get(0).getPhoto() is guaranteed already-initialized
-        // even though these FaceEntity instances are detached (FaceRepository.findByPersonIsNullAndSpaceIdFetchPhoto's
+        // even though these FaceEntity instances are detached (FaceRepository.findNewBySpaceIdFetchPhoto's
         // own JOIN FETCH f.photo - see its comment). photo.getSpace() itself may come back as an
         // uninitialized lazy proxy rather than a fully-loaded SpaceEntity, but that's fine here:
         // it's only ever used below as a FK reference when persisting newPerson, which Hibernate
@@ -91,6 +91,7 @@ public class PersonRecognitionServiceImpl implements PersonRecognitionService {
         PersonEntity person = personRepository.saveAndFlush(newPerson);
         faces.forEach(faceEntity -> {
             faceEntity.setPerson(person);
+            faceEntity.setCandidateCluster(null); // resolved into a real person - the open cluster it came from is being deleted by the caller
             faceEntity.setStatus(FaceStatus.OLD); // see updatePerson's matching comment above
         });
         faceRepository.saveAll(faces);

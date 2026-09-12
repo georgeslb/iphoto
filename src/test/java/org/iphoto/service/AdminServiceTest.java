@@ -2,6 +2,7 @@ package org.iphoto.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import org.iphoto.AbstractIntegrationTest;
+import org.iphoto.entities.CandidateClusterEntity;
 import org.iphoto.entities.DuplicateEntity;
 import org.iphoto.entities.FaceEntity;
 import org.iphoto.entities.FaceStatus;
@@ -14,6 +15,7 @@ import org.iphoto.entities.UserEntity;
 import org.iphoto.model.DuplicateStatus;
 import org.iphoto.model.TaskStatus;
 import org.iphoto.model.TaskType;
+import org.iphoto.repository.CandidateClusterRepository;
 import org.iphoto.repository.DuplicateRepository;
 import org.iphoto.repository.FaceRepository;
 import org.iphoto.repository.PersonRepository;
@@ -58,6 +60,8 @@ class AdminServiceTest extends AbstractIntegrationTest {
     private PhotoDuplicateRepository photoDuplicateRepository;
     @Autowired
     private DuplicateRepository duplicateRepository;
+    @Autowired
+    private CandidateClusterRepository candidateClusterRepository;
 
     private TaskEntity saveTask(TaskType taskType, TaskStatus status, String errorMessage) {
         TaskEntity task = new TaskEntity();
@@ -351,13 +355,27 @@ class AdminServiceTest extends AbstractIntegrationTest {
         face.setPerson(person);
         faceRepository.save(face);
 
+        // A separate, still-open candidate cluster (see FaceRecognitionServiceImpl's 2026-09-12
+        // rework) - unrelated to `person` above, but must be wiped by the SAME reset: a stale
+        // cluster left behind would get seeded back into CandidateClusterer on the next run,
+        // referencing a face that's about to be reset to NEW/unclustered underneath it.
+        FaceEntity clusteredFace = faceRepository.save(FaceEntity.builder()
+                .photo(photo).x(2).y(2).width(50).height(50)
+                .status(FaceStatus.OLD)
+                .embedding(EmbeddingCodec.toBytes(new float[]{0.3f, 0.4f}))
+                .build());
+        CandidateClusterEntity cluster = candidateClusterRepository.save(
+                CandidateClusterEntity.builder().id(UUID.randomUUID()).spaceId(mainSpace.getId()).build());
+        clusteredFace.setCandidateCluster(cluster);
+        faceRepository.save(clusteredFace);
+
         MvcResult result = mockMvc.perform(post("/api/admin/reprocess/persons").session(session))
                 .andExpect(status().isOk())
                 .andReturn();
 
         JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
         assertThat(body.get("personsDeleted").asInt()).isGreaterThanOrEqualTo(1);
-        assertThat(body.get("facesReset").asInt()).isGreaterThanOrEqualTo(1);
+        assertThat(body.get("facesReset").asInt()).isGreaterThanOrEqualTo(2);
 
         // restartPersonRecognition wipes every person globally - existsById (a plain JpaRepository
         // method, unlike the @MainSpaceLimited findById override) needs no SecurityContext to run
@@ -367,6 +385,11 @@ class AdminServiceTest extends AbstractIntegrationTest {
         FaceEntity reloadedFace = faceRepository.findById(face.getId()).orElseThrow();
         assertThat(reloadedFace.getPerson()).isNull();
         assertThat(reloadedFace.getStatus()).isEqualTo(FaceStatus.NEW);
+
+        assertThat(candidateClusterRepository.existsById(cluster.getId())).isFalse();
+        FaceEntity reloadedClusteredFace = faceRepository.findById(clusteredFace.getId()).orElseThrow();
+        assertThat(reloadedClusteredFace.getCandidateCluster()).isNull();
+        assertThat(reloadedClusteredFace.getStatus()).isEqualTo(FaceStatus.NEW);
 
         TaskEntity faceRecognition = taskRepository
                 .findFirstByTaskTypeOrderByCreatedAtDesc(TaskType.FACE_RECOGNITION).orElseThrow();

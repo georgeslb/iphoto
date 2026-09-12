@@ -10,7 +10,9 @@ import java.util.UUID;
 @Entity
 @Table(name = "faces", indexes = {
         @Index(columnList = "photo_id", name = "idx_faces_photo_id"),
-        @Index(columnList = "person_id", name = "idx_faces_person_id")
+        @Index(columnList = "person_id", name = "idx_faces_person_id"),
+        @Index(columnList = "candidate_cluster_id", name = "idx_faces_candidate_cluster_id"),
+        @Index(columnList = "status", name = "idx_faces_status")
 })
 @Getter
 @Setter
@@ -28,6 +30,13 @@ public class FaceEntity { // Extends BaseEntity
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "person_id")
     private PersonEntity person;
+
+    // Set while this face sits in a still-open (not yet promoted) CandidateClusterEntity - see
+    // that entity's own comment and CandidateClusterer for the full incremental-clustering design.
+    // Cleared (along with status/person) by AdminServiceImpl#restartPersonRecognition's bulk reset.
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "candidate_cluster_id")
+    private CandidateClusterEntity candidateCluster;
 
     @Column(nullable = false)
     private int x;
