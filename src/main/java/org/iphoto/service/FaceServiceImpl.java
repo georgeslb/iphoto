@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.iphoto.entities.FaceEntity;
 import org.iphoto.entities.FaceLinkExclusionEntity;
+import org.iphoto.entities.FaceStatus;
 import org.iphoto.entities.PersonEntity;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.SpaceEntity;
@@ -161,17 +162,34 @@ public class FaceServiceImpl implements FaceService {
 
         person.setName(trimmed);
         personRepository.save(person);
+
+        // mergeInto keeps whichever side has MORE faces as the actual survivor (see its own
+        // comment) - it is NOT guaranteed to be `personId` just because that's the one the caller
+        // renamed. Track the current survivor across the whole fold instead of assuming it stays
+        // `personId`, or a merge that "wins" over the just-renamed person would both 404 below
+        // (re-fetching an id that mergeInto just deleted) and silently drop the rename.
+        UUID survivorId = personId;
         if (mergeWithPersonIds != null) {
             for (UUID sourceId : mergeWithPersonIds) {
-                if (sourceId.equals(personId)) {
-                    continue; // Defensive: never merge the target into itself.
+                if (sourceId.equals(survivorId)) {
+                    continue; // Defensive: never merge the current survivor into itself.
                 }
-                personRecognitionService.mergeInto(personId, sourceId);
+                survivorId = personRecognitionService.mergeInto(survivorId, sourceId).getId();
             }
         }
 
-        return mapToPerson(personRepository.findByIdInMainSpace(personId)
-                .orElseThrow(() -> new NoSuchElementException("no person found with id " + personId)));
+        UUID finalSurvivorId = survivorId; // survivorId is reassigned above - capture the final value for the lambda below
+        PersonEntity survivor = personRepository.findByIdInMainSpace(finalSurvivorId)
+                .orElseThrow(() -> new NoSuchElementException("no person found with id " + finalSurvivorId));
+        // The name the user just confirmed must apply to whichever person actually survived the
+        // merge(s) above, even if that turned out to be one of the mergeWithPersonIds candidates
+        // rather than `personId` itself.
+        if (!trimmed.equals(survivor.getName())) {
+            survivor.setName(trimmed);
+            personRepository.save(survivor);
+        }
+
+        return mapToPerson(survivor);
     }
 
     @Override
@@ -319,6 +337,16 @@ public class FaceServiceImpl implements FaceService {
     // reattaches this exact pair — see FaceLinkExclusionEntity) and, if it was that person's cover
     // face, picks a replacement immediately. Does not save either entity — callers do that once
     // they're done making all their changes.
+    //
+    // Also flips the face back to FaceStatus.NEW. FaceRecognitionServiceImpl.groupFacesForUser
+    // only ever runs the existing-person matching step (the one that reads exclusions) for a NEW
+    // face — an OLD one is assumed to have already been checked against every person and skips
+    // straight to clustering-candidate duty. A face linked to a person is essentially always OLD
+    // (PersonRecognitionServiceImpl.updatePerson/addPerson set it OLD the moment they attach it),
+    // so without this reset here, unlinking would leave the face permanently OLD: the exclusion
+    // row would exist but nothing would ever re-consult it, and the face could never be
+    // automatically matched to a DIFFERENT person either — silently defeating the whole point of
+    // unlinking (see FaceLinkExclusionEntity's own class comment).
     private void detachFaceFromPerson(FaceEntity face, PersonEntity person) {
         if (!faceLinkExclusionRepository.existsByFaceIdAndExcludedPersonId(face.getId(), person.getId())) {
             faceLinkExclusionRepository.save(
@@ -333,6 +361,7 @@ public class FaceServiceImpl implements FaceService {
         person.getFaces().remove(face);
         personRecognitionService.removeFaceFromBucket(person, face);
         face.setPerson(null);
+        face.setStatus(FaceStatus.NEW);
         if (wasCoverFace) {
             person.setCoverFace(null);
             personRecognitionService.recalculateCoverFace(person);

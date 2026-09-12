@@ -26,7 +26,11 @@ function pickKeeperIndex(members) {
 // TODO.md.
 export default function DuplicateClusterModal({ item, onClose, handleMoveToGarbage, handleUnlinkDuplicate, onExpand }) {
   const { messages } = useLocale();
-  const members = item?.members ?? [];
+  // useMemo (not `?? []` inline) so `members` keeps a stable reference across renders when
+  // item?.members is nullish - otherwise the `?? []` fallback allocates a fresh empty array every
+  // render, which would defeat keeperIndex's own useMemo below (a new [] each render never equals
+  // the previous one, so it'd never actually skip recomputing).
+  const members = useMemo(() => item?.members ?? [], [item?.members]);
   const keeperIndex = useMemo(() => pickKeeperIndex(members), [members]);
 
   const [shownIndex, setShownIndex] = useState(0);
@@ -38,7 +42,6 @@ export default function DuplicateClusterModal({ item, onClose, handleMoveToGarba
   useEffect(() => {
     setShownIndex(keeperIndex);
     setAutoFlicker(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item?.primary?.id, members.length, keeperIndex]);
 
   const canFlicker = members.length > 1;

@@ -25,9 +25,10 @@ export default function PersonStrip({ selectedPersonId, refreshToken }) {
       return;
     }
     fetchPersons();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchPersons intentionally omitted:
-    // it's stable (see usePersons), and this effect should only re-run when refreshToken changes,
-    // not merely because usePersons() re-rendered with a fresh function identity.
+    // fetchPersons intentionally omitted: it's stable (see usePersons), and this effect should
+    // only re-run when refreshToken changes, not merely because usePersons() re-rendered with a
+    // fresh function identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshToken]);
 
   const scrollByAmount = (amount) => {

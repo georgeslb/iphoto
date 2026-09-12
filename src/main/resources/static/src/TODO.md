@@ -18,16 +18,6 @@ and a compressed record of how we got here, not a second copy of the spec.
   `PersonRecognitionServiceImpl.mergeFacesIntoTarget` merge itself, which has its own passing
   regression test) — start by reproducing from the Library banner and checking the browser network
   tab/backend logs for the actual request/response on click.
-- **Flaky backend test**: `PhotoServiceTest.downloadSingleAndMultiplePhotosSetContentDispositionAndZipEntries`
-  fails intermittently in a full `mvn test` run (wrong zip entry count) but passes reliably in
-  isolation. `AbstractIntegrationTest#generateTestJpeg()`'s per-call random solid-color fill has a
-  real, higher-than-expected MD5 collision rate (JPEG quantization likely maps many solid colors
-  to identical bytes), which can make `PhotoRepository.findByFileHash`'s global uniqueness treat a
-  fresh upload as a duplicate — but that alone would surface as a `waitForTaskCompletion` timeout,
-  not this test's own "zip size" assertion, so there's likely a second, still-unidentified
-  mechanism (possibly a stale/reused `photoId` from a collision elsewhere in the same suite run
-  interacting with this test's fixtures). Not yet root-caused — needs a repeated full-suite run
-  with debug logging around `findOwnedByIds`/the zip-writing loop in `PhotoController#downloadMultiple`.
 
 ### Features
 - **Face-position overlay on a person's own photo grid** (`PersonDetail.jsx` → `PhotoGrid`):
@@ -47,25 +37,35 @@ and a compressed record of how we got here, not a second copy of the spec.
 - **`App.jsx` selection state**: `selectedIds`/`selectedAlbumIds`/`selectedSpaceIds` and their
   setters are still threaded through as many individual props rather than one consolidated
   object. Deliberately deferred — touches the prop signature of most consumer components
-  (`Header`, grids, modals) — worth a dedicated pass if there's appetite.
-- **Large files not yet reviewed for internal duplication**: `Lightbox.jsx` (~520 lines),
+  (`Header`, grids, modals) — worth a dedicated pass if there's appetite. **Step 1 (the regression
+  safety net) is done (2026-09-11) — the refactor itself is still open.** `App.test.jsx` is a real
+  root smoke test (renders the actual `<App/>` inside a `MemoryRouter`/`LocaleProvider`, mocking
+  every mount-time endpoint the Library route hits: `/api/user/me`, `/api/photos/days`,
+  `/api/photos/day/{day}`, `/api/faces/persons/merge-suggestions/count`, `/api/photos/memories`,
+  plus `/api/albums` for the menu-switch case — a capturing-`IntersectionObserver` stub fires
+  `PhotoGrid.jsx`'s day-sentinel manually, same technique as `PhotoGrid.test.jsx`'s own look-ahead
+  tests, since jsdom's shared stub never calls back on its own). Covers exactly the two scenarios
+  named below: selecting a photo shows "N selected" and the right bulk-action button in `Header`
+  (proving `selectedIds` AND the derived `photoSelection` both reach it correctly), and navigating
+  Library → Albums clears the selection (`App.jsx`'s path-change effect). Next: do the
+  consolidation, using this smoke test to catch wiring regressions as it lands — still worth a
+  dedicated `Header.jsx` test too if the refactor touches its prop shape directly.
+- **Large files not yet reviewed for internal duplication**: `Lightbox.jsx` (723 lines),
   `UploadManager.jsx`, `useAlbumManagement.js` (largest hook — remember Album/Space are NOT
   interchangeable domain concepts; any shared logic factored out must stay presentation-only).
-- **Unused npm packages**: `react-advanced-cropper`, `react-photo-album` — confirmed unused
-  anywhere in `src/`, candidates for `npm uninstall` absent a near-term plan to use them.
-- **Dead state, `Lightbox.jsx`**: `albumAllowed`/`setAlbumAllowed` — set but never read. Worth
-  checking git history before deleting in case it's a half-finished feature rather than leftover.
-- **Dead CSS, `App.css`**: `.library-timeline`/`.memory-card` and a first, duplicate `.memories-strip`
-  rule (around line 54-67) look like leftovers from the old `LibraryTimeline.jsx`/month-timeline
-  design that was fully replaced by the day-indexed Memories bar (a second, real `.memories-strip`
-  block exists further down and is what `MemoriesBar.jsx` actually uses) — confirm nothing still
-  references the first block before deleting it.
-- **`react-hooks/exhaustive-deps` warnings not yet individually triaged** (each needs judgment,
-  not a blind auto-fix — some omissions are intentional): `useMenuSelection.js` (missing
-  `setPhotoSelection`), `App.jsx` (missing `currentAlbumId`/`currentSpaceId`/`selectedMenu`),
-  `UploadManager.jsx` (unnecessary `effectivePath`/`refreshAndMaintainScroll`),
-  `useAlbumManagement.js` (unnecessary `fetchAlbums`, x2), `UserManagement.jsx` (missing
-  `fetchUsers`), `Lightbox.jsx` (missing `handleNext`/`handlePrevious`).
+  `UploadManager.jsx`/`useAlbumManagement.js` already had real regression coverage (checked
+  2026-09-11) and are safe to review as-is. **`Lightbox.jsx`'s test gap is now closed too
+  (2026-09-11)** — `Lightbox.test.jsx` covers the three areas flagged as prerequisites: the
+  face-box overlay position calculation (asserts exact `.face-box` `left`/`top`/`width`/`height`
+  against a stubbed letterboxed image+container, since jsdom does no real layout - naturalWidth/
+  Height and clientWidth/Height are stubbed directly on the DOM nodes via `Object.defineProperty`),
+  prev/next/Escape keyboard navigation (including not overflowing/underflowing past either end of
+  the photo list), and pan/zoom clamping (`clampPan`, verified by dragging far past the actual
+  overscroll range for a given zoom and asserting the rendered `transform`'s `translate()` stays
+  within it, plus confirming no pan at all is possible at the default 1x zoom). None of image
+  editing (crop/rotate/zoom via `react-cropper`), face rename/merge, or the wheel-zoom math itself
+  beyond one step are covered — worth another pass if the refactor ends up touching those. Ready
+  for the actual duplication review across all three files now.
 - **No CI workflow runs `npm test`/`npm run lint` automatically** — the frontend suite is still
   local-only. (`mvn test` now runs on every PR into master via
   `.github/workflows/docker-image.yml`'s `test` job, and is required to pass before the Docker
@@ -75,9 +75,9 @@ and a compressed record of how we got here, not a second copy of the spec.
   required status check under Settings > Branches for master (branch protection isn't something a
   workflow file alone can set) for PRs to actually be blocked on failure.
 - **Regression tests worth adding, not yet written**: `UploadManager.jsx`'s "PENDING keeps
-  polling" fix (needs fake timers + mocking the chunk-upload flow); a root `App.jsx` smoke test
-  (would need mocking every on-mount endpoint: `/api/user/me`, `/api/photos`,
-  `/api/photos/selected`, `/api/albums`, `/api/spaces`).
+  polling" fix (needs fake timers + mocking the chunk-upload flow). (The root `App.jsx` smoke test
+  that used to be listed here is now step 1 of the `App.jsx` selection-state item above, since
+  that refactor is what actually needs it.)
 - **CI build-time cache duplication**: the `test` job and `build-and-push` job each independently
   resolve the full (large, native-binary-heavy) Maven dependency tree via two cache namespaces
   that don't share bytes — every `pom.xml` change re-pulls the same artifacts twice. A real fix
@@ -283,6 +283,30 @@ matters again; `specification.md` is the source of truth for current behavior.
     `backToPersons` button, same pattern as Albums/Spaces); Albums grid search
     (`AlbumGridDisplay.jsx`'s case-insensitive client-side `filteredAlbums`, since `GET
     /api/albums` already returns the full unpaginated list).
+  - **Person detail "Faces" tab** (2026-09-12): `PersonDetail.jsx` now has Photos/Faces tabs -
+    Photos is the existing day-indexed `PhotoGrid`; Faces is a new paginated grid
+    (`PersonFacesGrid.jsx`/`hooks/usePersonFaces.js`) of the person's own distinct face crops,
+    newest-first, each unlinkable in place - reused the already-existing
+    `GET /api/faces/person/{id}/faces` + `DELETE /api/faces/{id}/person` endpoints as-is, no new
+    backend surface needed. Found and fixed a real bug surfaced while checking that unlink
+    correctly respects `FaceLinkExclusionEntity`: `FaceServiceImpl.detachFaceFromPerson` recorded
+    the exclusion but never reset the face's `status` back to `NEW`, and a linked face is
+    essentially always `OLD` by the time it's unlinked - `groupFacesForUser` only ever checks
+    exclusions for a `NEW` face, so unlinking silently orphaned the face forever (exclusion
+    recorded but never consulted, and never eligible for automatic re-matching to a different
+    person either). Fixed + regression-tested end-to-end
+    (`FaceRecognitionServiceImplTest#aFaceUnlinkedFromAPersonNeverReattachesThereButCanStillMatchADifferentPerson`).
+  - **`mergeInto` direction changed to face-count-based** (2026-09-12, product decision): used to
+    be fixed-direction (the explicitly-renamed/`targetPersonId` person always survived); now
+    mirrors `mergePersons` and keeps whichever side has more faces, regardless of which id was
+    passed as target vs. source. Tests updated (`PersonRecognitionServiceTest
+    #mergeIntoKeepsThePersonWithMoreFacesRegardlessOfWhichIdWasPassedAsTarget`). This surfaced a
+    real bug in the caller: `FaceServiceImpl.renamePerson` used to assume the person it renamed
+    would always be the survivor and re-fetched that same id afterward - when a merge candidate
+    turned out to have more faces and "won" instead, that re-fetch 404'd and the confirmed rename
+    was silently lost. Fixed to track whichever id actually survives across the whole
+    fold-in-candidates loop and apply the new name to it, whichever person that ends up being
+    (`FaceServiceTest#renamingAPersonThatMergesIntoABiggerCandidateStillAppliesTheNewNameToTheActualSurvivor`).
 
 ### Sharing
 - Full design in `specification.md` §4.4. Originally broken end-to-end (wrong URI parsing, guest
@@ -358,6 +382,28 @@ matters again; `specification.md` is the source of truth for current behavior.
   maintenance, an invalid default sort property).
 - Schema management moved from Hibernate `ddl-auto: update` to Flyway-versioned migrations
   (`ddl-auto: validate` now only checks the schema matches, never changes it).
+- **Root-caused the flaky `PhotoServiceTest.downloadSingleAndMultiplePhotosSetContentDispositionAndZipEntries`**
+  (reported 2026-09-09, investigated once already and left open — see that commit's notes; picked
+  back up 2026-09-11 on a hunch this was related to real `@Scheduled` background task execution
+  racing the test). Two earlier hypotheses were ruled out on re-examination: (1) `generateTestJpeg`'s
+  MD5-collision risk on `PhotoRepository.findByFileHash` routes a duplicate upload to `TaskStatus
+  .IGNORED`/`TRASHED`, which `waitForTaskCompletion` doesn't treat as terminal, so a real collision
+  would time out, not produce a wrong zip size; (2) `TaskWorkerManagerConcurrentPollTest`'s stress
+  test (64 threads hammering `pollLightPendingTasks()`) never reproduced the pre-existing
+  `queuedTasks` double-submission race either, even against the unfixed code. **Actual cause: a test
+  bug, not an application bug.** `PhotoController#downloadMultiple` returns
+  `ResponseEntity<StreamingResponseBody>`, which Spring MVC processes as an ASYNC request —
+  `MockMvc.perform()` returns once that async processing STARTS, not once the streaming body has
+  actually finished writing (the standard fix is the `asyncDispatch()` round-trip, which this test
+  was missing entirely). Confirmed by reproducing on demand: a throwaway test hammering the exact
+  same request pattern under artificial busy-thread CPU load reliably got an EMPTY zip (0 entries)
+  without `asyncDispatch()`, and 0 failures across 40 iterations once it was added — this is also
+  why it "passed reliably in isolation" (an idle CPU lets the async write finish before the test
+  thread reads the response almost every time) but flaked under a full suite's CPU contention (many
+  other tests'/schedulers' background threads delaying that same race). Fixed by adding the
+  `andExpect(request().asyncStarted())` + `asyncDispatch()` pair before reading the zip's content -
+  the only endpoint in the app returning `StreamingResponseBody`, so no other test needed the same
+  fix.
 
 ### Admin & misc backend
 - `AdminController` moved under the `/api` prefix (it was the one controller not following that
@@ -382,3 +428,41 @@ matters again; `specification.md` is the source of truth for current behavior.
   `poll*PendingTasks` query, all of which filter on `PENDING`); Unpark sets it straight back to
   `PENDING`. Backend: `AdminService`/`AdminServiceImpl.parkTask`/`unparkTask`,
   `AdminController`'s `POST /api/admin/tasks/{id}/park` / `.../unpark`.
+
+### Frontend lint/dead-code cleanup (2026-09-11)
+- Removed two confirmed-unused npm packages (`react-advanced-cropper`, `react-photo-album`).
+- `Lightbox.jsx`: deleted the entirely dead `albumAllowed`/`setAlbumAllowed` state and its
+  `GET /api/photos/{id}/space` fetch (set but never read anywhere in the file — git history traced
+  it to a since-superseded early attempt at gating something the centralized
+  `selectionCapabilities.js` capability-flag system now handles instead). This leaves
+  `PhotoController#getPhotoSpace` backend-orphaned (no other frontend/Android caller) — not removed
+  here, flagged as a possible following backend cleanup. Also dropped the now-unused
+  `errorFetchingSpaceInfo` i18n key (both locales).
+- `App.css`: deleted the dead `.library-timeline`/`.memory-card*`/`.timeline-browse`/
+  `.timeline-year*`/`.timeline-month*` rules (confirmed zero JSX references) — leftovers from the
+  deleted `LibraryTimeline.jsx` month-timeline UI, larger in extent than originally scoped (the
+  whole contiguous block, not just the two classes first flagged) — plus the stale duplicate
+  `.memories-strip` rule superseded by the real one `MemoriesBar.jsx` uses. Updated
+  `AlbumGridDisplay.jsx`'s comment, which referenced the now-deleted `.library-timeline` by name.
+- Triaged every `react-hooks/exhaustive-deps` warning (`npm run lint` is `--max-warnings 0`, so
+  these were failing it outright): `App.jsx`'s three `dayIndexed`-object omissions and
+  `UserManagement.jsx`'s mount-only `fetchUsers`/`fetchHeavyTasksActivated` omission were correct,
+  intentional patterns already used elsewhere in the codebase, just missing the documenting
+  `eslint-disable-next-line` comment (added). `UploadManager.jsx`'s `effectivePath`/
+  `refreshAndMaintainScroll` in `handleUploadFiles`'s deps were genuinely unused inside that
+  callback — removed. `PersonStrip.jsx` had a real, subtle bug: its explanatory comment before an
+  `eslint-disable-next-line` pushed the actual disable onto the wrong line (a blank/comment line,
+  not the dependency array two lines below), so the intended suppression silently did nothing and
+  the real warning re-appeared elsewhere — fixed by moving the directive immediately above the
+  array. `DuplicateClusterModal.jsx` had a stale, no-longer-needed disable directive (removed) and
+  a real perf issue the linter caught: `members = item?.members ?? []` allocated a fresh empty
+  array every render when `item?.members` was nullish, defeating `keeperIndex`'s own `useMemo` -
+  fixed by memoizing `members` itself. `Lightbox.jsx`'s `handleNext`/`handlePrevious` were plain,
+  non-memoized functions omitted from a keydown-listener `useEffect`'s deps despite closing over
+  `photos`/`onNavigate` - a genuine stale-closure risk, not just a lint nitpick (the listener could
+  keep firing against outdated photos/callback if those props changed without also changing one of
+  the effect's other listed deps) - fixed by wrapping both in their own `useCallback` and adding
+  them to the effect's deps. Also removed an unrelated, confirmed-unused `isDuplicatesPage` var in
+  `Header.jsx` (`no-unused-vars`) found while running the same lint pass. `npm run lint` is now
+  clean except one unrelated, out-of-scope `react-refresh/only-export-components` warning on
+  `LocaleContext.jsx` (would need splitting that file's exports, not attempted here).

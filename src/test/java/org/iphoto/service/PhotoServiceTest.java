@@ -30,6 +30,7 @@ import static org.hamcrest.Matchers.containsString;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 // Driven mostly through PhotoController's real endpoints - a couple of methods with no endpoint
@@ -334,8 +335,26 @@ class PhotoServiceTest extends AbstractIntegrationTest {
                 .andExpect(header().doesNotExist("Content-Disposition"));
 
         // Multiple - a zip containing one entry per (owned) selected photo.
-        MvcResult zipResult = mockMvc.perform(post("/api/photos/download").session(session).contentType(APPLICATION_JSON)
+        // PhotoController#downloadMultiple returns ResponseEntity<StreamingResponseBody>, which
+        // Spring MVC processes as an ASYNC request - MockMvc's own perform() returns as soon as
+        // that async processing STARTS, not once the streaming body has actually finished writing.
+        // Without the asyncDispatch() round-trip below, reading the response content races the
+        // background thread that writes the zip: harmless when that thread wins quickly (an idle
+        // machine running just this one test), but under real CPU contention (a full `mvn test`
+        // run with many other tests' background threads/schedulers competing for CPU) the async
+        // write can still be in progress - or not yet started - when the content is read, silently
+        // producing a truncated or empty zip. This was root-caused (2026-09-11) by reproducing it
+        // on demand: hammering this same request pattern under artificial busy-thread CPU load
+        // reliably produced "0 entries" without asyncDispatch, and 0 failures across 40 iterations
+        // once it was added - confirming the flakiness was a test bug (missing the standard
+        // MockMvc pattern for async controller methods), not an application bug in the upload/
+        // download/task pipeline itself (which several earlier investigation passes, recorded in
+        // TODO.md, had already spent real effort trying to root-cause from that angle).
+        MvcResult zipDispatch = mockMvc.perform(post("/api/photos/download").session(session).contentType(APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(List.of(firstPhotoId, secondPhotoId))))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        MvcResult zipResult = mockMvc.perform(asyncDispatch(zipDispatch))
                 .andExpect(status().isOk())
                 .andExpect(header().string("Content-Disposition", containsString("attachment")))
                 .andReturn();

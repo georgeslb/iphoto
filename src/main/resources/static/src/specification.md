@@ -479,6 +479,19 @@ This section describes the application's features. For the corresponding backend
         wrong recognition match) — the `FaceEntity` (bounding box, embedding, thumbnail) and the
         photo itself are untouched. `PhotoGrid.jsx`'s `handleUnlinkPerson` prop is optional and
         only ever passed from `PersonDetail.jsx` — Library/Album/Space grids don't get this icon.
+        **Photos / Faces tabs** (`.person-tabs`, plain `useState` — no route/query-param change):
+        "Photos" is the day-indexed `PhotoGrid` described above (still the default tab); "Faces" is
+        a separate, flat paginated grid (`PersonFacesGrid.jsx`, `hooks/usePersonFaces.js`) of this
+        person's own *distinct face crops* — one card per `FaceEntity`, not per photo — newest-first
+        (`GET /api/faces/person/{id}/faces`, already-existing `@PageableDefault(sort =
+        "photo.dateTaken", direction = DESC)`, `size=60` from the frontend). Each face card has its
+        own `Unlink2` button (same icon/action as the Lightbox's "Faces Detected" list —
+        `DELETE /api/faces/{id}/person`) so a face can be corrected directly from the person's own
+        page instead of having to find the one photo it came from first. A successful unlink
+        removes that card from the local list immediately (no refetch — this person no longer has
+        that face regardless of which loaded page it was on) and also re-fetches the person DTO
+        and refreshes the Photos tab's day index, since unlinking can change `photoCount` and drop
+        a photo out of the Photos tab entirely (if it was that photo's only face of this person's).
     *   **Manually removing a face** (Lightbox "Faces Detected" section): each face thumbnail has a
         small trash-icon button (`.face-remove-btn`) that deletes just that one `FaceEntity` via
         `DELETE /api/faces/{id}` — the photo itself is untouched, this only removes that one
@@ -570,10 +583,19 @@ This section describes the application's features. For the corresponding backend
             since they all share the exact name that collided, so each card shows its own face
             instead. The user selects zero or more to fold in; resubmitting with `confirmed: true`
             renames AND merges every selected id into the renamed person via
-            `PersonRecognitionService.mergeInto` — a *fixed-direction* sibling of `mergePersons`
-            above: the renamed person is always the keeper here, never chosen by face count, since
-            the user explicitly picked it by renaming it. Selecting none is a valid, deliberate
-            "rename anyway, don't merge with any of these" choice, not blocked.
+            `PersonRecognitionService.mergeInto`. **Direction, like `mergePersons`, is by face
+            count, not caller-chosen**: `mergeInto`'s own `targetPersonId`/`sourcePersonId`
+            parameters just mean "these two people," and it keeps whichever one actually has more
+            faces regardless of which id was passed as which. When multiple candidates are
+            selected, `FaceServiceImpl.renamePerson` folds them in one at a time, tracking
+            whichever id actually survived the *previous* merge as the next merge's target — it
+            does NOT assume the originally-renamed person survives. The confirmed name is applied
+            to whichever person is left standing at the end (even if that turns out to be one of
+            the merge candidates rather than the person the user renamed) — getting this wrong
+            used to mean an occasional silent-404 (re-fetching an id `mergeInto` had just deleted)
+            with the rename lost; see `FaceServiceTest#renamingAPersonThatMergesIntoABiggerCandidateStillAppliesTheNewNameToTheActualSurvivor`.
+            Selecting none is a valid, deliberate "rename anyway, don't merge with any of these"
+            choice, not blocked.
     *   **`FaceLinkExclusionEntity`** (`face_link_exclusions` table) — the piece that makes manual
         unlinking actually stick. Every path that detaches a face from a person (the two unlink
         actions above, and the "move only this face" branch of a name-collision merge) records a
@@ -587,6 +609,16 @@ This section describes the application's features. For the corresponding backend
         `PersonRecognitionService.mergePersons`: that's a deliberate "these are the same person"
         declaration, not a correction, so future auto-matching against the merge target should
         freely include the moved faces as if they'd always belonged to it.
+        **Load-bearing detail (bug fixed 2026-09-12):** `groupFacesForUser` only ever consults the
+        exclusion list for a face whose `status` is `NEW` — an `OLD` face skips the whole
+        existing-person-matching step (see the `FaceStatus` note in §4.3's face-grouping bullets)
+        and never gets that far, exclusion or not. A face that's currently linked to a person is
+        essentially always `OLD` (`PersonRecognitionServiceImpl.updatePerson`/`addPerson` flip it
+        the moment they attach it), so `detachFaceFromPerson` also resets `status` back to `NEW`
+        whenever it detaches a face — without that reset, unlinking recorded the exclusion but the
+        face would never live to see it checked: permanently orphaned, never reconsidered against
+        *any* person, automatically or otherwise. Covered end-to-end by
+        `FaceRecognitionServiceImplTest#aFaceUnlinkedFromAPersonNeverReattachesThereButCanStillMatchADifferentPerson`.
     *   **Bug fix, `PersonEntity`**: extends `BaseEntity`, whose `Persistable<UUID>.isNew()` reads
         a transient flag that every *other* `BaseEntity` subclass (`ShareEntity`, `AlbumEntity`,
         `SpaceEntity`) flips to `false` via `@PrePersist`/`@PostLoad` — `PersonEntity` never did,
@@ -819,7 +851,9 @@ Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
     pickers, which do render a photo count.
 *   `PUT /api/faces/person/{id}`: Rename a person (`{name, confirmed, mergeWithPersonIds}`) —
     409 + candidate `PersonDTO`s on a name collision unless `confirmed: true` (§4.3).
-*   `GET /api/faces/person/{id}/faces`: Every `FaceEntity` linked to a person.
+*   `GET /api/faces/person/{id}/faces`: Every `FaceEntity` linked to a person, paginated
+    (`size=60` from the frontend), newest-first (`photo.dateTaken DESC`) — backs the Person
+    detail page's "Faces" tab.
 *   `GET /api/faces/person/{id}/days` / `/photos/day/{day}`: Day-indexed photos for a person,
     same pattern as Library/Album/Space/Garbage (§4.1).
 *   `DELETE /api/faces/person/{personId}/photo/{photoId}`: Unlink a person from one photo

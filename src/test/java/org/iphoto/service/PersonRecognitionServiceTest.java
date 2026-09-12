@@ -239,25 +239,27 @@ class PersonRecognitionServiceTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void mergeIntoAlwaysKeepsTheExplicitTargetRegardlessOfFaceCount() throws Exception {
+    void mergeIntoKeepsThePersonWithMoreFacesRegardlessOfWhichIdWasPassedAsTarget() throws Exception {
         UserEntity user = newUser();
         SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
         PhotoEntity photo = savePhoto(space, user, LocalDateTime.of(2024, 4, 1, 0, 0));
 
-        FaceEntity targetFace = saveFace(photo, 4.0f);
-        personRecognitionService.addPerson(List.of(targetFace));
-        UUID targetId = faceRepository.findById(targetFace.getId()).orElseThrow().getPerson().getId();
+        FaceEntity smallerFace = saveFace(photo, 4.0f);
+        personRecognitionService.addPerson(List.of(smallerFace));
+        UUID smallerId = faceRepository.findById(smallerFace.getId()).orElseThrow().getPerson().getId();
 
-        FaceEntity sourceFace1 = saveFace(photo, 4.1f);
-        FaceEntity sourceFace2 = saveFace(photo, 4.2f);
-        personRecognitionService.addPerson(List.of(sourceFace1, sourceFace2));
-        UUID sourceId = faceRepository.findById(sourceFace1.getId()).orElseThrow().getPerson().getId();
+        FaceEntity biggerFace1 = saveFace(photo, 4.1f);
+        FaceEntity biggerFace2 = saveFace(photo, 4.2f);
+        personRecognitionService.addPerson(List.of(biggerFace1, biggerFace2));
+        UUID biggerId = faceRepository.findById(biggerFace1.getId()).orElseThrow().getPerson().getId();
 
-        // Source has MORE faces than target here - mergeInto must still keep target as the keeper.
-        PersonEntity result = runAs(user, () -> personRecognitionService.mergeInto(targetId, sourceId));
+        // Passed with the SMALLER person as the targetPersonId argument - mergeInto must still
+        // keep whichever person has MORE faces as the actual survivor, ignoring which id was
+        // passed as target vs. source (mirrors mergePersons' own direction rule).
+        PersonEntity result = runAs(user, () -> personRecognitionService.mergeInto(smallerId, biggerId));
 
-        assertThat(result.getId()).isEqualTo(targetId);
-        assertThat(runAs(user, () -> personRepository.findByIdInMainSpace(sourceId))).isEmpty();
+        assertThat(result.getId()).isEqualTo(biggerId);
+        assertThat(runAs(user, () -> personRepository.findByIdInMainSpace(smallerId))).isEmpty();
     }
 
     @Test

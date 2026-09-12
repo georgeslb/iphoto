@@ -6,6 +6,7 @@ import org.iphoto.entities.FaceStatus;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.SpaceEntity;
 import org.iphoto.entities.UserEntity;
+import org.iphoto.repository.FaceLinkExclusionRepository;
 import org.iphoto.repository.FaceRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.util.EmbeddingCodec;
@@ -54,6 +55,10 @@ class FaceRecognitionServiceImplTest extends AbstractIntegrationTest {
     private FaceRepository faceRepository;
     @Autowired
     private PersonRecognitionService personRecognitionService;
+    @Autowired
+    private FaceService faceService;
+    @Autowired
+    private FaceLinkExclusionRepository faceLinkExclusionRepository;
 
     private UserEntity createTestUser() {
         return userService.createUser("face-grouping-" + UUID.randomUUID(), "password", "USER");
@@ -209,5 +214,55 @@ class FaceRecognitionServiceImplTest extends AbstractIntegrationTest {
                 .as("a NEW face must still be matched against an existing person")
                 .isNotNull();
         assertThat(faceRepository.findById(newFace.getId()).orElseThrow().getPerson().getId()).isEqualTo(personId);
+    }
+
+    // End-to-end coverage for FaceLinkExclusionEntity actually being consulted: a face manually
+    // unlinked from a person (FaceService.unlinkFaceFromPerson) must not be silently reattached to
+    // that SAME person on a later groupFaces() run, but must remain free to match a DIFFERENT
+    // person. This only works because unlinkFaceFromPerson also flips the face back to
+    // FaceStatus.NEW (see FaceServiceImpl.detachFaceFromPerson's own comment) - groupFacesForUser
+    // only reads excludedPersonIdsByFace for a NEW face; an OLD one never reaches that check at
+    // all, exclusion or not.
+    @Test
+    void aFaceUnlinkedFromAPersonNeverReattachesThereButCanStillMatchADifferentPerson() throws Exception {
+        UserEntity testUser = createTestUser();
+        SpaceEntity space = spaceService.getDefaultSpaceForUser(testUser);
+        LocalDateTime t = LocalDateTime.of(2024, 10, 1, 12, 0);
+        float[] direction = {1f, 1f, 0f};
+
+        // Person A exists first and alone, so the face below is guaranteed to match it (not some
+        // tie-broken alternative).
+        FaceEntity personAFace = saveFace(savePhoto(space, testUser, t), direction);
+        runAs(testUser, () -> personRecognitionService.addPerson(List.of(personAFace)));
+        UUID personAId = faceRepository.findById(personAFace.getId()).orElseThrow().getPerson().getId();
+
+        FaceEntity face = saveFace(savePhoto(space, testUser, t.plusMinutes(1)), direction);
+        runAs(testUser, () -> faceRecognitionService.groupFaces());
+        assertThat(faceRepository.findById(face.getId()).orElseThrow().getPerson().getId()).isEqualTo(personAId);
+
+        // Manual unlink - the action under test.
+        runAs(testUser, () -> faceService.unlinkFaceFromPerson(testUser, face.getId()));
+        FaceEntity afterUnlink = faceRepository.findById(face.getId()).orElseThrow();
+        assertThat(afterUnlink.getPerson()).isNull();
+        assertThat(afterUnlink.getStatus()).isEqualTo(FaceStatus.NEW);
+        assertThat(faceLinkExclusionRepository.existsByFaceIdAndExcludedPersonId(face.getId(), personAId)).isTrue();
+
+        // Person B: same direction as person A - would score identically - built AFTER the unlink
+        // so the only way `face` ends up under it is via a genuine, non-excluded match, not
+        // leftover state from before.
+        FaceEntity personBFace = saveFace(savePhoto(space, testUser, t.plusMinutes(2)), direction);
+        runAs(testUser, () -> personRecognitionService.addPerson(List.of(personBFace)));
+        UUID personBId = faceRepository.findById(personBFace.getId()).orElseThrow().getPerson().getId();
+
+        runAs(testUser, () -> faceRecognitionService.groupFaces());
+
+        FaceEntity finalFace = faceRepository.findById(face.getId()).orElseThrow();
+        assertThat(finalFace.getPerson())
+                .as("excluded from person A only - must still be free to match a different person")
+                .isNotNull();
+        assertThat(finalFace.getPerson().getId())
+                .as("must never silently reattach to the person it was manually unlinked from")
+                .isNotEqualTo(personAId)
+                .isEqualTo(personBId);
     }
 }

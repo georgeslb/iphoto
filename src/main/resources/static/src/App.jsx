@@ -101,6 +101,9 @@ function App() {
     const el = document.querySelector(`[data-day-group="${day}"]`);
     if (el) el.scrollIntoView({ block: 'start' });
     dayIndexed.loadDayPage(day);
+    // dayIndexed itself deliberately excluded - it's a fresh object every render (see
+    // useDayIndexedPhotos.js's return statement), which would recreate this callback every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dayIndexed.loadDayPage]);
 
   const { saveScrollPosition } = useScrollRestoration(mainContentRef, isLightboxOpen, effectivePhotos);
@@ -220,6 +223,8 @@ function App() {
         }
       });
     }
+    // dayIndexed itself deliberately excluded - see seekToMemoryDay's own comment above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectivePath, fetchAlbums, fetchSpaces, fetchGarbageSpaces, duplicatesPage, fetchDuplicates, dayIndexed.refreshLoadedDays, selectedMenu, mainContentRef]);
 
   /* Update the refreshAndMaintainScroll state once the actual function is defined */
@@ -232,6 +237,8 @@ function App() {
   // logic.
   const removePhotosLocally = useCallback((ids) => {
     dayIndexed.setPhotosByDay(prev => removeFromPhotosByDay(prev, ids));
+    // dayIndexed itself deliberately excluded - see seekToMemoryDay's own comment above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dayIndexed.setPhotosByDay]);
 
   const {
