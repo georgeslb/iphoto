@@ -83,6 +83,140 @@ class PhotoServiceTest extends AbstractIntegrationTest {
     }
 
     @Test
+    void isVideoIsDerivedFromContentTypeOnSaveAndUpdate() {
+        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(admin);
+        String seed = UUID.randomUUID().toString();
+
+        PhotoEntity image = photoRepository.save(PhotoEntity.builder()
+                .id(UUID.randomUUID()).fileName(seed + ".jpg").fileHash(HexFormat.of().formatHex(seed.getBytes()))
+                .contentType("image/jpeg").user(admin).space(space).originalPath("/tmp/" + seed + ".jpg")
+                .isFavorite(false).isGarbage(false).build());
+        assertThat(image.getIsVideo()).isFalse();
+
+        String videoSeed = UUID.randomUUID().toString();
+        PhotoEntity video = photoRepository.save(PhotoEntity.builder()
+                .id(UUID.randomUUID()).fileName(videoSeed + ".mp4").fileHash(HexFormat.of().formatHex(videoSeed.getBytes()))
+                .contentType("video/mp4").user(admin).space(space).originalPath("/tmp/" + videoSeed + ".mp4")
+                .isFavorite(false).isGarbage(false).build());
+        assertThat(video.getIsVideo()).isTrue();
+
+        // onUpdate re-derives it too, not just onCreate - flipping the stored contentType later
+        // (e.g. a corrected upload) must not leave a stale isVideo behind.
+        video.setContentType("image/png");
+        PhotoEntity updated = photoRepository.save(video);
+        assertThat(updated.getIsVideo()).isFalse();
+    }
+
+    @Test
+    void typeFilterOnSpaceDaysAndDayEndpointsOnlyReturnsMatchingMediaType() throws Exception {
+        MockHttpSession session = loginAsAdmin();
+        UUID spaceId = createSpace(session, "TypeFilter-" + UUID.randomUUID());
+        UUID photoId = uploadPhoto(session, spaceId);
+        PhotoEntity photoEntity = photoRepository.findById(photoId).orElseThrow();
+
+        // A video sibling landing in the exact same day bucket, persisted directly (skipping the
+        // real upload/thumbnail pipeline, which the isVideo derivation itself doesn't need).
+        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
+        SpaceEntity space = spaceRepository.findById(spaceId).orElseThrow();
+        String seed = UUID.randomUUID().toString();
+        PhotoEntity video = photoRepository.save(PhotoEntity.builder()
+                .id(UUID.randomUUID()).fileName(seed + ".mp4").fileHash(HexFormat.of().formatHex(seed.getBytes()))
+                .contentType("video/mp4").user(admin).space(space).originalPath("/tmp/" + seed + ".mp4")
+                .dateTaken(photoEntity.getDateTaken()).isFavorite(false).isGarbage(false).build());
+        String day = photoEntity.getGroupedDay().toString();
+
+        MvcResult photosOnly = mockMvc.perform(get("/api/photos/space/{spaceId}/day/{day}", spaceId, day)
+                        .param("type", "photo").session(session))
+                .andExpect(status().isOk()).andReturn();
+        JsonNode photosOnlyContent = objectMapper.readTree(photosOnly.getResponse().getContentAsString()).get("content");
+        assertThat(photosOnlyContent).anyMatch(p -> p.get("id").asText().equals(photoId.toString()));
+        assertThat(photosOnlyContent).noneMatch(p -> p.get("id").asText().equals(video.getId().toString()));
+
+        MvcResult videosOnly = mockMvc.perform(get("/api/photos/space/{spaceId}/day/{day}", spaceId, day)
+                        .param("type", "video").session(session))
+                .andExpect(status().isOk()).andReturn();
+        JsonNode videosOnlyContent = objectMapper.readTree(videosOnly.getResponse().getContentAsString()).get("content");
+        assertThat(videosOnlyContent).anyMatch(p -> p.get("id").asText().equals(video.getId().toString()));
+        assertThat(videosOnlyContent).noneMatch(p -> p.get("id").asText().equals(photoId.toString()));
+
+        // No type param at all - both still show up (pre-filter behavior unaffected).
+        MvcResult unfiltered = mockMvc.perform(get("/api/photos/space/{spaceId}/day/{day}", spaceId, day).session(session))
+                .andExpect(status().isOk()).andReturn();
+        JsonNode unfilteredContent = objectMapper.readTree(unfiltered.getResponse().getContentAsString()).get("content");
+        assertThat(unfilteredContent).anyMatch(p -> p.get("id").asText().equals(photoId.toString()));
+        assertThat(unfilteredContent).anyMatch(p -> p.get("id").asText().equals(video.getId().toString()));
+
+        // The day-count also respects the filter, not just the per-day content.
+        MvcResult videoDays = mockMvc.perform(get("/api/photos/space/{spaceId}/days", spaceId)
+                        .param("type", "video").session(session))
+                .andExpect(status().isOk()).andReturn();
+        JsonNode videoDaysContent = objectMapper.readTree(videoDays.getResponse().getContentAsString());
+        JsonNode matchingDay = null;
+        for (JsonNode d : videoDaysContent) {
+            if (d.get("day").asText().equals(day)) matchingDay = d;
+        }
+        assertThat(matchingDay).describedAs("expected the video-only day count to include " + day).isNotNull();
+        assertThat(matchingDay.get("count").asLong()).isEqualTo(1L);
+    }
+
+    @Test
+    void typeFilterOnGarbageDaysAndDayEndpointsOnlyReturnsMatchingMediaType() throws Exception {
+        MockHttpSession session = loginAsAdmin();
+        UUID spaceId = createSpace(session, "GarbageTypeFilter-" + UUID.randomUUID());
+        UUID photoId = uploadPhoto(session, spaceId);
+        PhotoEntity photoEntity = photoRepository.findById(photoId).orElseThrow();
+
+        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
+        SpaceEntity space = spaceRepository.findById(spaceId).orElseThrow();
+        String seed = UUID.randomUUID().toString();
+        PhotoEntity video = photoRepository.save(PhotoEntity.builder()
+                .id(UUID.randomUUID()).fileName(seed + ".mp4").fileHash(HexFormat.of().formatHex(seed.getBytes()))
+                .contentType("video/mp4").user(admin).space(space).originalPath("/tmp/" + seed + ".mp4")
+                .dateTaken(photoEntity.getDateTaken()).isFavorite(false).isGarbage(false).build());
+
+        mockMvc.perform(post("/api/photos/garbage").session(session).contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(List.of(photoId, video.getId()))))
+                .andExpect(status().isOk());
+        String day = photoEntity.getGroupedDay().toString();
+
+        MvcResult videosOnly = mockMvc.perform(get("/api/photos/garbage/day/{day}", day)
+                        .param("type", "video").session(session))
+                .andExpect(status().isOk()).andReturn();
+        JsonNode videosOnlyContent = objectMapper.readTree(videosOnly.getResponse().getContentAsString()).get("content");
+        assertThat(videosOnlyContent).anyMatch(p -> p.get("id").asText().equals(video.getId().toString()));
+        assertThat(videosOnlyContent).noneMatch(p -> p.get("id").asText().equals(photoId.toString()));
+
+        MvcResult photosOnly = mockMvc.perform(get("/api/photos/garbage/day/{day}", day)
+                        .param("type", "photo").session(session))
+                .andExpect(status().isOk()).andReturn();
+        JsonNode photosOnlyContent = objectMapper.readTree(photosOnly.getResponse().getContentAsString()).get("content");
+        assertThat(photosOnlyContent).anyMatch(p -> p.get("id").asText().equals(photoId.toString()));
+        assertThat(photosOnlyContent).noneMatch(p -> p.get("id").asText().equals(video.getId().toString()));
+    }
+
+    @Test
+    void recentEndpointsSortByUploadTimeNewestFirstAndPaginateAtTwenty() throws Exception {
+        MockHttpSession session = loginAsAdmin();
+        UUID spaceId = createSpace(session, "Recent-" + UUID.randomUUID());
+        UUID firstUploaded = uploadPhoto(session, spaceId);
+        UUID secondUploaded = uploadPhoto(session, spaceId);
+
+        MvcResult recentResult = mockMvc.perform(get("/api/photos/space/{spaceId}/recent", spaceId).session(session))
+                .andExpect(status().isOk()).andReturn();
+        JsonNode recent = objectMapper.readTree(recentResult.getResponse().getContentAsString());
+        assertThat(recent.get("pageSize").asInt()).isEqualTo(20);
+        // Newest-uploaded-first: the second upload must come before the first in content order.
+        List<String> ids = new ArrayList<>();
+        recent.get("content").forEach(p -> ids.add(p.get("id").asText()));
+        assertThat(ids.indexOf(secondUploaded.toString())).isLessThan(ids.indexOf(firstUploaded.toString()));
+
+        // Library's own /recent (Main space) - just confirm it's reachable and shaped the same way;
+        // the actual sort/pagination behavior is already covered above.
+        mockMvc.perform(get("/api/photos/recent").session(session)).andExpect(status().isOk());
+    }
+
+    @Test
     void getMemoriesReturnsAPhotoTakenExactlyOneMonthAgo() throws Exception {
         MockHttpSession session = loginAsAdmin();
         // getMemories is scoped to the caller's MAIN space only (see PhotoController#getMemories) -

@@ -2,12 +2,20 @@ package org.iphoto.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import org.iphoto.AbstractIntegrationTest;
+import org.iphoto.entities.PhotoEntity;
+import org.iphoto.entities.SpaceEntity;
+import org.iphoto.entities.UserEntity;
 import org.iphoto.model.request.AlbumCreateRequest;
 import org.iphoto.model.request.AlbumUpdateRequest;
+import org.iphoto.repository.PhotoRepository;
+import org.iphoto.repository.SpaceRepository;
+import org.iphoto.repository.UserRepository;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.web.servlet.MvcResult;
 
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -26,6 +34,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 // have no endpoint of their own but are exercised on every AlbumDTO response above (every one of
 // them is built through those two methods), so no separate test is needed for them.
 class AlbumServiceTest extends AbstractIntegrationTest {
+
+    @Autowired
+    private PhotoRepository photoRepository;
+    @Autowired
+    private SpaceRepository spaceRepository;
+    @Autowired
+    private UserRepository userRepository;
 
     private UUID createAlbum(MockHttpSession session, String name) throws Exception {
         MvcResult result = mockMvc.perform(post("/api/albums")
@@ -117,6 +132,58 @@ class AlbumServiceTest extends AbstractIntegrationTest {
                 .andExpect(status().isOk())
                 .andReturn();
         assertThat(objectMapper.readTree(removeResult.getResponse().getContentAsString()).get("photoCount").asInt()).isZero();
+    }
+
+    @Test
+    void typeFilterOnAlbumDaysAndPhotosForDayOnlyReturnsMatchingMediaType() throws Exception {
+        MockHttpSession session = loginAsAdmin();
+        UUID spaceId = createSpace(session, "AlbumTypeFilter-" + UUID.randomUUID());
+        UUID photoId = uploadPhoto(session, spaceId);
+        mockMvc.perform(post("/api/photos/main").session(session).contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(List.of(photoId))))
+                .andExpect(status().isOk());
+        PhotoEntity photoEntity = photoRepository.findById(photoId).orElseThrow();
+
+        // A video sibling in the same Main-space day bucket - albums only ever reference Main
+        // space photos (see specification.md §1), so this has to land there too, not in spaceId.
+        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
+        SpaceEntity mainSpace = spaceRepository.findByTypeEqualsMainAndUser(admin);
+        String seed = UUID.randomUUID().toString();
+        PhotoEntity video = photoRepository.save(PhotoEntity.builder()
+                .id(UUID.randomUUID()).fileName(seed + ".mp4").fileHash(HexFormat.of().formatHex(seed.getBytes()))
+                .contentType("video/mp4").user(admin).space(mainSpace).originalPath("/tmp/" + seed + ".mp4")
+                .dateTaken(photoEntity.getDateTaken()).isFavorite(false).isGarbage(false).build());
+
+        UUID albumId = createAlbum(session, "TypeFilterAlbum-" + UUID.randomUUID());
+        mockMvc.perform(post("/api/albums/{id}/photos", albumId).session(session).contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("photoIds", List.of(photoId, video.getId())))))
+                .andExpect(status().isOk());
+        String day = photoEntity.getGroupedDay().toString();
+
+        MvcResult photosOnly = mockMvc.perform(get("/api/albums/{id}/photos/day/{day}", albumId, day)
+                        .param("type", "photo").session(session))
+                .andExpect(status().isOk()).andReturn();
+        JsonNode photosOnlyContent = objectMapper.readTree(photosOnly.getResponse().getContentAsString()).get("content");
+        assertThat(photosOnlyContent).anyMatch(p -> p.get("id").asText().equals(photoId.toString()));
+        assertThat(photosOnlyContent).noneMatch(p -> p.get("id").asText().equals(video.getId().toString()));
+
+        MvcResult videosOnly = mockMvc.perform(get("/api/albums/{id}/photos/day/{day}", albumId, day)
+                        .param("type", "video").session(session))
+                .andExpect(status().isOk()).andReturn();
+        JsonNode videosOnlyContent = objectMapper.readTree(videosOnly.getResponse().getContentAsString()).get("content");
+        assertThat(videosOnlyContent).anyMatch(p -> p.get("id").asText().equals(video.getId().toString()));
+        assertThat(videosOnlyContent).noneMatch(p -> p.get("id").asText().equals(photoId.toString()));
+
+        MvcResult videoDays = mockMvc.perform(get("/api/albums/{id}/days", albumId)
+                        .param("type", "video").session(session))
+                .andExpect(status().isOk()).andReturn();
+        JsonNode videoDaysContent = objectMapper.readTree(videoDays.getResponse().getContentAsString());
+        JsonNode matchingDay = null;
+        for (JsonNode d : videoDaysContent) {
+            if (d.get("day").asText().equals(day)) matchingDay = d;
+        }
+        assertThat(matchingDay).describedAs("expected the video-only album day count to include " + day).isNotNull();
+        assertThat(matchingDay.get("count").asLong()).isEqualTo(1L);
     }
 
     @Test

@@ -120,14 +120,20 @@ matters again; `specification.md` is the source of truth for current behavior.
   `V7__add_photos_is_video.sql`), `org.iphoto.util.MediaTypeFilter.resolveIsVideo` shared by
   `PhotoController`/`AlbumController`, optional-predicate JPQL (`:isVideo IS NULL OR ...`) on the
   day-count/per-day repository queries, `DayIndexCache` keyed per `(id, filter)` so counts for
-  different filters don't collide. Guest share flow unaffected (always unfiltered).
+  different filters don't collide. Guest share flow unaffected (always unfiltered). Tests:
+  `MediaTypeFilterTest`, `DayIndexCacheTest` (per-filter cache isolation), plus
+  `PhotoServiceTest`/`AlbumServiceTest` cases covering the `isVideo` derivation and `?type=`
+  filtering on Space/Garbage/Album day + day-count endpoints; frontend `useDayIndexedPhotos.test.js`
+  covers the `mediaType` URL-building and reset-on-change behavior.
 - **"Recently Added" strip** (Library, under Memories; top of each Space detail page):
   `RecentlyAddedSection.jsx` + `hooks/useRecentPhotos.js`, collapsed and unfetched until first
   expanded, flat non-day-grouped horizontal row, 20/page, next page loads on horizontal scroll
   near the track's right edge. Backend reuses the existing `PhotoService.getPhotos` with a
   `createdAt DESC` (upload time, not capture time) `Pageable` via two new thin endpoints
   (`GET /api/photos/recent`, `GET /api/photos/space/{spaceId}/recent`) — no new repository/service
-  method needed.
+  method needed. Tests: `PhotoServiceTest#recentEndpointsSortByUploadTimeNewestFirstAndPaginateAtTwenty`,
+  frontend `hooks/useRecentPhotos.test.js` + `components/RecentlyAddedSection.test.jsx` (lazy fetch,
+  no-double-fetch/isLast guards, baseUrl-change reset, scroll-triggered pagination).
 - **Timeline scrubber**: a right-edge vertical strip (one label per year) that jumps instantly
   (no smooth-scroll, so nothing in between gets fetched) to any day, loaded or not, via
   `PhotoGrid.jsx`'s per-day `data-day-group` markers.

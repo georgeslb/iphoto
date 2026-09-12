@@ -266,4 +266,91 @@ describe('useDayIndexedPhotos', () => {
     expect(result.current.photosByDay).toEqual({});
     expect(result.current.dayPageState).toEqual({});
   });
+
+  describe('mediaType filter', () => {
+    it('does not append ?type= for the default "all" filter (pre-filter callers unaffected)', async () => {
+      global.fetch = vi.fn(() => Promise.resolve({ json: () => Promise.resolve([]) }));
+
+      renderHook(() => useDayIndexedPhotos('/'));
+
+      await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+      expect(global.fetch.mock.calls[0][0]).toBe('/api/photos/days');
+    });
+
+    it('appends ?type=video to the Library days and day-photos URLs', async () => {
+      global.fetch = vi.fn()
+        .mockResolvedValueOnce({ json: () => Promise.resolve([{ day: '2024-03-15', count: 1 }]) })
+        .mockResolvedValueOnce({ json: () => Promise.resolve({ content: [{ id: 'a' }], last: true }) });
+
+      const { result } = renderHook(() => useDayIndexedPhotos('/', null, true, 'video'));
+      await waitFor(() => expect(result.current.days).toHaveLength(1));
+      expect(global.fetch.mock.calls[0][0]).toBe('/api/photos/days?type=video');
+
+      await act(async () => { await result.current.loadDayPage('2024-03-15'); });
+      expect(global.fetch.mock.calls[1][0]).toBe('/api/photos/day/2024-03-15?type=video&page=0&size=100');
+    });
+
+    it('appends ?type=photo to Space and Garbage URLs', async () => {
+      global.fetch = vi.fn()
+        .mockResolvedValueOnce({ json: () => Promise.resolve([{ day: '2024-03-15', count: 1 }]) })
+        .mockResolvedValueOnce({ json: () => Promise.resolve({ content: [], last: true }) });
+      renderHook(() => useDayIndexedPhotos('/spaces/xyz', null, true, 'photo'));
+      await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+      expect(global.fetch.mock.calls[0][0]).toBe('/api/photos/space/xyz/days?type=photo');
+
+      global.fetch = vi.fn(() => Promise.resolve({ json: () => Promise.resolve([]) }));
+      renderHook(() => useDayIndexedPhotos('/garbage', null, true, 'photo'));
+      await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+      expect(global.fetch.mock.calls[0][0]).toBe('/api/photos/garbage/days?type=photo');
+    });
+
+    it('appends ?type= to the Album days/day-photos URLs too', async () => {
+      global.fetch = vi.fn()
+        .mockResolvedValueOnce({ json: () => Promise.resolve([{ day: '2024-03-15', count: 1 }]) })
+        .mockResolvedValueOnce({ json: () => Promise.resolve({ content: [], page: { size: 100, number: 0, totalElements: 0, totalPages: 1 } }) });
+      const { result } = renderHook(() => useDayIndexedPhotos('/albums/abc', null, true, 'video'));
+      await waitFor(() => expect(result.current.days).toHaveLength(1));
+      expect(global.fetch.mock.calls[0][0]).toBe('/api/albums/abc/days?type=video');
+
+      await act(async () => { await result.current.loadDayPage('2024-03-15'); });
+      expect(global.fetch.mock.calls[1][0]).toBe('/api/albums/abc/photos/day/2024-03-15?type=video&page=0&size=100');
+    });
+
+    it('does not append ?type= for Person or the guest share flow, which do not expose the filter', async () => {
+      global.fetch = vi.fn(() => Promise.resolve({ json: () => Promise.resolve([]) }));
+      renderHook(() => useDayIndexedPhotos('/persons/abc123', null, true, 'video'));
+      await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+      expect(global.fetch.mock.calls[0][0]).toBe('/api/faces/person/abc123/days');
+
+      global.fetch = vi.fn()
+        .mockResolvedValueOnce({ json: () => Promise.resolve([{ day: '2024-03-15', count: 1 }]) });
+      const shareTarget = { type: 'shareAlbum', albumId: 'album-9', spaceId: null, personId: null };
+      renderHook(() => useDayIndexedPhotos('/share/abcmd5/holiday', shareTarget, true, 'video'));
+      await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+      expect(global.fetch.mock.calls[0][0]).toBe('/api/albums/share/album-9/days');
+    });
+
+    it('resets and refetches when only the mediaType filter changes', async () => {
+      global.fetch = vi.fn()
+        .mockResolvedValueOnce({ json: () => Promise.resolve([{ day: '2024-03-15', count: 3 }]) })
+        .mockResolvedValueOnce({ json: () => Promise.resolve({ content: [{ id: 'a' }], last: true }) })
+        .mockResolvedValueOnce({ json: () => Promise.resolve([{ day: '2024-03-15', count: 1 }]) });
+
+      const { result, rerender } = renderHook(
+        ({ mediaType }) => useDayIndexedPhotos('/', null, true, mediaType),
+        { initialProps: { mediaType: 'all' } }
+      );
+      await waitFor(() => expect(result.current.days).toEqual([{ day: '2024-03-15', count: 3 }]));
+
+      await act(async () => { await result.current.loadDayPage('2024-03-15'); });
+      expect(result.current.photosByDay['2024-03-15']).toEqual([{ id: 'a' }]);
+
+      rerender({ mediaType: 'video' });
+
+      await waitFor(() => expect(result.current.days).toEqual([{ day: '2024-03-15', count: 1 }]));
+      expect(global.fetch.mock.calls[2][0]).toBe('/api/photos/days?type=video');
+      expect(result.current.photosByDay).toEqual({});
+      expect(result.current.dayPageState).toEqual({});
+    });
+  });
 });
