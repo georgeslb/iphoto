@@ -68,10 +68,11 @@ class SyncViewModel(
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoadingSpaces = true, error = null)
             _uiState.value = try {
-                // Every Space - including Main - is a valid sync target: Main is just the Space
-                // the backend never lets the user delete (SpaceDTO.deletionAllowed = false), which
-                // has no bearing on whether its own photos can mirror a device folder.
-                val syncable = spaceApi.list()
+                // The Main Space isn't a valid sync target: it's the app's own default landing
+                // space (also the destination of Album references and "Move to Main Space"), not a
+                // user-created collection meant to mirror one phone folder. deletionAllowed is
+                // false for exactly (and only) the Main Space, so it doubles as this check.
+                val syncable = spaceApi.list().filter { it.deletionAllowed }
                 _uiState.value.copy(spaces = syncable, isLoadingSpaces = false)
             } catch (e: Exception) {
                 _uiState.value.copy(isLoadingSpaces = false, error = e.message ?: "Failed to load spaces")

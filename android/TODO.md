@@ -1,5 +1,21 @@
 # Android TODO
 
+## Reverted: Main Space is not a valid sync target — 2026-09-13
+
+Follow-up to (and partial revert of) "Main Space sync" further below: that entry removed
+`SyncViewModel.loadSpaces()`'s `deletionAllowed` filter on the theory that nothing backend-side
+stops Main Space's photos from mirroring a device folder. Explicit product call made this session:
+Main Space should stay off the sync-target list after all - it's the app's default landing space
+(also where Albums' references live, and the destination of "Move to Main Space"), not a
+user-created collection meant to own a one-to-one device-folder mirror the way a regular Space
+does. Restored the `.filter { it.deletionAllowed }` in `loadSpaces()` (`deletionAllowed` is false
+for exactly, and only, the Main Space) so it drops back out of the Sync screen's space picker.
+Backend untouched - this is a client-side policy choice, not a capability the API lacks.
+
+No test file exercises `SyncViewModel.loadSpaces()` (`SyncViewModel` itself was never covered by
+real compilation - see "Main Space sync" below - `androidx.work` needs a real Gradle/AGP resolve
+this environment still doesn't have), so nothing else needed updating.
+
 ## Confirm before removing the device file on "move to Main" — 2026-09-13
 
 `PagedPhotoGridViewModel.moveSelectionToMain` gained an `alsoRemoveFromDevice` param (default
