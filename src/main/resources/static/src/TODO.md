@@ -160,6 +160,24 @@ matters again; `specification.md` is the source of truth for current behavior.
   `similarPhotosBadge` template, which `DuplicateClusterModal.jsx`'s own title badge still uses
   unchanged) — only the Android side of that item (no duplicate-cluster UI there at all yet)
   remains open.
+- **Fixed duplicate `.../photos/day/{day}` requests, several per day** (2026-09-12, reported on a
+  Person's Photos tab, but the bug lives in the shared `useDayIndexedPhotos.js`/`PhotoGrid.jsx`
+  machinery every day-indexed view - Library/Album/Space/Garbage/Person - uses). Root cause:
+  `loadDayPage`'s re-entrancy guard read `dayPageStateRef`, a ref only kept in sync with React
+  state by its own separate `useEffect` - one render behind. PhotoGrid's shared day-sentinel
+  `IntersectionObserver` can call `loadDayPage` for the SAME day more than once in one synchronous
+  burst (its own 2-days-ahead look-ahead prefetch landing on a day that's also directly
+  intersecting, and/or the observer tearing down/recreating every time ANY OTHER day's fetch
+  completes - its effect depends on `photosByDay`/`dayPageState` - and re-evaluating still-visible
+  sentinels) - all before a render/effect round-trip could sync that ref, so the guard couldn't
+  see the first call's fetch as "in flight" yet and let duplicates straight through. Reproduced
+  directly (calling `loadDayPage` twice back-to-back with no `await` between them fired two
+  identical GETs) before fixing. Fixed with a second ref (`inFlightDaysRef`, a plain `Set`) mutated
+  synchronously the instant a fetch starts/finishes - no render needed for the very next call to
+  see it. Regression-tested
+  (`useDayIndexedPhotos.test.js#doesNotDoubleFetchWhenLoadDayPageIsCalledTwiceForTheSameDayBeforeTheFirstResolves`) -
+  every prior test in that file always awaited one `loadDayPage` call before making the next,
+  which is exactly why this never surfaced there.
 
 ### Duplicate detection
 - Two-tier detection: a tight global pHash/averageHash Hamming-distance match confirms directly;
