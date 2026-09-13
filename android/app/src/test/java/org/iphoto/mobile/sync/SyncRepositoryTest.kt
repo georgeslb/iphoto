@@ -61,9 +61,16 @@ class SyncRepositoryTest {
     // stubbed for toString via the normal every {} API).
     private var nextAssetSize = 100L
 
-    private fun testAsset(hash: String, name: String = "asset-$hash.jpg"): LocalAsset {
+    private fun testAsset(hash: String, name: String = "asset-$hash.jpg", relativeDir: String = ""): LocalAsset {
         val size = nextAssetSize++
-        val asset = LocalAsset(uri = mockk(relaxed = true), displayName = name, size = size, lastModified = 1_000L, mimeType = "image/jpeg")
+        val asset = LocalAsset(
+            uri = mockk(relaxed = true),
+            displayName = name,
+            size = size,
+            lastModified = 1_000L,
+            mimeType = "image/jpeg",
+            relativeDir = relativeDir
+        )
         every { hashCache.get(any(), size, 1_000L) } returns hash
         return asset
     }
@@ -203,8 +210,22 @@ class SyncRepositoryTest {
 
         repository.trashLocalFilesForHashes(folderUri, setOf("hash-match"))
 
-        verify(exactly = 1) { LocalTrash.moveToTrash(context, folderUri, matching.uri) }
-        verify(exactly = 0) { LocalTrash.moveToTrash(context, folderUri, other.uri) }
+        verify(exactly = 1) { LocalTrash.moveToTrash(context, folderUri, matching) }
+        verify(exactly = 0) { LocalTrash.moveToTrash(context, folderUri, other) }
+    }
+
+    @Test
+    fun `trashLocalFilesForHashes forwards a nested file's relativeDir unchanged`() = runTest {
+        val nested = testAsset("hash-nested", relativeDir = "Camera/2024/06")
+        every { LocalFolderScanner.scan(context, folderUri) } returns listOf(nested)
+        every { LocalTrash.moveToTrash(context, folderUri, any()) } returns true
+
+        repository.trashLocalFilesForHashes(folderUri, setOf("hash-nested"))
+
+        // LocalTrash.resolveOrCreateDir (LocalTrashTest) is what actually mirrors this path under
+        // .iPhotoTrash - this just guards against SyncRepository itself ever stripping it on the
+        // way there.
+        verify(exactly = 1) { LocalTrash.moveToTrash(context, folderUri, match { it.relativeDir == "Camera/2024/06" }) }
     }
 
     @Test
@@ -222,7 +243,7 @@ class SyncRepositoryTest {
 
         repository.restoreLocalAssets(folderUri, listOf(asset1, asset2))
 
-        verify(exactly = 1) { LocalTrash.restoreFromTrash(context, folderUri, asset1.uri) }
-        verify(exactly = 1) { LocalTrash.restoreFromTrash(context, folderUri, asset2.uri) }
+        verify(exactly = 1) { LocalTrash.restoreFromTrash(context, folderUri, asset1) }
+        verify(exactly = 1) { LocalTrash.restoreFromTrash(context, folderUri, asset2) }
     }
 }

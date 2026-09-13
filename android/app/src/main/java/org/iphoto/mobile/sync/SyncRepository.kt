@@ -193,10 +193,10 @@ class SyncRepository(
         photoApi.restoreFromGarbage(photoIds)
     }
 
-    /** Moves [assets] (as returned by [LocalTrash.scan]) back to the root of the synced folder. */
+    /** Moves [assets] (as returned by [LocalTrash.scan]) back to their original relativeDir under the synced folder root. */
     suspend fun restoreLocalAssets(folderUri: Uri, assets: List<LocalAsset>) = withContext(Dispatchers.IO) {
         for (asset in assets) {
-            LocalTrash.restoreFromTrash(context, folderUri, asset.uri)
+            LocalTrash.restoreFromTrash(context, folderUri, asset)
         }
     }
 
@@ -209,7 +209,7 @@ class SyncRepository(
         val localAssets = LocalFolderScanner.scan(context, folderUri)
         for (asset in localAssets) {
             if (hashOf(asset) in hashes) {
-                LocalTrash.moveToTrash(context, folderUri, asset.uri)
+                LocalTrash.moveToTrash(context, folderUri, asset)
             }
         }
         hashCache.persist()

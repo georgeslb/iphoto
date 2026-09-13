@@ -105,9 +105,29 @@ Known gaps / not done:
   actually ran" entry below. Reviewed by hand instead; the backend half (`GET
   /api/spaces/{spaceId}/garbage`, `PhotoRepository`/`PhotoServiceImpl`) does compile (`mvn compile`
   passed). Needs a real `assembleDebug`/`testDebugUnitTest` pass before shipping.
-- `LocalTrash` restores a file to the folder **root**, not its original subfolder - nested
-  camera-roll layouts (`Camera/2024/06/...`) lose their subfolder on restore. Fine for now since
-  sync only matches by content hash, not path, but worth fixing if it turns out to matter.
+- ~~`LocalTrash` restores a file to the folder root, not its original subfolder~~ - fixed,
+  2026-09-13. `LocalAsset` gained a `relativeDir` field (e.g. `"Camera/2024/06"`, empty for a
+  root-level file), populated by `LocalFolderScanner`/`LocalTrash.scan` as they walk (both already
+  tracked depth for `MAX_DEPTH`, just didn't record the path). `LocalTrash.moveToTrash` now mirrors
+  that same relative path under `.iPhotoTrash` (`resolveOrCreateDir`, walking/creating each path
+  segment) instead of flattening everything into one directory, and `restoreFromTrash` recreates
+  that path back under the synced root - a file that lived at `root/Camera/2024/06/IMG.jpg` now
+  round-trips through `root/.iPhotoTrash/Camera/2024/06/IMG.jpg` and back to the same place instead
+  of landing at `root/IMG.jpg`. `moveToTrash`/`restoreFromTrash`/`SyncRepository.restoreLocalAssets`
+  /`trashLocalFilesForHashes` now take the whole `LocalAsset` instead of just its `Uri`, so
+  `relativeDir` travels with it.
+  Added `LocalTrashTest` (new file) directly exercising `resolveOrCreateDir` - now `internal` for
+  exactly this reason - against a small hand-built in-memory `DocumentFile` tree: empty relativeDir
+  resolves to the start dir itself, a single segment creates one missing directory, a nested path
+  creates/traverses every segment in order, and resolving twice reuses the existing directories
+  rather than creating duplicates. `moveToTrash`/`restoreFromTrash` themselves aren't covered by a
+  test - they also depend on `DocumentFile.fromTreeUri`/`fromSingleUri`'s static resolution and
+  `ContentResolver`-based byte copying, which would need a much larger fake-SAF harness than this
+  fix's actual risk (the path math in `resolveOrCreateDir`) justified. Verified for real, same
+  approach as the other `sync/` test files above: compiled and ran `LocalTrashTest` plus the updated
+  `SyncRepositoryTest`/`SyncRepositoryUploadTest` (26 tests total) against real MockK/JUnit/
+  coroutines-test/retrofit/okhttp/gson jars and the `com.google.android:android:4.1.1.4` stub jar -
+  all passed.
 - Still no Garbage screen anywhere in the Android app, so a user can't trigger a restore from the
   app UI directly - `toRestore`/`toLocalRestore` only fire from file-system-level reconciliation
   (manually moving a file, or restoring via the web app) picked up on the next sync.
