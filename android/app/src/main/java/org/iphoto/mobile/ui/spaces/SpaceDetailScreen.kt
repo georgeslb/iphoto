@@ -73,12 +73,28 @@ fun SpaceDetailScreen(spaceId: String, onPhotoClick: (String) -> Unit, onBack: (
             }
         } else null
     }
+    // Move to Main Space is offered from every Space, synced or not - only the bookkeeping below
+    // (so a synced folder's file isn't re-uploaded next sync) is conditional on isSyncedSpace.
+    val onPhotosMovedToMain: (suspend (List<Photo>) -> Unit)? = remember(spaceId, isSyncedSpace) {
+        if (isSyncedSpace) {
+            { photos: List<Photo> ->
+                photos.forEach { photo ->
+                    val hash = photo.fileHash
+                    if (!hash.isNullOrBlank()) {
+                        syncPrefs.markMovedToMain(hash, photo.title, photo.id)
+                    }
+                }
+            }
+        } else null
+    }
     val viewModel: PagedPhotoGridViewModel = viewModel(
         key = "space-$spaceId",
         factory = PagedPhotoGridViewModelFactory(
             loadPage,
             onPhotosMovedToGarbage = onPhotosMovedToGarbage,
-            onPhotosExcludedFromSync = onPhotosExcludedFromSync
+            onPhotosExcludedFromSync = onPhotosExcludedFromSync,
+            canMoveToMain = true,
+            onPhotosMovedToMain = onPhotosMovedToMain
         )
     )
     val state by viewModel.uiState.collectAsState()

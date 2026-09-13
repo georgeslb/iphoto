@@ -16,7 +16,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import org.iphoto.mobile.data.SyncPrefs
-import org.iphoto.mobile.data.SyncPrefs.ExcludedAsset
+import org.iphoto.mobile.data.SyncPrefs.TrackedAsset
 import org.iphoto.mobile.model.SpaceDTO
 import org.iphoto.mobile.network.PhotoApi
 import org.iphoto.mobile.network.SpaceApi
@@ -40,7 +40,7 @@ data class SyncUiState(
     // Photos excluded from the currently synced Space (SpaceDetailScreen's "Exclude from sync"
     // action) - shown here so the user has somewhere to undo it, since an excluded photo is
     // garbaged and no longer visible in the Space's own photo grid.
-    val excludedAssets: List<ExcludedAsset> = emptyList(),
+    val excludedAssets: List<TrackedAsset> = emptyList(),
     val error: String? = null
 )
 
@@ -87,7 +87,7 @@ class SyncViewModel(
     // Reverses SpaceDetailScreen's "Exclude from sync" action: restores the photo in the Space and
     // stops treating its hash as excluded, so the next sync pass (or this call, immediately) picks
     // the still-present local file back up normally.
-    fun includeAsset(asset: ExcludedAsset) {
+    fun includeAsset(asset: TrackedAsset) {
         viewModelScope.launch {
             try {
                 photoApi.restoreFromGarbage(listOf(asset.photoId))
@@ -160,7 +160,8 @@ class SyncViewModel(
         _uiState.value = _uiState.value.copy(isPreviewing = true, error = null)
         viewModelScope.launch {
             _uiState.value = try {
-                val diff = syncRepository.computeDiff(spaceId, Uri.parse(folderUri), syncPrefs.excludedHashes)
+                val skipHashes = syncPrefs.excludedHashes + syncPrefs.movedToMainHashes
+                val diff = syncRepository.computeDiff(spaceId, Uri.parse(folderUri), skipHashes)
                 _uiState.value.copy(isPreviewing = false, pendingDiff = diff)
             } catch (e: Exception) {
                 _uiState.value.copy(isPreviewing = false, error = e.message ?: "Failed to compare space with folder")

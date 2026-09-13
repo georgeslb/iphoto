@@ -46,7 +46,8 @@ class SyncWorker(
         return try {
             val repository = container.syncRepository()
             promoteToForeground(createForegroundInfo("Checking for changes…", 0, 0))
-            val diff = repository.computeDiff(spaceId, Uri.parse(folderUriString), container.syncPrefs.excludedHashes)
+            val skipHashes = container.syncPrefs.excludedHashes + container.syncPrefs.movedToMainHashes
+            val diff = repository.computeDiff(spaceId, Uri.parse(folderUriString), skipHashes)
             val total = diff.toUpload.size + diff.toRemove.size + diff.toRestore.size + diff.toLocalRestore.size
             var done = 0
             Log.d(

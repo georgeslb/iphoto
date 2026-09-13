@@ -339,6 +339,83 @@ class PagedPhotoGridViewModelTest {
     }
 
     @Test
+    fun `canMoveToMain defaults to false`() {
+        val viewModel = PagedPhotoGridViewModel({ _, _ -> emptyList<Photo>() to true })
+
+        assertFalse(viewModel.canMoveToMain)
+    }
+
+    @Test
+    fun `moveSelectionToMain moves the selection and invokes the moved-to-main callback`() = runTest {
+        var movedToMainCallbackPhotos: List<Photo>? = null
+        val viewModel = PagedPhotoGridViewModel(
+            { _, _ -> listOf(testPhoto("1"), testPhoto("2")) to true },
+            canMoveToMain = true,
+            onPhotosMovedToMain = { movedToMainCallbackPhotos = it }
+        )
+        viewModel.toggleSelection("1")
+        val photoApi = mockk<PhotoApi>()
+        coEvery { photoApi.moveToMain(listOf("1")) } returns Unit
+
+        assertTrue(viewModel.canMoveToMain)
+        viewModel.moveSelectionToMain(photoApi)
+
+        coVerify(exactly = 1) { photoApi.moveToMain(listOf("1")) }
+        assertEquals(listOf("1"), movedToMainCallbackPhotos?.map { it.id })
+        val state = viewModel.uiState.value
+        assertTrue(state.selectedIds.isEmpty())
+        assertFalse(state.isMutating)
+        assertNull(state.actionError)
+    }
+
+    @Test
+    fun `moveSelectionToMain works without a moved-to-main callback set (unsynced Space)`() = runTest {
+        val viewModel = PagedPhotoGridViewModel(
+            { _, _ -> listOf(testPhoto("1")) to true },
+            canMoveToMain = true
+        )
+        viewModel.toggleSelection("1")
+        val photoApi = mockk<PhotoApi>()
+        coEvery { photoApi.moveToMain(listOf("1")) } returns Unit
+
+        viewModel.moveSelectionToMain(photoApi)
+
+        coVerify(exactly = 1) { photoApi.moveToMain(listOf("1")) }
+        assertTrue(viewModel.uiState.value.selectedIds.isEmpty())
+    }
+
+    @Test
+    fun `moveSelectionToMain surfaces an error and stops mutating on failure`() = runTest {
+        val viewModel = PagedPhotoGridViewModel(
+            { _, _ -> listOf(testPhoto("1")) to true },
+            canMoveToMain = true
+        )
+        viewModel.toggleSelection("1")
+        val photoApi = mockk<PhotoApi>()
+        coEvery { photoApi.moveToMain(any()) } throws RuntimeException("network down")
+
+        viewModel.moveSelectionToMain(photoApi)
+
+        val state = viewModel.uiState.value
+        assertEquals("network down", state.actionError)
+        assertFalse(state.isMutating)
+        assertEquals(setOf("1"), state.selectedIds)
+    }
+
+    @Test
+    fun `moveSelectionToMain is a no-op with nothing selected`() = runTest {
+        val viewModel = PagedPhotoGridViewModel(
+            { _, _ -> listOf(testPhoto("1")) to true },
+            canMoveToMain = true
+        )
+        val photoApi = mockk<PhotoApi>()
+
+        viewModel.moveSelectionToMain(photoApi)
+
+        coVerify(exactly = 0) { photoApi.moveToMain(any()) }
+    }
+
+    @Test
     fun `addSelectionToAlbum adds photos without reloading the page`() = runTest {
         val photos = listOf(testPhoto("1"), testPhoto("2"))
         val viewModel = viewModelWith(photos)

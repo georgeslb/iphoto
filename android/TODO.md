@@ -1,5 +1,50 @@
 # Android TODO
 
+## "Move to Main Space" for a synced Space, tracked so it isn't re-imported — 2026-09-13
+
+Follow-up to "exclude/include from sync" below: "when connecting to a space different from main
+space, user can move some assets to main space. In this case they should not be imported a second
+time from device. [...] keep a list of excluded assets and a list of moved to main assets. Both
+should not be synchronized again."
+
+There was no "Move to Main Space" action anywhere in the Android app yet (the backend endpoint,
+`POST /api/photos/main`, already existed and is used by the web frontend - see specification.md -
+just never wired up on mobile). Added it, plus the sync-side bookkeeping the request specifically
+called out:
+
+- `PhotoApi.moveToMain` (new retrofit call).
+- `PagedPhotoGridViewModel.moveSelectionToMain` + a new `canMoveToMain` flag (parallel to
+  `albumId`/`canExcludeFromSync`) so `PhotoGridContent`/`SelectionActionBar` only offer the button
+  (home icon) inside a Space - never Library or an Album, where "move to Main" is either already
+  true or meaningless. Unlike exclude, this button isn't conditional on the Space being synced -
+  "move to Main" is a general Space feature, not a sync one (see specification.md).
+- `SyncPrefs`: the existing `ExcludedAsset` data class is now `TrackedAsset` (used by both lists) -
+  added a second `movedToMainAssets`/`movedToMainHashes`/`markMovedToMain` set alongside the
+  existing excluded one, same hand-rolled ``-delimited encoding, same reasoning: kept
+  *separate* from the excluded list (as asked) since they're conceptually different actions even
+  though `SyncRepository.computeDiff` treats both identically.
+- `SyncRepository.computeDiff`'s third parameter is renamed `excludedHashes` -> `skipHashes` (still
+  defaults to empty, still just "don't touch this hash's local file's upload/restore treatment") -
+  callers now pass `syncPrefs.excludedHashes + syncPrefs.movedToMainHashes`, the union of both
+  lists. Without this, a photo moved to Main Space is indistinguishable from a genuinely new local
+  file on the next sync pass (it's in neither the Space's active list nor its garbage list anymore -
+  it just belongs to a different Space now) - computeDiff would queue it right back up for upload
+  and duplicate it.
+- Only set for a synced Space, exactly like the exclude bookkeeping: `SpaceDetailScreen`'s
+  `onPhotosMovedToMain` callback (`canMoveToMain` itself stays true regardless, per above).
+- No "undo"/browse UI for the moved-to-main list this time, unlike excluded assets - the photo
+  isn't hidden in garbage, it's sitting right there in Library (Main Space) same as always, so
+  there's somewhere to find it already. If a "move back out of Main" feature ever gets built, this
+  list is what it'd need to also clear via a new `SyncPrefs` method (there isn't one yet - only
+  `markMovedToMain` adds to it).
+
+**Verified for real**, same approach as the section below: recompiled and ran `SyncPrefsTest` (6
+new tests, 14 total), `SyncRepositoryTest` (1 new test - a moved-to-main hash is never re-uploaded -
+19 total), and `PagedPhotoGridViewModelTest` (5 new tests - `canMoveToMain`, `moveSelectionToMain`
+with/without a callback set, its error and no-op paths - 30 total), against the same real
+dependency jars. All passed. `SpaceDetailScreen`/`SelectionActionBar`/`PhotoGridContent`'s actual
+Compose rendering (the new button) is reviewed by hand only, same Compose-UI caveat as always.
+
 ## Main Space sync, exclude/include from sync, and "Remember me" — 2026-09-13
 
 Three separate asks in one request: "user can't sync main space", "user can exclude/include some

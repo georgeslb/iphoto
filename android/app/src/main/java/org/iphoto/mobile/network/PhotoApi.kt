@@ -68,6 +68,9 @@ interface PhotoApi {
     @POST("api/photos/garbage")
     suspend fun moveToGarbage(@Body ids: List<String>)
 
+    @POST("api/photos/main")
+    suspend fun moveToMain(@Body ids: List<String>)
+
     @POST("api/photos/garbage/restore")
     suspend fun restoreFromGarbage(@Body ids: List<String>)
 

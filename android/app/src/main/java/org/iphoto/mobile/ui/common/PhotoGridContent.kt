@@ -147,6 +147,9 @@ fun PhotoGridContent(
                 } else null,
                 onExcludeFromSync = if (viewModel.canExcludeFromSync) {
                     { viewModel.excludeSelectionFromSync(container.photoApi) }
+                } else null,
+                onMoveToMain = if (viewModel.canMoveToMain) {
+                    { viewModel.moveSelectionToMain(container.photoApi) }
                 } else null
             )
         }

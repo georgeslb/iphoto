@@ -54,7 +54,18 @@ class PagedPhotoGridViewModel(
     // SyncPrefs.excludedAssets) so a later sync leaves its still-present local file alone, rather
     // than mirroring the removal onto the phone the way onPhotosMovedToGarbage does. Exposed via
     // canExcludeFromSync so PhotoGridContent only offers the action where it's meaningful.
-    private val onPhotosExcludedFromSync: (suspend (List<Photo>) -> Unit)? = null
+    private val onPhotosExcludedFromSync: (suspend (List<Photo>) -> Unit)? = null,
+    // Set only by SpaceDetailScreen (any Space, synced or not - "move to Main Space" is a general
+    // Space feature, see specification.md) so PhotoGridContent offers the action there and nowhere
+    // else (moving a Library/Album photo to Main is meaningless - it's either already there, or, for
+    // an album, only ever references a Main Space photo to begin with).
+    val canMoveToMain: Boolean = false,
+    // Only set (in addition to canMoveToMain) for the currently synced Space - records each moved
+    // photo's hash (see SyncPrefs.movedToMainAssets) for the same reason onPhotosExcludedFromSync
+    // does: without it, the next sync pass would see the still-present local file, find its hash no
+    // longer active in *this* Space, and re-upload it as if new - duplicating a photo that now just
+    // lives in Main instead.
+    private val onPhotosMovedToMain: (suspend (List<Photo>) -> Unit)? = null
 ) : ViewModel() {
 
     val canExcludeFromSync: Boolean get() = onPhotosExcludedFromSync != null
@@ -174,6 +185,36 @@ class PagedPhotoGridViewModel(
         }
     }
 
+    // Moves the selection to the Main Space (Albums hold references to Main Space photos, Spaces
+    // own them - this actually transfers ownership, unlike addSelectionToAlbum below). The photos
+    // leave this Space entirely, so this reloads the same way moveSelectionToGarbage does.
+    fun moveSelectionToMain(photoApi: PhotoApi) {
+        val ids = _uiState.value.selectedIds.toList()
+        if (ids.isEmpty()) return
+        val selectedPhotos = _uiState.value.photos.filter { it.id in _uiState.value.selectedIds }
+        _uiState.value = _uiState.value.copy(isMutating = true, actionError = null)
+        viewModelScope.launch {
+            try {
+                photoApi.moveToMain(ids)
+                // Best-effort, same reasoning as moveSelectionToGarbage's mirror: if this throws,
+                // the photo is still moved server-side, and the next sync pass would just re-upload
+                // the local file once more before settling - not silent data loss, just a wasted
+                // upload.
+                try {
+                    onPhotosMovedToMain?.invoke(selectedPhotos)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to record move-to-Main for the synced folder", e)
+                }
+                loadFirstPage()
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isMutating = false,
+                    actionError = e.message ?: "Failed to move to Main Space"
+                )
+            }
+        }
+    }
+
     // Adding to an album only creates references (Albums hold references to Main Space photos,
     // they don't own them) - the photos stay exactly where they are in Library/Space, so no
     // reload is needed here, just clearing the selection.
@@ -267,9 +308,18 @@ class PagedPhotoGridViewModelFactory(
     private val loadPage: suspend (page: Int, size: Int) -> Pair<List<Photo>, Boolean>,
     private val albumId: String? = null,
     private val onPhotosMovedToGarbage: (suspend (List<Photo>) -> Unit)? = null,
-    private val onPhotosExcludedFromSync: (suspend (List<Photo>) -> Unit)? = null
+    private val onPhotosExcludedFromSync: (suspend (List<Photo>) -> Unit)? = null,
+    private val canMoveToMain: Boolean = false,
+    private val onPhotosMovedToMain: (suspend (List<Photo>) -> Unit)? = null
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T =
-        PagedPhotoGridViewModel(loadPage, albumId, onPhotosMovedToGarbage, onPhotosExcludedFromSync) as T
+        PagedPhotoGridViewModel(
+            loadPage,
+            albumId,
+            onPhotosMovedToGarbage,
+            onPhotosExcludedFromSync,
+            canMoveToMain,
+            onPhotosMovedToMain
+        ) as T
 }

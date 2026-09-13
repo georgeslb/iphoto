@@ -153,7 +153,7 @@ class SyncRepositoryTest {
         val excluded = testAsset("hash-excluded")
         every { LocalFolderScanner.scan(context, folderUri) } returns listOf(excluded)
 
-        val diff = repository.computeDiff(SPACE_ID, folderUri, excludedHashes = setOf("hash-excluded"))
+        val diff = repository.computeDiff(SPACE_ID, folderUri, skipHashes = setOf("hash-excluded"))
 
         assertTrue("an excluded local file should never be queued for upload", diff.toUpload.isEmpty())
     }
@@ -166,7 +166,7 @@ class SyncRepositoryTest {
         coEvery { photoApi.listGarbageForSpace(SPACE_ID, 0, any()) } returns
             onePage(listOf(testPhoto("garbage-1", fileHash = "hash-excluded")))
 
-        val diff = repository.computeDiff(SPACE_ID, folderUri, excludedHashes = setOf("hash-excluded"))
+        val diff = repository.computeDiff(SPACE_ID, folderUri, skipHashes = setOf("hash-excluded"))
 
         assertTrue("excluding a photo should stick across sync passes, not auto-restore it", diff.toRestore.isEmpty())
         assertTrue(diff.toUpload.isEmpty())
@@ -179,9 +179,25 @@ class SyncRepositoryTest {
         val normal = testAsset("hash-normal")
         every { LocalFolderScanner.scan(context, folderUri) } returns listOf(excluded, normal)
 
-        val diff = repository.computeDiff(SPACE_ID, folderUri, excludedHashes = setOf("hash-excluded"))
+        val diff = repository.computeDiff(SPACE_ID, folderUri, skipHashes = setOf("hash-excluded"))
 
         assertEquals(listOf(normal), diff.toUpload)
+    }
+
+    @Test
+    fun `a hash moved to Main Space is never re-uploaded even though the file is still present`() = runTest {
+        // Unlike an excluded photo, a photo moved to Main Space shows up in neither this Space's
+        // active list nor its garbage list - it's simply owned by a different Space now. Without
+        // skipHashes, that "hash not in remoteHashes" is indistinguishable from a genuinely new
+        // local file, so computeDiff would queue it for upload and duplicate a photo that already
+        // exists (just under Main now) - exactly the bug SyncPrefs.movedToMainHashes exists to avoid.
+        stubEmptySpace()
+        val movedToMain = testAsset("hash-moved")
+        every { LocalFolderScanner.scan(context, folderUri) } returns listOf(movedToMain)
+
+        val diff = repository.computeDiff(SPACE_ID, folderUri, skipHashes = setOf("hash-moved"))
+
+        assertTrue("a photo moved to Main Space should never be re-uploaded to its old Space", diff.toUpload.isEmpty())
     }
 
     @Test

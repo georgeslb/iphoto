@@ -8,6 +8,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Event
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.PhotoAlbum
 import androidx.compose.material.icons.filled.PlaylistRemove
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -40,6 +41,8 @@ fun SelectionActionBar(
     // Only shown inside the Space currently synced to a device folder - see
     // PagedPhotoGridViewModel.canExcludeFromSync.
     onExcludeFromSync: (() -> Unit)? = null,
+    // Only shown inside any Space (synced or not) - see PagedPhotoGridViewModel.canMoveToMain.
+    onMoveToMain: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     Surface(modifier = modifier.fillMaxWidth(), tonalElevation = 3.dp) {
@@ -69,6 +72,11 @@ fun SelectionActionBar(
                 if (onExcludeFromSync != null) {
                     IconButton(onClick = onExcludeFromSync, enabled = enabled) {
                         Icon(Icons.Filled.VisibilityOff, contentDescription = "Exclude from sync")
+                    }
+                }
+                if (onMoveToMain != null) {
+                    IconButton(onClick = onMoveToMain, enabled = enabled) {
+                        Icon(Icons.Filled.Home, contentDescription = "Move to Main Space")
                     }
                 }
                 IconButton(onClick = onMoveToGarbage, enabled = enabled) {
