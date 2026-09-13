@@ -77,14 +77,10 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:5.1.0")
     implementation("com.squareup.okhttp3:logging-interceptor:5.1.0")
 
-    // Still on security-crypto: all its APIs (EncryptedSharedPreferences, MasterKey) were
-    // deprecated in favor of using Android Keystore directly, but the library itself still
-    // works - see TokenStore.kt. Worth a real migration later; not a version-bump-sized change.
-    implementation("androidx.security:security-crypto:1.1.0")
-
-    // On-device folder sync: WorkManager runs the actual upload/garbage job in the background
-    // (only ever enqueued by a user tapping "Sync now", never on a schedule), DocumentFile walks
-    // the SAF-picked folder tree. work-runtime-ktx is genuinely empty as of 2.9.0+ - confirmed
+    // On-device folder sync: WorkManager runs the actual upload/garbage job in the background,
+    // either a one-off from a user tapping "Sync now" or periodically once they opt into
+    // automatic sync (see SyncWorker/SyncPrefs.autoSyncEnabled); DocumentFile walks the SAF-picked
+    // folder tree. work-runtime-ktx is genuinely empty as of 2.9.0+ - confirmed
     // against the androidx source tree - its Kotlin APIs (CoroutineWorker,
     // getWorkInfosForUniqueWorkFlow, etc.) live directly in work-runtime now.
     implementation("androidx.work:work-runtime:2.11.2")

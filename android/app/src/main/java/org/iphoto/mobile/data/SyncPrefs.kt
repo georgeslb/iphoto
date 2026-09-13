@@ -4,7 +4,7 @@ import android.content.Context
 
 /**
  * Sync target selection (which Space mirrors which on-device folder) and last-run bookkeeping.
- * Plain SharedPreferences, not TokenStore's EncryptedSharedPreferences - none of this is
+ * Plain SharedPreferences, not TokenStore's KeystoreEncryptedPreferences - none of this is
  * sensitive (a space id, a SAF folder URI, a timestamp).
  */
 class SyncPrefs(context: Context) {

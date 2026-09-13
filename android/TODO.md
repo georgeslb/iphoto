@@ -56,11 +56,32 @@ Tracking work left over from the AGP 9 / Kotlin 2.4 / Gradle 9 / Compose BOM 202
 (Sept 2026). The upgrade got the project building again, but these are known gaps, not just
 version bumps:
 
-- [ ] **Migrate off `androidx.security:security-crypto`** (`data/TokenStore.kt`). All of its APIs
-      (`EncryptedSharedPreferences`, `MasterKey`) were deprecated upstream in favor of using the
-      Android Keystore directly - the library still works on the current stable 1.1.0, but won't
-      see further updates. This is a real rewrite of how the server URL/device token/token id are
-      persisted, not a dependency-version change - do it as its own task.
+- [x] **Migrate off `androidx.security:security-crypto`** (`data/TokenStore.kt`) - done, 2026-09-13.
+      Replaced `EncryptedSharedPreferences`/`MasterKey` with a hand-rolled
+      `KeystoreEncryptedPreferences` (a `SharedPreferences` decorator: AES-256-GCM key generated
+      in/retained by `AndroidKeyStore`, only values encrypted, not key names - see its kdoc for why
+      that's an acceptable trade for TokenStore's own non-secret key names). The actual
+      encrypt/decrypt framing (IV handling, Base64, GCM tag) is split into its own object,
+      `GcmCipherCodec`, specifically so it can be unit-tested against a plain in-memory `SecretKey`
+      (`GcmCipherCodecTest` - round-trip, wrong-key, and tampered-ciphertext cases) without needing
+      a real Android Keystore. `TokenStore` itself didn't change its public shape - it already
+      gained an `internal` `SharedPreferences`-taking constructor before this migration
+      specifically so `TokenStoreTest` (written first, against a hand-rolled `FakeSharedPreferences`
+      double) could pin down its get/set/clear contract independent of whatever backs `prefs`; that
+      same test suite passed unchanged after the swap, which is what actually gives confidence
+      nothing broke. No data-migration path for values written under the old scheme - they simply
+      fail to decrypt and behave like "nothing stored" (`KeystoreEncryptedPreferences#getString`
+      catches and falls back), which for TokenStore just means logging in again; reasonable for a
+      pre-release app, called out explicitly in case it ever isn't.
+      **Verified without an Android SDK/emulator in this session**: no device/emulator was
+      available, so this was checked by compiling+running `GcmCipherCodecTest` and `TokenStoreTest`
+      standalone against a real `kotlinc` (2.4.20) and a real `android.jar` (pulled from
+      `org.robolectric:android-all` on Maven Central, for genuine `SharedPreferences` interface
+      signatures rather than hand-typed guesses) - all 11 tests passed for real, not just "looks
+      right on review". What's still unverified: `KeystoreEncryptedPreferences.getOrCreateKey()`
+      itself (needs a real `AndroidKeyStore` provider - doesn't exist outside a real device/
+      emulator/Robolectric, so this one piece stays a manual-review-only change) and the app
+      actually building via Gradle/AGP (no SDK here either - same gap as the rest of this file).
 - [x] `androidx.work` artifact resolved: pinned to plain `work-runtime:2.11.2` (not `-ktx`) -
       confirmed by extracting the actual cached AARs (`~/.gradle/caches/.../androidx.work/`):
       `work-runtime-ktx:2.11.2`'s classes.jar is genuinely empty (version marker only, zero
@@ -83,10 +104,21 @@ version bumps:
 - [ ] Spot-check the Coil 2 -> 3 migration (`AppContainer.kt`, `PhotoThumbnail.kt`,
       `PhotoDetailScreen.kt`) against a running app - thumbnails and full-size photos should still
       authenticate via the shared `OkHttpClient` through `OkHttpNetworkFetcherFactory`.
-- [ ] Double check exact dependency versions actually resolved during sync (`compose-bom`,
-      `navigation-compose`, `retrofit`, `okhttp`, `coil3`, `androidx.work`) against what's pinned
-      in `app/build.gradle.kts` - several were pinned from web lookups during the upgrade rather
-      than verified against a live Gradle sync at the time they were written.
+- [x] Double check exact dependency versions - partially done, 2026-09-13, still no live Gradle
+      sync (no SDK in this container either). Verified existence directly against each repo's real
+      `maven-metadata.xml`/POM instead: everything hosted on Maven Central (`retrofit`/
+      `converter-gson` 3.0.0, `okhttp`/`logging-interceptor` 5.1.0, `junit` 4.13.2,
+      `kotlinx-coroutines-test` 1.10.2, `mockk` 1.14.11, `kotlin-gradle-plugin` 2.4.20,
+      `io.coil-kt.coil3:coil-compose`/`coil-network-okhttp` 3.6.2) resolves exactly as pinned - all
+      real, resolvable releases, not typos. Two have newer releases available (informational only,
+      not broken): `okhttp` 5.1.0 pinned vs 5.5.0 latest, `kotlinx-coroutines-test` 1.10.2 pinned vs
+      1.11.0 latest. **Could not check the Google-Maven-hosted half** (`compose-bom`,
+      `activity-compose`, `lifecycle-runtime-ktx`/`lifecycle-viewmodel-compose`,
+      `navigation-compose`, `androidx.work`, `androidx.documentfile`, AGP itself) - this session's
+      egress proxy blocks `dl.google.com`/`maven.google.com` outright (org policy, confirmed via
+      `curl`), which is also where Android Studio's own Gradle sync would need to reach. Needs
+      either a real Gradle sync (as originally planned) or running from a network that can reach
+      Google's Maven repo.
 
 ## Multi-select (garbage / album / date) - 2026-09-13
 
