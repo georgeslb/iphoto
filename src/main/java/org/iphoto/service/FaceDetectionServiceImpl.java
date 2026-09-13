@@ -29,7 +29,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.file.Paths;
@@ -49,6 +51,7 @@ public class FaceDetectionServiceImpl implements FaceDetectionService {
     private final ZooModel<Image, float[]> embeddingModel;
     private final PersonRepository personRepository;
     private final PersonRecognitionService personRecognitionService;
+    private final FaceThumbnailStorageService faceThumbnailStorageService;
 
     // Hard floor (post-padding, see padX/padY below): below this, there just isn't enough source
     // resolution left for the embedding model to produce anything usable. RetinaFace's smallest
@@ -106,6 +109,7 @@ public class FaceDetectionServiceImpl implements FaceDetectionService {
                 personRecognitionService.recalculateCoverFace(personEntity);
                 personRepository.save(personEntity);
             });
+            faceThumbnailStorageService.delete(faceEntity.getThumbnailPath());
         });
         faceRepository.deleteByPhoto(photo);
 
@@ -215,11 +219,12 @@ public class FaceDetectionServiceImpl implements FaceDetectionService {
                         byte[] embeddingBytes = EmbeddingCodec.toBytes(embedding);
 
                         byte[] thumbnailBytes = generateFaceThumbnail((BufferedImage) subImage.getWrappedImage());
+                        String thumbnailPath = faceThumbnailStorageService.save(thumbnailBytes, photo.getDateTaken());
 
                         FaceEntity faceEntity =
                                 FaceEntity.builder().width(w).height(h).x(x).y(y).photo(photo).build();
                         faceEntity.setEmbedding(embeddingBytes);
-                        faceEntity.setFaceThumbnail(thumbnailBytes);
+                        faceEntity.setThumbnailPath(thumbnailPath);
 
                         faceRepository.save(faceEntity);
                     } catch (Exception e) {
@@ -250,6 +255,19 @@ public class FaceDetectionServiceImpl implements FaceDetectionService {
                 .outputFormat("jpg")
                 .toOutputStream(baos);
         return baos.toByteArray();
+    }
+
+    // Used by FaceThumbnailMigrationService to backfill pre-existing faces.face_thumbnail blobs
+    // onto disk - decodes whatever was previously stored (some rows predate the fix above and are
+    // still full-resolution PNGs) and re-runs it through the same size/JPEG pipeline, rather than
+    // just relocating the existing bytes as-is, so a backfilled row ends up the same
+    // small/compressed shape a freshly detected face gets.
+    static byte[] regenerateFaceThumbnail(byte[] sourceBytes) throws IOException {
+        BufferedImage image = ImageIO.read(new ByteArrayInputStream(sourceBytes));
+        if (image == null) {
+            throw new IOException("Unreadable face thumbnail source image");
+        }
+        return generateFaceThumbnail(image);
     }
 
 }

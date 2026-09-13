@@ -1,5 +1,6 @@
 package org.iphoto.service;
 
+import org.iphoto.model.FaceThumbnailMigrationSummaryDTO;
 import org.iphoto.model.StorageMigrationSummaryDTO;
 import org.iphoto.model.TaskAdminDTO;
 import org.iphoto.model.TaskStatus;
@@ -21,6 +22,10 @@ public interface AdminService {
 
     // Optional, admin-triggered backfill - see StorageMigrationService for why this isn't automatic.
     StorageMigrationSummaryDTO migrateFlatFilesToOrganizedStorage();
+
+    // Optional, admin-triggered backfill - see FaceThumbnailMigrationService for why this isn't
+    // automatic.
+    FaceThumbnailMigrationSummaryDTO migrateFaceThumbnailsToFilesystem();
 
     void updateImageTaskToDo();
 

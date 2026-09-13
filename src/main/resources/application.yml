@@ -28,6 +28,16 @@ spring:
         dialect: org.hibernate.dialect.PostgreSQLDialect
       jdbc:
         batch_size: 30
+      # Batches lazy-proxy/collection initialization into WHERE id IN (...) chunks instead of one
+      # query per item - fixes the N+1 pattern PersonRecognitionServiceImpl.recalculateCoverFace
+      # (called from every face detach/delete path) hits every time it walks a person's
+      # `faces` collection and dereferences each face's lazy `photo` @ManyToOne: invisible with a
+      # handful of faces, but a real production-only, data-size-scaling slowdown for a heavily-
+      # photographed person with thousands of faces across thousands of distinct photos (see
+      # TODO.md's "detaching a face from a person is slow in production" entry). Global rather than
+      # a per-association @BatchSize so it also covers any other lazy N+1 of the same shape
+      # elsewhere in the app.
+      default_batch_fetch_size: 30
 
   servlet:
     multipart:
@@ -71,6 +81,7 @@ iphoto:
     base: /home/georges/data/iphoto/storage
     photos: ${iphoto.storage.base}/originals
     thumbnails: ${iphoto.storage.base}/thumbnails
+    face-thumbnails: ${iphoto.storage.base}/face-thumbnails
     temp: ${iphoto.storage.base}/temp
     chunks: ${iphoto.storage.base}/chunks
     immich-temp: ${iphoto.storage.base}/immich-temp

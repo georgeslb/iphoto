@@ -10,6 +10,18 @@ and a compressed record of how we got here, not a second copy of the spec.
 ## 1. Open / Not Yet Done
 
 ### Bugs
+- **Bulk face deletion (`FaceRepository.deleteByPhoto`, `PersonRepository`'s "detach all from
+  persons" admin action) doesn't clean up on-disk thumbnail files** — only the single-face paths
+  (`FaceServiceImpl.deleteFace`, `FaceDetectionServiceImpl.deleteFaces`, which loops face-by-face
+  anyway) delete the file via `FaceThumbnailStorageService.delete`. A whole-photo re-detect run
+  does go through `deleteFaces`' loop so it's covered; anything that bulk-deletes `FaceEntity` rows
+  without going through that loop would leak orphaned thumbnail files on disk. Not currently a
+  correctness bug (just wasted disk space over time), not fixed here.
+- **`faces.face_thumbnail` (legacy BYTEA blob) column not yet dropped** — kept intentionally until
+  `POST /api/admin/storage/migrate-face-thumbnails` has been run in production and confirmed to
+  have migrated every row (see §4.3/§5.7 of `specification.md`). Drop it in a follow-up migration
+  once that's verified, not before — deploying a migration that drops it before the backfill has
+  actually run in production would lose any not-yet-migrated thumbnail permanently.
 - **Merging persons from the merge-suggestion review flow still not working** (reported
   2026-09-11). `PersonMergeSuggestionBanner.jsx`/`PersonMergeSuggestionModal.jsx`'s Merge button is
   supposed to reuse the existing `/persons/merge` two-person flow unchanged (see "Persons & faces"
@@ -407,6 +419,36 @@ matters again; `specification.md` is the source of truth for current behavior.
     levers stay (1) bounding the algorithm itself (the batch-prefetch fix above) and (2) fast
     detection via this health indicator; true per-task kill-ability would need running heavy tasks
     in an isolated child process, a bigger change not attempted here.
+
+- **Face thumbnail storage moved from a DB `BYTEA` blob to a file on disk** (reported 2026-09-13:
+  base64-inlining `faces.face_thumbnail` into every `FaceDTO` made the Persons grid/Lightbox/merge-
+  suggestion responses slow to build and slow to load, and — the actual root cause of a separately
+  reported "detaching a face from a person is slow in production, scales with data size" complaint
+  — just touching `PersonEntity.faces` (a plain lazy `@OneToMany`, no batch-fetch) during any
+  detach/delete/merge path pulled every one of a person's full thumbnail blobs into memory, plus an
+  N+1 on each face's lazy `photo` association inside `recalculateCoverFace`'s `getLastFaceForPerson`
+  loop — invisible with a handful of faces, brutal for a heavily-photographed person with thousands).
+  Fixed: `FaceEntity.thumbnailPath` (new, migration `V8__add_faces_thumbnail_path.sql`) + new
+  `FaceThumbnailStorageService`/`FaceStoragePathResolver`-style file storage under
+  `iphoto.storage.faceThumbnails/{year}/{month}/`, same convention `PhotoStoragePathResolver`
+  already uses; `FaceDetectionServiceImpl` writes straight to disk instead of the blob column;
+  `FaceDTO.image` is now a URL (`GET /api/faces/{id}/thumbnail`, `FaceController`) instead of a
+  `data:image/jpeg;base64,...` string, so `FaceServiceImpl#mapToDTO` no longer touches the blob at
+  all; `hibernate.default_batch_fetch_size: 30` added (`application.yml`) to batch away the N+1 on
+  every lazy-loaded association app-wide, not just this one path. `faces.face_thumbnail` is kept
+  (not dropped) for backward compatibility — `FaceController#getThumbnail` falls back to it for any
+  row not yet migrated, and the new admin-triggered, idempotent
+  `POST /api/admin/storage/migrate-face-thumbnails` (`FaceThumbnailMigrationService`, same
+  page-at-0-until-empty pattern as `StorageMigrationServiceImpl`, deliberately no surrounding
+  `@Transactional` — see that class's own comment on why, given the 2026-09-12 incident below)
+  backfills existing rows, re-cropping/recompressing each one through
+  `FaceDetectionServiceImpl.regenerateFaceThumbnail` along the way — this also closes the
+  previously-open "existing oversized legacy PNG thumbnails never got reprocessed" gap noted below,
+  since a backfilled row is regenerated regardless of its original format/size. Also fixed in
+  passing: `FaceServiceImpl.findById(user, id)` used to silently ignore its `user` parameter
+  (dead code until this change wired it into the new thumbnail endpoint) — now actually scopes to
+  the caller's own faces, same ownership check `assertFaceOwnedBy` already uses elsewhere in the
+  same class. See `specification.md` §4.3/§5.6/§5.7 for the current design.
 
 ### Sharing
 - Full design in `specification.md` §4.4. Originally broken end-to-end (wrong URI parsing, guest

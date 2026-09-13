@@ -71,6 +71,8 @@ class FaceServiceTest extends AbstractIntegrationTest {
     private PersonMergeSuggestionRepository personMergeSuggestionRepository;
     @Autowired
     private FaceLinkExclusionRepository faceLinkExclusionRepository;
+    @Autowired
+    private FaceThumbnailStorageService faceThumbnailStorageService;
 
     // A fresh regular user, with its own private MAIN space (userService.createUser creates one) -
     // brand new, so its people/faces are fully isolated from every other test class's leftovers in
@@ -143,6 +145,107 @@ class FaceServiceTest extends AbstractIntegrationTest {
         mockMvc.perform(delete("/api/faces/{id}", face.getId()).session(session))
                 .andExpect(status().isNoContent());
         assertThat(faceRepository.findById(face.getId())).isEmpty();
+    }
+
+    @Test
+    void faceWithAThumbnailPathExposesAThumbnailUrlThatServesItsFileFromDisk() throws Exception {
+        UserEntity user = newUser();
+        MockHttpSession session = sessionFor(user);
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
+        PhotoEntity photo = savePhoto(space, user);
+        FaceEntity face = saveFace(photo);
+        byte[] thumbnailBytes = generateTestJpeg();
+        face.setThumbnailPath(faceThumbnailStorageService.save(thumbnailBytes, photo.getDateTaken()));
+        faceRepository.save(face);
+
+        MvcResult listResult = mockMvc.perform(get("/api/faces/photo/{id}", photo.getId()).session(session))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode faceJson = objectMapper.readTree(listResult.getResponse().getContentAsString()).get(0);
+        assertThat(faceJson.get("image").asText()).isEqualTo("/api/faces/" + face.getId() + "/thumbnail");
+
+        MvcResult thumbnailResult = mockMvc.perform(get(faceJson.get("image").asText()).session(session))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(thumbnailResult.getResponse().getContentAsByteArray()).isEqualTo(thumbnailBytes);
+    }
+
+    // A face row saved before thumbnails moved to disk (only the legacy faceThumbnail blob set, no
+    // thumbnailPath yet) must keep working through the same endpoint until
+    // FaceThumbnailMigrationService backfills it.
+    @Test
+    void faceWithOnlyTheLegacyBlobStillExposesAWorkingThumbnailUrl() throws Exception {
+        UserEntity user = newUser();
+        MockHttpSession session = sessionFor(user);
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
+        PhotoEntity photo = savePhoto(space, user);
+        byte[] thumbnailBytes = generateTestJpeg();
+        FaceEntity face = faceRepository.save(FaceEntity.builder()
+                .photo(photo).x(1).y(1).width(50).height(50)
+                .embedding(EmbeddingCodec.toBytes(new float[]{0.1f, 0.2f}))
+                .faceThumbnail(thumbnailBytes)
+                .build());
+
+        MvcResult thumbnailResult = mockMvc.perform(get("/api/faces/{id}/thumbnail", face.getId()).session(session))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(thumbnailResult.getResponse().getContentAsByteArray()).isEqualTo(thumbnailBytes);
+    }
+
+    @Test
+    void faceWithNoThumbnailAtAllHasANullImageAndA404Thumbnail() throws Exception {
+        UserEntity user = newUser();
+        MockHttpSession session = sessionFor(user);
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
+        PhotoEntity photo = savePhoto(space, user);
+        FaceEntity face = saveFace(photo);
+
+        MvcResult listResult = mockMvc.perform(get("/api/faces/photo/{id}", photo.getId()).session(session))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode faceJson = objectMapper.readTree(listResult.getResponse().getContentAsString()).get(0);
+        assertThat(faceJson.get("image").isNull()).isTrue();
+
+        mockMvc.perform(get("/api/faces/{id}/thumbnail", face.getId()).session(session))
+                .andExpect(status().isNotFound());
+    }
+
+    // Ownership check (FaceServiceImpl#findById) - a caller can't fetch another user's face
+    // thumbnail by guessing its id.
+    @Test
+    void anotherUsersFaceThumbnailIsNotFound() throws Exception {
+        UserEntity owner = newUser();
+        SpaceEntity ownerSpace = spaceRepository.findByTypeEqualsMainAndUser(owner);
+        PhotoEntity photo = savePhoto(ownerSpace, owner);
+        FaceEntity face = saveFace(photo);
+        face.setThumbnailPath(faceThumbnailStorageService.save(generateTestJpeg(), photo.getDateTaken()));
+        faceRepository.save(face);
+
+        UserEntity intruder = newUser();
+        MockHttpSession intruderSession = sessionFor(intruder);
+
+        mockMvc.perform(get("/api/faces/{id}/thumbnail", face.getId()).session(intruderSession))
+                .andExpect(status().isNotFound());
+    }
+
+    // deleteFace must clean up the on-disk thumbnail file too, not just the DB row - otherwise
+    // every deleted face leaks its thumbnail file forever.
+    @Test
+    void deletingAFaceAlsoDeletesItsOnDiskThumbnailFile() throws Exception {
+        UserEntity user = newUser();
+        MockHttpSession session = sessionFor(user);
+        SpaceEntity space = spaceRepository.findByTypeEqualsMainAndUser(user);
+        PhotoEntity photo = savePhoto(space, user);
+        FaceEntity face = saveFace(photo);
+        String thumbnailPath = faceThumbnailStorageService.save(generateTestJpeg(), photo.getDateTaken());
+        face.setThumbnailPath(thumbnailPath);
+        faceRepository.save(face);
+        assertThat(java.nio.file.Files.exists(java.nio.file.Path.of(thumbnailPath))).isTrue();
+
+        mockMvc.perform(delete("/api/faces/{id}", face.getId()).session(session))
+                .andExpect(status().isNoContent());
+
+        assertThat(java.nio.file.Files.exists(java.nio.file.Path.of(thumbnailPath))).isFalse();
     }
 
     @Test

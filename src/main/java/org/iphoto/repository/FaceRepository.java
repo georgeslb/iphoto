@@ -69,4 +69,11 @@ public interface FaceRepository extends JpaRepository<FaceEntity, UUID> {
     @Modifying(clearAutomatically = true)
     @Query("UPDATE FaceEntity f SET f.person = null, f.status = :status")
     int detachAllFromPersonsAndResetStatus(@Param("status") FaceStatus status);
+
+    // FaceThumbnailMigrationService's backfill target - any row still holding the legacy DB-blob
+    // thumbnail that hasn't yet been written to disk. JOIN FETCH photo since the migration needs
+    // each face's photo.dateTaken to resolve the on-disk {year}/{month} folder, same reasoning as
+    // findByPersonIsNullAndSpaceIdFetchPhoto above.
+    @Query("SELECT f FROM FaceEntity f JOIN FETCH f.photo WHERE f.faceThumbnail IS NOT NULL AND f.thumbnailPath IS NULL")
+    Slice<FaceEntity> findByFaceThumbnailIsNotNullAndThumbnailPathIsNullFetchPhoto(Pageable pageable);
 }
