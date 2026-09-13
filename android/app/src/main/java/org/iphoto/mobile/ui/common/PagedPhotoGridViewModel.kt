@@ -86,7 +86,8 @@ class PagedPhotoGridViewModel(
                 _uiState.value = _uiState.value.copy(
                     photos = _uiState.value.photos + photos,
                     isLoadingMore = false,
-                    endReached = last
+                    endReached = last,
+                    error = null
                 )
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(isLoadingMore = false, error = e.message)

@@ -308,6 +308,29 @@ unavailable dependency) - all 11 tests passed for real. The actual production `A
 follow the exact same `MutableStateFlow` + `viewModelScope.launch { try/catch }` shape already
 proven out by `AuthViewModel`/`PhotoDetailViewModel` elsewhere in this same module.
 
+`PagedPhotoGridViewModel.loadMore` edge cases added later still - `loadFirstPage` already had
+coverage, `loadMore` had none. Covers: appends the next page and advances the page counter/
+`endReached`; a no-op once `endReached`; a no-op while the first page is still loading
+(`isLoading`) or while another `loadMore` is already in flight (`isLoadingMore`) - both exercised
+by suspending the fake `loadPage` on a manually-completed `CompletableDeferred` so the guard can
+actually be observed mid-flight, rather than racing a dispatcher that runs coroutines eagerly; a
+failure preserves the existing photos/`endReached` and doesn't advance the page (so a retry
+re-requests the *same* page, not the next one); and a successful retry after a failure.
+
+**Found and fixed a real bug via that last test**: `loadMore`'s success branch built its new state
+with `.copy(...)` and never touched `error`, unlike `loadFirstPage`, which always constructs a
+fresh `PagedPhotosUiState()` (so `error` defaults back to null every time). That meant a failed
+`loadMore` followed by a *successful* retry left the old error message sitting in state forever -
+harmless today only because `PhotoGridContent` only ever renders `state.error` when
+`state.photos.isEmpty()`, which is never true right after a successful `loadMore` appended more.
+Added `error = null` to the success branch's `copy(...)` so a successful retry actually clears it,
+matching every other action in this class.
+
 Still not covered: `SyncViewModel` itself (see the "SyncRepository test coverage" entry above -
-`SyncRepository` now has real coverage, `SyncViewModel`'s WorkManager plumbing doesn't yet),
-`PagedPhotoGridViewModel`'s `loadMore` pagination edge cases beyond the basics tested so far.
+`SyncRepository` now has real coverage, `SyncViewModel`'s WorkManager plumbing doesn't yet).
+
+**Verified for real**, same stand-in approach as `AlbumsViewModel`/`SpacesViewModel` above (`androidx.lifecycle`
+unreachable here): compiled and ran the real, unmodified `PagedPhotoGridViewModelTest` (all 21 tests,
+old and new) against the real `AlbumApi`/`PhotoApi`/`Photo`/etc., substituting only
+`PagedPhotoGridViewModel` with a `CoroutineScope(Dispatchers.Main)` stand-in - all passed, including
+after the `error = null` fix above.

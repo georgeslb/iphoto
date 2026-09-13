@@ -3,6 +3,7 @@ package org.iphoto.mobile.ui.common
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.runTest
 import org.iphoto.mobile.model.AlbumDTO
 import org.iphoto.mobile.model.AlbumPhotoRequest
@@ -54,6 +55,134 @@ class PagedPhotoGridViewModelTest {
         assertEquals("boom", state.error)
         assertFalse(state.isLoading)
         assertTrue(state.photos.isEmpty())
+    }
+
+    @Test
+    fun `loadMore appends the next page, advances the page counter, and updates endReached`() = runTest {
+        val firstPage = listOf(testPhoto("1"), testPhoto("2"))
+        val secondPage = listOf(testPhoto("3"))
+        val requestedPages = mutableListOf<Int>()
+        val loadPage: suspend (Int, Int) -> Pair<List<Photo>, Boolean> = { page, _ ->
+            requestedPages.add(page)
+            if (page == 0) firstPage to false else secondPage to true
+        }
+        val viewModel = PagedPhotoGridViewModel(loadPage)
+
+        viewModel.loadMore()
+
+        assertEquals(listOf(0, 1), requestedPages)
+        val state = viewModel.uiState.value
+        assertEquals(firstPage + secondPage, state.photos)
+        assertTrue(state.endReached)
+        assertFalse(state.isLoadingMore)
+        assertNull(state.error)
+    }
+
+    @Test
+    fun `loadMore is a no-op once endReached`() = runTest {
+        var callCount = 0
+        val loadPage: suspend (Int, Int) -> Pair<List<Photo>, Boolean> = { _, _ ->
+            callCount++
+            listOf(testPhoto("1")) to true // already the last page from the first load
+        }
+        val viewModel = PagedPhotoGridViewModel(loadPage)
+        assertEquals(1, callCount)
+
+        viewModel.loadMore()
+
+        assertEquals(1, callCount)
+    }
+
+    @Test
+    fun `loadMore is a no-op while the first page is still loading`() = runTest {
+        val deferred = CompletableDeferred<Pair<List<Photo>, Boolean>>()
+        var callCount = 0
+        val loadPage: suspend (Int, Int) -> Pair<List<Photo>, Boolean> = { _, _ ->
+            callCount++
+            deferred.await()
+        }
+        val viewModel = PagedPhotoGridViewModel(loadPage)
+        assertTrue(viewModel.uiState.value.isLoading)
+
+        viewModel.loadMore()
+
+        // The isLoading guard should have stopped loadMore from calling loadPage a second time.
+        assertEquals(1, callCount)
+        deferred.complete(listOf(testPhoto("1")) to true)
+        assertFalse(viewModel.uiState.value.isLoading)
+    }
+
+    @Test
+    fun `loadMore ignores a second call while one is already in flight`() = runTest {
+        val firstPage = listOf(testPhoto("1"))
+        var callCount = 0
+        val deferred = CompletableDeferred<Pair<List<Photo>, Boolean>>()
+        val loadPage: suspend (Int, Int) -> Pair<List<Photo>, Boolean> = { page, _ ->
+            callCount++
+            if (page == 0) firstPage to false else deferred.await()
+        }
+        val viewModel = PagedPhotoGridViewModel(loadPage)
+        assertEquals(1, callCount)
+
+        viewModel.loadMore() // page 1, suspends on the deferred
+        assertEquals(2, callCount)
+        assertTrue(viewModel.uiState.value.isLoadingMore)
+
+        viewModel.loadMore() // isLoadingMore guard should ignore this one
+
+        assertEquals(2, callCount)
+        deferred.complete(listOf(testPhoto("2")) to true)
+        assertEquals(firstPage + listOf(testPhoto("2")), viewModel.uiState.value.photos)
+    }
+
+    @Test
+    fun `a failed loadMore preserves the existing photos and endReached, and doesn't advance the page`() = runTest {
+        val firstPage = listOf(testPhoto("1"))
+        val requestedPages = mutableListOf<Int>()
+        val loadPage: suspend (Int, Int) -> Pair<List<Photo>, Boolean> = { page, _ ->
+            requestedPages.add(page)
+            if (page == 0) firstPage to false else error("network down")
+        }
+        val viewModel = PagedPhotoGridViewModel(loadPage)
+
+        viewModel.loadMore()
+
+        assertEquals(listOf(0, 1), requestedPages)
+        val state = viewModel.uiState.value
+        assertEquals("network down", state.error)
+        assertFalse(state.isLoadingMore)
+        assertEquals(firstPage, state.photos)
+        assertFalse(state.endReached)
+    }
+
+    @Test
+    fun `retrying loadMore after a failure re-requests the same page, not the next one`() = runTest {
+        val firstPage = listOf(testPhoto("1"))
+        val requestedPages = mutableListOf<Int>()
+        var shouldFail = true
+        val loadPage: suspend (Int, Int) -> Pair<List<Photo>, Boolean> = { page, _ ->
+            requestedPages.add(page)
+            when {
+                page == 0 -> firstPage to false
+                shouldFail -> error("network down")
+                else -> listOf(testPhoto("2")) to true
+            }
+        }
+        val viewModel = PagedPhotoGridViewModel(loadPage)
+        viewModel.loadMore() // fails, requests page 1
+        shouldFail = false
+
+        viewModel.loadMore() // retry
+
+        assertEquals(listOf(0, 1, 1), requestedPages)
+        val state = viewModel.uiState.value
+        assertEquals(firstPage + listOf(testPhoto("2")), state.photos)
+        assertTrue(state.endReached)
+        // A successful retry clears the stale error from the previous failed attempt - loadMore's
+        // success branch didn't used to reset this field at all (unlike loadFirstPage, which
+        // always builds a fresh PagedPhotosUiState()), so a retry after a failure would silently
+        // leave the old error message sitting in state forever even though the retry succeeded.
+        assertNull(state.error)
     }
 
     @Test
