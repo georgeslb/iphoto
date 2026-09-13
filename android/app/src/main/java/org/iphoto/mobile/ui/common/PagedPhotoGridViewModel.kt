@@ -1,5 +1,6 @@
 package org.iphoto.mobile.ui.common
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -15,6 +16,8 @@ import org.iphoto.mobile.model.Photo
 import org.iphoto.mobile.model.UpdatePhotoDateRequest
 import org.iphoto.mobile.network.AlbumApi
 import org.iphoto.mobile.network.PhotoApi
+
+private const val TAG = "PagedPhotoGridVM"
 
 data class PagedPhotosUiState(
     val photos: List<Photo> = emptyList(),
@@ -41,7 +44,12 @@ class PagedPhotoGridViewModel(
     private val loadPage: suspend (page: Int, size: Int) -> Pair<List<Photo>, Boolean>,
     // Set only by AlbumDetailScreen - lets PhotoGridContent offer "remove from album" alongside
     // the garbage/album/date actions that apply everywhere else too.
-    val albumId: String? = null
+    val albumId: String? = null,
+    // Set only by SpaceDetailScreen when its Space is the one currently synced to a device folder
+    // (see SyncPrefs) - mirrors a "move to garbage" onto the matching local file (SyncRepository's
+    // LocalTrash) right away, instead of waiting for the next sync pass to notice the Space photo
+    // is gone.
+    private val onPhotosMovedToGarbage: (suspend (List<Photo>) -> Unit)? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(PagedPhotosUiState())
@@ -113,10 +121,18 @@ class PagedPhotoGridViewModel(
     fun moveSelectionToGarbage(photoApi: PhotoApi) {
         val ids = _uiState.value.selectedIds.toList()
         if (ids.isEmpty()) return
+        val selectedPhotos = _uiState.value.photos.filter { it.id in _uiState.value.selectedIds }
         _uiState.value = _uiState.value.copy(isMutating = true, actionError = null)
         viewModelScope.launch {
             try {
                 photoApi.moveToGarbage(ids)
+                // Best-effort: if this throws, the Space photo is still garbaged server-side, and
+                // the next sync pass will reconcile the local file via computeDiff's toRemove.
+                try {
+                    onPhotosMovedToGarbage?.invoke(selectedPhotos)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to mirror move-to-garbage onto the local synced folder", e)
+                }
                 loadFirstPage()
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
@@ -218,9 +234,10 @@ class PagedPhotoGridViewModel(
 
 class PagedPhotoGridViewModelFactory(
     private val loadPage: suspend (page: Int, size: Int) -> Pair<List<Photo>, Boolean>,
-    private val albumId: String? = null
+    private val albumId: String? = null,
+    private val onPhotosMovedToGarbage: (suspend (List<Photo>) -> Unit)? = null
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T =
-        PagedPhotoGridViewModel(loadPage, albumId) as T
+        PagedPhotoGridViewModel(loadPage, albumId, onPhotosMovedToGarbage) as T
 }

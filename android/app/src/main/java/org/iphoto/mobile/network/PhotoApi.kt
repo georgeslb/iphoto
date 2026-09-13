@@ -40,6 +40,16 @@ interface PhotoApi {
         @Query("size") size: Int
     ): SpringPage<Photo>
 
+    // Backs the device-folder sync feature's garbage/restore reconciliation (see
+    // org.iphoto.mobile.sync.SyncRepository) - the web frontend has no equivalent call, it only
+    // ever browses garbage cross-space via the day-indexed /api/photos/garbage/* views.
+    @GET("api/spaces/{spaceId}/garbage")
+    suspend fun listGarbageForSpace(
+        @Path("spaceId") spaceId: String,
+        @Query("page") page: Int,
+        @Query("size") size: Int
+    ): SpringPage<Photo>
+
     // Backs the device-folder sync feature (see org.iphoto.mobile.sync). Mirrors the same
     // multipart contract the web frontend's chunked uploader uses against UploadController.
     @Multipart
@@ -57,6 +67,9 @@ interface PhotoApi {
 
     @POST("api/photos/garbage")
     suspend fun moveToGarbage(@Body ids: List<String>)
+
+    @POST("api/photos/garbage/restore")
+    suspend fun restoreFromGarbage(@Body ids: List<String>)
 
     @PATCH("api/photos/{id}/date")
     suspend fun updateDate(@Path("id") id: String, @Body request: UpdatePhotoDateRequest): Photo

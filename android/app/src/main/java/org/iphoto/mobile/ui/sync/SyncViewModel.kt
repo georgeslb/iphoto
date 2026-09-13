@@ -30,6 +30,7 @@ data class SyncUiState(
     val folderUri: String? = null,
     val folderDisplayName: String? = null,
     val lastSyncAt: Long = 0L,
+    val autoSyncEnabled: Boolean = false,
     val isLoadingSpaces: Boolean = true,
     val isPreviewing: Boolean = false,
     val isSyncRunning: Boolean = false,
@@ -49,7 +50,8 @@ class SyncViewModel(
             selectedSpaceId = syncPrefs.spaceId,
             folderUri = syncPrefs.folderUri,
             folderDisplayName = syncPrefs.folderDisplayName,
-            lastSyncAt = syncPrefs.lastSyncAt
+            lastSyncAt = syncPrefs.lastSyncAt,
+            autoSyncEnabled = syncPrefs.autoSyncEnabled
         )
     )
     val uiState: StateFlow<SyncUiState> = _uiState.asStateFlow()
@@ -79,15 +81,35 @@ class SyncViewModel(
             WorkManager.getInstance(appContext)
                 .getWorkInfosForUniqueWorkFlow(SyncWorker.UNIQUE_WORK_NAME)
                 .collect { infos ->
-                    val running = infos.any {
+                    // ENQUEUED counts as "running" here because a one-time request only sits
+                    // ENQUEUED briefly, right before it runs.
+                    manualSyncRunning = infos.any {
                         it.state == WorkInfo.State.RUNNING || it.state == WorkInfo.State.ENQUEUED
                     }
-                    _uiState.value = _uiState.value.copy(
-                        isSyncRunning = running,
-                        lastSyncAt = syncPrefs.lastSyncAt
-                    )
+                    updateRunningState()
                 }
         }
+        viewModelScope.launch {
+            WorkManager.getInstance(appContext)
+                .getWorkInfosForUniqueWorkFlow(SyncWorker.PERIODIC_WORK_NAME)
+                .collect { infos ->
+                    // Unlike the one-time work above, periodic work sits ENQUEUED between runs as
+                    // its normal steady state - only RUNNING means a sync is actually in progress,
+                    // otherwise "Sync now" would look permanently busy once auto-sync is on.
+                    autoSyncRunning = infos.any { it.state == WorkInfo.State.RUNNING }
+                    updateRunningState()
+                }
+        }
+    }
+
+    private var manualSyncRunning = false
+    private var autoSyncRunning = false
+
+    private fun updateRunningState() {
+        _uiState.value = _uiState.value.copy(
+            isSyncRunning = manualSyncRunning || autoSyncRunning,
+            lastSyncAt = syncPrefs.lastSyncAt
+        )
     }
 
     fun selectSpace(spaceId: String) {
@@ -125,6 +147,19 @@ class SyncViewModel(
 
     fun dismissPreview() {
         _uiState.value = _uiState.value.copy(pendingDiff = null)
+    }
+
+    // Opt-in periodic background sync - off by default (SyncPrefs.autoSyncEnabled), matching the
+    // feature's original "nothing happens unless you tap the button" design. Requires a space and
+    // folder to already be chosen, same precondition as "Sync now".
+    fun setAutoSyncEnabled(enabled: Boolean) {
+        syncPrefs.autoSyncEnabled = enabled
+        _uiState.value = _uiState.value.copy(autoSyncEnabled = enabled)
+        if (enabled) {
+            SyncWorker.schedulePeriodic(appContext)
+        } else {
+            SyncWorker.cancelPeriodic(appContext)
+        }
     }
 
     fun confirmSync() {

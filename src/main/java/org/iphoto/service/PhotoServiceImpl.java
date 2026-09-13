@@ -127,6 +127,12 @@ public class PhotoServiceImpl implements PhotoService {
     }
 
     @Override
+    public Page<Photo> getSpaceGarbagePhotos(UserEntity currentUser, UUID spaceId, Pageable pageable) {
+        SpaceDTO space = spaceService.getSpaceByIdForUser(spaceId, currentUser).orElseThrow(NoMatchUserSpaceException::new);
+        return photoRepository.findBySpaceIdAndIsGarbageTrue(space.id(), pageable).map(photoMapper::photoEntityToPhoto);
+    }
+
+    @Override
     @Transactional
     public void restoreAssetsFromGarbage(UserEntity currentUser, List<UUID> ids) {
         List<PhotoEntity> photos = photoRepository.findByIdIn(ids).stream().toList();

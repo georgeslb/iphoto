@@ -114,4 +114,18 @@ public class SpaceController extends AbstractBaseController {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
         }
     }
+
+    // Mobile folder-sync only (see org.iphoto.mobile.sync on the Android side): lets a synced
+    // Space's garbage be reconciled against the device's local trash by fileHash, without paging
+    // through the cross-space day-indexed garbage view the web app uses.
+    @GetMapping("/{spaceId}/garbage")
+    public ResponseEntity<Page<Photo>> getSpaceGarbagePhotos(@PathVariable UUID spaceId, @PageableDefault(size = 50, sort = "dateTaken", direction = Sort.Direction.DESC) Pageable pageable) {
+        UserEntity currentUser = getCurrentUser();
+        try {
+            Page<Photo> photos = photoService.getSpaceGarbagePhotos(currentUser, spaceId, pageable);
+            return ResponseEntity.ok(photos);
+        } catch (NoSuchElementException e) {
+            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+        }
+    }
 }

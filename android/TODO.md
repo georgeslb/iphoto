@@ -1,5 +1,62 @@
 # Android TODO
 
+## Sync/Space fluidity — 2026-09-13
+
+Improved how a synced Space and its device folder stay consistent, in both directions, without
+needing a Garbage screen in the app (there still isn't one - see "Test coverage" below):
+
+- **Automatic sync** (opt-in): `SyncPrefs.autoSyncEnabled` + `SyncWorker.schedulePeriodic`/
+  `cancelPeriodic`, wired to a "Sync automatically" switch in `SyncScreen`. Runs a periodic
+  `SyncWorker` (6h interval, network + battery-not-low constraints) under its own unique work name
+  (`PERIODIC_WORK_NAME`), separate from the manual "Sync now" one-time work (`UNIQUE_WORK_NAME`) so
+  neither blocks the other. Off by default, matching the feature's original design.
+- **Sync status banner**: `SpaceDetailScreen` now shows a banner when the space it's showing is the
+  one currently synced (`SyncPrefs.spaceId`/`folderUri`) - which folder, and when it last synced.
+- **Garbage mirrored onto the phone**: moving a photo to the Garbage from a synced Space
+  (`SpaceDetailScreen`'s selection action bar) now also moves the matching local file (by content
+  hash) into `LocalTrash` (`sync/LocalTrash.kt`, a `.iPhotoTrash` subfolder inside the synced
+  folder) right away - see `PagedPhotoGridViewModel.onPhotosMovedToGarbage` and
+  `SyncRepository.trashLocalFilesForHashes`. This is an app-managed trash, not the OS/MediaStore
+  trash: an arbitrary SAF-picked folder isn't necessarily MediaStore-indexed, and trashing via
+  MediaStore needs a per-call user-consent intent, so a plain subfolder is what a general synced
+  folder can actually support.
+- **Restore, both directions**, handled passively by `SyncRepository.computeDiff`'s new
+  `toRestore`/`toLocalRestore` (applied by `SyncWorker`):
+  - A garbage photo's file reappearing in the synced folder root (e.g. the user drags it back out
+    of `.iPhotoTrash` with a file manager) restores the photo via `POST /api/photos/garbage/restore`
+    instead of re-uploading it as new (`toRestore`, matched against the new
+    `GET /api/spaces/{spaceId}/garbage` endpoint).
+  - A Space photo becoming active again while its file still sits in `.iPhotoTrash` (e.g. restored
+    from the web app) moves the file back to the folder root (`toLocalRestore`).
+  - Both only run on the next sync pass (manual or automatic) - there's no live filesystem watch.
+
+Known gaps / not done:
+- No Android build/test run in this session - no Android SDK in this container (no `ANDROID_HOME`,
+  no cached Gradle wrapper distribution), unlike the machine that produced the "Fixed: sync never
+  actually ran" entry below. Reviewed by hand instead; the backend half (`GET
+  /api/spaces/{spaceId}/garbage`, `PhotoRepository`/`PhotoServiceImpl`) does compile (`mvn compile`
+  passed). Needs a real `assembleDebug`/`testDebugUnitTest` pass before shipping.
+- `LocalTrash` restores a file to the folder **root**, not its original subfolder - nested
+  camera-roll layouts (`Camera/2024/06/...`) lose their subfolder on restore. Fine for now since
+  sync only matches by content hash, not path, but worth fixing if it turns out to matter.
+- Still no Garbage screen anywhere in the Android app, so a user can't trigger a restore from the
+  app UI directly - `toRestore`/`toLocalRestore` only fire from file-system-level reconciliation
+  (manually moving a file, or restoring via the web app) picked up on the next sync.
+- The reactive "also trash the local file" wiring only covers `SpaceDetailScreen`'s multi-select
+  garbage action (`PagedPhotoGridViewModel.onPhotosMovedToGarbage`), not the lightbox's own
+  independent delete button (`PhotoDetailViewModel.moveToGarbage`) - same root cause as the
+  existing "Lightbox has no 'remove from album' action" item above: the `photo/{photoId}` route
+  carries no space-context argument, so the lightbox has no way to know it's showing a photo from
+  the synced Space. **Consequence**: deleting via the lightbox from a synced Space leaves the local
+  file in place, and since `computeDiff` treats the folder as ground truth (matching how `toRemove`
+  already treats local absence as authoritative the other way), the *next* sync will restore that
+  photo instead of leaving it garbaged - not a crash, but likely surprising. Fix is the same nav
+  argument the album TODO needs, passed through to a garbage-move hook analogous to
+  `onPhotosMovedToGarbage`.
+- `trashLocalFilesForHashes`/local-trash moves are best-effort and silently swallow individual
+  per-file failures (`LocalTrash.moveDocument` returns `false` rather than throwing) - if one is
+  worth surfacing to the user, `SyncWorker`'s logs are the only place it currently shows up.
+
 ## 2026 dependency upgrade — follow-ups
 
 Tracking work left over from the AGP 9 / Kotlin 2.4 / Gradle 9 / Compose BOM 2026.08 upgrade

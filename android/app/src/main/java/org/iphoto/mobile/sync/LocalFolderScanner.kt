@@ -23,6 +23,11 @@ object LocalFolderScanner {
         if (depth > MAX_DEPTH) return
         for (child in dir.listFiles()) {
             when {
+                // The local-trash subfolder (see LocalTrash) holds files the sync feature has
+                // already moved out of the active folder - it must never be scanned back in as if
+                // it were still-present content, or a garbaged photo's file would look "still
+                // there" and computeDiff would never flag the Space photo for removal.
+                child.isDirectory && child.name == LocalTrash.TRASH_DIR_NAME -> Unit
                 child.isDirectory -> walk(child, depth + 1, out)
                 child.isFile -> {
                     val mimeType = child.type.orEmpty()

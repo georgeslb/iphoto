@@ -811,6 +811,12 @@ This section lists the primary API endpoints the frontend application calls to i
 ### 5.4. Space Management
 *   `GET /api/spaces`: Fetches the list of all non-garbage spaces.
 *   `GET /api/spaces/garbage`: Fetches the list of spaces currently in the garbage.
+*   `GET /api/spaces/{spaceId}/photos`: Fetches a paginated list of a single space's non-garbage photos.
+*   `GET /api/spaces/{spaceId}/garbage`: Fetches a paginated list of a single space's garbage photos
+    (includes `fileHash`). Not used by the web frontend — backs the Android app's device-folder
+    sync feature (`android/app/src/main/java/org/iphoto/mobile/sync/`), which reconciles a synced
+    Space's garbage against the device's local trash by content hash so garbage/restore stays
+    consistent between the phone folder and the Space in both directions.
 *   `POST /api/spaces`: Creates a new space.
 *   `DELETE /api/spaces/{id}`: Moves a single space to the garbage.
 *   `POST /api/spaces/restore`: Restores a list of spaces from the garbage.

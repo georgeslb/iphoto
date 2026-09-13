@@ -3,8 +3,10 @@ package org.iphoto.mobile.ui.sync
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -17,6 +19,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -25,6 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -63,11 +67,31 @@ fun SyncScreen() {
         Text(
             "Pick a Space and a folder on this phone. \"Sync now\" makes that Space mirror the " +
                 "folder: new photos/videos are uploaded, and any that are no longer in the folder " +
-                "are moved to the Garbage. Nothing happens automatically or in the background - " +
-                "only when you tap the button.",
+                "are moved to the Garbage (and restored back if the same file, or a garbaged " +
+                "photo, reappears). By default this only happens when you tap the button below - " +
+                "turn on \"Sync automatically\" to also run it periodically in the background.",
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.padding(top = 4.dp, bottom = 16.dp)
         )
+
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Sync automatically", style = MaterialTheme.typography.labelLarge)
+                Text(
+                    "Runs periodically in the background, network and battery permitting.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            Switch(
+                checked = state.autoSyncEnabled,
+                onCheckedChange = viewModel::setAutoSyncEnabled,
+                enabled = state.selectedSpaceId != null && state.folderUri != null
+            )
+        }
 
         Text("Space", style = MaterialTheme.typography.labelLarge)
         Box {
@@ -147,7 +171,9 @@ fun SyncScreen() {
                 Text(
                     "${diff.toUpload.size} photo(s)/video(s) will be uploaded to the space.\n" +
                         "${diff.toRemove.size} photo(s) will be moved to the Garbage " +
-                        "(no longer found in the folder)."
+                        "(no longer found in the folder).\n" +
+                        "${diff.toRestore.size} photo(s) will be restored (found back in the folder).\n" +
+                        "${diff.toLocalRestore.size} file(s) will be restored from the phone's local trash."
                 )
             },
             confirmButton = {

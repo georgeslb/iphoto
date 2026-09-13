@@ -22,13 +22,24 @@ data class RemotePhotoRef(val id: String, val fileHash: String?)
 
 data class SyncDiff(
     val toUpload: List<LocalAsset>,
-    val toRemove: List<RemotePhotoRef>
+    val toRemove: List<RemotePhotoRef>,
+    // Garbage photos in this Space whose fileHash reappeared in the synced folder - e.g. the user
+    // dragged the file back out of the local trash (LocalTrash) with a file manager. Restored via
+    // the API instead of being re-uploaded as a "new" photo (which the server would just bounce
+    // back as TRASHED - see UploadController/PhotoServiceImpl#uploadAsset - so re-uploading would
+    // just waste bandwidth, not actually undo the garbage state).
+    val toRestore: List<RemotePhotoRef> = emptyList(),
+    // Files sitting in the local trash whose hash matches a still-*active* remote photo - e.g. the
+    // photo was restored from the web app while its file was already trashed locally. Moved back
+    // to the folder root to keep the phone side consistent.
+    val toLocalRestore: List<LocalAsset> = emptyList()
 )
 
 /**
  * Drives the device-folder <-> Space mirror described in the sync feature: computes what's out of
  * sync (by content hash, not filename - see FileHasher) and applies it (chunked upload for new
- * local files, move-to-garbage for Space photos no longer present locally).
+ * local files, move-to-garbage/restore for Space photos, mirrored on-device via LocalTrash for a
+ * synced folder's own garbage/restore state).
  */
 class SyncRepository(
     private val context: Context,
@@ -40,18 +51,24 @@ class SyncRepository(
         val remotePhotos = fetchAllSpacePhotos(spaceId)
         val remoteHashes = remotePhotos.mapNotNull { it.fileHash?.takeIf(String::isNotBlank) }.toSet()
 
-        val localAssets = LocalFolderScanner.scan(context, folderUri)
-        val localHashes = mutableSetOf<String>()
-        val toUpload = mutableListOf<LocalAsset>()
+        val remoteGarbagePhotos = fetchAllSpaceGarbagePhotos(spaceId)
+        val garbageIdByHash = remoteGarbagePhotos
+            .mapNotNull { photo -> photo.fileHash?.takeIf(String::isNotBlank)?.let { it to photo.id } }
+            .toMap()
 
+        val localAssets = LocalFolderScanner.scan(context, folderUri)
+        val localHashToAsset = mutableMapOf<String, LocalAsset>()
         for (asset in localAssets) {
-            val hash = hashCache.get(asset.uri.toString(), asset.size, asset.lastModified)
-                ?: FileHasher.md5(context, asset.uri).also {
-                    hashCache.put(asset.uri.toString(), asset.size, asset.lastModified, it)
-                }
-            localHashes.add(hash)
-            if (hash !in remoteHashes) {
-                toUpload.add(asset)
+            localHashToAsset[hashOf(asset)] = asset
+        }
+
+        val toUpload = mutableListOf<LocalAsset>()
+        val toRestore = mutableListOf<RemotePhotoRef>()
+        for ((hash, asset) in localHashToAsset) {
+            val garbageId = garbageIdByHash[hash]
+            when {
+                garbageId != null -> toRestore.add(RemotePhotoRef(garbageId, hash))
+                hash !in remoteHashes -> toUpload.add(asset)
             }
         }
         hashCache.persist()
@@ -60,17 +77,42 @@ class SyncRepository(
         // is always set by the upload/edit pipeline, so a null here means "don't know", not "gone
         // from the phone", and this mirror should never delete something on an "I'm not sure".
         val toRemove = remotePhotos
-            .filter { !it.fileHash.isNullOrBlank() && it.fileHash !in localHashes }
+            .filter { !it.fileHash.isNullOrBlank() && it.fileHash !in localHashToAsset.keys }
             .map { RemotePhotoRef(it.id, it.fileHash) }
 
-        SyncDiff(toUpload, toRemove)
+        val trashAssets = LocalTrash.scan(context, folderUri)
+        val toLocalRestore = trashAssets.filter { asset ->
+            val hash = hashOf(asset)
+            hash in remoteHashes && hash !in localHashToAsset.keys
+        }
+        hashCache.persist()
+
+        SyncDiff(toUpload, toRemove, toRestore, toLocalRestore)
     }
+
+    private suspend fun hashOf(asset: LocalAsset): String =
+        hashCache.get(asset.uri.toString(), asset.size, asset.lastModified)
+            ?: FileHasher.md5(context, asset.uri).also {
+                hashCache.put(asset.uri.toString(), asset.size, asset.lastModified, it)
+            }
 
     private suspend fun fetchAllSpacePhotos(spaceId: String): List<Photo> {
         val all = mutableListOf<Photo>()
         var page = 0
         while (true) {
             val response = photoApi.listForSpace(spaceId, page, SPACE_PAGE_SIZE)
+            all += response.content
+            if (response.page.isLast) break
+            page++
+        }
+        return all
+    }
+
+    private suspend fun fetchAllSpaceGarbagePhotos(spaceId: String): List<Photo> {
+        val all = mutableListOf<Photo>()
+        var page = 0
+        while (true) {
+            val response = photoApi.listGarbageForSpace(spaceId, page, SPACE_PAGE_SIZE)
             all += response.content
             if (response.page.isLast) break
             page++
@@ -133,6 +175,33 @@ class SyncRepository(
     suspend fun removeFromSpace(photoIds: List<String>) {
         if (photoIds.isEmpty()) return
         photoApi.moveToGarbage(photoIds)
+    }
+
+    suspend fun restoreInSpace(photoIds: List<String>) {
+        if (photoIds.isEmpty()) return
+        photoApi.restoreFromGarbage(photoIds)
+    }
+
+    /** Moves [assets] (as returned by [LocalTrash.scan]) back to the root of the synced folder. */
+    suspend fun restoreLocalAssets(folderUri: Uri, assets: List<LocalAsset>) = withContext(Dispatchers.IO) {
+        for (asset in assets) {
+            LocalTrash.restoreFromTrash(context, folderUri, asset.uri)
+        }
+    }
+
+    // Backs the reactive "also trash the file on the phone" side of moving a Space photo to
+    // garbage from the app UI (SpaceDetailScreen), for a Space currently synced to [folderUri] -
+    // finds each local file matching one of [hashes] and moves it into LocalTrash immediately,
+    // rather than waiting for the next sync pass to notice the Space photo is gone.
+    suspend fun trashLocalFilesForHashes(folderUri: Uri, hashes: Set<String>) = withContext(Dispatchers.IO) {
+        if (hashes.isEmpty()) return@withContext
+        val localAssets = LocalFolderScanner.scan(context, folderUri)
+        for (asset in localAssets) {
+            if (hashOf(asset) in hashes) {
+                LocalTrash.moveToTrash(context, folderUri, asset.uri)
+            }
+        }
+        hashCache.persist()
     }
 
     private fun readFully(stream: InputStream, buffer: ByteArray): Int {
