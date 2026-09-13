@@ -35,12 +35,39 @@ exercised at runtime here, since `mockkObject` replaces both files' actual bodie
 had to satisfy the compiler). All 14 tests passed for real, including the one that initially failed
 and pointed at the bug above.
 
-Still not covered: `SyncViewModel` itself (the WorkManager plumbing - `observeWork`,
-`schedulePeriodic`, `confirmSync` - would need `androidx.work`'s real classes plus
-`androidx.work:work-testing`'s fakes to test meaningfully, and both are Google-Maven-hosted, same
-blocker as everywhere else `androidx.*` shows up in this file), and `uploadAsset`/
-`waitForProcessing`'s chunk-upload loop (exercises real multipart/OkHttp request-building - doable,
-just not done yet).
+`SyncRepositoryUploadTest` added right after, covering `uploadAsset`'s chunking/multipart-building
+and `waitForProcessing`'s polling loop: single-chunk and multi-chunk (asset larger than the 1 MiB
+chunk size) uploads, exact multipart field values (`fileName`/`fileSize`/`chunkIndex`/
+`totalChunks`/`contentType`/`spaceId`) and exact per-chunk byte content, `openInputStream` returning
+null throwing before any network call, polling until `COMPLETED`, throwing on `FAILED`, and never
+polling at all when the final chunk's response carries no task. A custom `StingyInputStream` test
+double deliberately returns small reads (≤4 KiB) regardless of the requested length, to prove
+`readFully`'s accumulation loop assembles a full 1 MiB chunk correctly even when the real
+`ContentResolver` stream doesn't fill the buffer in one call - the exact scenario `readFully`'s own
+comment says it exists for.
+
+**Hit, and got past, a sharper verification-environment gotcha than the entries above**: mocking a
+real `android.content.ContentResolver` via `robolectric:android-all` (the jar used to verify
+everything above) crashed with `UnsatisfiedLinkError` in `Build.<clinit>` - that jar ships
+Android's *actual platform implementation*, whose static initializers call real native methods
+that only exist on a real device/emulator. The project's actual Gradle unit tests never hit this,
+because AGP compiles/runs them against the plain Android SDK **stub** jar
+(`unitTests.isReturnDefaultValues = true` in `app/build.gradle.kts`, empty-or-default method
+bodies, no such static initializers) - `android-all` was a real-but-imperfect stand-in for that,
+close enough for everything tested before this file but not for `ContentResolver`. Swapped in
+`com.google.android:android:4.1.1.4` (an old but real community mirror of that same style of stub
+jar, on Maven Central) for this one file instead, which is actually the *more* faithful match to
+how the real project's tests run than `android-all` was - and all 20 tests across both
+`SyncRepositoryTest` and `SyncRepositoryUploadTest` passed against it.
+
+Not covered: `waitForProcessing`'s timeout path specifically (documented in the test file itself -
+its deadline check uses real `System.currentTimeMillis()` while its retry backoff uses
+`kotlinx.coroutines.delay()`, which only advances *virtual* time under `runTest`; actually reaching
+the 5-minute deadline in a test would take 5 real minutes, not a virtual-time skip), and
+`SyncViewModel` itself (the WorkManager plumbing - `observeWork`, `schedulePeriodic`, `confirmSync`
+- would need `androidx.work`'s real classes plus `androidx.work:work-testing`'s fakes to test
+meaningfully, and both are Google-Maven-hosted, same blocker as everywhere else `androidx.*` shows
+up in this file).
 
 ## Sync/Space fluidity — 2026-09-13
 
