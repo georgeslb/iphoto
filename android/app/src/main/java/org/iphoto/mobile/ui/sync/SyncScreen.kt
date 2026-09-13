@@ -11,9 +11,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LinearProgressIndicator
@@ -47,7 +46,6 @@ fun SyncScreen() {
             context.applicationContext,
             container.spaceApi,
             container.photoApi,
-            container.syncRepository(),
             container.syncPrefs
         )
     )
@@ -63,14 +61,25 @@ fun SyncScreen() {
         }
     }
 
-    Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+    // The screen used to be a plain Column with no scroll modifier at all - fine while it was
+    // short, but the description text plus a growing "Excluded from sync" list (unbounded, one
+    // row per excluded photo) could overflow the screen height with no way to reach the rest.
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp)
+    ) {
         Text("Device folder sync", style = MaterialTheme.typography.titleLarge)
         Text(
-            "Pick a Space and a folder on this phone. \"Sync now\" makes that Space mirror the " +
-                "folder: new photos/videos are uploaded, and any that are no longer in the folder " +
-                "are moved to the Garbage (and restored back if the same file, or a garbaged " +
-                "photo, reappears). By default this only happens when you tap the button below - " +
-                "turn on \"Sync automatically\" to also run it periodically in the background.",
+            "Pick a Space and a folder on this phone. Turn on \"Sync automatically\" and this Space " +
+                "will mirror the folder on its own - usually within moments of a new photo/video " +
+                "showing up (works even if the app isn't running), with a check every 15 minutes as " +
+                "a backup in case that doesn't fire. New files upload a bit at a time (a large " +
+                "backlog is spread across several runs rather than sent all at once), and any that " +
+                "are no longer in the folder are moved to the Garbage (and restored back if the " +
+                "same file, or a garbaged photo, reappears). There's no manual \"sync now\" - only " +
+                "the automatic background job.",
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.padding(top = 4.dp, bottom = 16.dp)
         )
@@ -83,7 +92,7 @@ fun SyncScreen() {
             Column(modifier = Modifier.weight(1f)) {
                 Text("Sync automatically", style = MaterialTheme.typography.labelLarge)
                 Text(
-                    "Runs periodically in the background, network and battery permitting.",
+                    "Runs roughly every 15 minutes in the background, network and battery permitting.",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -136,18 +145,11 @@ fun SyncScreen() {
         if (state.isSyncRunning) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             Text("Sync in progress…", modifier = Modifier.padding(top = 8.dp))
-        } else {
-            Button(
-                onClick = { viewModel.previewSync() },
-                enabled = state.selectedSpaceId != null && state.folderUri != null && !state.isPreviewing,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                if (state.isPreviewing) {
-                    CircularProgressIndicator(modifier = Modifier.height(20.dp))
-                } else {
-                    Text("Sync now")
-                }
-            }
+        } else if (state.autoSyncEnabled) {
+            Text(
+                "Waiting for the next automatic sync…",
+                style = MaterialTheme.typography.bodyMedium
+            )
         }
 
         if (state.lastSyncAt > 0) {
@@ -182,28 +184,5 @@ fun SyncScreen() {
                 }
             }
         }
-    }
-
-    val diff = state.pendingDiff
-    if (diff != null) {
-        AlertDialog(
-            onDismissRequest = viewModel::dismissPreview,
-            title = { Text("Confirm sync") },
-            text = {
-                Text(
-                    "${diff.toUpload.size} photo(s)/video(s) will be uploaded to the space.\n" +
-                        "${diff.toRemove.size} photo(s) will be moved to the Garbage " +
-                        "(no longer found in the folder).\n" +
-                        "${diff.toRestore.size} photo(s) will be restored (found back in the folder).\n" +
-                        "${diff.toLocalRestore.size} file(s) will be restored from the phone's local trash."
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = viewModel::confirmSync) { Text("Sync") }
-            },
-            dismissButton = {
-                TextButton(onClick = viewModel::dismissPreview) { Text("Cancel") }
-            }
-        )
     }
 }

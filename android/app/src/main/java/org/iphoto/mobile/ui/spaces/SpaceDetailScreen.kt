@@ -18,20 +18,37 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import java.text.DateFormat
 import java.util.Date
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.isActive
 import org.iphoto.mobile.LocalAppContainer
 import org.iphoto.mobile.model.Photo
+import org.iphoto.mobile.sync.SyncWorker
 import org.iphoto.mobile.ui.common.PagedPhotoGridViewModel
 import org.iphoto.mobile.ui.common.PagedPhotoGridViewModelFactory
 import org.iphoto.mobile.ui.common.PhotoGridContent
+
+// How often to poll for new thumbnails while a sync is actively running against the
+// currently-viewed space - frequent enough to feel live, infrequent enough not to hammer
+// GET /api/spaces/{id}/photos every frame.
+private const val LIVE_REFRESH_INTERVAL_MS = 8_000L
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -98,6 +115,39 @@ fun SpaceDetailScreen(spaceId: String, onPhotoClick: (String) -> Unit, onBack: (
         )
     )
     val state by viewModel.uiState.collectAsState()
+
+    // Refresh whenever this destination becomes active again (navigating back into it, or the
+    // app returning to the foreground while already on it) - otherwise photos uploaded by a
+    // background sync while the user wasn't looking would only ever show up if the ViewModel
+    // happened to get recreated.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.refreshQuietly()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // While a sync is actively running against *this* space, poll for new thumbnails so they
+    // show up live instead of only after leaving and reopening the screen. collectLatest cancels
+    // the polling loop the instant the WorkInfo reports the run is no longer RUNNING.
+    if (isSyncedSpace) {
+        val context = LocalContext.current
+        LaunchedEffect(spaceId) {
+            WorkManager.getInstance(context.applicationContext)
+                .getWorkInfosForUniqueWorkFlow(SyncWorker.PERIODIC_WORK_NAME)
+                .collectLatest { infos ->
+                    val running = infos.any { it.state == WorkInfo.State.RUNNING }
+                    if (running) {
+                        while (isActive) {
+                            viewModel.refreshQuietly()
+                            delay(LIVE_REFRESH_INTERVAL_MS)
+                        }
+                    }
+                }
+        }
+    }
 
     Scaffold(
         topBar = {

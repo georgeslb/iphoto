@@ -2,13 +2,9 @@ package org.iphoto.mobile.ui.sync
 
 import android.content.Context
 import android.net.Uri
-import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import androidx.work.ExistingWorkPolicy
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -20,11 +16,7 @@ import org.iphoto.mobile.data.SyncPrefs.TrackedAsset
 import org.iphoto.mobile.model.SpaceDTO
 import org.iphoto.mobile.network.PhotoApi
 import org.iphoto.mobile.network.SpaceApi
-import org.iphoto.mobile.sync.SyncDiff
-import org.iphoto.mobile.sync.SyncRepository
 import org.iphoto.mobile.sync.SyncWorker
-
-private const val TAG = "SyncViewModel"
 
 data class SyncUiState(
     val spaces: List<SpaceDTO> = emptyList(),
@@ -34,9 +26,7 @@ data class SyncUiState(
     val lastSyncAt: Long = 0L,
     val autoSyncEnabled: Boolean = false,
     val isLoadingSpaces: Boolean = true,
-    val isPreviewing: Boolean = false,
     val isSyncRunning: Boolean = false,
-    val pendingDiff: SyncDiff? = null,
     // Photos excluded from the currently synced Space (SpaceDetailScreen's "Exclude from sync"
     // action) - shown here so the user has somewhere to undo it, since an excluded photo is
     // garbaged and no longer visible in the Space's own photo grid.
@@ -44,11 +34,16 @@ data class SyncUiState(
     val error: String? = null
 )
 
+/**
+ * There is no manual "Sync now" trigger any more - a one-off tap could push an unbounded number
+ * of assets in a single burst. The only way to sync is the opt-in periodic background job
+ * (schedulePeriodic/cancelPeriodic below), which SyncWorker itself now also caps to a byte budget
+ * per run (see SyncRepository.selectUploadBatch) rather than draining the whole backlog at once.
+ */
 class SyncViewModel(
     private val appContext: Context,
     private val spaceApi: SpaceApi,
     private val photoApi: PhotoApi,
-    private val syncRepository: SyncRepository,
     private val syncPrefs: SyncPrefs
 ) : ViewModel() {
 
@@ -102,42 +97,21 @@ class SyncViewModel(
     private fun observeWork() {
         viewModelScope.launch {
             WorkManager.getInstance(appContext)
-                .getWorkInfosForUniqueWorkFlow(SyncWorker.UNIQUE_WORK_NAME)
-                .collect { infos ->
-                    // ENQUEUED counts as "running" here because a one-time request only sits
-                    // ENQUEUED briefly, right before it runs.
-                    manualSyncRunning = infos.any {
-                        it.state == WorkInfo.State.RUNNING || it.state == WorkInfo.State.ENQUEUED
-                    }
-                    updateRunningState()
-                }
-        }
-        viewModelScope.launch {
-            WorkManager.getInstance(appContext)
                 .getWorkInfosForUniqueWorkFlow(SyncWorker.PERIODIC_WORK_NAME)
                 .collect { infos ->
-                    // Unlike the one-time work above, periodic work sits ENQUEUED between runs as
-                    // its normal steady state - only RUNNING means a sync is actually in progress,
-                    // otherwise "Sync now" would look permanently busy once auto-sync is on.
-                    autoSyncRunning = infos.any { it.state == WorkInfo.State.RUNNING }
-                    updateRunningState()
+                    // Periodic work sits ENQUEUED between runs as its normal steady state - only
+                    // RUNNING means a sync is actually in progress right now.
+                    _uiState.value = _uiState.value.copy(
+                        isSyncRunning = infos.any { it.state == WorkInfo.State.RUNNING },
+                        lastSyncAt = syncPrefs.lastSyncAt
+                    )
                 }
         }
-    }
-
-    private var manualSyncRunning = false
-    private var autoSyncRunning = false
-
-    private fun updateRunningState() {
-        _uiState.value = _uiState.value.copy(
-            isSyncRunning = manualSyncRunning || autoSyncRunning,
-            lastSyncAt = syncPrefs.lastSyncAt
-        )
     }
 
     fun selectSpace(spaceId: String) {
         syncPrefs.spaceId = spaceId
-        _uiState.value = _uiState.value.copy(selectedSpaceId = spaceId, pendingDiff = null)
+        _uiState.value = _uiState.value.copy(selectedSpaceId = spaceId)
     }
 
     fun selectFolder(uri: Uri, displayName: String) {
@@ -149,51 +123,30 @@ class SyncViewModel(
         syncPrefs.folderDisplayName = displayName
         _uiState.value = _uiState.value.copy(
             folderUri = uri.toString(),
-            folderDisplayName = displayName,
-            pendingDiff = null
+            folderDisplayName = displayName
         )
-    }
-
-    fun previewSync() {
-        val spaceId = _uiState.value.selectedSpaceId ?: return
-        val folderUri = _uiState.value.folderUri ?: return
-        _uiState.value = _uiState.value.copy(isPreviewing = true, error = null)
-        viewModelScope.launch {
-            _uiState.value = try {
-                val skipHashes = syncPrefs.excludedHashes + syncPrefs.movedToMainHashes
-                val diff = syncRepository.computeDiff(spaceId, Uri.parse(folderUri), skipHashes)
-                _uiState.value.copy(isPreviewing = false, pendingDiff = diff)
-            } catch (e: Exception) {
-                _uiState.value.copy(isPreviewing = false, error = e.message ?: "Failed to compare space with folder")
-            }
+        // If auto-sync is already on, the content-uri trigger (if any) is still watching the
+        // *previous* folder - re-arm it for the new one rather than waiting for the next periodic
+        // run (up to 15 minutes away) to notice the change.
+        if (syncPrefs.autoSyncEnabled) {
+            SyncWorker.scheduleContentTrigger(appContext, uri)
         }
     }
 
-    fun dismissPreview() {
-        _uiState.value = _uiState.value.copy(pendingDiff = null)
-    }
-
-    // Opt-in periodic background sync - off by default (SyncPrefs.autoSyncEnabled), matching the
-    // feature's original "nothing happens unless you tap the button" design. Requires a space and
-    // folder to already be chosen, same precondition as "Sync now".
+    // Opt-in background sync - off by default (SyncPrefs.autoSyncEnabled). Requires a space and
+    // folder to already be chosen. This is now the *only* way a sync ever runs (see this class's
+    // own kdoc for why the old one-off "Sync now" trigger was removed), driven by two triggers -
+    // see SyncWorker's own kdoc for the near-instant content-uri trigger vs. the ~15-minute
+    // periodic fallback.
     fun setAutoSyncEnabled(enabled: Boolean) {
         syncPrefs.autoSyncEnabled = enabled
         _uiState.value = _uiState.value.copy(autoSyncEnabled = enabled)
         if (enabled) {
             SyncWorker.schedulePeriodic(appContext)
+            syncPrefs.folderUri?.let { SyncWorker.scheduleContentTrigger(appContext, Uri.parse(it)) }
         } else {
             SyncWorker.cancelPeriodic(appContext)
         }
-    }
-
-    fun confirmSync() {
-        Log.d(TAG, "Sync requested by user for space ${_uiState.value.selectedSpaceId} - see SyncWorker logs for progress")
-        _uiState.value = _uiState.value.copy(pendingDiff = null)
-        val request = OneTimeWorkRequestBuilder<SyncWorker>()
-            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-            .build()
-        WorkManager.getInstance(appContext)
-            .enqueueUniqueWork(SyncWorker.UNIQUE_WORK_NAME, ExistingWorkPolicy.KEEP, request)
     }
 }
 
@@ -201,10 +154,9 @@ class SyncViewModelFactory(
     private val appContext: Context,
     private val spaceApi: SpaceApi,
     private val photoApi: PhotoApi,
-    private val syncRepository: SyncRepository,
     private val syncPrefs: SyncPrefs
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T =
-        SyncViewModel(appContext, spaceApi, photoApi, syncRepository, syncPrefs) as T
+        SyncViewModel(appContext, spaceApi, photoApi, syncPrefs) as T
 }

@@ -44,9 +44,15 @@ class TokenStore internal constructor(private val prefs: SharedPreferences) {
     // under itself), but AuthViewModel#resumeSession treats it as expired on the *next* cold start
     // instead of silently signing back in. Defaults true so installs that logged in before this
     // flag existed keep behaving exactly as before.
+    //
+    // Stored as a string, not prefs.getBoolean/putBoolean: KeystoreEncryptedPreferences only
+    // implements the String get/put path (see its own kdoc) and throws UnsupportedOperationException
+    // for every other type, including booleans - a real crash this surfaced on-device even though
+    // TokenStoreTest passed, because that test runs against a fully-featured fake SharedPreferences
+    // that (unlike the real Keystore-backed one) never narrowed itself to String-only.
     var rememberMe: Boolean
-        get() = prefs.getBoolean(KEY_REMEMBER_ME, true)
-        set(value) = prefs.edit().putBoolean(KEY_REMEMBER_ME, value).apply()
+        get() = prefs.getString(KEY_REMEMBER_ME, null)?.toBooleanStrictOrNull() ?: true
+        set(value) = prefs.edit().putString(KEY_REMEMBER_ME, value.toString()).apply()
 
     val isLoggedIn: Boolean
         get() = !token.isNullOrEmpty()

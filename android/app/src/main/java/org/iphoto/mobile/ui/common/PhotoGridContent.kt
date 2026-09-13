@@ -15,9 +15,11 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -61,6 +63,7 @@ fun PhotoGridContent(
     val container = LocalAppContainer.current
     var showAlbumPicker by remember { mutableStateOf(false) }
     var showDatePicker by remember { mutableStateOf(false) }
+    var showMoveToMainDeviceConfirm by remember { mutableStateOf(false) }
 
     BackHandler(enabled = state.isSelectionMode) { viewModel.clearSelection() }
 
@@ -149,7 +152,17 @@ fun PhotoGridContent(
                     { viewModel.excludeSelectionFromSync(container.photoApi) }
                 } else null,
                 onMoveToMain = if (viewModel.canMoveToMain) {
-                    { viewModel.moveSelectionToMain(container.photoApi) }
+                    {
+                        // Only ask "also remove from device?" when this Space is actually the one
+                        // synced to a device folder (canExcludeFromSync doubles as that signal) -
+                        // otherwise there's no local file this could ever apply to, so skip
+                        // straight to the move like any other action.
+                        if (viewModel.canExcludeFromSync) {
+                            showMoveToMainDeviceConfirm = true
+                        } else {
+                            viewModel.moveSelectionToMain(container.photoApi)
+                        }
+                    }
                 } else null
             )
         }
@@ -166,6 +179,32 @@ fun PhotoGridContent(
             onCreateAlbum = { name ->
                 viewModel.createAlbumAndAddSelection(container.albumApi, name)
                 showAlbumPicker = false
+            }
+        )
+    }
+
+    if (showMoveToMainDeviceConfirm) {
+        AlertDialog(
+            onDismissRequest = { showMoveToMainDeviceConfirm = false },
+            title = { Text("Remove from this phone too?") },
+            text = {
+                Text(
+                    "This Space is synced to a folder on this phone. Moving to Main Space keeps " +
+                        "the photo, but do you also want to move the matching file on this phone " +
+                        "to this app's local trash?"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.moveSelectionToMain(container.photoApi, alsoRemoveFromDevice = true)
+                    showMoveToMainDeviceConfirm = false
+                }) { Text("Remove from device") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    viewModel.moveSelectionToMain(container.photoApi, alsoRemoveFromDevice = false)
+                    showMoveToMainDeviceConfirm = false
+                }) { Text("Keep on device") }
             }
         )
     }

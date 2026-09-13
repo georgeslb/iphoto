@@ -13,6 +13,9 @@ interface AlbumApi {
     @GET("api/albums")
     suspend fun list(): List<AlbumDTO>
 
+    @GET("api/albums/{id}")
+    suspend fun get(@Path("id") id: String): AlbumDTO
+
     @POST("api/albums")
     suspend fun create(@Body request: AlbumCreateRequest): AlbumDTO
 

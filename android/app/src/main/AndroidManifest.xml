@@ -44,6 +44,17 @@
                 tools:node="remove" />
         </provider>
 
+        <!-- WorkManager's own manifest declares this service with NO foregroundServiceType at
+             all - it's up to the app to add whichever type(s) its Workers actually request via
+             ForegroundInfo, otherwise startForeground() throws IllegalArgumentException
+             ("foregroundServiceType 0x1 is not a subset of ... 0x0") the instant SyncWorker tries
+             to promote itself, crashing the whole process (confirmed via a real device crash -
+             this manifest gap, not the Worker code, was the actual cause). -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

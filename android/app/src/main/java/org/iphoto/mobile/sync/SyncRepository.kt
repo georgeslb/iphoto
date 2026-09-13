@@ -115,6 +115,23 @@ class SyncRepository(
         SyncDiff(toUpload, toRemove, toRestore, toLocalRestore)
     }
 
+    // Caps one sync run's uploads to a cumulative size budget instead of draining the whole
+    // backlog in one burst - a large backlog is spread across several (now 15-minutes-apart,
+    // see SyncWorker) runs instead. Always includes at least one asset even if it alone exceeds
+    // the budget, so one unusually large file can't stall progress on everything behind it
+    // forever. [assets] order is preserved as given (whatever order computeDiff produced it in) -
+    // this doesn't try to prioritize smaller/newer/older files over each other.
+    fun selectUploadBatch(assets: List<LocalAsset>, maxBytes: Long = MAX_UPLOAD_BYTES_PER_RUN): List<LocalAsset> {
+        val batch = mutableListOf<LocalAsset>()
+        var cumulative = 0L
+        for (asset in assets) {
+            if (batch.isNotEmpty() && cumulative + asset.size > maxBytes) break
+            batch.add(asset)
+            cumulative += asset.size
+        }
+        return batch
+    }
+
     private suspend fun hashOf(asset: LocalAsset): String =
         hashCache.get(asset.uri.toString(), asset.size, asset.lastModified)
             ?: FileHasher.md5(context, asset.uri).also {
@@ -246,5 +263,9 @@ class SyncRepository(
         private const val CHUNK_SIZE = 1 * 1024 * 1024
         private const val TASK_POLL_INTERVAL_MS = 1000L
         private const val TASK_POLL_TIMEOUT_MS = 5 * 60 * 1000L
+        // Default per-run upload budget for selectUploadBatch - chosen as a reasonable amount for
+        // one ~15-minute cycle on typical mobile/wifi conditions without hammering a self-hosted
+        // single-instance server harder than it's likely provisioned for.
+        const val MAX_UPLOAD_BYTES_PER_RUN = 200L * 1024 * 1024
     }
 }

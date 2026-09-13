@@ -1,5 +1,37 @@
 # Android TODO
 
+## Confirm before removing the device file on "move to Main" — 2026-09-13
+
+`PagedPhotoGridViewModel.moveSelectionToMain` gained an `alsoRemoveFromDevice` param (default
+`false`, unused change for every existing caller). `PhotoGridContent`'s "move to Main" action now
+shows a confirmation dialog first, but only when `canExcludeFromSync` is true (i.e. this Space is
+the one currently synced to a device folder - the only case a matching local file could even
+exist). "Remove from device" reuses `onPhotosMovedToGarbage` - the exact same local-trash mirror
+`moveSelectionToGarbage` already uses - since "move this file to `.iPhotoTrash`" is the identical
+operation either way, just triggered from a different action. Not wired into the single-photo
+lightbox - there's no "move to Main" action there at all yet, grid-only.
+
+## Content-URI trigger for near-instant sync, even with the app not running — 2026-09-13
+
+The 15-minute periodic poll alone meant sync only ever happened while the app was already
+running/recently running - not the "sync when a photo is added, even if the app isn't running at
+all" the user actually needed. Added `SyncWorker.scheduleContentTrigger` using
+`Constraints.addContentUriTrigger(folderUri, true)` - backed by `JobInfo.TriggerContentUri`, this
+is watched by the system JobScheduler itself, not any in-process listener, so it wakes the app for
+a file change in the synced folder even from a fully dead process.
+
+- Content-uri-trigger jobs are inherently one-shot (JobScheduler: can't combine with
+  `setPeriodic()`/`setPersisted()`) - `SyncWorker.doWork()` re-arms it again at the end of every
+  run (success or failure), and `SyncViewModel` also (re-)arms it explicitly when auto-sync is
+  turned on and whenever the synced folder changes.
+- **Kept the 15-minute periodic poll running as a fallback, not a replacement** - reliability of
+  the content trigger depends on the specific SAF `DocumentsProvider` behind the chosen folder
+  actually calling `notifyChange()`. The built-in local-storage/SD-card provider does (backed by a
+  real `FileObserver`); a third-party provider (e.g. a cloud-storage app's own SAF picker) might
+  never fire it, which is exactly what the periodic fallback covers.
+- [ ] Not yet verified on-device with the app fully killed (not just backgrounded) - the mechanism
+  is confirmed against the actual API docs/JobScheduler behavior, not observed end-to-end here.
+
 ## "Move to Main Space" for a synced Space, tracked so it isn't re-imported — 2026-09-13
 
 Follow-up to "exclude/include from sync" below: "when connecting to a space different from main
@@ -44,6 +76,50 @@ new tests, 14 total), `SyncRepositoryTest` (1 new test - a moved-to-main hash is
 with/without a callback set, its error and no-op paths - 30 total), against the same real
 dependency jars. All passed. `SpaceDetailScreen`/`SelectionActionBar`/`PhotoGridContent`'s actual
 Compose rendering (the new button) is reviewed by hand only, same Compose-UI caveat as always.
+
+## Removed manual "Sync now", batched/throttled auto-sync, live space refresh — 2026-09-13
+
+- **Removed "Sync now"** entirely (`SyncScreen`/`SyncViewModel`) - a one-off tap could push an
+  unbounded number of assets in a single burst. The opt-in periodic job is now the only way sync
+  ever runs.
+- **Periodic interval 6h -> 15min**: asked for 10 minutes, but `PeriodicWorkRequest` has a hard
+  15-minute floor - no WorkManager configuration goes lower (confirmed against the API, not
+  assumed). Went with the plain 15-minute `PeriodicWorkRequestBuilder` rather than a
+  self-rescheduling one-time-work chain that could hit exactly 10 - simpler and more robust
+  (the OS guarantees the reschedule, not app code), per explicit confirmation.
+- **Per-run upload cap**: `SyncRepository.selectUploadBatch` caps one run to a 200MB cumulative
+  budget (`MAX_UPLOAD_BYTES_PER_RUN`) instead of draining the whole backlog - a large backlog now
+  spreads across several 15-minute runs. Always includes at least one asset even if it alone
+  exceeds the budget, so a single large file can't stall everything behind it forever.
+- **Live space refresh**: `SpaceDetailScreen` now refreshes on `ON_RESUME` (returning to an
+  already-open screen, or the app itself resuming) and, while a sync is actively `RUNNING` against
+  the space currently being viewed, polls every 8s for new thumbnails - both via a new
+  `PagedPhotoGridViewModel.refreshQuietly()` that swaps in the new page without flipping
+  `isLoading` (a plain `loadFirstPage()` would blank/flash the grid every 8 seconds, which would
+  have been bad UX for something running that often).
+- [ ] **Not extended to Library/Main Space**: this only covers `SpaceDetailScreen`. Main Space
+  sync is supported server-side and by `SyncWorker`, but `LibraryScreen` doesn't currently know its
+  own backing space id, so it can't check "is *this* the space being synced" the way
+  `SpaceDetailScreen` does. Worth adding if Main Space sync sees real use.
+
+## Fixed: window froze on tapping "Log in" — 2026-09-13
+
+`AuthRepository.login()`/`logout()` had no dispatcher switch at all, and `AuthViewModel` calls them
+from `viewModelScope.launch { }` (defaults to `Dispatchers.Main.immediate`) - every
+`tokenStore.xxx = ...` write runs through `KeystoreEncryptedPreferences`, which does real Android
+Keystore crypto (`Cipher.doFinal()`, and on the very first call ever, a blocking
+`KeyGenerator.generateKey()` against the Keystore). All of that was running directly on the UI
+thread. Fixed by wrapping both methods' bodies in `withContext(Dispatchers.IO)`. Verified with a
+real `assembleDebug` + `testDebugUnitTest` run, both green, and installed to the connected device.
+
+- [ ] **Related, not yet fixed**: `AuthViewModel.resumeSession()` (called synchronously from
+  `init {}`) reads `repository.isLoggedIn` / `repository.rememberMe` directly, outside any
+  coroutine - same class of bug (a decrypt on the Keystore-backed store, blocking whatever thread
+  constructs the ViewModel), just smaller/less noticeable since decrypt is faster than the
+  first-ever key generation `login()` could hit. Worth moving these reads onto IO too, but that
+  means either making `AuthRepository.isLoggedIn`/`rememberMe` suspend (touches every call site,
+  including `LoginScreen`'s initial value wiring) or restructuring `resumeSession()` - didn't want
+  to expand this fix's blast radius beyond the actual reported bug (the login button freezing).
 
 ## Main Space sync, exclude/include from sync, and "Remember me" — 2026-09-13
 

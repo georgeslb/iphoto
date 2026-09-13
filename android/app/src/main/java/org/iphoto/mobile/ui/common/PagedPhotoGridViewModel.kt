@@ -93,6 +93,32 @@ class PagedPhotoGridViewModel(
         }
     }
 
+    // Re-fetches page 0 and swaps in the result without flipping isLoading or touching
+    // selectedIds/isMutating/actionError - a plain loadFirstPage() would blank the grid and show a
+    // spinner, which is fine for an explicit user action but not for a refresh firing repeatedly
+    // in the background (SpaceDetailScreen uses this both on screen resume and, while a sync is
+    // actively running against the currently-viewed Space, on a timer - so new thumbnails show up
+    // without the user needing to leave and reopen the screen). A refresh already in flight, or a
+    // real load still in progress, is left alone rather than piling up a second one.
+    private var isRefreshing = false
+
+    fun refreshQuietly() {
+        if (_uiState.value.isLoading || isRefreshing) return
+        isRefreshing = true
+        viewModelScope.launch {
+            try {
+                val (photos, last) = loadPage(0, PAGE_SIZE)
+                nextPage = 1
+                _uiState.value = _uiState.value.copy(photos = photos, endReached = last)
+            } catch (e: Exception) {
+                // Silent by design - this is a background refresh, not a user-initiated action.
+                // Whatever the last real load/error showed stays on screen.
+            } finally {
+                isRefreshing = false
+            }
+        }
+    }
+
     fun loadMore() {
         val current = _uiState.value
         if (current.isLoading || current.isLoadingMore || current.endReached) return
@@ -145,19 +171,31 @@ class PagedPhotoGridViewModel(
         viewModelScope.launch {
             try {
                 photoApi.moveToGarbage(ids)
-                // Best-effort: if this throws, the Space photo is still garbaged server-side, and
-                // the next sync pass will reconcile the local file via computeDiff's toRemove.
-                try {
-                    onPhotosMovedToGarbage?.invoke(selectedPhotos)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to mirror move-to-garbage onto the local synced folder", e)
-                }
+                mirrorToLocalTrashInBackground(selectedPhotos)
                 loadFirstPage()
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isMutating = false,
                     actionError = e.message ?: "Failed to move to garbage"
                 )
+            }
+        }
+    }
+
+    // onPhotosMovedToGarbage (SyncRepository.trashLocalFilesForHashes) re-scans and re-hashes the
+    // *entire* synced folder via SAF to find the handful of files matching this selection - slow
+    // enough on a large folder that awaiting it inline made "move to garbage"/"move to Main + also
+    // remove from device" visibly hang before the action appeared to finish. It was already
+    // documented as best-effort (a failure here doesn't undo the server-side move, the next sync
+    // pass reconciles it), so there's no correctness reason to block on it - launched as its own
+    // independent coroutine instead, so the grid refreshes and the mutating spinner clears the
+    // moment the server call succeeds, while this keeps running in the background.
+    private fun mirrorToLocalTrashInBackground(photos: List<Photo>) {
+        viewModelScope.launch {
+            try {
+                onPhotosMovedToGarbage?.invoke(photos)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to mirror move-to-garbage onto the local synced folder", e)
             }
         }
     }
@@ -188,7 +226,13 @@ class PagedPhotoGridViewModel(
     // Moves the selection to the Main Space (Albums hold references to Main Space photos, Spaces
     // own them - this actually transfers ownership, unlike addSelectionToAlbum below). The photos
     // leave this Space entirely, so this reloads the same way moveSelectionToGarbage does.
-    fun moveSelectionToMain(photoApi: PhotoApi) {
+    //
+    // alsoRemoveFromDevice: the user's answer to "also remove this from your phone?" (asked by
+    // PhotoGridContent only when canExcludeFromSync - i.e. this Space is the one currently synced
+    // to a device folder, the only case where a matching local file could even exist). When true,
+    // this reuses onPhotosMovedToGarbage - the exact same "move this file to .iPhotoTrash" mirror
+    // moveSelectionToGarbage uses - since it's the same underlying operation either way.
+    fun moveSelectionToMain(photoApi: PhotoApi, alsoRemoveFromDevice: Boolean = false) {
         val ids = _uiState.value.selectedIds.toList()
         if (ids.isEmpty()) return
         val selectedPhotos = _uiState.value.photos.filter { it.id in _uiState.value.selectedIds }
@@ -199,11 +243,17 @@ class PagedPhotoGridViewModel(
                 // Best-effort, same reasoning as moveSelectionToGarbage's mirror: if this throws,
                 // the photo is still moved server-side, and the next sync pass would just re-upload
                 // the local file once more before settling - not silent data loss, just a wasted
-                // upload.
+                // upload. Bookkeeping (markMovedToMain) is cheap/synchronous so it stays inline;
+                // the actual device-file removal is the slow full-folder scan+hash, so it's
+                // launched independently (see mirrorToLocalTrashInBackground) rather than making
+                // the whole action wait on it.
                 try {
                     onPhotosMovedToMain?.invoke(selectedPhotos)
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to record move-to-Main for the synced folder", e)
+                }
+                if (alsoRemoveFromDevice) {
+                    mirrorToLocalTrashInBackground(selectedPhotos)
                 }
                 loadFirstPage()
             } catch (e: Exception) {
