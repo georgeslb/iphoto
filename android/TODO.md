@@ -196,8 +196,30 @@ Android Studio's bundled JDK (`...\Android Studio\jbr`) already exist on disk - 
 Added the first unit tests in the module (none existed before): JUnit4 + kotlinx-coroutines-test +
 MockK, `app/src/test/java/org/iphoto/mobile/`. Covered `PagedPhotoGridViewModel`,
 `PhotoDetailViewModel`, `AuthViewModel` - the ViewModels with the most business logic and, for the
-first two, the newest and least-exercised code (today's multi-select feature). Not yet covered:
-`SyncViewModel`/`SyncRepository` (needs a real or faked `Context`/`ContentResolver` for
-`LocalFolderScanner`/SAF access - more setup than a plain ViewModel test), `AlbumsViewModel`,
-`SpacesViewModel`, `PagedPhotoGridViewModel`'s `loadMore` pagination edge cases beyond the basics
+first two, the newest and least-exercised code (today's multi-select feature).
+
+`AlbumsViewModelTest`/`SpacesViewModelTest` added later the same day - both ViewModels are a thin
+`init { load() }` + `load()` wrapper around one `suspend list()` call, so coverage is intentionally
+small: loads on init, falls back to an error state (with and without a message) on failure, `load()`
+reloads and replaces the previous list, and a previous error clears once a reload succeeds.
+`SpacesViewModelTest` also pins that `deletionAllowed` survives the round trip unchanged (the Main
+space's non-deletable flag - not filtered here, unlike `SyncViewModel`'s sync-target picker, but
+something `SpacesScreen`'s own "delete" affordance is expected to read directly off this state).
+Added `testAlbum`/`testSpace` fixtures to `TestFixtures.kt` alongside the existing `testPhoto`.
+
+**Verified without a live Gradle sync**, same as the `TokenStore` migration and for the same
+reason (`androidx.lifecycle` is Google-Maven-hosted, unreachable here): compiled and ran the real,
+unmodified `AlbumsViewModelTest`/`SpacesViewModelTest` files against the real `AlbumApi`/`SpaceApi`/
+`AlbumDTO`/`SpaceDTO` and real MockK/JUnit/kotlinx-coroutines-test jars, substituting only
+`AlbumsViewModel`/`SpacesViewModel` themselves with a stand-in using a plain
+`CoroutineScope(Dispatchers.Main)` instead of `androidx.lifecycle`'s `ViewModel`/`viewModelScope`
+(identical behavior under `MainDispatcherRule`'s `Dispatchers.setMain`, just without the
+unavailable dependency) - all 11 tests passed for real. The actual production `AlbumsViewModel`/
+`SpacesViewModel` classes themselves were not recompiled this way, only reviewed by hand, but they
+follow the exact same `MutableStateFlow` + `viewModelScope.launch { try/catch }` shape already
+proven out by `AuthViewModel`/`PhotoDetailViewModel` elsewhere in this same module.
+
+Still not covered: `SyncViewModel`/`SyncRepository` (needs a real or faked `Context`/
+`ContentResolver` for `LocalFolderScanner`/SAF access - meaningfully more setup than a plain
+ViewModel test), `PagedPhotoGridViewModel`'s `loadMore` pagination edge cases beyond the basics
 tested so far.

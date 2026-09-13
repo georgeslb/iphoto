@@ -1,6 +1,8 @@
 package org.iphoto.mobile.testutil
 
+import org.iphoto.mobile.model.AlbumDTO
 import org.iphoto.mobile.model.Photo
+import org.iphoto.mobile.model.SpaceDTO
 
 fun testPhoto(
     id: String,
@@ -25,4 +27,30 @@ fun testPhoto(
     height = 1080,
     fileSystemCreationDate = null,
     duplicates = null
+)
+
+fun testAlbum(id: String, name: String = "Album $id"): AlbumDTO = AlbumDTO(
+    id = id,
+    name = name,
+    description = null,
+    coverPhoto = null,
+    photoCount = 0,
+    createdAt = "2026-01-01T00:00:00",
+    updatedAt = "2026-01-01T00:00:00"
+)
+
+fun testSpace(
+    id: String,
+    name: String = "Space $id",
+    deletionAllowed: Boolean = true
+): SpaceDTO = SpaceDTO(
+    id = id,
+    name = name,
+    photoCount = 0,
+    createdAt = "2026-01-01T00:00:00",
+    updatedAt = "2026-01-01T00:00:00",
+    albumAllowed = true,
+    allowCopyToMain = true,
+    deletionAllowed = deletionAllowed,
+    deleted = false
 )
