@@ -42,17 +42,10 @@ Known gaps / not done:
 - Still no Garbage screen anywhere in the Android app, so a user can't trigger a restore from the
   app UI directly - `toRestore`/`toLocalRestore` only fire from file-system-level reconciliation
   (manually moving a file, or restoring via the web app) picked up on the next sync.
-- The reactive "also trash the local file" wiring only covers `SpaceDetailScreen`'s multi-select
-  garbage action (`PagedPhotoGridViewModel.onPhotosMovedToGarbage`), not the lightbox's own
-  independent delete button (`PhotoDetailViewModel.moveToGarbage`) - same root cause as the
-  existing "Lightbox has no 'remove from album' action" item above: the `photo/{photoId}` route
-  carries no space-context argument, so the lightbox has no way to know it's showing a photo from
-  the synced Space. **Consequence**: deleting via the lightbox from a synced Space leaves the local
-  file in place, and since `computeDiff` treats the folder as ground truth (matching how `toRemove`
-  already treats local absence as authoritative the other way), the *next* sync will restore that
-  photo instead of leaving it garbaged - not a crash, but likely surprising. Fix is the same nav
-  argument the album TODO needs, passed through to a garbage-move hook analogous to
-  `onPhotosMovedToGarbage`.
+- ~~The reactive "also trash the local file" wiring only covers `SpaceDetailScreen`'s multi-select
+  garbage action~~ - fixed, see "Multi-select (garbage / album / date)" below: the lightbox's own
+  delete button now mirrors onto the local synced folder's trash too, via the same `spaceId` nav
+  arg that also fixed "Lightbox has no 'remove from album' action".
 - `trashLocalFilesForHashes`/local-trash moves are best-effort and silently swallow individual
   per-file failures (`LocalTrash.moveDocument` returns `false` rather than throwing) - if one is
   worth surfacing to the user, `SyncWorker`'s logs are the only place it currently shows up.
@@ -97,11 +90,24 @@ version bumps:
 
 ## Multi-select (garbage / album / date) - 2026-09-13
 
-- [ ] **Lightbox has no "remove from album" action**, only the album-grid selection bar does.
-      `PhotoDetailScreen`/`MainScreen`'s `photo/{photoId}` route has no album-context argument
-      today, so the lightbox can't know it was opened from inside an album. Would need a nav
-      argument (e.g. `photo/{photoId}?albumId={albumId}`) threaded from `AlbumDetailScreen`'s
-      `onPhotoClick` through `MainScreen`'s NavHost.
+- [x] **Lightbox has no "remove from album" action** - fixed. `MainScreen`'s `photo/{photoId}`
+      route now takes optional `albumId`/`spaceId` query-style nav args (`photo/{photoId}
+      ?albumId={albumId}&spaceId={spaceId}`), threaded from `AlbumDetailScreen`'s and
+      `SpaceDetailScreen`'s `onPhotoClick`; `LibraryScreen`'s `onPhotoClick` still navigates with
+      neither, which the route's `nullable = true, defaultValue = null` args allow. `PhotoDetailScreen`
+      shows a "remove from album" button (`PhotoDetailViewModel.removeFromAlbum`) whenever `albumId`
+      is non-null, mirroring `PagedPhotoGridViewModel.removeSelectionFromAlbum`'s bulk-action
+      behavior for the single-photo case. Same caveat as that bulk action already had: popping back
+      to `AlbumDetailScreen` doesn't refresh its (separate, same-instance) `PagedPhotoGridViewModel`
+      state, so the removed photo stays visible in the grid until it's reloaded some other way -
+      pre-existing gap, not introduced here.
+- [x] The new `spaceId` nav arg above also closes the sync-fluidity gap from the "Sync/Space
+      fluidity" entry above: the lightbox's own delete button (`PhotoDetailViewModel.moveToGarbage`)
+      now mirrors onto the local synced folder's trash too, the same way
+      `SpaceDetailScreen`'s multi-select action already did - see `PhotoDetailScreen`'s
+      `onPhotoMovedToGarbage` (same logic as `SpaceDetailScreen`'s, just for one photo instead of a
+      selection). Not yet run through a real device/emulator - see "No Android build/test run in
+      this session" above, still true.
 - [ ] **Black image in the lightbox** (`PhotoDetailScreen`) - added `Log.e`/`Log.d` around the
       `AsyncImage` load (tag `PhotoDetailScreen`) logging the failing URL, contentType, and
       throwable. Leading hypotheses, unconfirmed: (a) the photo is a video and `/original` serves

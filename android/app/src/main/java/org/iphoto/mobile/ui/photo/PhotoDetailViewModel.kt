@@ -1,5 +1,6 @@
 package org.iphoto.mobile.ui.photo
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -16,18 +17,29 @@ import org.iphoto.mobile.model.UpdatePhotoDateRequest
 import org.iphoto.mobile.network.AlbumApi
 import org.iphoto.mobile.network.PhotoApi
 
+private const val TAG = "PhotoDetailViewModel"
+
 sealed interface PhotoDetailUiState {
     data object Loading : PhotoDetailUiState
     data class Loaded(val photo: Photo, val isMutating: Boolean = false, val actionError: String? = null) :
         PhotoDetailUiState
     data class Failed(val message: String) : PhotoDetailUiState
-    // Only reachable from Loaded, once moveToGarbage succeeds - the screen navigates back on it.
+    // Only reachable from Loaded, once moveToGarbage or removeFromAlbum succeeds - either way the
+    // photo is no longer visible from wherever the lightbox was opened, so the screen navigates
+    // back on it (see PhotoDetailScreen's LaunchedEffect).
     data object Removed : PhotoDetailUiState
 }
 
 class PhotoDetailViewModel(
     private val photoApi: PhotoApi,
-    private val photoId: String
+    private val photoId: String,
+    // Set only when the lightbox was opened from AlbumDetailScreen - lets it offer "remove from
+    // album" alongside the garbage/album/date actions that apply everywhere.
+    private val albumId: String? = null,
+    // Set only when the lightbox was opened from the Space currently synced to a device folder
+    // (see SyncPrefs) - mirrors "move to garbage" onto the matching local file right away, same as
+    // PagedPhotoGridViewModel.onPhotosMovedToGarbage does for the grid's own selection action.
+    private val onPhotoMovedToGarbage: (suspend (Photo) -> Unit)? = null
 ) : ViewModel() {
     private val _uiState = MutableStateFlow<PhotoDetailUiState>(PhotoDetailUiState.Loading)
     val uiState: StateFlow<PhotoDetailUiState> = _uiState.asStateFlow()
@@ -51,9 +63,33 @@ class PhotoDetailViewModel(
         viewModelScope.launch {
             try {
                 photoApi.moveToGarbage(listOf(photoId))
+                // Best-effort: if this throws, the photo is still garbaged server-side, and the
+                // next sync pass will reconcile the local file via computeDiff's toRemove.
+                try {
+                    onPhotoMovedToGarbage?.invoke(loaded.photo)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to mirror move-to-garbage onto the local synced folder", e)
+                }
                 _uiState.value = PhotoDetailUiState.Removed
             } catch (e: Exception) {
                 _uiState.value = loaded.copy(isMutating = false, actionError = e.message ?: "Failed to move to garbage")
+            }
+        }
+    }
+
+    // Only meaningful when albumId is set (lightbox opened from AlbumDetailScreen) - removing a
+    // reference from this album doesn't touch the photo's Main Space ownership, but the photo is
+    // no longer part of *this* album view, so the screen navigates back the same way moveToGarbage
+    // does.
+    fun removeFromAlbum(albumApi: AlbumApi) = withLoaded { loaded ->
+        val id = albumId ?: return@withLoaded
+        _uiState.value = loaded.copy(isMutating = true, actionError = null)
+        viewModelScope.launch {
+            try {
+                albumApi.removePhotos(id, AlbumPhotoRequest(listOf(photoId)))
+                _uiState.value = PhotoDetailUiState.Removed
+            } catch (e: Exception) {
+                _uiState.value = loaded.copy(isMutating = false, actionError = e.message ?: "Failed to remove from album")
             }
         }
     }
@@ -103,8 +139,11 @@ class PhotoDetailViewModel(
 
 class PhotoDetailViewModelFactory(
     private val photoApi: PhotoApi,
-    private val photoId: String
+    private val photoId: String,
+    private val albumId: String? = null,
+    private val onPhotoMovedToGarbage: (suspend (Photo) -> Unit)? = null
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
-    override fun <T : ViewModel> create(modelClass: Class<T>): T = PhotoDetailViewModel(photoApi, photoId) as T
+    override fun <T : ViewModel> create(modelClass: Class<T>): T =
+        PhotoDetailViewModel(photoApi, photoId, albumId, onPhotoMovedToGarbage) as T
 }

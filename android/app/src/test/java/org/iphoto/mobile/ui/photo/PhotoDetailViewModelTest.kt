@@ -6,6 +6,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.iphoto.mobile.model.AlbumDTO
 import org.iphoto.mobile.model.AlbumPhotoRequest
+import org.iphoto.mobile.model.Photo
 import org.iphoto.mobile.network.AlbumApi
 import org.iphoto.mobile.network.PhotoApi
 import org.iphoto.mobile.testutil.MainDispatcherRule
@@ -70,6 +71,80 @@ class PhotoDetailViewModelTest {
         val state = viewModel.uiState.value as PhotoDetailUiState.Loaded
         assertEquals("boom", state.actionError)
         assertFalse(state.isMutating)
+    }
+
+    @Test
+    fun `moveToGarbage invokes onPhotoMovedToGarbage with the loaded photo after the api call`() = runTest {
+        val photoApi = mockk<PhotoApi>()
+        val photo = testPhoto("1")
+        coEvery { photoApi.get("1") } returns photo
+        coEvery { photoApi.moveToGarbage(listOf("1")) } returns Unit
+        var invokedWith: Photo? = null
+        val viewModel = PhotoDetailViewModel(photoApi, "1", onPhotoMovedToGarbage = { invokedWith = it })
+
+        viewModel.moveToGarbage()
+
+        assertEquals(photo, invokedWith)
+        assertTrue(viewModel.uiState.value is PhotoDetailUiState.Removed)
+    }
+
+    @Test
+    fun `moveToGarbage still transitions to Removed when onPhotoMovedToGarbage throws`() = runTest {
+        val photoApi = mockk<PhotoApi>()
+        coEvery { photoApi.get("1") } returns testPhoto("1")
+        coEvery { photoApi.moveToGarbage(listOf("1")) } returns Unit
+        val viewModel = PhotoDetailViewModel(
+            photoApi,
+            "1",
+            onPhotoMovedToGarbage = { throw RuntimeException("local trash unavailable") }
+        )
+
+        viewModel.moveToGarbage()
+
+        assertTrue(viewModel.uiState.value is PhotoDetailUiState.Removed)
+    }
+
+    @Test
+    fun `removeFromAlbum calls the api with this photo's id and transitions to Removed`() = runTest {
+        val photoApi = mockk<PhotoApi>()
+        coEvery { photoApi.get("1") } returns testPhoto("1")
+        val albumApi = mockk<AlbumApi>()
+        coEvery { albumApi.removePhotos("album-1", AlbumPhotoRequest(listOf("1"))) } returns
+            AlbumDTO("album-1", "Trip", null, null, 0, "now", "now")
+        val viewModel = PhotoDetailViewModel(photoApi, "1", albumId = "album-1")
+
+        viewModel.removeFromAlbum(albumApi)
+
+        coVerify(exactly = 1) { albumApi.removePhotos("album-1", AlbumPhotoRequest(listOf("1"))) }
+        assertTrue(viewModel.uiState.value is PhotoDetailUiState.Removed)
+    }
+
+    @Test
+    fun `removeFromAlbum surfaces an error and stays Loaded on failure`() = runTest {
+        val photoApi = mockk<PhotoApi>()
+        coEvery { photoApi.get("1") } returns testPhoto("1")
+        val albumApi = mockk<AlbumApi>()
+        coEvery { albumApi.removePhotos(any(), any()) } throws RuntimeException("boom")
+        val viewModel = PhotoDetailViewModel(photoApi, "1", albumId = "album-1")
+
+        viewModel.removeFromAlbum(albumApi)
+
+        val state = viewModel.uiState.value as PhotoDetailUiState.Loaded
+        assertEquals("boom", state.actionError)
+        assertFalse(state.isMutating)
+    }
+
+    @Test
+    fun `removeFromAlbum is a no-op when the lightbox has no album context`() = runTest {
+        val photoApi = mockk<PhotoApi>()
+        coEvery { photoApi.get("1") } returns testPhoto("1")
+        val albumApi = mockk<AlbumApi>()
+        val viewModel = PhotoDetailViewModel(photoApi, "1")
+
+        viewModel.removeFromAlbum(albumApi)
+
+        coVerify(exactly = 0) { albumApi.removePhotos(any(), any()) }
+        assertTrue(viewModel.uiState.value is PhotoDetailUiState.Loaded)
     }
 
     @Test

@@ -85,7 +85,7 @@ fun MainScreen(onLogout: () -> Unit) {
                 val albumId = backStackEntry.arguments?.getString("albumId").orEmpty()
                 AlbumDetailScreen(
                     albumId = albumId,
-                    onPhotoClick = { photoId -> navController.navigate("photo/$photoId") },
+                    onPhotoClick = { photoId -> navController.navigate("photo/$photoId?albumId=$albumId") },
                     onBack = { navController.popBackStack() }
                 )
             }
@@ -99,7 +99,7 @@ fun MainScreen(onLogout: () -> Unit) {
                 val spaceId = backStackEntry.arguments?.getString("spaceId").orEmpty()
                 SpaceDetailScreen(
                     spaceId = spaceId,
-                    onPhotoClick = { photoId -> navController.navigate("photo/$photoId") },
+                    onPhotoClick = { photoId -> navController.navigate("photo/$photoId?spaceId=$spaceId") },
                     onBack = { navController.popBackStack() }
                 )
             }
@@ -110,11 +110,27 @@ fun MainScreen(onLogout: () -> Unit) {
                 SyncScreen()
             }
             composable(
-                route = "photo/{photoId}",
-                arguments = listOf(navArgument("photoId") { type = NavType.StringType })
+                // albumId/spaceId are optional context the lightbox needs to know what it can act
+                // on - "remove from album" only makes sense when opened from AlbumDetailScreen,
+                // and mirroring "move to garbage" onto a synced folder's local trash only applies
+                // when opened from the Space currently synced to a device folder. Library's
+                // onPhotoClick passes neither.
+                route = "photo/{photoId}?albumId={albumId}&spaceId={spaceId}",
+                arguments = listOf(
+                    navArgument("photoId") { type = NavType.StringType },
+                    navArgument("albumId") { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("spaceId") { type = NavType.StringType; nullable = true; defaultValue = null }
+                )
             ) { backStackEntry ->
                 val photoId = backStackEntry.arguments?.getString("photoId").orEmpty()
-                PhotoDetailScreen(photoId = photoId, onBack = { navController.popBackStack() })
+                val albumId = backStackEntry.arguments?.getString("albumId")
+                val spaceId = backStackEntry.arguments?.getString("spaceId")
+                PhotoDetailScreen(
+                    photoId = photoId,
+                    albumId = albumId,
+                    spaceId = spaceId,
+                    onBack = { navController.popBackStack() }
+                )
             }
         }
     }

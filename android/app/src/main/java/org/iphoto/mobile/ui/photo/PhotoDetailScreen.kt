@@ -1,5 +1,6 @@
 package org.iphoto.mobile.ui.photo
 
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -13,6 +14,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.PhotoAlbum
+import androidx.compose.material.icons.filled.PlaylistRemove
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -42,6 +44,7 @@ import coil3.compose.AsyncImagePainter
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import org.iphoto.mobile.LocalAppContainer
+import org.iphoto.mobile.model.Photo
 import org.iphoto.mobile.ui.common.AlbumPickerDialog
 import org.iphoto.mobile.ui.common.DateTimePickerDialog
 
@@ -49,11 +52,26 @@ private const val TAG = "PhotoDetailScreen"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PhotoDetailScreen(photoId: String, onBack: () -> Unit) {
+fun PhotoDetailScreen(photoId: String, albumId: String? = null, spaceId: String? = null, onBack: () -> Unit) {
     val container = LocalAppContainer.current
+    // Same synced-space check as SpaceDetailScreen's banner - only set when this lightbox is
+    // showing a photo from the Space currently synced to a device folder.
+    val syncPrefs = container.syncPrefs
+    val isSyncedSpace = spaceId != null && syncPrefs.spaceId == spaceId && syncPrefs.folderUri != null
+    val syncedFolderUri = syncPrefs.folderUri
+    val onPhotoMovedToGarbage: (suspend (Photo) -> Unit)? = remember(spaceId, isSyncedSpace, syncedFolderUri) {
+        if (isSyncedSpace && syncedFolderUri != null) {
+            { photo: Photo ->
+                val hash = photo.fileHash?.takeIf(String::isNotBlank)
+                if (hash != null) {
+                    container.syncRepository().trashLocalFilesForHashes(Uri.parse(syncedFolderUri), setOf(hash))
+                }
+            }
+        } else null
+    }
     val viewModel: PhotoDetailViewModel = viewModel(
         key = "photo-$photoId",
-        factory = PhotoDetailViewModelFactory(container.photoApi, photoId)
+        factory = PhotoDetailViewModelFactory(container.photoApi, photoId, albumId, onPhotoMovedToGarbage)
     )
     val state by viewModel.uiState.collectAsState()
     var showAlbumPicker by remember { mutableStateOf(false) }
@@ -85,6 +103,11 @@ fun PhotoDetailScreen(photoId: String, onBack: () -> Unit) {
                         }
                         IconButton(onClick = { showAlbumPicker = true }, enabled = !loaded.isMutating) {
                             Icon(Icons.Filled.PhotoAlbum, contentDescription = "Add to album", tint = Color.White)
+                        }
+                        if (albumId != null) {
+                            IconButton(onClick = { viewModel.removeFromAlbum(container.albumApi) }, enabled = !loaded.isMutating) {
+                                Icon(Icons.Filled.PlaylistRemove, contentDescription = "Remove from album", tint = Color.White)
+                            }
                         }
                         IconButton(onClick = viewModel::moveToGarbage, enabled = !loaded.isMutating) {
                             Icon(Icons.Filled.Delete, contentDescription = "Move to garbage", tint = Color.White)
@@ -146,8 +169,8 @@ fun PhotoDetailScreen(photoId: String, onBack: () -> Unit) {
         AlbumPickerDialog(
             albumApi = container.albumApi,
             onDismiss = { showAlbumPicker = false },
-            onAlbumPicked = { albumId ->
-                viewModel.addToAlbum(container.albumApi, albumId)
+            onAlbumPicked = { pickedAlbumId ->
+                viewModel.addToAlbum(container.albumApi, pickedAlbumId)
                 showAlbumPicker = false
             },
             onCreateAlbum = { name ->
