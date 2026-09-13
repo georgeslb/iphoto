@@ -876,6 +876,32 @@ Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
     409 + the colliding `PersonDTO` unless `confirmMerge: true` (§4.3).
 *   `DELETE /api/faces/{id}/person`: Unlink one face from its person, keeping the `FaceEntity`.
 
+### 5.10. Operations / Observability (Spring Boot Actuator)
+Not called by the frontend — an ops surface for an admin/operator during an incident, added after
+a real production incident (2026-09-12, see TODO.md) took hours to diagnose manually (borrowing a
+JDK image, `jhsdb jstack` over a shared PID namespace, hand-rolled `/proc` CPU-tick scraping) for
+lack of anything better. Gated the same way as `/api/admin/**` (`SecurityConfig`:
+`/actuator/**` → `hasRole("ADMIN")`), on the *same* port as everything else (no
+`management.server.port` override — a separate management port runs its own embedded server
+context that Spring Security's normal filter chain never sees, which would leave these endpoints
+unauthenticated). Only a curated subset is exposed (`management.endpoints.web.exposure.include` in
+`application.yml`) — not `env`/`beans`/`configprops`, which dump more internal detail than an
+incident actually needs.
+*   `GET /actuator/health`: Aggregate health, `show-details: always`. Includes
+    `HeavyTaskHealthIndicator` (`org.iphoto.health`) — flips `DOWN` the moment any `FACE_RECOGNITION`/
+    `CHECK_DUPLICATION` task has been `PROCESSING` for more than 15 minutes (well above any
+    legitimate run of these self-bounded algorithms, far below the hour
+    `TaskWorkerManagerImpl#reclaimStuckProcessingTasks` waits before treating one as orphaned) —
+    the fast-alerting complement to that hourly, unconditional fallback.
+*   `GET /actuator/threaddump`: Full JSON thread dump over HTTP — no more borrowing a JDK image to
+    get one.
+*   `GET /actuator/heapdump`: Full heap dump for postmortem analysis.
+*   `GET /actuator/metrics` / `GET /actuator/metrics/{name}`: JVM/GC/thread/HTTP-latency metrics
+    (Micrometer, no external registry wired up yet — nothing is scraping/graphing these, they're
+    just queryable on demand right now).
+*   `POST /actuator/loggers/{name}`: Bump a logger's level at runtime (e.g. Hibernate/JPA SQL
+    logging) without a restart — useful mid-incident.
+
 ## 6. Technical Architecture (Inferred from Code)
 
 *   **Frontend Framework:** React
