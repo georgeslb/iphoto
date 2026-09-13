@@ -7,7 +7,10 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
@@ -44,8 +47,25 @@ fun VideoPlayer(streamUrl: String, dataSourceFactory: DataSource.Factory, modifi
     // Tied to the ExoPlayer instance above (which itself is keyed on streamUrl), not just Unit -
     // navigating to a different photoId recreates both together rather than leaking the old
     // player's decoder/surface resources into the new one.
-    DisposableEffect(exoPlayer) {
-        onDispose { exoPlayer.release() }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(exoPlayer, lifecycleOwner) {
+        // Composing this screen doesn't get torn down just because the app is backgrounded (the
+        // user locks the screen, or switches away mid-video) - only navigating off this screen
+        // does, via the release() below. Without pausing here too, ExoPlayer would keep decoding
+        // and playing indefinitely in the background - a real, needless battery (and data) drain
+        // for exactly the kind of app that plays video. No matching resume-on-ON_START: the user
+        // coming back to a paused video and tapping play again (PlayerView's own controls) is a
+        // simpler, safer contract than tracking "was this actually playing before we paused it".
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE) {
+                exoPlayer.pause()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            exoPlayer.release()
+        }
     }
 
     AndroidView(

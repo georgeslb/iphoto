@@ -261,6 +261,48 @@ version bumps:
       `OkHttpDataSource.Factory`), but genuinely unverified. Needs a real `assembleDebug` +
       on-device tap-a-video check before trusting it.
 
+## Battery usage audit — 2026-09-13
+
+Went looking for the concrete things that actually drain battery on Android, rather than guessing:
+wake locks, unbounded background polling, background-work scheduling constraints, and media
+playback lifecycle. Already fine, no change needed:
+- `SyncWorker`'s periodic auto-sync already gates on `CONNECTED` + `setRequiresBatteryNotLow(true)`
+  (see "Sync/Space fluidity" above) at a 6h interval, not tighter.
+- `HashCache` persists once per sync run, not per file (see its own kdoc).
+- No `WakeLock`/`PowerManager`/`AlarmManager`/`Handler.postDelayed`/`Timer` usage anywhere in the
+  module (checked directly - none exist).
+- `SyncRepository`'s only polling loop (`waitForProcessing`, 1s interval / 5min cap) only runs
+  during an active, user-triggered or already-battery-gated upload, not on a standing timer.
+- OkHttp's logging interceptor is `if (BuildConfig.DEBUG)`-gated - zero overhead in release builds.
+- Coil's `AsyncImage` decode size is constrained by Compose layout size resolution by default (no
+  full-resolution decode for grid thumbnails) - nothing to tune here.
+
+**Found and fixed a real one**: `VideoPlayer` (lightbox video playback, see the entry above) set
+`playWhenReady = true` once and only ever released the player in `DisposableEffect`'s `onDispose`,
+which fires when the composable leaves *composition* (navigating to a different photo) - not when
+the app is merely backgrounded. Locking the screen or switching apps mid-video left ExoPlayer
+decoding and playing indefinitely in the background: real, needless battery *and* data drain, for
+exactly the kind of app where video playback is the single most power-hungry thing it does. Added a
+`LifecycleEventObserver` (via `LocalLifecycleOwner`) that calls `exoPlayer.pause()` on
+`ON_PAUSE`, alongside the existing release-on-dispose - deliberately no matching resume on
+`ON_START`/`ON_RESUME`: coming back to a paused video and tapping play again via `PlayerView`'s own
+controls is a simpler, safer contract than tracking "was this actually playing before it got
+paused". **Not verified by a compile/run** - same `androidx.media3`/Google-Maven blocker as the
+rest of the video-playback work, plus this specifically needs `LocalLifecycleOwner`
+(`androidx.compose.ui.platform`), which has a real (if in this case low-probability) version-drift
+risk: newer Compose/Lifecycle releases introduced a parallel `androidx.lifecycle.compose.
+LocalLifecycleOwner` in `lifecycle-runtime-compose` (not currently a dependency here), and this
+session has no way to confirm which one `compose-bom:2026.08.00` actually resolves `LocalLifecycleOwner`
+to, or whether the old one still compiles against it. Needs the same real `assembleDebug` +
+on-device check as the rest of the video player before trusting it - if it doesn't compile, the fix
+is a one-line import swap to `androidx.lifecycle.compose.LocalLifecycleOwner` (adding
+`lifecycle-runtime-compose` as a dependency), not a redesign.
+
+Not otherwise pursued without being asked: restricting periodic auto-sync to `NetworkType.UNMETERED`
+(Wi-Fi only) would save additional battery (cellular radio draws more power per byte transferred
+than Wi-Fi) at the cost of auto-sync silently not running at all away from Wi-Fi - a real
+product/data-usage trade-off, not a pure bugfix, so left as `CONNECTED` unless asked to change it.
+
 ## Fixed: sync never actually ran - 2026-09-13
 
 `SyncWorker` always failed with `NoSuchMethodException` on its constructor, before `doWork()` ever
