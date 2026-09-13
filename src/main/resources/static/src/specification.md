@@ -23,6 +23,24 @@ This document outlines the functionality and behavior of the IPHOTO web applicat
         `hooks/useMemories.js` + `components/MemoriesBar.jsx`, rendered only for the Library view
         (not Garbage/Album/Space/Person), clicking a memory opens it in the Lightbox the same way
         any grid photo click does.
+*   **"Recently Added" strip** (`components/RecentlyAddedSection.jsx`): a collapsed-by-default
+    section — Library (under `MemoriesBar`) and the top of each Space detail page, not
+    Album/Garbage/Person — showing the most-recently-*uploaded* (not most-recently-*taken*) assets
+    as one flat, non-day-grouped, horizontally-scrolling row (no timeline/day headers at all,
+    unlike every other photo-listing view). Deliberately lazy: nothing is fetched until the user
+    expands it (`hooks/useRecentPhotos.js`'s `loadMore` is only ever called from the toggle
+    button's first-expand and from the track's own scroll handler — never on mount), and the next
+    20-item page loads once the track is scrolled within `SCROLL_LOAD_THRESHOLD_PX` of its right
+    edge, rather than via a "load more" button or day-index prefetching. Backend:
+    `GET /api/photos/recent` / `GET /api/photos/space/{spaceId}/recent`
+    (`PhotoController`, `?page={n}`, fixed 20/page) — both just reuse the existing
+    `PhotoService.getPhotos(spaceId, pageable)` (same dedup treatment as the flat/day-index
+    listings) with a `Pageable` sorted by `createdAt DESC` instead of `dateTaken DESC`; no new
+    repository or service method was needed. Clicking an item reuses `handlePhotoClick` directly
+    (opens the Lightbox), but since these items aren't part of the current day-indexed
+    `effectivePhotos` list, Lightbox prev/next won't traverse this strip — `Lightbox.jsx`'s
+    `photos.findIndex` returns -1 for the currently-shown photo in that case, which just disables
+    both nav arrows rather than throwing.
 *   **Timeline scrubber:** every day-indexed view (Library/Album/Space/Garbage/Person, plus the
     share-guest flow) shows a right-edge vertical scrubber (`components/TimelineScrubber.jsx`) with
     one label per year. Click or drag-and-release jumps straight to that day's section — an
@@ -167,6 +185,28 @@ This section describes the application's features. For the corresponding backend
     uniformly to every menu that uses it (Library, Garbage, Album detail, Space detail). The
     Duplicates comparison view (`DuplicatePhotoGrid.jsx`) has its own separate, simpler selection
     UI and does not use this range-select behavior.
+*   **Photo/Video type filter:** a three-way toggle (All/Photos/Videos, `Header.jsx`'s
+    `MediaTypeFilter`) shown on the four day-indexed photo grids — Library, Space detail, Album
+    detail, Garbage — hidden during selection mode and on every other page (Persons, Map,
+    Duplicates, the Albums/Spaces list pages, admin). State lives in `App.jsx`
+    (`mediaTypeFilter`/`setMediaTypeFilter`, plumbed through `HeaderWrapper`), fed straight into the
+    single shared `useDayIndexedPhotos` hook instance as its 4th argument (`'all' | 'photo' |
+    'video'`), which appends `?type=photo|video` to both the `/days` and `/day/{day}` requests
+    (`all` adds nothing, so every pre-filter caller/URL is unaffected) — see
+    `hooks/useDayIndexedPhotos.js`. Backend: `PhotoEntity.isVideo` (boolean, derived from
+    `contentType`'s `"video/"` prefix, kept in sync in `onCreate`/`onUpdate` the same way
+    `groupedDay` is) backs an indexed `(space_id, is_garbage, is_video)` column
+    (`idx_photos_space_id_is_garbage_is_video`, migration `V7__add_photos_is_video.sql`, existing
+    rows backfilled from `content_type`). `org.iphoto.util.MediaTypeFilter.resolveIsVideo(String
+    type)` maps the `?type=` query param to a nullable `Boolean` (`null` = every type) shared by
+    `PhotoController`/`AlbumController`; the day-count and per-day repository queries take this as
+    an optional JPQL predicate (`(:isVideo IS NULL OR p.isVideo = :isVideo)`) rather than a derived
+    method name, since Spring Data can't express "ignore this predicate when null" through naming
+    alone. `DayIndexCache` (Library/Space/Album day-counts only — Garbage/Person stay uncached)
+    keys each entry by `"<id>:<all|photo|video>"` so counts for different filter values don't
+    collide; `evictSpace`/`evictAlbum` still remove every filter variant for that id at once on any
+    mutation. The guest share flow (`AlbumShareController`/`getAlbumPhotosForDayForShare` etc.)
+    doesn't expose this filter — always called with `isVideo = null`.
 *   **Drag-to-reorder within a day:** hovering a photo card (`PhotoGrid.jsx`, everywhere it's used
     with a `handleReorderPhotos` prop — Library/Album detail/Space detail/Person detail; never on
     `SharedAlbumView.jsx`'s public grid) shows a translucent circular drag handle. Dropping it
@@ -752,6 +792,8 @@ This section lists the primary API endpoints the frontend application calls to i
     actually owns (`PhotoService.findOwnedByIds` silently drops any other id — the authorization
     boundary here, mirroring the ownership check bulk-delete already does), with filename
     collisions within one zip de-duplicated by appending a suffix from the photo's own id.
+*   `GET /api/photos/recent?page={n}` / `GET /api/photos/space/{spaceId}/recent?page={n}`: Flat,
+    upload-time-sorted ("Recently Added" strip) pages, 20/page — see §4.1.
 *   `GET /api/map-assets?path={effectivePath}`: Fetches assets to be displayed on the map view.
 *   *(removed)* `POST /api/photos/selected` and `POST /api/menu/selected` — the toolbar/Lightbox
     button-visibility flags they returned are now computed client-side in

@@ -1,6 +1,7 @@
 import React from 'react';
 import { useParams } from 'react-router-dom';
 import PhotoGrid from './PhotoGrid'; // Assuming PhotoGrid is in the same components directory
+import RecentlyAddedSection from './RecentlyAddedSection';
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 import { useEntityById } from '../hooks/useEntityById';
 
@@ -28,6 +29,11 @@ function SpaceDetail({
         <p>{currentSpace.description}</p>
         <span className="count">{messages["photosCount"](currentSpace.photoCount)}</span>
       </div>
+      <RecentlyAddedSection
+          baseUrl={`/api/photos/space/${spaceId}/recent`}
+          onPhotoClick={handlePhotoClick}
+          isLightboxOpen={isLightboxOpen}
+      />
       {dayIndex.loadingDays ? (
         <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>{messages["loadingMorePhotos"]}</div>
       ) : dayIndex.days.length > 0 ? (

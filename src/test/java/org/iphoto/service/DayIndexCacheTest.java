@@ -25,15 +25,15 @@ class DayIndexCacheTest extends AbstractIntegrationTest {
         List<DayBucketDTO> loaded = List.of(new DayBucketDTO(LocalDate.of(2024, 1, 1), 3L));
         AtomicInteger loaderCalls = new AtomicInteger();
 
-        List<DayBucketDTO> first = dayIndexCache.getSpaceDayCounts(spaceId, () -> { loaderCalls.incrementAndGet(); return loaded; });
-        List<DayBucketDTO> second = dayIndexCache.getSpaceDayCounts(spaceId, () -> { loaderCalls.incrementAndGet(); return loaded; });
+        List<DayBucketDTO> first = dayIndexCache.getSpaceDayCounts(spaceId, null, () -> { loaderCalls.incrementAndGet(); return loaded; });
+        List<DayBucketDTO> second = dayIndexCache.getSpaceDayCounts(spaceId, null, () -> { loaderCalls.incrementAndGet(); return loaded; });
 
         assertThat(first).isEqualTo(loaded);
         assertThat(second).isEqualTo(loaded);
         assertThat(loaderCalls).hasValue(1);
 
         dayIndexCache.evictSpace(spaceId);
-        dayIndexCache.getSpaceDayCounts(spaceId, () -> { loaderCalls.incrementAndGet(); return loaded; });
+        dayIndexCache.getSpaceDayCounts(spaceId, null, () -> { loaderCalls.incrementAndGet(); return loaded; });
         assertThat(loaderCalls).hasValue(2);
     }
 
@@ -43,12 +43,33 @@ class DayIndexCacheTest extends AbstractIntegrationTest {
         List<DayBucketDTO> loaded = List.of(new DayBucketDTO(LocalDate.of(2024, 2, 2), 1L));
         AtomicInteger loaderCalls = new AtomicInteger();
 
-        dayIndexCache.getAlbumDayCounts(albumId, () -> { loaderCalls.incrementAndGet(); return loaded; });
-        dayIndexCache.getAlbumDayCounts(albumId, () -> { loaderCalls.incrementAndGet(); return loaded; });
+        dayIndexCache.getAlbumDayCounts(albumId, null, () -> { loaderCalls.incrementAndGet(); return loaded; });
+        dayIndexCache.getAlbumDayCounts(albumId, null, () -> { loaderCalls.incrementAndGet(); return loaded; });
         assertThat(loaderCalls).hasValue(1);
 
         dayIndexCache.evictAlbum(albumId);
-        dayIndexCache.getAlbumDayCounts(albumId, () -> { loaderCalls.incrementAndGet(); return loaded; });
+        dayIndexCache.getAlbumDayCounts(albumId, null, () -> { loaderCalls.incrementAndGet(); return loaded; });
         assertThat(loaderCalls).hasValue(2);
+    }
+
+    @Test
+    void getSpaceDayCountsCachesSeparatelyPerMediaTypeFilter() {
+        UUID spaceId = UUID.randomUUID();
+        List<DayBucketDTO> all = List.of(new DayBucketDTO(LocalDate.of(2024, 1, 1), 3L));
+        List<DayBucketDTO> videosOnly = List.of(new DayBucketDTO(LocalDate.of(2024, 1, 1), 1L));
+        AtomicInteger loaderCalls = new AtomicInteger();
+
+        List<DayBucketDTO> unfiltered = dayIndexCache.getSpaceDayCounts(spaceId, null, () -> { loaderCalls.incrementAndGet(); return all; });
+        List<DayBucketDTO> video = dayIndexCache.getSpaceDayCounts(spaceId, true, () -> { loaderCalls.incrementAndGet(); return videosOnly; });
+
+        assertThat(unfiltered).isEqualTo(all);
+        assertThat(video).isEqualTo(videosOnly);
+        assertThat(loaderCalls).hasValue(2);
+
+        // evictSpace clears every filter variant for that space, not just one.
+        dayIndexCache.evictSpace(spaceId);
+        dayIndexCache.getSpaceDayCounts(spaceId, null, () -> { loaderCalls.incrementAndGet(); return all; });
+        dayIndexCache.getSpaceDayCounts(spaceId, true, () -> { loaderCalls.incrementAndGet(); return videosOnly; });
+        assertThat(loaderCalls).hasValue(4);
     }
 }

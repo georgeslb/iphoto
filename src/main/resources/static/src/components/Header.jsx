@@ -1,6 +1,32 @@
 import React, { useCallback } from 'react';
-import { X, Upload, Plus, Trash2, RotateCcw, ImageIcon, ArrowLeft, ChevronLeft, ChevronRight, Link, Home, MinusCircle, FolderX,  ArchiveRestore, CalendarClock, Download} from 'lucide-react'; // Added Home icon
+import { X, Upload, Plus, Trash2, RotateCcw, ImageIcon, ArrowLeft, ChevronLeft, ChevronRight, Link, Home, MinusCircle, FolderX,  ArchiveRestore, CalendarClock, Download, Video, LayoutGrid} from 'lucide-react'; // Added Home icon
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
+
+// Photo/video type filter, shown on the four day-indexed photo grids (Library, Space detail,
+// Album detail, Garbage) - not during selection mode, and not on any other page (Persons, Map,
+// Duplicates, the Albums/Spaces list pages, admin, etc). 'all' | 'photo' | 'video'.
+function MediaTypeFilter({ mediaTypeFilter, setMediaTypeFilter, messages }) {
+  const options = [
+    { value: 'all', icon: LayoutGrid, label: messages["showAllMedia"] },
+    { value: 'photo', icon: ImageIcon, label: messages["showPhotosOnly"] },
+    { value: 'video', icon: Video, label: messages["showVideosOnly"] },
+  ];
+  return (
+    <div className="media-type-filter" style={{ display: 'flex', gap: '4px' }}>
+      {options.map(({ value, icon: Icon, label }) => (
+        <button
+            key={value}
+            className={mediaTypeFilter === value ? 'btn btn-primary' : 'btn'}
+            onClick={() => setMediaTypeFilter(value)}
+            title={label}
+            aria-pressed={mediaTypeFilter === value}
+        >
+          <Icon size={18} />
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export default function Header({
   selectedIds,
@@ -36,11 +62,18 @@ export default function Header({
   fromGarbage,
   setShowEditDateModal,
   handleDownload,
+  mediaTypeFilter,
+  setMediaTypeFilter,
 }) {
   const { messages } = useLocale(); // Use the useLocale hook
   const selectionMode = selectedIds.length > 0 || selectedSpaceIds.length > 0 || selectedAlbumIds.length > 0;
   const selectionCount = pathname === '/spaces' ? selectedSpaceIds.length : pathname === '/albums' ? selectedAlbumIds.length : selectedIds.length
   const isSpacesPage = pathname.startsWith('/spaces/') && menuSpaceId;
+  const isAlbumDetailPage = pathname.startsWith('/albums/') && menuAlbumId;
+  const isLibraryPage = pathname === '/' || pathname.startsWith('/asset/');
+  const isGarbagePage = pathname === '/garbage';
+  const showMediaTypeFilter = !selectionMode
+      && (isLibraryPage || isGarbagePage || isAlbumDetailPage || isSpacesPage);
   const menuSelection = photoSelection.menuSelection
   const handleUploadClick = useCallback(() => {
     if (fileInputRef.current) {
@@ -119,6 +152,10 @@ export default function Header({
             {photoSelection.canBeDeleted && <button className="btn" style={{color: '#ff3b30'}} onClick={() => handleMoveToGarbage(selectedIds)} title={messages["moveToGarbage"]}><Trash2 size={18}/></button>}
 
           </>
+        )}
+
+        {showMediaTypeFilter && (
+          <MediaTypeFilter mediaTypeFilter={mediaTypeFilter} setMediaTypeFilter={setMediaTypeFilter} messages={messages} />
         )}
 
         {

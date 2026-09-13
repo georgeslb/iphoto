@@ -35,10 +35,11 @@ public interface AlbumService {
     // Day-index browsing for Album detail (see PhotoService.getDailyPhotoCounts, the Library/
     // Space equivalent) - an album references photos rather than owning them, so this groups
     // through the album_photos join instead of by space_id. Cached (see DayIndexCache), evicted
-    // on addPhotosToAlbum/removePhotosFromAlbum above.
-    List<DayBucketDTO> getAlbumDailyPhotoCounts(UUID albumId);
+    // on addPhotosToAlbum/removePhotosFromAlbum above. isVideo is the photo/video type filter
+    // (null = every type).
+    List<DayBucketDTO> getAlbumDailyPhotoCounts(UUID albumId, Boolean isVideo);
 
-    Page<Photo> getAlbumPhotosForDay(UUID albumId, LocalDate day, Pageable pageable);
+    Page<Photo> getAlbumPhotosForDay(UUID albumId, LocalDate day, Pageable pageable, Boolean isVideo);
 
     // Guest/share-flow variants: deliberately use the unfiltered album lookup since a guest
     // share session has no matching UserEntity (the space-filter aspect would throw trying to

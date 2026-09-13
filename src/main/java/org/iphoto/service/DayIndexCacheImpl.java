@@ -14,26 +14,35 @@ import java.util.function.Supplier;
 @Component
 public class DayIndexCacheImpl implements DayIndexCache {
 
-    private final Map<UUID, List<DayBucketDTO>> spaceDayCounts = new ConcurrentHashMap<>();
-    private final Map<UUID, List<DayBucketDTO>> albumDayCounts = new ConcurrentHashMap<>();
+    // Keyed by "<id>:<all|photo|video>" rather than a nested map - evictSpace/evictAlbum then just
+    // need a prefix match over a flat key set instead of reaching into a per-id sub-map.
+    private final Map<String, List<DayBucketDTO>> spaceDayCounts = new ConcurrentHashMap<>();
+    private final Map<String, List<DayBucketDTO>> albumDayCounts = new ConcurrentHashMap<>();
+
+    private static String key(UUID id, Boolean isVideo) {
+        String type = isVideo == null ? "all" : (isVideo ? "video" : "photo");
+        return id + ":" + type;
+    }
 
     @Override
-    public List<DayBucketDTO> getSpaceDayCounts(UUID spaceId, Supplier<List<DayBucketDTO>> loader) {
-        return spaceDayCounts.computeIfAbsent(spaceId, id -> loader.get());
+    public List<DayBucketDTO> getSpaceDayCounts(UUID spaceId, Boolean isVideo, Supplier<List<DayBucketDTO>> loader) {
+        return spaceDayCounts.computeIfAbsent(key(spaceId, isVideo), k -> loader.get());
     }
 
     @Override
     public void evictSpace(UUID spaceId) {
-        spaceDayCounts.remove(spaceId);
+        String prefix = spaceId + ":";
+        spaceDayCounts.keySet().removeIf(k -> k.startsWith(prefix));
     }
 
     @Override
-    public List<DayBucketDTO> getAlbumDayCounts(UUID albumId, Supplier<List<DayBucketDTO>> loader) {
-        return albumDayCounts.computeIfAbsent(albumId, id -> loader.get());
+    public List<DayBucketDTO> getAlbumDayCounts(UUID albumId, Boolean isVideo, Supplier<List<DayBucketDTO>> loader) {
+        return albumDayCounts.computeIfAbsent(key(albumId, isVideo), k -> loader.get());
     }
 
     @Override
     public void evictAlbum(UUID albumId) {
-        albumDayCounts.remove(albumId);
+        String prefix = albumId + ":";
+        albumDayCounts.keySet().removeIf(k -> k.startsWith(prefix));
     }
 }

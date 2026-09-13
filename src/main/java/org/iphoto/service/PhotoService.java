@@ -31,8 +31,9 @@ public interface PhotoService {
     // Day-index browsing (replaces the old month-timeline this app used to have): one row per
     // day that has a non-garbage photo in this space, newest first. Cached (see DayIndexCache) -
     // evicted on every mutation that can change a space's day counts/covers (upload, move to/from
-    // garbage, move to main, date edit).
-    List<DayBucketDTO> getDailyPhotoCounts(UUID spaceId);
+    // garbage, move to main, date edit). isVideo is the photo/video type filter (null = every
+    // type).
+    List<DayBucketDTO> getDailyPhotoCounts(UUID spaceId, Boolean isVideo);
 
     // Library's "N months/years ago" bar - one candidate window per configured offset (see
     // IPhotoProperties.Memories.offsets/MemoryOffset), each resolved to random non-garbage photos
@@ -40,13 +41,15 @@ public interface PhotoService {
     List<MemoryDTO> getMemories(UUID spaceId);
 
     // One page of a single day's photos - same dedup treatment as the plain feed (getPhotos).
-    PageResponse<Photo> getPhotosForDay(UUID spaceId, LocalDate day, Pageable pageable);
+    // isVideo: see getDailyPhotoCounts above.
+    PageResponse<Photo> getPhotosForDay(UUID spaceId, LocalDate day, Pageable pageable, Boolean isVideo);
 
     // Garbage's day-index equivalent of getDailyPhotoCounts/getPhotosForDay above - cross-space
-    // (a user's garbage isn't scoped to one space), no dedup treatment.
-    List<DayBucketDTO> getGarbageDailyPhotoCounts(UserEntity user);
+    // (a user's garbage isn't scoped to one space), no dedup treatment. isVideo: see
+    // getDailyPhotoCounts above.
+    List<DayBucketDTO> getGarbageDailyPhotoCounts(UserEntity user, Boolean isVideo);
 
-    Page<Photo> getGarbagePhotosForDay(UserEntity user, LocalDate day, Pageable pageable);
+    Page<Photo> getGarbagePhotosForDay(UserEntity user, LocalDate day, Pageable pageable, Boolean isVideo);
 
     Page<Photo> getSpacePhotos(UserEntity currentUser, UUID spaceId, Pageable pageable);
 

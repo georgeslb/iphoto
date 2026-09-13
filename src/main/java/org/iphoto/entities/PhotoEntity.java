@@ -20,7 +20,12 @@ import java.util.*;
         @Index(columnList = "space_id,is_garbage", name = "idx_photos_space_id_is_garbage"),
         @Index(columnList = "space_id,grouped_day", name = "idx_photos_space_id_grouped_day"),
         @Index(columnList = "user_id", name = "idx_photos_user_id"),
-        @Index(columnList = "space_id,date_taken", name = "idx_photos_space_id_date_taken")
+        @Index(columnList = "space_id,date_taken", name = "idx_photos_space_id_date_taken"),
+        // Backs the photo/video type filter (Library/Space/Album/Garbage day-index queries) -
+        // pairs is_video with the two columns those queries already filter on, rather than a
+        // standalone index on is_video alone, which has too low a cardinality to be selective by
+        // itself.
+        @Index(columnList = "space_id,is_garbage,is_video", name = "idx_photos_space_id_is_garbage_is_video")
 })
 @EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true)
 @ToString(onlyExplicitlyIncluded = true)
@@ -81,6 +86,12 @@ public class PhotoEntity extends BaseEntity  { // Extends BaseEntity
     @Column(nullable = false)
     private Boolean isGarbage;
 
+    // Derived from contentType (true for "video/*"), kept in sync via onCreate/onUpdate below -
+    // same pattern as groupedDay, so the photo/video filter can use a plain indexed boolean
+    // instead of a LIKE 'video/%' scan on content_type at query time.
+    @Column(name = "is_video", nullable = false)
+    private Boolean isVideo;
+
     @Column(columnDefinition = "BYTEA")
     private byte[] phash;
 
@@ -134,15 +145,21 @@ public class PhotoEntity extends BaseEntity  { // Extends BaseEntity
         if (isFavorite == null) isFavorite = false;
         if (isGarbage == null) isGarbage = false;
         syncGroupedDay();
+        syncIsVideo();
     }
 
     @PreUpdate
     protected void onUpdate() {
         syncGroupedDay();
+        syncIsVideo();
     }
 
     private void syncGroupedDay() {
         this.groupedDay = dateTaken != null ? dateTaken.toLocalDate() : null;
+    }
+
+    private void syncIsVideo() {
+        this.isVideo = contentType != null && contentType.startsWith("video/");
     }
 
     public PhotoEntity() {

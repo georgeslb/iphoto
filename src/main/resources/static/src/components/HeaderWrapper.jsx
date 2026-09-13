@@ -36,6 +36,8 @@ function HeaderWrapper({
   fromGarbage,
   setShowEditDateModal,
   handleDownload,
+  mediaTypeFilter,
+  setMediaTypeFilter,
 }) {
   const location = useLocation();
   const effectivePath = backgroundLocation?.pathname || location.pathname;
@@ -76,6 +78,8 @@ function HeaderWrapper({
           fromGarbage={fromGarbage}
           setShowEditDateModal={setShowEditDateModal}
           handleDownload={handleDownload}
+          mediaTypeFilter={mediaTypeFilter}
+          setMediaTypeFilter={setMediaTypeFilter}
       />
   );
 }

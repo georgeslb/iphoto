@@ -74,8 +74,8 @@ public class PhotoServiceImpl implements PhotoService {
     }
 
     @Override
-    public List<DayBucketDTO> getDailyPhotoCounts(UUID spaceId) {
-        return dayIndexCache.getSpaceDayCounts(spaceId, () -> DayBucketDTO.from(photoRepository.countDailyPhotosBySpaceId(spaceId)));
+    public List<DayBucketDTO> getDailyPhotoCounts(UUID spaceId, Boolean isVideo) {
+        return dayIndexCache.getSpaceDayCounts(spaceId, isVideo, () -> DayBucketDTO.from(photoRepository.countDailyPhotosBySpaceId(spaceId, isVideo)));
     }
 
     @Override
@@ -104,20 +104,20 @@ public class PhotoServiceImpl implements PhotoService {
     }
 
     @Override
-    public PageResponse<Photo> getPhotosForDay(UUID spaceId, LocalDate day, Pageable pageable) {
-        return PageResponse.from(buildDedupedPage(photoRepository.findBySpaceIdAndIsGarbageFalseAndGroupedDay(spaceId, day, pageable)));
+    public PageResponse<Photo> getPhotosForDay(UUID spaceId, LocalDate day, Pageable pageable, Boolean isVideo) {
+        return PageResponse.from(buildDedupedPage(photoRepository.findBySpaceIdAndIsGarbageFalseAndGroupedDay(spaceId, day, isVideo, pageable)));
     }
 
     @Override
-    public List<DayBucketDTO> getGarbageDailyPhotoCounts(UserEntity user) {
+    public List<DayBucketDTO> getGarbageDailyPhotoCounts(UserEntity user, Boolean isVideo) {
         Set<UUID> allUserSpacesIds = spaceService.getAllSpaces(user).stream().map(SpaceDTO::id).collect(Collectors.toSet());
-        return DayBucketDTO.from(photoRepository.countDailyGarbagePhotosBySpaceIds(allUserSpacesIds));
+        return DayBucketDTO.from(photoRepository.countDailyGarbagePhotosBySpaceIds(allUserSpacesIds, isVideo));
     }
 
     @Override
-    public Page<Photo> getGarbagePhotosForDay(UserEntity user, LocalDate day, Pageable pageable) {
+    public Page<Photo> getGarbagePhotosForDay(UserEntity user, LocalDate day, Pageable pageable, Boolean isVideo) {
         Set<UUID> allUserSpacesIds = spaceService.getAllSpaces(user).stream().map(SpaceDTO::id).collect(Collectors.toSet());
-        return photoRepository.findBySpaceIdInAndIsGarbageTrueAndGroupedDay(allUserSpacesIds, day, pageable).map(photoMapper::photoEntityToPhoto);
+        return photoRepository.findBySpaceIdInAndIsGarbageTrueAndGroupedDay(allUserSpacesIds, day, isVideo, pageable).map(photoMapper::photoEntityToPhoto);
     }
 
     @Override

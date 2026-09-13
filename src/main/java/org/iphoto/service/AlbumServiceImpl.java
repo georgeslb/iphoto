@@ -165,16 +165,16 @@ public class AlbumServiceImpl implements AlbumService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<DayBucketDTO> getAlbumDailyPhotoCounts(UUID albumId) {
+    public List<DayBucketDTO> getAlbumDailyPhotoCounts(UUID albumId, Boolean isVideo) {
         AlbumEntity album = getAlbum(albumId);
-        return dayIndexCache.getAlbumDayCounts(albumId, () -> DayBucketDTO.from(photoRepository.countDailyPhotosByAlbums(Set.of(album))));
+        return dayIndexCache.getAlbumDayCounts(albumId, isVideo, () -> DayBucketDTO.from(photoRepository.countDailyPhotosByAlbums(Set.of(album), isVideo)));
     }
 
     @Override
     @Transactional(readOnly = true)
-    public Page<Photo> getAlbumPhotosForDay(UUID albumId, LocalDate day, Pageable pageable) {
+    public Page<Photo> getAlbumPhotosForDay(UUID albumId, LocalDate day, Pageable pageable, Boolean isVideo) {
         AlbumEntity album = getAlbum(albumId);
-        return photoRepository.findByIsGarbageFalseAndAlbumsAndGroupedDay(Set.of(album), day, pageable)
+        return photoRepository.findByIsGarbageFalseAndAlbumsAndGroupedDay(Set.of(album), day, isVideo, pageable)
                 .map(photoMapper::photoEntityToPhoto);
     }
 
@@ -199,16 +199,17 @@ public class AlbumServiceImpl implements AlbumService {
     @Transactional(readOnly = true)
     public List<DayBucketDTO> getAlbumDailyPhotoCountsForShare(UUID albumId) {
         AlbumEntity album = getAlbumIgnoringSpace(albumId);
-        // Same cache key/entry as getAlbumDailyPhotoCounts - it's keyed by albumId and the counts
-        // are identical whichever door the caller came through.
-        return dayIndexCache.getAlbumDayCounts(albumId, () -> DayBucketDTO.from(photoRepository.countDailyPhotosByAlbums(Set.of(album))));
+        // Same cache key/entry as getAlbumDailyPhotoCounts(albumId, null) - it's keyed by albumId
+        // (+ the null/"all" filter) and the counts are identical whichever door the caller came
+        // through. The guest share view doesn't expose the type filter, so always unfiltered.
+        return dayIndexCache.getAlbumDayCounts(albumId, null, () -> DayBucketDTO.from(photoRepository.countDailyPhotosByAlbums(Set.of(album), null)));
     }
 
     @Override
     @Transactional(readOnly = true)
     public Page<Photo> getAlbumPhotosForDayForShare(UUID albumId, LocalDate day, Pageable pageable) {
         AlbumEntity album = getAlbumIgnoringSpace(albumId);
-        return photoRepository.findByIsGarbageFalseAndAlbumsAndGroupedDay(Set.of(album), day, pageable)
+        return photoRepository.findByIsGarbageFalseAndAlbumsAndGroupedDay(Set.of(album), day, null, pageable)
                 .map(photoMapper::photoEntityToPhoto);
     }
 
