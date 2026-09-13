@@ -2,6 +2,8 @@ package org.iphoto.mobile
 
 import android.content.Context
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import coil3.ImageLoader
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import org.iphoto.mobile.auth.AuthRepository
@@ -43,6 +45,11 @@ class AppContainer(private val context: Context) {
             }
             .build()
     }
+
+    // shares the auth-carrying OkHttpClient so video streaming requests (ExoPlayer, lightbox video
+    // playback) authenticate the same way REST calls and thumbnail/original image requests do -
+    // see imageLoader above for the same pattern applied to Coil.
+    fun videoDataSourceFactory(): DataSource.Factory = OkHttpDataSource.Factory(apiClient.httpClient)
 
     fun absoluteUrl(relativeUrlOrPath: String): String {
         if (relativeUrlOrPath.startsWith("http")) return relativeUrlOrPath

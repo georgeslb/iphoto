@@ -74,6 +74,9 @@ fun PhotoDetailScreen(photoId: String, albumId: String? = null, spaceId: String?
         factory = PhotoDetailViewModelFactory(container.photoApi, photoId, albumId, onPhotoMovedToGarbage)
     )
     val state by viewModel.uiState.collectAsState()
+    // Built once per screen instance (not per photo) - cheap to share across whatever VideoPlayer
+    // instances this screen creates, same as container.imageLoader being shared across AsyncImage.
+    val videoDataSourceFactory = remember { container.videoDataSourceFactory() }
     var showAlbumPicker by remember { mutableStateOf(false) }
     var showDatePicker by remember { mutableStateOf(false) }
 
@@ -129,25 +132,37 @@ fun PhotoDetailScreen(photoId: String, albumId: String? = null, spaceId: String?
                         modifier = Modifier.align(Alignment.Center).padding(24.dp)
                     )
                 is PhotoDetailUiState.Loaded -> {
-                    val imageUrl = container.absoluteUrl("/api/photos/${current.photo.id}/original")
-                    AsyncImage(
-                        model = imageUrl,
-                        imageLoader = container.imageLoader,
-                        contentDescription = current.photo.title,
-                        contentScale = ContentScale.Fit,
-                        onState = { state ->
-                            when (state) {
-                                is AsyncImagePainter.State.Error -> Log.e(
-                                    TAG,
-                                    "Failed to load $imageUrl (contentType=${current.photo.contentType})",
-                                    state.result.throwable
-                                )
-                                is AsyncImagePainter.State.Success -> Log.d(TAG, "Loaded $imageUrl")
-                                else -> {}
-                            }
-                        },
-                        modifier = Modifier.fillMaxSize()
-                    )
+                    if (current.photo.contentType?.startsWith("video") == true) {
+                        // Coil/AsyncImage (below) can't decode video at all - this mirrors the web
+                        // app's own <video> element, both against the same /stream endpoint rather
+                        // than /original (see VideoPlayer's kdoc).
+                        val streamUrl = container.absoluteUrl("/api/photos/${current.photo.id}/stream")
+                        VideoPlayer(
+                            streamUrl = streamUrl,
+                            dataSourceFactory = videoDataSourceFactory,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        val imageUrl = container.absoluteUrl("/api/photos/${current.photo.id}/original")
+                        AsyncImage(
+                            model = imageUrl,
+                            imageLoader = container.imageLoader,
+                            contentDescription = current.photo.title,
+                            contentScale = ContentScale.Fit,
+                            onState = { state ->
+                                when (state) {
+                                    is AsyncImagePainter.State.Error -> Log.e(
+                                        TAG,
+                                        "Failed to load $imageUrl (contentType=${current.photo.contentType})",
+                                        state.result.throwable
+                                    )
+                                    is AsyncImagePainter.State.Success -> Log.d(TAG, "Loaded $imageUrl")
+                                    else -> {}
+                                }
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
                     if (current.actionError != null) {
                         Text(
                             current.actionError,

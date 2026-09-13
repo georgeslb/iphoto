@@ -140,17 +140,37 @@ version bumps:
       `onPhotoMovedToGarbage` (same logic as `SpaceDetailScreen`'s, just for one photo instead of a
       selection). Not yet run through a real device/emulator - see "No Android build/test run in
       this session" above, still true.
-- [ ] **Black image in the lightbox** (`PhotoDetailScreen`) - added `Log.e`/`Log.d` around the
-      `AsyncImage` load (tag `PhotoDetailScreen`) logging the failing URL, contentType, and
-      throwable. Leading hypotheses, unconfirmed: (a) the photo is a video and `/original` serves
-      the raw video file, which Coil can't decode as an image - PhotoDetailScreen has no video
-      playback path at all right now; (b) `photo.getOriginalPath()` file is missing on disk on the
-      WSL2 backend (thumbnails are generated/stored separately from originals, so thumbnails
-      working doesn't rule this out) -> `/original` 404s. Repro with Logcat filtered on
-      `PhotoDetailScreen` to confirm which.
-- [ ] If (a) above is confirmed: PhotoDetailScreen needs an actual video player (ExoPlayer/Media3)
-      for `contentType` starting with "video" - there's currently no video playback anywhere in
-      the app, only the play-icon badge on thumbnails.
+- [ ] **Black image in the lightbox for photos** (`PhotoDetailScreen`) - the video half of this
+      (below) is fixed; this is what's left. Confirmed via code review this session that it's *not*
+      only videos - the still-open hypothesis is (b) `photo.getOriginalPath()` missing/corrupt on
+      disk (thumbnails are generated/stored separately from originals, so thumbnails working
+      doesn't rule this out), possibly combined with an original in a format the client can't
+      decode (no HEIC/RAW transcoding exists anywhere in the app - `/original` always streams raw
+      bytes, both on Android and in the web app's own Lightbox/DuplicateClusterModal/
+      SharedLightbox/UploadPreviewModal). Blocked on a real repro: the `Log.e`/`Log.d` logging
+      added around the `AsyncImage` load (tag `PhotoDetailScreen`, logs the failing URL,
+      contentType, and throwable) needs a Logcat capture from an actual affected photo to go
+      further - no device access this session.
+- [x] **Video playback in the lightbox** - done, 2026-09-13. Confirmed by code review (not a
+      hypothesis): `AsyncImage`/Coil has no video decode path in this project's dependencies, so
+      every video hit this the same way, 100% of the time, distinct from whatever's separately
+      wrong with some photos above. Added `androidx.media3:media3-exoplayer`/`media3-ui`/
+      `media3-datasource-okhttp` (`1.5.1`, pinned from a web lookup - see the dependency-version
+      entry above for why: `androidx.media3` is Google-Maven-hosted, unreachable from this
+      session). `PhotoDetailScreen` now branches on `contentType?.startsWith("video")`: video goes
+      to the new `VideoPlayer` composable (`ui/photo/VideoPlayer.kt`, an ExoPlayer wrapped in
+      `AndroidView`/`PlayerView`), pointed at `GET /api/photos/{id}/stream` - the same
+      range-request-capable endpoint (`PhotoController#streamVideo`) the web app's own
+      `<video controls autoPlay>` element already uses, instead of `/original`. Authenticates via
+      `AppContainer#videoDataSourceFactory` (`OkHttpDataSource` wrapping the same authenticated
+      `OkHttpClient` Coil's `imageLoader` already shares) - the stream endpoint needs the same
+      Bearer token header as everything else, which ExoPlayer's default HTTP stack wouldn't carry.
+      **Not verified by an actual compile/run**: unlike the TokenStore migration above,
+      `androidx.media3` isn't on Maven Central, so it couldn't be downloaded and checked against
+      real signatures in this session either - this is reviewed-by-hand only, against Media3 APIs
+      that have been stable for a long time (`ExoPlayer.Builder`, `MediaItem.fromUri`, `PlayerView`,
+      `OkHttpDataSource.Factory`), but genuinely unverified. Needs a real `assembleDebug` +
+      on-device tap-a-video check before trusting it.
 
 ## Fixed: sync never actually ran - 2026-09-13
 

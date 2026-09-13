@@ -77,6 +77,20 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:5.1.0")
     implementation("com.squareup.okhttp3:logging-interceptor:5.1.0")
 
+    // Lightbox video playback (PhotoDetailScreen) - Coil/AsyncImage, used for everything else in
+    // the lightbox, has no video decode path at all; this is the counterpart to the web app's own
+    // <video> element, both pointed at the same GET /api/photos/{id}/stream endpoint (which
+    // supports HTTP range requests for seeking - PhotoController#streamVideo). media3-datasource-
+    // okhttp lets ExoPlayer reuse the same authenticated OkHttpClient as every other network call
+    // (see AppContainer#videoDataSourceFactory) - the stream endpoint needs the same Bearer token
+    // header as everything else, and ExoPlayer's own default HTTP stack wouldn't carry it.
+    // Versions pinned from a web lookup, not a live Gradle sync (androidx.media3 is Google-Maven-
+    // hosted, unreachable from this environment - see android/TODO.md's dependency-version entry
+    // for why several other AndroidX pins in this file carry the same caveat).
+    implementation("androidx.media3:media3-exoplayer:1.5.1")
+    implementation("androidx.media3:media3-ui:1.5.1")
+    implementation("androidx.media3:media3-datasource-okhttp:1.5.1")
+
     // On-device folder sync: WorkManager runs the actual upload/garbage job in the background,
     // either a one-off from a user tapping "Sync now" or periodically once they opt into
     // automatic sync (see SyncWorker/SyncPrefs.autoSyncEnabled); DocumentFile walks the SAF-picked
