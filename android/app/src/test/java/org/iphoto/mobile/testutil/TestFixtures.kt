@@ -8,7 +8,8 @@ fun testPhoto(
     id: String,
     groupDate: String = "Monday, Jan 01, 2026",
     fullDateTime: String = "2026-01-01T12:00:00",
-    contentType: String? = "image/jpeg"
+    contentType: String? = "image/jpeg",
+    fileHash: String? = null
 ): Photo = Photo(
     id = id,
     title = "photo-$id",
@@ -22,7 +23,7 @@ fun testPhoto(
     location = null,
     camera = null,
     contentType = contentType,
-    fileHash = null,
+    fileHash = fileHash,
     width = 1920,
     height = 1080,
     fileSystemCreationDate = null,

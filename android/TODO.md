@@ -1,5 +1,47 @@
 # Android TODO
 
+## SyncRepository test coverage + a real bug it found — 2026-09-13
+
+Added `SyncRepositoryTest` (`app/src/test/java/org/iphoto/mobile/sync/`), covering
+`computeDiff`'s full diff logic and the local-trash helpers (`trashLocalFilesForHashes`,
+`restoreLocalAssets`, `removeFromSpace`, `restoreInSpace`). `LocalFolderScanner`/`LocalTrash` are
+plain Kotlin `object`s, so `mockkObject` stubs their functions directly - no need to fake a whole
+`DocumentFile`/SAF tree just to test `SyncRepository`'s own reconciliation logic. `HashCache.get`
+is stubbed per-asset (keyed on a unique `size` per test asset, not on `Uri.toString()` - MockK
+can't stub `toString()` on a mock via the normal `every {}` API, learned the hard way when the
+first version of this test failed with "Missing mocked calls" purely from trying).
+
+**Found and fixed a real bug while writing the "trashed file matching an active photo" test**: a
+file sitting *only* in the local trash (not the folder root) that matches a still-*active* remote
+photo - exactly the "restored from the web app while the file is still in `.iPhotoTrash`" case
+`toLocalRestore` exists for - was *also* getting queued in `toRemove`, because that filter only
+checked presence in the root scan, not the trash scan. One sync pass would garbage the photo *and*
+restore the file to root; the next pass would then see the file back in root matching a (freshly
+re-)garbaged photo and restore it *again* - a two-pass flap instead of settling in one.
+`computeDiff` now excludes any remote-active photo whose hash is found in the trash scan from
+`toRemove` (see its updated comment) - safe for the ordinary "photo actually garbaged, file already
+moved to trash" path too, since a photo already in the Space's garbage list never reaches the
+`toRemove` filter in the first place (it only iterates *active* `remotePhotos`).
+
+**Verified for real**, same approach as the `TokenStore`/`AlbumsViewModel` work above: compiled and
+ran the real `SyncRepository`/`LocalFolderScanner`/`LocalTrash`/`LocalAsset`/`FileHasher`/
+`HashCache`/`PhotoApi` files (not stand-ins) plus the real test file, against real MockK/JUnit/
+kotlinx-coroutines-test/retrofit/okhttp/gson jars from Maven Central and a real `android.jar`
+(robolectric's `android-all`, for `Context`/`Uri`). The one thing that genuinely couldn't be
+sourced anywhere on Maven Central is `androidx.documentfile:documentfile` itself (Google-Maven-only,
+confirmed 404) - `LocalFolderScanner`/`LocalTrash` both import `DocumentFile`, so compiling them at
+all needed a hand-written stand-in `DocumentFile` class matching the real one's public shape (never
+exercised at runtime here, since `mockkObject` replaces both files' actual bodies entirely - it only
+had to satisfy the compiler). All 14 tests passed for real, including the one that initially failed
+and pointed at the bug above.
+
+Still not covered: `SyncViewModel` itself (the WorkManager plumbing - `observeWork`,
+`schedulePeriodic`, `confirmSync` - would need `androidx.work`'s real classes plus
+`androidx.work:work-testing`'s fakes to test meaningfully, and both are Google-Maven-hosted, same
+blocker as everywhere else `androidx.*` shows up in this file), and `uploadAsset`/
+`waitForProcessing`'s chunk-upload loop (exercises real multipart/OkHttp request-building - doable,
+just not done yet).
+
 ## Sync/Space fluidity — 2026-09-13
 
 Improved how a synced Space and its device folder stay consistent, in both directions, without
@@ -219,7 +261,6 @@ unavailable dependency) - all 11 tests passed for real. The actual production `A
 follow the exact same `MutableStateFlow` + `viewModelScope.launch { try/catch }` shape already
 proven out by `AuthViewModel`/`PhotoDetailViewModel` elsewhere in this same module.
 
-Still not covered: `SyncViewModel`/`SyncRepository` (needs a real or faked `Context`/
-`ContentResolver` for `LocalFolderScanner`/SAF access - meaningfully more setup than a plain
-ViewModel test), `PagedPhotoGridViewModel`'s `loadMore` pagination edge cases beyond the basics
-tested so far.
+Still not covered: `SyncViewModel` itself (see the "SyncRepository test coverage" entry above -
+`SyncRepository` now has real coverage, `SyncViewModel`'s WorkManager plumbing doesn't yet),
+`PagedPhotoGridViewModel`'s `loadMore` pagination edge cases beyond the basics tested so far.

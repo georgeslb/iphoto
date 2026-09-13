@@ -62,6 +62,14 @@ class SyncRepository(
             localHashToAsset[hashOf(asset)] = asset
         }
 
+        // Computed before toRemove below specifically so a file sitting only in the trash (not the
+        // root) can be excluded from it - see toRemove's own comment for why.
+        val trashAssets = LocalTrash.scan(context, folderUri)
+        val trashHashToAsset = mutableMapOf<String, LocalAsset>()
+        for (asset in trashAssets) {
+            trashHashToAsset[hashOf(asset)] = asset
+        }
+
         val toUpload = mutableListOf<LocalAsset>()
         val toRestore = mutableListOf<RemotePhotoRef>()
         for ((hash, asset) in localHashToAsset) {
@@ -71,20 +79,23 @@ class SyncRepository(
                 hash !in remoteHashes -> toUpload.add(asset)
             }
         }
-        hashCache.persist()
 
         // Photos with no recorded hash are left alone rather than treated as removable - fileHash
         // is always set by the upload/edit pipeline, so a null here means "don't know", not "gone
-        // from the phone", and this mirror should never delete something on an "I'm not sure".
+        // from the phone", and this mirror should never delete something on an "I'm not sure". A
+        // photo whose file is sitting in the local trash (not the root) isn't "gone from the
+        // phone" either, even though it's absent from localHashToAsset - it's still tracked there
+        // and about to be moved back to the root by toLocalRestore below, so garbaging it here
+        // would just get undone (and the file re-trashed, then re-restored) over the next couple
+        // of sync passes instead of settling in this one.
         val toRemove = remotePhotos
-            .filter { !it.fileHash.isNullOrBlank() && it.fileHash !in localHashToAsset.keys }
+            .filter { !it.fileHash.isNullOrBlank() && it.fileHash !in localHashToAsset.keys && it.fileHash !in trashHashToAsset.keys }
             .map { RemotePhotoRef(it.id, it.fileHash) }
 
-        val trashAssets = LocalTrash.scan(context, folderUri)
-        val toLocalRestore = trashAssets.filter { asset ->
-            val hash = hashOf(asset)
-            hash in remoteHashes && hash !in localHashToAsset.keys
-        }
+        val toLocalRestore = trashHashToAsset
+            .filter { (hash, _) -> hash in remoteHashes && hash !in localHashToAsset.keys }
+            .values.toList()
+
         hashCache.persist()
 
         SyncDiff(toUpload, toRemove, toRestore, toLocalRestore)
