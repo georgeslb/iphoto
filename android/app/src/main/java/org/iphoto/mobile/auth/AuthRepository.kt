@@ -1,12 +1,15 @@
 package org.iphoto.mobile.auth
 
 import android.os.Build
+import android.util.Log
 import org.iphoto.mobile.data.TokenStore
 import org.iphoto.mobile.model.DeviceLoginRequest
 import org.iphoto.mobile.model.UserDto
 import org.iphoto.mobile.network.ApiClient
 import org.iphoto.mobile.network.AuthApi
 import org.iphoto.mobile.network.UserApi
+
+private const val TAG = "AuthRepository"
 
 class AuthRepository(
     private val tokenStore: TokenStore,
@@ -17,13 +20,23 @@ class AuthRepository(
 
     suspend fun login(serverUrl: String, username: String, password: String): UserDto {
         tokenStore.serverUrl = serverUrl
-        val response = apiClient.create<AuthApi>().login(
-            DeviceLoginRequest(
-                username = username,
-                password = password,
-                deviceName = "${Build.MANUFACTURER} ${Build.MODEL}"
+        Log.d(TAG, "login: dispatching POST api/auth/mobile/login to $serverUrl")
+        val response = try {
+            apiClient.create<AuthApi>().login(
+                DeviceLoginRequest(
+                    username = username,
+                    password = password,
+                    deviceName = "${Build.MANUFACTURER} ${Build.MODEL}"
+                )
             )
-        )
+        } catch (e: Exception) {
+            // e.message alone often just says "timeout" - the exception's actual class
+            // (SocketTimeoutException vs UnknownHostException vs ConnectException) tells you
+            // whether the host is unreachable, DNS failed, or the port is closed/firewalled.
+            Log.e(TAG, "login: request to $serverUrl failed (${e::class.simpleName}): ${e.message}", e)
+            throw e
+        }
+        Log.d(TAG, "login: success, userId=${response.user.id}")
         tokenStore.token = response.token
         tokenStore.deviceTokenId = response.id
         return response.user

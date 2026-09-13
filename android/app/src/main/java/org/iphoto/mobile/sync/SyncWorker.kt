@@ -6,11 +6,14 @@ import android.content.Context
 import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.Build
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import org.iphoto.mobile.AppContainer
+
+private const val TAG = "SyncWorker"
 
 /**
  * Runs one full Space<->folder sync: computes the diff fresh (so it always acts on the current
@@ -33,26 +36,46 @@ class SyncWorker(
 
         return try {
             val repository = container.syncRepository()
-            setForeground(createForegroundInfo("Checking for changes…", 0, 0))
+            promoteToForeground(createForegroundInfo("Checking for changes…", 0, 0))
             val diff = repository.computeDiff(spaceId, Uri.parse(folderUriString))
             val total = diff.toUpload.size + diff.toRemove.size
             var done = 0
+            Log.d(TAG, "Sync diff for space $spaceId: ${diff.toUpload.size} to upload, ${diff.toRemove.size} to remove")
 
             for (asset in diff.toUpload) {
-                setForeground(createForegroundInfo("Uploading ${asset.displayName}", done, total))
+                Log.d(TAG, "Importing asset ${asset.displayName} (${done + 1}/${diff.toUpload.size})")
+                promoteToForeground(createForegroundInfo("Uploading ${asset.displayName}", done, total))
                 repository.uploadAsset(asset, spaceId)
                 done++
+                Log.d(TAG, "Imported $done / ${diff.toUpload.size} photos")
             }
 
             if (diff.toRemove.isNotEmpty()) {
-                setForeground(createForegroundInfo("Moving removed photos to garbage…", done, total))
+                Log.d(TAG, "Moving ${diff.toRemove.size} removed photo(s) to garbage")
+                promoteToForeground(createForegroundInfo("Moving removed photos to garbage…", done, total))
                 repository.removeFromSpace(diff.toRemove.map { it.id })
             }
 
             container.syncPrefs.lastSyncAt = System.currentTimeMillis()
+            Log.d(TAG, "Sync finished: imported ${diff.toUpload.size}, removed ${diff.toRemove.size}")
             Result.success()
         } catch (e: Exception) {
+            Log.e(TAG, "Sync failed for space $spaceId", e)
             Result.failure()
+        }
+    }
+
+    // The OS can refuse to let a Worker promote itself to a foreground service if the app has
+    // dropped out of a qualifying visible state between the user tapping "Sync now" and this
+    // actually running (ForegroundServiceStartNotAllowedException, seen in production - the app
+    // was already TOP_SLEEPING by the time this ran). The notification/foreground promotion is
+    // only there so the OS is less likely to kill the process mid-sync - it's not load-bearing for
+    // correctness, so a refusal here should degrade to "keep syncing without it", not crash the job.
+    private suspend fun promoteToForeground(info: ForegroundInfo) {
+        try {
+            setForeground(info)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not promote sync to a foreground service, continuing without it", e)
         }
     }
 

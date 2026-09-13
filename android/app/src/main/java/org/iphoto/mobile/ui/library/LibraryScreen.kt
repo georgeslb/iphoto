@@ -26,5 +26,10 @@ fun LibraryScreen(onPhotoClick: (String) -> Unit) {
     )
     val state by viewModel.uiState.collectAsState()
 
-    PhotoGridContent(state = state, onPhotoClick = onPhotoClick, onLoadMore = viewModel::loadMore)
+    PhotoGridContent(
+        state = state,
+        viewModel = viewModel,
+        onPhotoClick = onPhotoClick,
+        onLoadMore = viewModel::loadMore
+    )
 }

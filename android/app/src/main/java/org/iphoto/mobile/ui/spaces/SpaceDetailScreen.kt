@@ -3,6 +3,7 @@ package org.iphoto.mobile.ui.spaces
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
@@ -20,6 +21,7 @@ import org.iphoto.mobile.ui.common.PagedPhotoGridViewModel
 import org.iphoto.mobile.ui.common.PagedPhotoGridViewModelFactory
 import org.iphoto.mobile.ui.common.PhotoGridContent
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SpaceDetailScreen(spaceId: String, onPhotoClick: (String) -> Unit, onBack: () -> Unit) {
     val container = LocalAppContainer.current
@@ -49,6 +51,7 @@ fun SpaceDetailScreen(spaceId: String, onPhotoClick: (String) -> Unit, onBack: (
     ) { padding ->
         PhotoGridContent(
             state = state,
+            viewModel = viewModel,
             onPhotoClick = onPhotoClick,
             onLoadMore = viewModel::loadMore,
             modifier = Modifier.padding(padding)

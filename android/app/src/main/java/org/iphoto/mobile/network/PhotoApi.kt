@@ -5,10 +5,12 @@ import okhttp3.RequestBody
 import org.iphoto.mobile.model.Photo
 import org.iphoto.mobile.model.PhotoPageResponse
 import org.iphoto.mobile.model.SpringPage
+import org.iphoto.mobile.model.UpdatePhotoDateRequest
 import org.iphoto.mobile.model.UploadChunkResponse
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.Multipart
+import retrofit2.http.PATCH
 import retrofit2.http.POST
 import retrofit2.http.Part
 import retrofit2.http.Path
@@ -55,4 +57,7 @@ interface PhotoApi {
 
     @POST("api/photos/garbage")
     suspend fun moveToGarbage(@Body ids: List<String>)
+
+    @PATCH("api/photos/{id}/date")
+    suspend fun updateDate(@Path("id") id: String, @Body request: UpdatePhotoDateRequest): Photo
 }

@@ -2,6 +2,7 @@ package org.iphoto.mobile.ui.nav
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ExitToApp
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.NavigationBar
@@ -29,6 +30,7 @@ import org.iphoto.mobile.ui.spaces.SpaceDetailScreen
 import org.iphoto.mobile.ui.spaces.SpacesScreen
 import org.iphoto.mobile.ui.sync.SyncScreen
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(onLogout: () -> Unit) {
     val navController = rememberNavController()

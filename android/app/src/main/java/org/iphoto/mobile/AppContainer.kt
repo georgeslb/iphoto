@@ -2,7 +2,8 @@ package org.iphoto.mobile
 
 import android.content.Context
 import androidx.compose.runtime.staticCompositionLocalOf
-import coil.ImageLoader
+import coil3.ImageLoader
+import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import org.iphoto.mobile.auth.AuthRepository
 import org.iphoto.mobile.data.SyncPrefs
 import org.iphoto.mobile.data.TokenStore
@@ -37,7 +38,9 @@ class AppContainer(private val context: Context) {
     // the same way REST calls do
     val imageLoader: ImageLoader by lazy {
         ImageLoader.Builder(context)
-            .okHttpClient(apiClient.httpClient)
+            .components {
+                add(OkHttpNetworkFetcherFactory(callFactory = { apiClient.httpClient }))
+            }
             .build()
     }
 

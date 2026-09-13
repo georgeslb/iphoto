@@ -1,5 +1,6 @@
 package org.iphoto.mobile.auth
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -8,6 +9,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import org.iphoto.mobile.model.UserDto
+
+private const val TAG = "AuthViewModel"
 
 sealed interface AuthUiState {
     data object CheckingSession : AuthUiState
@@ -47,6 +50,7 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
             _uiState.value = try {
                 AuthUiState.LoggedIn(repository.login(serverUrl, username, password))
             } catch (e: Exception) {
+                Log.e(TAG, "login: failed for serverUrl=$serverUrl", e)
                 AuthUiState.LoggedOut(error = e.message ?: "Login failed")
             }
         }

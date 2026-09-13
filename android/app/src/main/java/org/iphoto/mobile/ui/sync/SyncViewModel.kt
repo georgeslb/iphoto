@@ -2,6 +2,7 @@ package org.iphoto.mobile.ui.sync
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -10,7 +11,6 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
-import androidx.work.getWorkInfosForUniqueWorkFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,6 +21,8 @@ import org.iphoto.mobile.network.SpaceApi
 import org.iphoto.mobile.sync.SyncDiff
 import org.iphoto.mobile.sync.SyncRepository
 import org.iphoto.mobile.sync.SyncWorker
+
+private const val TAG = "SyncViewModel"
 
 data class SyncUiState(
     val spaces: List<SpaceDTO> = emptyList(),
@@ -126,9 +128,10 @@ class SyncViewModel(
     }
 
     fun confirmSync() {
+        Log.d(TAG, "Sync requested by user for space ${_uiState.value.selectedSpaceId} - see SyncWorker logs for progress")
         _uiState.value = _uiState.value.copy(pendingDiff = null)
         val request = OneTimeWorkRequestBuilder<SyncWorker>()
-            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WHEN_QUOTA_EXCEEDED)
+            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
             .build()
         WorkManager.getInstance(appContext)
             .enqueueUniqueWork(SyncWorker.UNIQUE_WORK_NAME, ExistingWorkPolicy.KEEP, request)

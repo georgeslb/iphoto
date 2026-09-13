@@ -3,19 +3,33 @@ package org.iphoto.mobile.ui.common
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import org.iphoto.mobile.model.AlbumCreateRequest
+import org.iphoto.mobile.model.AlbumPhotoRequest
 import org.iphoto.mobile.model.Photo
+import org.iphoto.mobile.model.UpdatePhotoDateRequest
+import org.iphoto.mobile.network.AlbumApi
+import org.iphoto.mobile.network.PhotoApi
 
 data class PagedPhotosUiState(
     val photos: List<Photo> = emptyList(),
     val isLoading: Boolean = true,
     val isLoadingMore: Boolean = false,
     val error: String? = null,
-    val endReached: Boolean = false
-)
+    val endReached: Boolean = false,
+    // Google Photos-style long-press multi-select, shared by every screen built on this
+    // ViewModel (Library/Album-detail/Space-detail) - see PhotoGridContent/PhotoThumbnail.
+    val selectedIds: Set<String> = emptySet(),
+    val isMutating: Boolean = false,
+    val actionError: String? = null
+) {
+    val isSelectionMode: Boolean get() = selectedIds.isNotEmpty()
+}
 
 /**
  * Generic pager shared by Library/Album-detail/Space-detail - GET /api/photos, GET
@@ -24,7 +38,10 @@ data class PagedPhotosUiState(
  * envelope the caller's endpoint uses down to (items, isLastPage).
  */
 class PagedPhotoGridViewModel(
-    private val loadPage: suspend (page: Int, size: Int) -> Pair<List<Photo>, Boolean>
+    private val loadPage: suspend (page: Int, size: Int) -> Pair<List<Photo>, Boolean>,
+    // Set only by AlbumDetailScreen - lets PhotoGridContent offer "remove from album" alongside
+    // the garbage/album/date actions that apply everywhere else too.
+    val albumId: String? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(PagedPhotosUiState())
@@ -69,15 +86,141 @@ class PagedPhotoGridViewModel(
         }
     }
 
+    fun toggleSelection(photoId: String) {
+        val current = _uiState.value.selectedIds
+        _uiState.value = _uiState.value.copy(
+            selectedIds = if (photoId in current) current - photoId else current + photoId
+        )
+    }
+
+    // Tapping a day header (PhotoGridContent) selects/deselects every photo in that day at once -
+    // "already all selected" toggles off, otherwise it's a no-op union so partially-selected days
+    // just top up to fully selected, matching stock Photos app behavior.
+    fun toggleDaySelection(dayPhotoIds: List<String>) {
+        val current = _uiState.value.selectedIds
+        val allSelected = dayPhotoIds.isNotEmpty() && current.containsAll(dayPhotoIds)
+        _uiState.value = _uiState.value.copy(
+            selectedIds = if (allSelected) current - dayPhotoIds.toSet() else current + dayPhotoIds
+        )
+    }
+
+    fun clearSelection() {
+        _uiState.value = _uiState.value.copy(selectedIds = emptySet())
+    }
+
+    // Garbage-d photos disappear from every Main/Space view, so a full reload (rather than an
+    // optimistic local removal) is the simplest way to keep pagination/day-grouping consistent.
+    fun moveSelectionToGarbage(photoApi: PhotoApi) {
+        val ids = _uiState.value.selectedIds.toList()
+        if (ids.isEmpty()) return
+        _uiState.value = _uiState.value.copy(isMutating = true, actionError = null)
+        viewModelScope.launch {
+            try {
+                photoApi.moveToGarbage(ids)
+                loadFirstPage()
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isMutating = false,
+                    actionError = e.message ?: "Failed to move to garbage"
+                )
+            }
+        }
+    }
+
+    // Adding to an album only creates references (Albums hold references to Main Space photos,
+    // they don't own them) - the photos stay exactly where they are in Library/Space, so no
+    // reload is needed here, just clearing the selection.
+    fun addSelectionToAlbum(albumApi: AlbumApi, albumId: String) {
+        val ids = _uiState.value.selectedIds.toList()
+        if (ids.isEmpty()) return
+        _uiState.value = _uiState.value.copy(isMutating = true, actionError = null)
+        viewModelScope.launch {
+            try {
+                albumApi.addPhotos(albumId, AlbumPhotoRequest(ids))
+                _uiState.value = _uiState.value.copy(isMutating = false, selectedIds = emptySet())
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isMutating = false,
+                    actionError = e.message ?: "Failed to add to album"
+                )
+            }
+        }
+    }
+
+    fun createAlbumAndAddSelection(albumApi: AlbumApi, albumName: String) {
+        val ids = _uiState.value.selectedIds.toList()
+        if (ids.isEmpty()) return
+        _uiState.value = _uiState.value.copy(isMutating = true, actionError = null)
+        viewModelScope.launch {
+            try {
+                val album = albumApi.create(AlbumCreateRequest(name = albumName))
+                albumApi.addPhotos(album.id, AlbumPhotoRequest(ids))
+                _uiState.value = _uiState.value.copy(isMutating = false, selectedIds = emptySet())
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isMutating = false,
+                    actionError = e.message ?: "Failed to create album"
+                )
+            }
+        }
+    }
+
+    // No batch date-update endpoint on the backend - PATCH /api/photos/{id}/date is one photo at
+    // a time, so a multi-selection just calls it once per selected id. A changed date can move a
+    // photo into a different day group or reorder it within one, so this reloads afterward.
+    fun updateSelectionDate(photoApi: PhotoApi, newDate: LocalDateTime) {
+        val ids = _uiState.value.selectedIds.toList()
+        if (ids.isEmpty()) return
+        _uiState.value = _uiState.value.copy(isMutating = true, actionError = null)
+        viewModelScope.launch {
+            try {
+                val formatted = newDate.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+                ids.forEach { id -> photoApi.updateDate(id, UpdatePhotoDateRequest(formatted)) }
+                loadFirstPage()
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isMutating = false,
+                    actionError = e.message ?: "Failed to update date"
+                )
+            }
+        }
+    }
+
+    // Only meaningful when albumId is set (AlbumDetailScreen) - removing a reference from this
+    // album doesn't touch the photo's Main Space ownership, but it does disappear from *this*
+    // view, so a reload is needed the same way garbage/date-update need one.
+    fun removeSelectionFromAlbum(albumApi: AlbumApi) {
+        val id = albumId ?: return
+        val ids = _uiState.value.selectedIds.toList()
+        if (ids.isEmpty()) return
+        _uiState.value = _uiState.value.copy(isMutating = true, actionError = null)
+        viewModelScope.launch {
+            try {
+                albumApi.removePhotos(id, AlbumPhotoRequest(ids))
+                loadFirstPage()
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isMutating = false,
+                    actionError = e.message ?: "Failed to remove from album"
+                )
+            }
+        }
+    }
+
+    fun dismissActionError() {
+        _uiState.value = _uiState.value.copy(actionError = null)
+    }
+
     companion object {
         private const val PAGE_SIZE = 60
     }
 }
 
 class PagedPhotoGridViewModelFactory(
-    private val loadPage: suspend (page: Int, size: Int) -> Pair<List<Photo>, Boolean>
+    private val loadPage: suspend (page: Int, size: Int) -> Pair<List<Photo>, Boolean>,
+    private val albumId: String? = null
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T =
-        PagedPhotoGridViewModel(loadPage) as T
+        PagedPhotoGridViewModel(loadPage, albumId) as T
 }
