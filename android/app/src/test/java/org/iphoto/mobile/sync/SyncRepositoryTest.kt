@@ -148,6 +148,43 @@ class SyncRepositoryTest {
     }
 
     @Test
+    fun `an excluded hash is never re-uploaded even though the file is still present`() = runTest {
+        stubEmptySpace()
+        val excluded = testAsset("hash-excluded")
+        every { LocalFolderScanner.scan(context, folderUri) } returns listOf(excluded)
+
+        val diff = repository.computeDiff(SPACE_ID, folderUri, excludedHashes = setOf("hash-excluded"))
+
+        assertTrue("an excluded local file should never be queued for upload", diff.toUpload.isEmpty())
+    }
+
+    @Test
+    fun `an excluded hash is never auto-restored even though it matches a garbage photo`() = runTest {
+        stubEmptySpace()
+        val excluded = testAsset("hash-excluded")
+        every { LocalFolderScanner.scan(context, folderUri) } returns listOf(excluded)
+        coEvery { photoApi.listGarbageForSpace(SPACE_ID, 0, any()) } returns
+            onePage(listOf(testPhoto("garbage-1", fileHash = "hash-excluded")))
+
+        val diff = repository.computeDiff(SPACE_ID, folderUri, excludedHashes = setOf("hash-excluded"))
+
+        assertTrue("excluding a photo should stick across sync passes, not auto-restore it", diff.toRestore.isEmpty())
+        assertTrue(diff.toUpload.isEmpty())
+    }
+
+    @Test
+    fun `a non-excluded hash is uploaded normally alongside an excluded one`() = runTest {
+        stubEmptySpace()
+        val excluded = testAsset("hash-excluded")
+        val normal = testAsset("hash-normal")
+        every { LocalFolderScanner.scan(context, folderUri) } returns listOf(excluded, normal)
+
+        val diff = repository.computeDiff(SPACE_ID, folderUri, excludedHashes = setOf("hash-excluded"))
+
+        assertEquals(listOf(normal), diff.toUpload)
+    }
+
+    @Test
     fun `pages through every page of both active and garbage photos`() = runTest {
         stubEmptySpace()
         coEvery { photoApi.listForSpace(SPACE_ID, 0, any()) } returns

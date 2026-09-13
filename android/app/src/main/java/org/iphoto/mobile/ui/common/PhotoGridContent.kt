@@ -144,6 +144,9 @@ fun PhotoGridContent(
                 onEditDate = { showDatePicker = true },
                 onRemoveFromAlbum = if (viewModel.albumId != null) {
                     { viewModel.removeSelectionFromAlbum(container.albumApi) }
+                } else null,
+                onExcludeFromSync = if (viewModel.canExcludeFromSync) {
+                    { viewModel.excludeSelectionFromSync(container.photoApi) }
                 } else null
             )
         }

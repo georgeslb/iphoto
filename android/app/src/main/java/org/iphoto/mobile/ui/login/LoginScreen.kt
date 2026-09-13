@@ -3,12 +3,14 @@ package org.iphoto.mobile.ui.login
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -29,11 +31,12 @@ fun LoginScreen(
     initialServerUrl: String,
     isLoading: Boolean,
     errorMessage: String?,
-    onLogin: (serverUrl: String, username: String, password: String) -> Unit
+    onLogin: (serverUrl: String, username: String, password: String, rememberMe: Boolean) -> Unit
 ) {
     var serverUrl by remember { mutableStateOf(initialServerUrl) }
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var rememberMe by remember { mutableStateOf(true) }
 
     Box(modifier = Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
         Column(
@@ -69,12 +72,20 @@ fun LoginScreen(
                 modifier = Modifier.fillMaxWidth()
             )
 
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(checked = rememberMe, onCheckedChange = { rememberMe = it })
+                Text("Remember me", style = MaterialTheme.typography.bodyMedium)
+            }
+
             if (errorMessage != null) {
                 Text(errorMessage, color = MaterialTheme.colorScheme.error)
             }
 
             Button(
-                onClick = { onLogin(serverUrl.trim(), username.trim(), password) },
+                onClick = { onLogin(serverUrl.trim(), username.trim(), password, rememberMe) },
                 enabled = !isLoading && serverUrl.isNotBlank() && username.isNotBlank() && password.isNotBlank(),
                 modifier = Modifier.fillMaxWidth()
             ) {

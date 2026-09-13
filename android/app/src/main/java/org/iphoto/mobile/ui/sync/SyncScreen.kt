@@ -46,6 +46,7 @@ fun SyncScreen() {
         factory = SyncViewModelFactory(
             context.applicationContext,
             container.spaceApi,
+            container.photoApi,
             container.syncRepository(),
             container.syncPrefs
         )
@@ -159,6 +160,27 @@ fun SyncScreen() {
 
         state.error?.let {
             Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 12.dp))
+        }
+
+        if (state.excludedAssets.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(24.dp))
+            Text("Excluded from sync", style = MaterialTheme.typography.labelLarge)
+            Text(
+                "These photos were removed from the space but kept on this phone - they won't be " +
+                    "re-uploaded. Tap \"Include\" to bring one back into the space.",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)
+            )
+            state.excludedAssets.forEach { asset ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(asset.title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { viewModel.includeAsset(asset) }) { Text("Include") }
+                }
+            }
         }
     }
 

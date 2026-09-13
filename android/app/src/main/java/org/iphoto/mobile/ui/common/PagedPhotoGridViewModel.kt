@@ -49,8 +49,15 @@ class PagedPhotoGridViewModel(
     // (see SyncPrefs) - mirrors a "move to garbage" onto the matching local file (SyncRepository's
     // LocalTrash) right away, instead of waiting for the next sync pass to notice the Space photo
     // is gone.
-    private val onPhotosMovedToGarbage: (suspend (List<Photo>) -> Unit)? = null
+    private val onPhotosMovedToGarbage: (suspend (List<Photo>) -> Unit)? = null,
+    // Also only set for the currently synced Space - records each excluded photo's hash (see
+    // SyncPrefs.excludedAssets) so a later sync leaves its still-present local file alone, rather
+    // than mirroring the removal onto the phone the way onPhotosMovedToGarbage does. Exposed via
+    // canExcludeFromSync so PhotoGridContent only offers the action where it's meaningful.
+    private val onPhotosExcludedFromSync: (suspend (List<Photo>) -> Unit)? = null
 ) : ViewModel() {
+
+    val canExcludeFromSync: Boolean get() = onPhotosExcludedFromSync != null
 
     private val _uiState = MutableStateFlow(PagedPhotosUiState())
     val uiState: StateFlow<PagedPhotosUiState> = _uiState.asStateFlow()
@@ -139,6 +146,29 @@ class PagedPhotoGridViewModel(
                 _uiState.value = _uiState.value.copy(
                     isMutating = false,
                     actionError = e.message ?: "Failed to move to garbage"
+                )
+            }
+        }
+    }
+
+    // Removes the selection from this Space (garbaged server-side, same as moveSelectionToGarbage)
+    // without mirroring anything onto the phone - the local file stays exactly where it is.
+    // Distinct from moveSelectionToGarbage: that action's local-trash mirror means "this file is
+    // gone", while excluding means "keep the file, just stop syncing it into this Space".
+    fun excludeSelectionFromSync(photoApi: PhotoApi) {
+        val ids = _uiState.value.selectedIds.toList()
+        if (ids.isEmpty()) return
+        val selectedPhotos = _uiState.value.photos.filter { it.id in _uiState.value.selectedIds }
+        _uiState.value = _uiState.value.copy(isMutating = true, actionError = null)
+        viewModelScope.launch {
+            try {
+                photoApi.moveToGarbage(ids)
+                onPhotosExcludedFromSync?.invoke(selectedPhotos)
+                loadFirstPage()
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isMutating = false,
+                    actionError = e.message ?: "Failed to exclude from sync"
                 )
             }
         }
@@ -236,9 +266,10 @@ class PagedPhotoGridViewModel(
 class PagedPhotoGridViewModelFactory(
     private val loadPage: suspend (page: Int, size: Int) -> Pair<List<Photo>, Boolean>,
     private val albumId: String? = null,
-    private val onPhotosMovedToGarbage: (suspend (List<Photo>) -> Unit)? = null
+    private val onPhotosMovedToGarbage: (suspend (List<Photo>) -> Unit)? = null,
+    private val onPhotosExcludedFromSync: (suspend (List<Photo>) -> Unit)? = null
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T =
-        PagedPhotoGridViewModel(loadPage, albumId, onPhotosMovedToGarbage) as T
+        PagedPhotoGridViewModel(loadPage, albumId, onPhotosMovedToGarbage, onPhotosExcludedFromSync) as T
 }

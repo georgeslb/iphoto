@@ -1,5 +1,76 @@
 # Android TODO
 
+## Main Space sync, exclude/include from sync, and "Remember me" — 2026-09-13
+
+Three separate asks in one request: "user can't sync main space", "user can exclude/include some
+asset from space [and excluding should] not [be] moved to garbage on device, only moving to
+garbage in [the] distant server", and a "remember me" button on login.
+
+- **Main Space sync**: `SyncViewModel.loadSpaces()` used to filter out any Space with
+  `deletionAllowed = false`, which is exactly (and only) the Main Space, on the theory it "isn't a
+  valid sync target". There's no backend reason it can't work - `/api/spaces/{id}/photos` and
+  `/api/spaces/{id}/garbage` are already generic across every Space, Main included. Removed the
+  filter.
+
+- **Exclude/include from sync** (a brand new action - nothing like it existed before):
+  `SpaceDetailScreen`'s selection bar gets an "Exclude from sync" button (eye-off icon), shown only
+  for the Space currently synced to a device folder. Exclude garbages the photo on the server right
+  away (same API call as "Move to garbage") but deliberately never mirrors it into `LocalTrash` -
+  the request was explicit that an excluded photo should stay on the phone untouched, only garbaged
+  server-side. `SyncPrefs.excludedAssets` (hash + title + photoId, a hand-rolled ``-delimited
+  encoding rather than pulling in a JSON dependency this module otherwise has no need for) tracks
+  which hashes are excluded; `SyncRepository.computeDiff` takes a new `excludedHashes` param and
+  skips them entirely - without this, the *next* sync pass would either re-upload the still-present
+  local file or auto-restore the Space photo (a garbage entry whose hash matches a present local
+  file is normally exactly what `toRestore` is for), undoing the exclusion within one cycle.
+  `SyncScreen` shows an "Excluded from sync" list with an "Include" button per entry (restores the
+  photo server-side, drops it from the excluded set) - since there's still no Garbage screen (see
+  "Test coverage" below), an excluded photo would otherwise be unreachable to undo.
+  - Design call made without checking back first: with no Garbage/browse-garbage screen anywhere in
+    the app yet, and the request not specifying where "include" should live, the undo list went on
+    the Sync tab rather than building a whole Garbage screen. Worth moving there instead if a real
+    Garbage screen ever gets built.
+
+- **"Remember me" on login**: `TokenStore` already always persisted the session - there was no way
+  to opt out. Added `TokenStore.rememberMe` (defaults `true`, so existing installs keep behaving
+  exactly as before) plus a checkbox on `LoginScreen`. Unchecking it doesn't stop the token from
+  being written (a background sync mid-flight shouldn't get logged out from under itself) - instead
+  `AuthViewModel#resumeSession`, which only ever runs once per app process (the ViewModel survives
+  config changes; only a real process restart recreates it), treats an unremembered session as
+  expired on the *next* cold start and clears it via the new `AuthRepository#forgetUnrememberedSession`
+  - no server-side revoke, the device token itself is still valid, this device just stops holding it.
+
+**Verified for real**, same approach as the sections below: this environment still has no
+gradle/AGP access (`dl.google.com` returns a 403 through the proxy, confirmed again this session -
+`./gradlew :app:compileDebugKotlin` fails to resolve the Android Gradle Plugin itself, before
+touching any app code). Compiled and ran the real changed files against real MockK/JUnit/
+kotlinx-coroutines-test/retrofit/okhttp/gson jars from Maven Central plus the
+`com.google.android:android:4.1.1.4` stub jar, with small hand-written compile-time stand-ins for
+`androidx.lifecycle.ViewModel`/`viewModelScope` and `android.security.keystore.*` (same idea as the
+existing `DocumentFile` stand-in below - Google-Maven-only, never exercised at runtime, only needed
+so the real files typecheck):
+- `SyncPrefsTest` (new, 8 tests) - the exclude/include encode/decode round trip, including a title
+  containing the delimiter character.
+- `SyncRepositoryTest` (3 new tests added to the existing 15) - `excludedHashes` suppresses both
+  re-upload and auto-restore, and leaves non-excluded hashes alone.
+- `PagedPhotoGridViewModelTest` (4 new tests added) - `excludeSelectionFromSync` garbages the
+  selection and invokes only the exclude callback, never the move-to-garbage/local-trash one; plus
+  its no-op/error paths.
+- `TokenStoreTest` (3 new tests) + `AuthViewModelTest` (updated for the new `login` param, plus 2
+  new tests) - `rememberMe` persistence, and `resumeSession` forgetting an unremembered session on
+  a cold start without ever calling `currentUser()`.
+
+All passed except one pre-existing, unrelated failure: `AuthViewModelTest`'s "login surfaces the
+failure message" throws inside the old `com.google.android:android:4.1.1.4` stub's `Log.e` (a bare
+`RuntimeException: Stub!` - that particular stub jar throws instead of no-op'ing, unlike the real
+Gradle test config's `isReturnDefaultValues = true`). That `Log.e` call was already there,
+unmodified by this change - a known limitation of this stand-in jar, not a regression.
+
+Not covered by real compilation: `SyncViewModel` itself (still needs `androidx.work`, same
+Google-Maven blocker as always) and the two touched Compose screens' actual rendering
+(`SpaceDetailScreen`'s new button, `SyncScreen`'s new list/checkbox) - reviewed by hand only, same
+caveat as every other Compose UI change in this file.
+
 ## SyncRepository test coverage + a real bug it found — 2026-09-13
 
 Added `SyncRepositoryTest` (`app/src/test/java/org/iphoto/mobile/sync/`), covering

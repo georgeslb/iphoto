@@ -17,9 +17,11 @@ class AuthRepository(
 ) {
     val isLoggedIn: Boolean get() = tokenStore.isLoggedIn
     val storedServerUrl: String? get() = tokenStore.serverUrl
+    val rememberMe: Boolean get() = tokenStore.rememberMe
 
-    suspend fun login(serverUrl: String, username: String, password: String): UserDto {
+    suspend fun login(serverUrl: String, username: String, password: String, rememberMe: Boolean): UserDto {
         tokenStore.serverUrl = serverUrl
+        tokenStore.rememberMe = rememberMe
         Log.d(TAG, "login: dispatching POST api/auth/mobile/login to $serverUrl")
         val response = try {
             apiClient.create<AuthApi>().login(
@@ -43,6 +45,16 @@ class AuthRepository(
     }
 
     suspend fun currentUser(): UserDto = apiClient.create<UserApi>().me()
+
+    /**
+     * Drops a session that was never meant to survive this app process (rememberMe was unchecked
+     * at login) - called on the *next* cold start, not this one, so the user isn't logged out
+     * mid-use. No server-side revoke: the device token itself is still valid, this device just
+     * stops holding onto it locally, same as any other "forgot to log out" token expiry.
+     */
+    fun forgetUnrememberedSession() {
+        tokenStore.clearSession()
+    }
 
     /**
      * Revoking on the server is best-effort - a failed revoke call (offline, already revoked,

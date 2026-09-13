@@ -34,6 +34,15 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
             _uiState.value = AuthUiState.LoggedOut()
             return
         }
+        // resumeSession only runs from this init block, which only runs once per app process -
+        // MainActivity builds this ViewModel via viewModel(), so it survives config changes
+        // (rotation) and only gets recreated on a genuine cold start. That makes this exactly the
+        // "next cold start" a rememberMe=false login is supposed to stop being remembered at.
+        if (!repository.rememberMe) {
+            repository.forgetUnrememberedSession()
+            _uiState.value = AuthUiState.LoggedOut()
+            return
+        }
         viewModelScope.launch {
             _uiState.value = try {
                 AuthUiState.LoggedIn(repository.currentUser())
@@ -44,11 +53,11 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
         }
     }
 
-    fun login(serverUrl: String, username: String, password: String) {
+    fun login(serverUrl: String, username: String, password: String, rememberMe: Boolean) {
         _uiState.value = AuthUiState.LoggedOut(isLoading = true)
         viewModelScope.launch {
             _uiState.value = try {
-                AuthUiState.LoggedIn(repository.login(serverUrl, username, password))
+                AuthUiState.LoggedIn(repository.login(serverUrl, username, password, rememberMe))
             } catch (e: Exception) {
                 Log.e(TAG, "login: failed for serverUrl=$serverUrl", e)
                 AuthUiState.LoggedOut(error = e.message ?: "Login failed")

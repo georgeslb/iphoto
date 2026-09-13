@@ -38,6 +38,16 @@ class TokenStore internal constructor(private val prefs: SharedPreferences) {
         get() = prefs.getString(KEY_DEVICE_TOKEN_ID, null)
         set(value) = prefs.edit().putString(KEY_DEVICE_TOKEN_ID, value).apply()
 
+    // Whether the session set at the last login should survive the app process dying (the user
+    // swiping it away, the OS reclaiming memory) - unchecked on LoginScreen's "Remember me" means
+    // the token is still kept (a background sync/upload mid-flight shouldn't get logged out from
+    // under itself), but AuthViewModel#resumeSession treats it as expired on the *next* cold start
+    // instead of silently signing back in. Defaults true so installs that logged in before this
+    // flag existed keep behaving exactly as before.
+    var rememberMe: Boolean
+        get() = prefs.getBoolean(KEY_REMEMBER_ME, true)
+        set(value) = prefs.edit().putBoolean(KEY_REMEMBER_ME, value).apply()
+
     val isLoggedIn: Boolean
         get() = !token.isNullOrEmpty()
 
@@ -53,6 +63,7 @@ class TokenStore internal constructor(private val prefs: SharedPreferences) {
         private const val KEY_SERVER_URL = "server_url"
         private const val KEY_TOKEN = "token"
         private const val KEY_DEVICE_TOKEN_ID = "device_token_id"
+        private const val KEY_REMEMBER_ME = "remember_me"
 
         private fun createEncryptedPrefs(context: Context): SharedPreferences =
             KeystoreEncryptedPreferences(context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE))

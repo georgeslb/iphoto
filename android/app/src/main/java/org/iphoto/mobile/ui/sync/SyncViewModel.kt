@@ -16,7 +16,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import org.iphoto.mobile.data.SyncPrefs
+import org.iphoto.mobile.data.SyncPrefs.ExcludedAsset
 import org.iphoto.mobile.model.SpaceDTO
+import org.iphoto.mobile.network.PhotoApi
 import org.iphoto.mobile.network.SpaceApi
 import org.iphoto.mobile.sync.SyncDiff
 import org.iphoto.mobile.sync.SyncRepository
@@ -35,12 +37,17 @@ data class SyncUiState(
     val isPreviewing: Boolean = false,
     val isSyncRunning: Boolean = false,
     val pendingDiff: SyncDiff? = null,
+    // Photos excluded from the currently synced Space (SpaceDetailScreen's "Exclude from sync"
+    // action) - shown here so the user has somewhere to undo it, since an excluded photo is
+    // garbaged and no longer visible in the Space's own photo grid.
+    val excludedAssets: List<ExcludedAsset> = emptyList(),
     val error: String? = null
 )
 
 class SyncViewModel(
     private val appContext: Context,
     private val spaceApi: SpaceApi,
+    private val photoApi: PhotoApi,
     private val syncRepository: SyncRepository,
     private val syncPrefs: SyncPrefs
 ) : ViewModel() {
@@ -51,7 +58,8 @@ class SyncViewModel(
             folderUri = syncPrefs.folderUri,
             folderDisplayName = syncPrefs.folderDisplayName,
             lastSyncAt = syncPrefs.lastSyncAt,
-            autoSyncEnabled = syncPrefs.autoSyncEnabled
+            autoSyncEnabled = syncPrefs.autoSyncEnabled,
+            excludedAssets = syncPrefs.excludedAssets.toList()
         )
     )
     val uiState: StateFlow<SyncUiState> = _uiState.asStateFlow()
@@ -65,13 +73,28 @@ class SyncViewModel(
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoadingSpaces = true, error = null)
             _uiState.value = try {
-                // The Main space isn't a valid sync target - it's the app's own default landing
-                // space, not a user-created collection meant to mirror one phone folder. The
-                // backend already flags it this way via `deletionAllowed = false`.
-                val syncable = spaceApi.list().filter { it.deletionAllowed }
+                // Every Space - including Main - is a valid sync target: Main is just the Space
+                // the backend never lets the user delete (SpaceDTO.deletionAllowed = false), which
+                // has no bearing on whether its own photos can mirror a device folder.
+                val syncable = spaceApi.list()
                 _uiState.value.copy(spaces = syncable, isLoadingSpaces = false)
             } catch (e: Exception) {
                 _uiState.value.copy(isLoadingSpaces = false, error = e.message ?: "Failed to load spaces")
+            }
+        }
+    }
+
+    // Reverses SpaceDetailScreen's "Exclude from sync" action: restores the photo in the Space and
+    // stops treating its hash as excluded, so the next sync pass (or this call, immediately) picks
+    // the still-present local file back up normally.
+    fun includeAsset(asset: ExcludedAsset) {
+        viewModelScope.launch {
+            try {
+                photoApi.restoreFromGarbage(listOf(asset.photoId))
+                syncPrefs.includeAsset(asset.hash)
+                _uiState.value = _uiState.value.copy(excludedAssets = syncPrefs.excludedAssets.toList())
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(error = e.message ?: "Failed to include \"${asset.title}\"")
             }
         }
     }
@@ -137,7 +160,7 @@ class SyncViewModel(
         _uiState.value = _uiState.value.copy(isPreviewing = true, error = null)
         viewModelScope.launch {
             _uiState.value = try {
-                val diff = syncRepository.computeDiff(spaceId, Uri.parse(folderUri))
+                val diff = syncRepository.computeDiff(spaceId, Uri.parse(folderUri), syncPrefs.excludedHashes)
                 _uiState.value.copy(isPreviewing = false, pendingDiff = diff)
             } catch (e: Exception) {
                 _uiState.value.copy(isPreviewing = false, error = e.message ?: "Failed to compare space with folder")
@@ -176,10 +199,11 @@ class SyncViewModel(
 class SyncViewModelFactory(
     private val appContext: Context,
     private val spaceApi: SpaceApi,
+    private val photoApi: PhotoApi,
     private val syncRepository: SyncRepository,
     private val syncPrefs: SyncPrefs
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T =
-        SyncViewModel(appContext, spaceApi, syncRepository, syncPrefs) as T
+        SyncViewModel(appContext, spaceApi, photoApi, syncRepository, syncPrefs) as T
 }

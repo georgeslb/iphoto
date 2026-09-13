@@ -5,9 +5,9 @@ import android.content.SharedPreferences
 /**
  * Minimal in-memory [SharedPreferences] fake - lets a plain JUnit test exercise a class's real
  * get/set/clear persistence contract (e.g. TokenStore, SyncPrefs) without Robolectric or a real
- * Android Context. Only the String get/put path is implemented (the only type those classes
- * currently store); anything else throws so a test that actually needs it fails loudly instead of
- * silently returning a wrong default.
+ * Android Context. Only the String/String-set/Int/Long/Boolean get/put paths are implemented (the
+ * only types those classes currently store); anything else throws so a test that actually needs it
+ * fails loudly instead of silently returning a wrong default.
  */
 class FakeSharedPreferences : SharedPreferences {
     private val values = mutableMapOf<String, Any?>()
@@ -17,8 +17,9 @@ class FakeSharedPreferences : SharedPreferences {
     override fun getString(key: String?, defValue: String?): String? =
         values[key] as? String ?: defValue
 
+    @Suppress("UNCHECKED_CAST")
     override fun getStringSet(key: String?, defValues: MutableSet<String>?): MutableSet<String>? =
-        throw UnsupportedOperationException("FakeSharedPreferences: string sets are not used by TokenStore/SyncPrefs")
+        (values[key] as? Set<String>)?.toMutableSet() ?: defValues
 
     override fun getInt(key: String?, defValue: Int): Int = values[key] as? Int ?: defValue
 
@@ -54,8 +55,9 @@ class FakeSharedPreferences : SharedPreferences {
             if (key != null) pending[key] = value
         }
 
-        override fun putStringSet(key: String?, values: MutableSet<String>?): SharedPreferences.Editor =
-            throw UnsupportedOperationException("FakeSharedPreferences: string sets are not used by TokenStore/SyncPrefs")
+        override fun putStringSet(key: String?, values: MutableSet<String>?): SharedPreferences.Editor = apply {
+            if (key != null) pending[key] = values?.toSet()
+        }
 
         override fun putInt(key: String?, value: Int): SharedPreferences.Editor = apply {
             if (key != null) pending[key] = value

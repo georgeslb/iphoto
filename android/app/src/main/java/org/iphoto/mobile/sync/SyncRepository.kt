@@ -47,7 +47,18 @@ class SyncRepository(
     private val taskApi: TaskApi,
     private val hashCache: HashCache
 ) {
-    suspend fun computeDiff(spaceId: String, folderUri: Uri): SyncDiff = withContext(Dispatchers.IO) {
+    suspend fun computeDiff(
+        spaceId: String,
+        folderUri: Uri,
+        // Hashes of photos the user explicitly excluded from this Space (SyncPrefs.excludedHashes)
+        // - see the exclude/include feature on SpaceDetailScreen/SyncScreen. Excluding a photo
+        // garbages it remotely right away without touching the local file, so on every later pass
+        // its hash still shows up in localHashToAsset like any other present file; without this,
+        // the loop below would either re-upload it (nothing else marks it as already handled) or
+        // auto-restore it (a garbage entry whose hash matches a present local file is exactly what
+        // toRestore is otherwise for), undoing the exclusion within a single sync cycle.
+        excludedHashes: Set<String> = emptySet()
+    ): SyncDiff = withContext(Dispatchers.IO) {
         val remotePhotos = fetchAllSpacePhotos(spaceId)
         val remoteHashes = remotePhotos.mapNotNull { it.fileHash?.takeIf(String::isNotBlank) }.toSet()
 
@@ -73,6 +84,7 @@ class SyncRepository(
         val toUpload = mutableListOf<LocalAsset>()
         val toRestore = mutableListOf<RemotePhotoRef>()
         for ((hash, asset) in localHashToAsset) {
+            if (hash in excludedHashes) continue
             val garbageId = garbageIdByHash[hash]
             when {
                 garbageId != null -> toRestore.add(RemotePhotoRef(garbageId, hash))

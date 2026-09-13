@@ -272,6 +272,73 @@ class PagedPhotoGridViewModelTest {
     }
 
     @Test
+    fun `canExcludeFromSync is false unless onPhotosExcludedFromSync is set`() {
+        val loadPage: suspend (Int, Int) -> Pair<List<Photo>, Boolean> = { _, _ -> emptyList<Photo>() to true }
+        val viewModel = PagedPhotoGridViewModel(loadPage)
+
+        assertFalse(viewModel.canExcludeFromSync)
+    }
+
+    @Test
+    fun `excludeSelectionFromSync garbages the selection and invokes the exclude callback, without the garbage callback`() =
+        runTest {
+            val loadPage: suspend (Int, Int) -> Pair<List<Photo>, Boolean> =
+                { _, _ -> listOf(testPhoto("1"), testPhoto("2")) to true }
+            var garbageCallbackPhotos: List<Photo>? = null
+            var excludeCallbackPhotos: List<Photo>? = null
+            val viewModel = PagedPhotoGridViewModel(
+                loadPage,
+                onPhotosMovedToGarbage = { garbageCallbackPhotos = it },
+                onPhotosExcludedFromSync = { excludeCallbackPhotos = it }
+            )
+            viewModel.toggleSelection("1")
+            val photoApi = mockk<PhotoApi>()
+            coEvery { photoApi.moveToGarbage(listOf("1")) } returns Unit
+
+            assertTrue(viewModel.canExcludeFromSync)
+            viewModel.excludeSelectionFromSync(photoApi)
+
+            coVerify(exactly = 1) { photoApi.moveToGarbage(listOf("1")) }
+            assertEquals(listOf("1"), excludeCallbackPhotos?.map { it.id })
+            assertNull("excluding must never invoke the local-trash mirror", garbageCallbackPhotos)
+            val state = viewModel.uiState.value
+            assertTrue(state.selectedIds.isEmpty())
+            assertFalse(state.isMutating)
+            assertNull(state.actionError)
+        }
+
+    @Test
+    fun `excludeSelectionFromSync surfaces an error and stops mutating on failure`() = runTest {
+        val viewModel = PagedPhotoGridViewModel(
+            { _, _ -> listOf(testPhoto("1")) to true },
+            onPhotosExcludedFromSync = { }
+        )
+        viewModel.toggleSelection("1")
+        val photoApi = mockk<PhotoApi>()
+        coEvery { photoApi.moveToGarbage(any()) } throws RuntimeException("network down")
+
+        viewModel.excludeSelectionFromSync(photoApi)
+
+        val state = viewModel.uiState.value
+        assertEquals("network down", state.actionError)
+        assertFalse(state.isMutating)
+        assertEquals(setOf("1"), state.selectedIds)
+    }
+
+    @Test
+    fun `excludeSelectionFromSync is a no-op with nothing selected`() = runTest {
+        val viewModel = PagedPhotoGridViewModel(
+            { _, _ -> listOf(testPhoto("1")) to true },
+            onPhotosExcludedFromSync = { }
+        )
+        val photoApi = mockk<PhotoApi>()
+
+        viewModel.excludeSelectionFromSync(photoApi)
+
+        coVerify(exactly = 0) { photoApi.moveToGarbage(any()) }
+    }
+
+    @Test
     fun `addSelectionToAlbum adds photos without reloading the page`() = runTest {
         val photos = listOf(testPhoto("1"), testPhoto("2"))
         val viewModel = viewModelWith(photos)

@@ -76,6 +76,33 @@ class TokenStoreTest {
     }
 
     @Test
+    fun `rememberMe defaults to true so pre-existing installs keep their current behavior`() {
+        val store = TokenStore(FakeSharedPreferences())
+
+        assertTrue(store.rememberMe)
+    }
+
+    @Test
+    fun `rememberMe persists an explicit false`() {
+        val store = TokenStore(FakeSharedPreferences())
+
+        store.rememberMe = false
+
+        assertFalse(store.rememberMe)
+    }
+
+    @Test
+    fun `clearSession does not touch rememberMe`() {
+        val store = TokenStore(FakeSharedPreferences())
+        store.token = "abc123"
+        store.rememberMe = false
+
+        store.clearSession()
+
+        assertFalse(store.rememberMe)
+    }
+
+    @Test
     fun `a second TokenStore over the same prefs sees what the first one wrote`() {
         val prefs = FakeSharedPreferences()
         val first = TokenStore(prefs)
