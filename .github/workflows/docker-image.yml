@@ -24,16 +24,35 @@ jobs:
       # (verified by running it with both files removed entirely - see TODO.md). Skipping the LFS
       # pull here avoids spending bandwidth against GitHub's small free LFS quota on every push for
       # files this job doesn't need - build-and-push below is where they actually matter.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Matches pom.xml's maven-compiler-plugin release (25) - not the project's
       # <java.version>21</java.version> property, which is a separate, older setting; see the
       # Dockerfile's top comment for the same note.
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '25'
           cache: maven
+
+      # javacv's opencv-platform/ffmpeg-platform native .so files dlopen a handful of system
+      # libraries at load time (not just when their functionality is actually used - e.g.
+      # libopencv_highgui links GTK2 even though this app never opens a GUI window). The
+      # Dockerfile's runtime stage already documents the exact list, found by running `ldd`
+      # against every linux-x86_64 .so in these exact opencv/ffmpeg artifact versions - mirror it
+      # here rather than re-deriving it, since this runner and that image are both recent Ubuntu.
+      # Without this, any test that synchronously calls into ORB/highgui-adjacent OpenCV code
+      # fails with "UnsatisfiedLinkError: no jniopencv_highgui in java.library.path" - previously
+      # never caught here because the only code path that touched it (DuplicationServiceImpl,
+      # reached via async background task processing in every other test) silently swallowed the
+      # failure instead of failing a test.
+      - name: Install OpenCV/FFmpeg native runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgomp1 libsm6 libxext6 libxrender1 \
+            libgtk2.0-0t64 libcairo2 libgdk-pixbuf-2.0-0 libopenblas0 \
+            libva2 libva-drm2 libasound2t64 libpulse0
 
       # The backend's integration tests (src/test/java) spin up a real Postgres via
       # Testcontainers - this needs Docker, which GitHub-hosted ubuntu-latest runners already
@@ -56,7 +75,7 @@ jobs:
       # the real, production app image, which DOES need working ONNX models at runtime. Without
       # this the image would ship with the ~130-byte git-lfs pointer files instead of real models,
       # and face detection would fail the moment a real request hit it.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           lfs: true
 

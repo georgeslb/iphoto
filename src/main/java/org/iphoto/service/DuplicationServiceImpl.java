@@ -22,6 +22,11 @@ import org.springframework.data.domain.Slice;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import javax.imageio.ImageIO;
+import javax.imageio.ImageReader;
+import javax.imageio.stream.ImageInputStream;
+import java.io.File;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -30,6 +35,9 @@ import java.util.stream.Collectors;
 import static org.bytedeco.opencv.global.opencv_calib3d.RANSAC;
 import static org.bytedeco.opencv.global.opencv_calib3d.findHomography;
 import static org.bytedeco.opencv.global.opencv_core.*;
+import static org.bytedeco.opencv.global.opencv_imgcodecs.IMREAD_REDUCED_COLOR_2;
+import static org.bytedeco.opencv.global.opencv_imgcodecs.IMREAD_REDUCED_COLOR_4;
+import static org.bytedeco.opencv.global.opencv_imgcodecs.IMREAD_REDUCED_COLOR_8;
 import static org.bytedeco.opencv.global.opencv_imgcodecs.imread;
 import static org.bytedeco.opencv.global.opencv_imgproc.*;
 import static org.iphoto.model.DuplicateStatus.*;
@@ -47,6 +55,8 @@ public class DuplicationServiceImpl implements DuplicationService {
     private TaskMapper taskMapper;
 
     private static final int MAX_SIZE = 1000;
+    // Candidate OpenCV JPEG-scaled-decode factors, largest first - see selectReducedDecodeFactor.
+    private static final int[] REDUCED_DECODE_FACTORS = {8, 4, 2};
 
     // Global hash distances (out of 64 bits) tight enough to confirm a duplicate on their own.
     private static final int STRONG_PHASH_MAX = 12;
@@ -153,7 +163,7 @@ public class DuplicationServiceImpl implements DuplicationService {
 
         String imagePath = photo.getOriginalPath();
 
-        Mat image = imread(imagePath);
+        Mat image = readForHashing(imagePath);
 
         if (image.empty()) {
             image.release();
@@ -211,6 +221,85 @@ public class DuplicationServiceImpl implements DuplicationService {
             // reassignments happened above.
             image.release();
         }
+    }
+
+    // ---------------------------------------------------
+    // REDUCED-RESOLUTION DECODE (avoid ever allocating a full-resolution native buffer)
+    // ---------------------------------------------------
+    // hashing/ORB only ever need the image at MAX_SIZE (see resizeIfNeeded below), but a plain
+    // imread() decodes at full original resolution first regardless - for a 12MP+ photo that's a
+    // large, entirely wasted native (off-heap) allocation, freed moments later. OpenCV's imread
+    // supports IMREAD_REDUCED_COLOR_2/4/8 flags, which for JPEG (the vast majority of photos)
+    // use libjpeg's own DCT-based scaled decode to produce the reduced image directly - the
+    // full-resolution buffer is never allocated at all. For formats that don't support scaled
+    // decode (PNG, HEIC, ...), OpenCV silently ignores the flag and decodes at full size as
+    // before - a safe, correct fallback, just without the memory win for those files.
+    //
+    // Note: DCT-scaled decode isn't pixel-identical to full decode + cv::resize, so a hash
+    // computed this way can differ from the old path by a handful of bits. The strong/candidate
+    // hash-distance bands already carry generous slack (12-24 bits out of 64) specifically to
+    // absorb crops/edits/recompression, so this is not expected to flip any real duplicate/
+    // non-duplicate verdict.
+    Mat readForHashing(String imagePath) {
+        int[] dimensions = probeDimensions(imagePath);
+        if (dimensions != null) {
+            int maxDimension = Math.max(dimensions[0], dimensions[1]);
+            int factor = selectReducedDecodeFactor(maxDimension);
+            if (factor > 1) {
+                Mat reduced = imread(imagePath, reducedColorFlag(factor));
+                if (!reduced.empty()) {
+                    return reduced;
+                }
+                reduced.release();
+            }
+        }
+        return imread(imagePath);
+    }
+
+    // Header-only read (no pixel decode) via ImageIO, so we know whether a reduced decode is
+    // worth attempting before ever touching OpenCV. Returns null (caller falls back to a plain
+    // imread) if the format has no registered ImageIO reader or the file can't be probed.
+    private int[] probeDimensions(String imagePath) {
+        try (ImageInputStream iis = ImageIO.createImageInputStream(new File(imagePath))) {
+            if (iis == null) {
+                return null;
+            }
+            Iterator<ImageReader> readers = ImageIO.getImageReaders(iis);
+            if (!readers.hasNext()) {
+                return null;
+            }
+            ImageReader reader = readers.next();
+            try {
+                reader.setInput(iis);
+                return new int[]{reader.getWidth(0), reader.getHeight(0)};
+            } finally {
+                reader.dispose();
+            }
+        } catch (IOException | RuntimeException e) {
+            return null;
+        }
+    }
+
+    // Picks the largest reduction factor (8/4/2) that still leaves the image at least MAX_SIZE
+    // on its longer side, so resizeIfNeeded's later precise downscale never has to upscale back.
+    // Returns 1 (no reduction - decode at full size) when the image is already near MAX_SIZE, or
+    // too small a multiple of it for the coarse 2/4/8 steps to land above the target.
+    static int selectReducedDecodeFactor(int maxDimension) {
+        for (int factor : REDUCED_DECODE_FACTORS) {
+            if (maxDimension / factor >= MAX_SIZE) {
+                return factor;
+            }
+        }
+        return 1;
+    }
+
+    private static int reducedColorFlag(int factor) {
+        return switch (factor) {
+            case 8 -> IMREAD_REDUCED_COLOR_8;
+            case 4 -> IMREAD_REDUCED_COLOR_4;
+            case 2 -> IMREAD_REDUCED_COLOR_2;
+            default -> throw new IllegalArgumentException("Unsupported reduced decode factor: " + factor);
+        };
     }
 
     // ---------------------------------------------------
@@ -327,7 +416,7 @@ public class DuplicationServiceImpl implements DuplicationService {
     // RESIZE LARGE IMAGES
     // ---------------------------------------------------
 
-    private Mat resizeIfNeeded(Mat image) {
+    Mat resizeIfNeeded(Mat image) {
 
         int width = image.cols();
         int height = image.rows();
