@@ -1,8 +1,10 @@
 package org.iphoto.mobile.ui.photo
 
+import android.content.res.Configuration
 import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -43,6 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import android.util.Log
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -130,6 +133,27 @@ fun PhotoDetailScreen(
     var showDatePicker by remember { mutableStateOf(false) }
     var showMoveToMainDeviceConfirm by remember { mutableStateOf(false) }
 
+    // Landscape drops the fixed top/bottom app bars in favor of a single collapsed bar overlaid on
+    // top of a truly full-screen image - matches the fullscreen-with-collapsible-controls pattern
+    // most photo viewers use in landscape, where screen height is the scarce resource.
+    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    var controlsVisible by remember { mutableStateOf(true) }
+    LaunchedEffect(isLandscape) { if (isLandscape) controlsVisible = true }
+
+    val onEditDateClick: () -> Unit = { showDatePicker = true }
+    val onAddToAlbumClick: () -> Unit = { showAlbumPicker = true }
+    val onRemoveFromAlbumClick: () -> Unit = { viewModel.removeFromAlbum(container.albumApi) }
+    val onExcludeFromSyncClick: () -> Unit = { viewModel.excludeFromSync(container.photoApi) }
+    val onMoveToMainClick: () -> Unit = {
+        // Same policy as PhotoGridContent's selection action bar: only ask "also remove from
+        // device?" when this Space is actually the one synced to a device folder.
+        if (viewModel.canExcludeFromSync) {
+            showMoveToMainDeviceConfirm = true
+        } else {
+            viewModel.moveToMain(container.photoApi)
+        }
+    }
+
     // Computed fresh per photoId against whatever grid last populated PhotoBrowsingContext (see its
     // own kdoc) - not reactive, but the browsed list isn't expected to change while viewing a photo.
     val browsingIds = remember(photoId) { PhotoBrowsingContext.photoIds }
@@ -143,56 +167,36 @@ fun PhotoDetailScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Black)
-            )
+            if (!isLandscape) {
+                TopAppBar(
+                    title = { Text("") },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Black)
+                )
+            }
         },
         bottomBar = {
-            val loaded = state as? PhotoDetailUiState.Loaded
-            if (loaded != null) {
-                BottomAppBar(containerColor = Color.Black) {
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                        IconButton(onClick = { showDatePicker = true }, enabled = !loaded.isMutating) {
-                            Icon(Icons.Filled.Event, contentDescription = "Edit date", tint = Color.White)
-                        }
-                        IconButton(onClick = { showAlbumPicker = true }, enabled = !loaded.isMutating) {
-                            Icon(Icons.Filled.PhotoAlbum, contentDescription = "Add to album", tint = Color.White)
-                        }
-                        if (albumId != null) {
-                            IconButton(onClick = { viewModel.removeFromAlbum(container.albumApi) }, enabled = !loaded.isMutating) {
-                                Icon(Icons.Filled.PlaylistRemove, contentDescription = "Remove from album", tint = Color.White)
-                            }
-                        }
-                        if (viewModel.canExcludeFromSync) {
-                            IconButton(onClick = { viewModel.excludeFromSync(container.photoApi) }, enabled = !loaded.isMutating) {
-                                Icon(Icons.Filled.VisibilityOff, contentDescription = "Exclude from sync", tint = Color.White)
-                            }
-                        }
-                        if (viewModel.canMoveToMain) {
-                            IconButton(
-                                onClick = {
-                                    // Same policy as PhotoGridContent's selection action bar: only
-                                    // ask "also remove from device?" when this Space is actually
-                                    // the one synced to a device folder.
-                                    if (viewModel.canExcludeFromSync) {
-                                        showMoveToMainDeviceConfirm = true
-                                    } else {
-                                        viewModel.moveToMain(container.photoApi)
-                                    }
-                                },
-                                enabled = !loaded.isMutating
-                            ) {
-                                Icon(Icons.Filled.DriveFileMove, contentDescription = "Move to Main Space", tint = Color.White)
-                            }
-                        }
-                        IconButton(onClick = viewModel::moveToGarbage, enabled = !loaded.isMutating) {
-                            Icon(Icons.Filled.Delete, contentDescription = "Move to garbage", tint = Color.White)
+            if (!isLandscape) {
+                val loaded = state as? PhotoDetailUiState.Loaded
+                if (loaded != null) {
+                    BottomAppBar(containerColor = Color.Black) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                            PhotoActionButtons(
+                                loaded = loaded,
+                                canRemoveFromAlbum = albumId != null,
+                                canExcludeFromSync = viewModel.canExcludeFromSync,
+                                canMoveToMain = viewModel.canMoveToMain,
+                                onEditDate = onEditDateClick,
+                                onAddToAlbum = onAddToAlbumClick,
+                                onRemoveFromAlbum = onRemoveFromAlbumClick,
+                                onExcludeFromSync = onExcludeFromSyncClick,
+                                onMoveToMain = onMoveToMainClick,
+                                onMoveToGarbage = viewModel::moveToGarbage
+                            )
                         }
                     }
                 }
@@ -211,6 +215,17 @@ fun PhotoDetailScreen(
                         modifier = Modifier.align(Alignment.Center).padding(24.dp)
                     )
                 is PhotoDetailUiState.Loaded -> {
+                    // In landscape the top/bottom bars are gone entirely (see Scaffold above), so
+                    // the image itself is the only tap target left to collapse/reveal the overlay
+                    // options bar below - portrait keeps the fixed bars and isn't tappable this way.
+                    val mediaModifier = if (isLandscape) {
+                        Modifier.fillMaxSize().clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { controlsVisible = !controlsVisible }
+                    } else {
+                        Modifier.fillMaxSize()
+                    }
                     if (current.photo.contentType?.startsWith("video") == true) {
                         // Coil/AsyncImage (below) can't decode video at all - this mirrors the web
                         // app's own <video> element, both against the same /stream endpoint rather
@@ -219,7 +234,7 @@ fun PhotoDetailScreen(
                         VideoPlayer(
                             streamUrl = streamUrl,
                             dataSourceFactory = videoDataSourceFactory,
-                            modifier = Modifier.fillMaxSize()
+                            modifier = mediaModifier
                         )
                     } else {
                         val imageUrl = container.absoluteUrl("/api/photos/${current.photo.id}/original")
@@ -239,8 +254,37 @@ fun PhotoDetailScreen(
                                     else -> {}
                                 }
                             },
-                            modifier = Modifier.fillMaxSize()
+                            modifier = mediaModifier
                         )
+                    }
+                    if (isLandscape && controlsVisible) {
+                        Row(
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .fillMaxWidth()
+                                .background(Color.Black.copy(alpha = 0.6f))
+                                .padding(horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            IconButton(onClick = onBack) {
+                                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+                            }
+                            Row(horizontalArrangement = Arrangement.SpaceEvenly) {
+                                PhotoActionButtons(
+                                    loaded = current,
+                                    canRemoveFromAlbum = albumId != null,
+                                    canExcludeFromSync = viewModel.canExcludeFromSync,
+                                    canMoveToMain = viewModel.canMoveToMain,
+                                    onEditDate = onEditDateClick,
+                                    onAddToAlbum = onAddToAlbumClick,
+                                    onRemoveFromAlbum = onRemoveFromAlbumClick,
+                                    onExcludeFromSync = onExcludeFromSyncClick,
+                                    onMoveToMain = onMoveToMainClick,
+                                    onMoveToGarbage = viewModel::moveToGarbage
+                                )
+                            }
+                        }
                     }
                     if (previousPhotoId != null) {
                         IconButton(
@@ -270,6 +314,19 @@ fun PhotoDetailScreen(
                                 .padding(12.dp)
                         )
                     }
+                }
+            }
+            // Loading/Failed states render no bar of their own in landscape (see topBar above), so
+            // the back button still needs a way to reach the user - the Loaded branch's own overlay
+            // bar above already covers that case for a loaded photo.
+            if (isLandscape && state !is PhotoDetailUiState.Loaded) {
+                IconButton(
+                    onClick = onBack,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .background(Color.Black.copy(alpha = 0.6f))
+                ) {
+                    Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
                 }
             }
         }
@@ -332,5 +389,46 @@ fun PhotoDetailScreen(
                 }
             )
         }
+    }
+}
+
+// Shared between the portrait BottomAppBar and the landscape collapsed overlay bar so both stay
+// in sync automatically - one row of action icons, not two definitions of "what actions exist".
+@Composable
+private fun PhotoActionButtons(
+    loaded: PhotoDetailUiState.Loaded,
+    canRemoveFromAlbum: Boolean,
+    canExcludeFromSync: Boolean,
+    canMoveToMain: Boolean,
+    onEditDate: () -> Unit,
+    onAddToAlbum: () -> Unit,
+    onRemoveFromAlbum: () -> Unit,
+    onExcludeFromSync: () -> Unit,
+    onMoveToMain: () -> Unit,
+    onMoveToGarbage: () -> Unit
+) {
+    IconButton(onClick = onEditDate, enabled = !loaded.isMutating) {
+        Icon(Icons.Filled.Event, contentDescription = "Edit date", tint = Color.White)
+    }
+    IconButton(onClick = onAddToAlbum, enabled = !loaded.isMutating) {
+        Icon(Icons.Filled.PhotoAlbum, contentDescription = "Add to album", tint = Color.White)
+    }
+    if (canRemoveFromAlbum) {
+        IconButton(onClick = onRemoveFromAlbum, enabled = !loaded.isMutating) {
+            Icon(Icons.Filled.PlaylistRemove, contentDescription = "Remove from album", tint = Color.White)
+        }
+    }
+    if (canExcludeFromSync) {
+        IconButton(onClick = onExcludeFromSync, enabled = !loaded.isMutating) {
+            Icon(Icons.Filled.VisibilityOff, contentDescription = "Exclude from sync", tint = Color.White)
+        }
+    }
+    if (canMoveToMain) {
+        IconButton(onClick = onMoveToMain, enabled = !loaded.isMutating) {
+            Icon(Icons.Filled.DriveFileMove, contentDescription = "Move to Main Space", tint = Color.White)
+        }
+    }
+    IconButton(onClick = onMoveToGarbage, enabled = !loaded.isMutating) {
+        Icon(Icons.Filled.Delete, contentDescription = "Move to garbage", tint = Color.White)
     }
 }

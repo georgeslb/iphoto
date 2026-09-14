@@ -1,5 +1,25 @@
 # Android TODO
 
+## Lightbox goes full-screen with a collapsed overlay bar on landscape rotation — 2026-09-14
+
+`PhotoDetailScreen` used to keep the same fixed `TopAppBar` + `BottomAppBar` layout in both
+orientations, which eats a large fraction of a landscape screen's limited height. Now, whenever
+`LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE`, the Scaffold's
+`topBar`/`bottomBar` render nothing at all and the photo/video fills the entire screen; a single
+collapsed toolbar (back button + every action icon the portrait top/bottom bars used to split
+across two bars — edit date, add to album, remove from album, exclude from sync, move to Main
+Space, move to garbage) is drawn as one semi-transparent overlay row on top of the image instead.
+Tapping the image toggles that overlay's visibility (`controlsVisible`, reset to `true` whenever
+orientation flips back to landscape), the same collapsible-controls pattern most fullscreen photo/
+video viewers use. Loading/Failed states have no photo to tap, so they get their own always-visible
+minimal back-button overlay instead. Portrait is completely unchanged (still the two fixed bars,
+no tap-to-toggle). The action icon set itself was extracted into a shared `PhotoActionButtons`
+composable so the portrait bottom bar and the landscape overlay can't drift apart into two
+different lists of "what actions exist". **Not verified on a real device/emulator** — this
+environment has no Gradle wrapper/Android SDK (see the dependency-version entries below), so this
+is hand-reviewed against the Compose APIs only, same caveat as the sync UI work elsewhere in this
+file.
+
 ## Fixed: "remove from device" now uses the phone's real system trash; lightbox gets next/prev arrows + full synced-Space actions — 2026-09-14
 
 Three rounds on the same feature, in order:
