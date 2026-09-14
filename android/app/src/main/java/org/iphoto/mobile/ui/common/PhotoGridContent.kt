@@ -65,6 +65,10 @@ fun PhotoGridContent(
     var showDatePicker by remember { mutableStateOf(false) }
     var showMoveToMainDeviceConfirm by remember { mutableStateOf(false) }
 
+    // Keeps PhotoBrowsingContext in sync with what's actually on screen, so the lightbox's
+    // next/previous arrows always reflect this grid's current (possibly paginated) order.
+    LaunchedEffect(state.photos) { PhotoBrowsingContext.photoIds = state.photos.map { it.id } }
+
     BackHandler(enabled = state.isSelectionMode) { viewModel.clearSelection() }
 
     Column(modifier = modifier.fillMaxSize()) {

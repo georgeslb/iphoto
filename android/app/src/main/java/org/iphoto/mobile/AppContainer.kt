@@ -6,6 +6,9 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import coil3.ImageLoader
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import org.iphoto.mobile.auth.AuthRepository
 import org.iphoto.mobile.data.SyncPrefs
 import org.iphoto.mobile.data.TokenStore
@@ -32,6 +35,18 @@ class AppContainer(private val context: Context) {
 
     val syncPrefs = SyncPrefs(context)
     private val syncHashCache = HashCache(context)
+
+    // Outlives any single screen/ViewModel - for background work that must finish even if the
+    // user navigates away before a ViewModel's own viewModelScope would otherwise cancel it. This
+    // container is held for the whole process lifetime (IPhotoApplication's own `by lazy`), so
+    // this scope is too. Specifically added for mirroring a "move to garbage"/"move to Main + also
+    // remove from device" onto the locally synced folder (SyncRepository.trashLocalFilesForHashes)
+    // - that's a full folder scan+hash, slow enough that awaiting it inside viewModelScope was
+    // either blocking the UI (fixed once) or, once fixed to launch independently but still on
+    // viewModelScope, getting silently cancelled mid-flight if the user navigated away from the
+    // screen before it finished - confirmed on a real device: the server-side move succeeded but
+    // the device file was never actually trashed.
+    val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     // Fresh each call, like the *Api properties above - always bound to today's server URL/token.
     fun syncRepository(): SyncRepository = SyncRepository(context, photoApi, taskApi, syncHashCache)

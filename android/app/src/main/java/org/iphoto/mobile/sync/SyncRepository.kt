@@ -1,7 +1,11 @@
 package org.iphoto.mobile.sync
 
+import android.content.ContentUris
 import android.content.Context
 import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -231,19 +235,65 @@ class SyncRepository(
         }
     }
 
-    // Backs the reactive "also trash the file on the phone" side of moving a Space photo to
-    // garbage from the app UI (SpaceDetailScreen), for a Space currently synced to [folderUri] -
-    // finds each local file matching one of [hashes] and moves it into LocalTrash immediately,
-    // rather than waiting for the next sync pass to notice the Space photo is gone.
-    suspend fun trashLocalFilesForHashes(folderUri: Uri, hashes: Set<String>) = withContext(Dispatchers.IO) {
-        if (hashes.isEmpty()) return@withContext
-        val localAssets = LocalFolderScanner.scan(context, folderUri)
-        for (asset in localAssets) {
-            if (hashOf(asset) in hashes) {
-                LocalTrash.moveToTrash(context, folderUri, asset)
-            }
+    // Backs the reactive "also remove this from my phone" side of moving a Space photo to garbage
+    // from the app UI (SpaceDetailScreen/PhotoDetailScreen), for a Space currently synced to
+    // [folderUri] - finds each local file matching one of [hashes], via SafDir's batched scan (see
+    // its kdoc - a naive per-file DocumentFile scan took ~40s for an 843-file camera roll).
+    suspend fun findLocalAssetsForHashes(folderUri: Uri, hashes: Set<String>): List<LocalAsset> = withContext(Dispatchers.IO) {
+        if (hashes.isEmpty()) {
+            Log.w(TAG, "findLocalAssetsForHashes: called with no hashes, nothing to do")
+            return@withContext emptyList()
         }
+        Log.d(TAG, "findLocalAssetsForHashes: scanning $folderUri for ${hashes.size} hash(es)")
+        val localAssets = LocalFolderScanner.scan(context, folderUri)
+        Log.d(TAG, "findLocalAssetsForHashes: scanned ${localAssets.size} local asset(s)")
+        val matched = localAssets.filter { hashOf(it) in hashes }
+        Log.d(TAG, "findLocalAssetsForHashes: matched ${matched.size} of ${hashes.size} requested hash(es)")
+        matched
+    }
+
+    // Fallback path for trashLocalFilesForHashes' callers when a matched asset can't be resolved to
+    // a MediaStore Uri (see toMediaStoreUri) - moves it into the app-managed .iPhotoTrash folder
+    // instead, silently and without a system dialog, since it isn't a MediaStore-indexed location.
+    suspend fun trashLocalFilesInAppFolder(folderUri: Uri, assets: List<LocalAsset>) = withContext(Dispatchers.IO) {
+        if (assets.isEmpty()) return@withContext
+        var trashedOk = 0
+        for (asset in assets) {
+            val moved = LocalTrash.moveToTrash(context, folderUri, asset)
+            if (moved) trashedOk++
+            Log.d(TAG, "trashLocalFilesInAppFolder: ${asset.displayName} -> moveToTrash=$moved")
+        }
+        Log.d(TAG, "trashLocalFilesInAppFolder: done, trashedOk=$trashedOk of ${assets.size}")
         hashCache.persist()
+    }
+
+    // Resolves a scanned local [asset] (living under a SAF tree the user picked) to its MediaStore
+    // content Uri, when that SAF location happens to also be MediaStore-indexed - true for standard
+    // camera-roll locations like DCIM/Camera, which is what this feature is built for. Lets the
+    // caller use MediaStore.createTrashRequest to put the file in the phone's *real* system trash
+    // (Gallery/Photos "Recently deleted", recoverable there) instead of our own hidden .iPhotoTrash
+    // subfolder - requires API 29+ (getMediaUri itself), null below that or for a non-indexed
+    // location, both of which fall back to trashLocalFilesInAppFolder.
+    fun toMediaStoreUri(asset: LocalAsset): Uri? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+        return try {
+            // getMediaUri returns a generic content://media/external/file/<id> Uri (the row ID in
+            // MediaStore's shared "files" table) - createTrashRequest rejects that with
+            // "All requested items must be Media items", it needs the type-specific Images/Video
+            // collection Uri instead. Same underlying row, just addressed through the collection
+            // createTrashRequest actually accepts.
+            val genericUri = MediaStore.getMediaUri(context, asset.uri) ?: return null
+            val id = ContentUris.parseId(genericUri)
+            val collection = if (asset.mimeType.startsWith("video/")) {
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            } else {
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            }
+            ContentUris.withAppendedId(collection, id)
+        } catch (e: Exception) {
+            Log.w(TAG, "toMediaStoreUri: could not resolve a MediaStore uri for ${asset.uri}", e)
+            null
+        }
     }
 
     private fun readFully(stream: InputStream, buffer: ByteArray): Int {
@@ -259,6 +309,7 @@ class SyncRepository(
     private fun String.toPlainRequestBody(): RequestBody = toRequestBody("text/plain".toMediaTypeOrNull())
 
     companion object {
+        private const val TAG = "SyncRepository"
         private const val SPACE_PAGE_SIZE = 200
         private const val CHUNK_SIZE = 1 * 1024 * 1024
         private const val TASK_POLL_INTERVAL_MS = 1000L

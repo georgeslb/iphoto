@@ -45,10 +45,16 @@ class PagedPhotoGridViewModel(
     // Set only by AlbumDetailScreen - lets PhotoGridContent offer "remove from album" alongside
     // the garbage/album/date actions that apply everywhere else too.
     val albumId: String? = null,
-    // Set only by SpaceDetailScreen when its Space is the one currently synced to a device folder
-    // (see SyncPrefs) - mirrors a "move to garbage" onto the matching local file (SyncRepository's
-    // LocalTrash) right away, instead of waiting for the next sync pass to notice the Space photo
-    // is gone.
+    // Set only by SpaceDetailScreen/PhotoDetailScreen when its Space is the one currently synced to
+    // a device folder (see SyncPrefs) - mirrors a "move to garbage" onto the matching local file
+    // right away (DeviceTrashRequester: prefers the phone's real system trash via
+    // MediaStore.createTrashRequest, falling back to the app's own LocalTrash folder), instead of
+    // waiting for the next sync pass to notice the Space photo is gone. Suspend and awaited inline
+    // on viewModelScope - it needs an ActivityResultLauncher to show the system trash confirmation
+    // dialog, which only makes sense tied to this screen being alive, not a background scope; the
+    // scan behind it is now fast (SafDir's batched query, not a per-file walk) so the window where
+    // navigating away mid-flight would cancel it is small, and cancelling it here is actually
+    // correct anyway since the dialog can't be shown for a screen that's gone.
     private val onPhotosMovedToGarbage: (suspend (List<Photo>) -> Unit)? = null,
     // Also only set for the currently synced Space - records each excluded photo's hash (see
     // SyncPrefs.excludedAssets) so a later sync leaves its still-present local file alone, rather
@@ -171,31 +177,21 @@ class PagedPhotoGridViewModel(
         viewModelScope.launch {
             try {
                 photoApi.moveToGarbage(ids)
-                mirrorToLocalTrashInBackground(selectedPhotos)
+                // Best-effort: the server-side move already succeeded above regardless of whether
+                // this (removing the matching local file, possibly via a system trash dialog)
+                // fails or the user declines it - so a failure here shouldn't surface as if the
+                // garbage action itself failed, and the reload below still happens.
+                try {
+                    onPhotosMovedToGarbage?.invoke(selectedPhotos)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to remove the local file for a garbaged photo", e)
+                }
                 loadFirstPage()
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isMutating = false,
                     actionError = e.message ?: "Failed to move to garbage"
                 )
-            }
-        }
-    }
-
-    // onPhotosMovedToGarbage (SyncRepository.trashLocalFilesForHashes) re-scans and re-hashes the
-    // *entire* synced folder via SAF to find the handful of files matching this selection - slow
-    // enough on a large folder that awaiting it inline made "move to garbage"/"move to Main + also
-    // remove from device" visibly hang before the action appeared to finish. It was already
-    // documented as best-effort (a failure here doesn't undo the server-side move, the next sync
-    // pass reconciles it), so there's no correctness reason to block on it - launched as its own
-    // independent coroutine instead, so the grid refreshes and the mutating spinner clears the
-    // moment the server call succeeds, while this keeps running in the background.
-    private fun mirrorToLocalTrashInBackground(photos: List<Photo>) {
-        viewModelScope.launch {
-            try {
-                onPhotosMovedToGarbage?.invoke(photos)
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to mirror move-to-garbage onto the local synced folder", e)
             }
         }
     }
@@ -240,20 +236,20 @@ class PagedPhotoGridViewModel(
         viewModelScope.launch {
             try {
                 photoApi.moveToMain(ids)
-                // Best-effort, same reasoning as moveSelectionToGarbage's mirror: if this throws,
-                // the photo is still moved server-side, and the next sync pass would just re-upload
-                // the local file once more before settling - not silent data loss, just a wasted
-                // upload. Bookkeeping (markMovedToMain) is cheap/synchronous so it stays inline;
-                // the actual device-file removal is the slow full-folder scan+hash, so it's
-                // launched independently (see mirrorToLocalTrashInBackground) rather than making
-                // the whole action wait on it.
+                // Best-effort: if this throws, the photo is still moved server-side, and the next
+                // sync pass would just re-upload the local file once more before settling - not
+                // silent data loss, just a wasted upload.
                 try {
                     onPhotosMovedToMain?.invoke(selectedPhotos)
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to record move-to-Main for the synced folder", e)
                 }
                 if (alsoRemoveFromDevice) {
-                    mirrorToLocalTrashInBackground(selectedPhotos)
+                    try {
+                        onPhotosMovedToGarbage?.invoke(selectedPhotos)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to remove the local file after move-to-Main", e)
+                    }
                 }
                 loadFirstPage()
             } catch (e: Exception) {

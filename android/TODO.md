@@ -1,5 +1,45 @@
 # Android TODO
 
+## Fixed: "remove from device" now uses the phone's real system trash; lightbox gets next/prev arrows + full synced-Space actions — 2026-09-14
+
+Three rounds on the same feature, in order:
+
+1. **Local-trash mirror silently cancelled on navigation.** Regression from "moving to main is
+   taking too long" below: that fix launched the local-trash mirror independently instead of
+   awaiting it inline, but it still ran on the calling screen's `viewModelScope` - leave
+   `SpaceDetailScreen` before the (then ~40s) scan finished and it got silently cancelled, no error
+   surfaced. First fix: gave it a process-lifetime home, `AppContainer.applicationScope`.
+2. **Diagnosed on a real device (logs added to `SyncRepository`/`LocalTrash`, previously silent):
+   the mirror actually worked, it was just slow** - 47s to move 3 files, because `LocalFolderScanner`/
+   `LocalTrash` walked SAF folders via `DocumentFile.listFiles()` plus 4 more per-child IPC round
+   trips (`.name`/`.type`/`.length()`/`.lastModified()`) - 5 calls per file, ~40s for an 843-file
+   camera roll. Added `SafDir.kt`: one batched `ContentResolver` query per directory instead of one
+   per file. Same walk now takes ~2-3s.
+3. **User clarified the actual ask: not a faster hidden `.iPhotoTrash` folder, but the phone's real
+   system trash** (Gallery/Photos "Recently deleted", recoverable there). Added
+   `DeviceTrashRequester` (`ui/common/DeviceTrashRequester.kt`): resolves each matched local file to
+   its MediaStore Uri (`MediaStore.getMediaUri` returns a generic `content://media/external/file/<id>`
+   Uri, which `createTrashRequest` rejects with "All requested items must be Media items" - had to
+   re-derive the type-specific Images/Video collection Uri via `ContentUris.parseId` +
+   `ContentUris.withAppendedId`), then `MediaStore.createTrashRequest` - shows one system
+   confirmation dialog, file lands in the real system trash. Requires an `ActivityResultLauncher`,
+   so this only works tied to a live screen (not `applicationScope` like the old approach) - the
+   MediaStore dialog can't be shown for a screen that's gone anyway, and the scan is fast now, so
+   `PagedPhotoGridViewModel.onPhotosMovedToGarbage` went back to `suspend`, awaited on
+   `viewModelScope`. Falls back to the old `.iPhotoTrash` folder (silent, no dialog) for files
+   MediaStore doesn't index, or below API 30. Wired into both `SpaceDetailScreen` (grid) and
+   `PhotoDetailScreen` (lightbox) via `rememberDeviceTrashRequester`.
+
+Also, while at it: the lightbox (`PhotoDetailScreen`) previously had a smaller action set than the
+grid's selection bar for a synced Space - missing "exclude from sync" and "move to Main Space".
+Added both (`PhotoDetailViewModel.excludeFromSync`/`moveToMain`, mirroring
+`PagedPhotoGridViewModel`'s), plus next/previous chevron arrows overlaid on the photo/video (new
+`PhotoBrowsingContext` - a plain last-write-wins holder for whichever grid's currently-visible
+photo IDs, set by `PhotoGridContent`, read by `PhotoDetailScreen` to compute siblings; `MainScreen`
+navigates to a sibling by replacing the lightbox's own backstack entry so Back always returns to
+the grid). Video autoplay (`VideoPlayer`'s `playWhenReady = true`) was already in place from an
+earlier fix.
+
 ## Fixed: sync schedule went stale after code changes; video/sync connection contention — 2026-09-13
 
 Two separate fixes from the same debugging session:

@@ -44,6 +44,7 @@ import org.iphoto.mobile.sync.SyncWorker
 import org.iphoto.mobile.ui.common.PagedPhotoGridViewModel
 import org.iphoto.mobile.ui.common.PagedPhotoGridViewModelFactory
 import org.iphoto.mobile.ui.common.PhotoGridContent
+import org.iphoto.mobile.ui.common.rememberDeviceTrashRequester
 
 // How often to poll for new thumbnails while a sync is actively running against the
 // currently-viewed space - frequent enough to feel live, infrequent enough not to hammer
@@ -68,12 +69,15 @@ fun SpaceDetailScreen(spaceId: String, onPhotoClick: (String) -> Unit, onBack: (
         }
     }
     // Only set for the Space currently synced to a device folder - mirrors "move to garbage" onto
-    // the matching local file right away (see PagedPhotoGridViewModel.onPhotosMovedToGarbage).
-    val onPhotosMovedToGarbage: (suspend (List<Photo>) -> Unit)? = remember(spaceId, isSyncedSpace, syncedFolderUri) {
+    // the matching local file right away (see PagedPhotoGridViewModel.onPhotosMovedToGarbage and
+    // DeviceTrashRequester - prefers the phone's real system trash, with a confirmation dialog,
+    // over the app's own hidden .iPhotoTrash folder).
+    val deviceTrashRequester = rememberDeviceTrashRequester(container)
+    val onPhotosMovedToGarbage: (suspend (List<Photo>) -> Unit)? = remember(spaceId, isSyncedSpace, syncedFolderUri, deviceTrashRequester) {
         if (isSyncedSpace && syncedFolderUri != null) {
             { photos: List<Photo> ->
                 val hashes = photos.mapNotNull { it.fileHash?.takeIf(String::isNotBlank) }.toSet()
-                container.syncRepository().trashLocalFilesForHashes(Uri.parse(syncedFolderUri), hashes)
+                deviceTrashRequester.trash(Uri.parse(syncedFolderUri), hashes)
             }
         } else null
     }

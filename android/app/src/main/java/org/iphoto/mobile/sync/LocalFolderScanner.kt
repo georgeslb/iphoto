@@ -17,13 +17,13 @@ object LocalFolderScanner {
     fun scan(context: Context, treeUri: Uri): List<LocalAsset> {
         val root = DocumentFile.fromTreeUri(context, treeUri) ?: return emptyList()
         val results = mutableListOf<LocalAsset>()
-        walk(root, 0, "", results)
+        walk(context, root.uri, 0, "", results)
         return results
     }
 
-    private fun walk(dir: DocumentFile, depth: Int, relativeDir: String, out: MutableList<LocalAsset>) {
+    private fun walk(context: Context, dirUri: Uri, depth: Int, relativeDir: String, out: MutableList<LocalAsset>) {
         if (depth > MAX_DEPTH) return
-        for (child in dir.listFiles()) {
+        for (child in SafDir.listChildren(context, dirUri)) {
             when {
                 // The local-trash subfolder (see LocalTrash) holds files the sync feature has
                 // already moved out of the active folder - it must never be scanned back in as if
@@ -33,17 +33,17 @@ object LocalFolderScanner {
                 child.isDirectory -> {
                     val childName = child.name ?: continue
                     val childRelativeDir = if (relativeDir.isEmpty()) childName else "$relativeDir/$childName"
-                    walk(child, depth + 1, childRelativeDir, out)
+                    walk(context, child.uri, depth + 1, childRelativeDir, out)
                 }
-                child.isFile -> {
-                    val mimeType = child.type.orEmpty()
+                else -> {
+                    val mimeType = child.mimeType.orEmpty()
                     if (mimeType.startsWith("image/") || mimeType.startsWith("video/")) {
                         out.add(
                             LocalAsset(
                                 uri = child.uri,
                                 displayName = child.name ?: child.uri.lastPathSegment.orEmpty(),
-                                size = child.length(),
-                                lastModified = child.lastModified(),
+                                size = child.size,
+                                lastModified = child.lastModified,
                                 mimeType = mimeType,
                                 relativeDir = relativeDir
                             )

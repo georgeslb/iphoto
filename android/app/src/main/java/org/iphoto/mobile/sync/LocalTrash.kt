@@ -2,7 +2,10 @@ package org.iphoto.mobile.sync
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import androidx.documentfile.provider.DocumentFile
+
+private const val TAG = "LocalTrash"
 
 /**
  * App-managed "phone garbage" for a synced folder: a `.iPhotoTrash` subfolder inside the SAF tree
@@ -34,27 +37,29 @@ object LocalTrash {
     fun scan(context: Context, rootUri: Uri): List<LocalAsset> {
         val dir = trashDir(context, rootUri, create = false) ?: return emptyList()
         val results = mutableListOf<LocalAsset>()
-        walk(dir, "", results)
+        walk(context, dir.uri, "", results)
         return results
     }
 
-    private fun walk(dir: DocumentFile, relativeDir: String, out: MutableList<LocalAsset>) {
-        for (child in dir.listFiles()) {
+    // See SafDir's kdoc: a single batched query per directory instead of DocumentFile.listFiles()
+    // plus 4 more IPC round trips per child.
+    private fun walk(context: Context, dirUri: Uri, relativeDir: String, out: MutableList<LocalAsset>) {
+        for (child in SafDir.listChildren(context, dirUri)) {
             when {
                 child.isDirectory -> {
                     val childName = child.name ?: continue
                     val childRelativeDir = if (relativeDir.isEmpty()) childName else "$relativeDir/$childName"
-                    walk(child, childRelativeDir, out)
+                    walk(context, child.uri, childRelativeDir, out)
                 }
-                child.isFile -> {
-                    val mimeType = child.type.orEmpty()
+                else -> {
+                    val mimeType = child.mimeType.orEmpty()
                     if (mimeType.startsWith("image/") || mimeType.startsWith("video/")) {
                         out.add(
                             LocalAsset(
                                 uri = child.uri,
                                 displayName = child.name ?: child.uri.lastPathSegment.orEmpty(),
-                                size = child.length(),
-                                lastModified = child.lastModified(),
+                                size = child.size,
+                                lastModified = child.lastModified,
                                 mimeType = mimeType,
                                 relativeDir = relativeDir
                             )
@@ -71,10 +76,24 @@ object LocalTrash {
      * `.iPhotoTrash` so a later restore can put it back where it came from.
      */
     fun moveToTrash(context: Context, rootUri: Uri, asset: LocalAsset): Boolean {
-        val source = DocumentFile.fromSingleUri(context, asset.uri)?.takeIf { it.exists() } ?: return false
-        val trashRoot = trashDir(context, rootUri, create = true) ?: return false
-        val destParent = resolveOrCreateDir(trashRoot, asset.relativeDir) ?: return false
-        return moveDocument(context, source, destParent)
+        val source = DocumentFile.fromSingleUri(context, asset.uri)?.takeIf { it.exists() }
+        if (source == null) {
+            Log.w(TAG, "moveToTrash: source missing/doesn't exist for ${asset.uri}")
+            return false
+        }
+        val trashRoot = trashDir(context, rootUri, create = true)
+        if (trashRoot == null) {
+            Log.w(TAG, "moveToTrash: could not create/find $TRASH_DIR_NAME under $rootUri")
+            return false
+        }
+        val destParent = resolveOrCreateDir(trashRoot, asset.relativeDir)
+        if (destParent == null) {
+            Log.w(TAG, "moveToTrash: could not create dest dir '${asset.relativeDir}' under $trashRoot")
+            return false
+        }
+        val ok = moveDocument(context, source, destParent)
+        if (!ok) Log.w(TAG, "moveToTrash: moveDocument failed for ${asset.uri} -> $destParent")
+        return ok
     }
 
     /** Moves a trashed [asset] (as found by [scan]) back to its original relativeDir under the synced folder root. */

@@ -255,25 +255,40 @@ class SyncRepositoryTest {
     }
 
     @Test
-    fun `trashLocalFilesForHashes only trashes files matching the given hashes`() = runTest {
+    fun `findLocalAssetsForHashes only returns files matching the given hashes`() = runTest {
         val matching = testAsset("hash-match")
         val other = testAsset("hash-other")
         every { LocalFolderScanner.scan(context, folderUri) } returns listOf(matching, other)
-        every { LocalTrash.moveToTrash(context, folderUri, any()) } returns true
 
-        repository.trashLocalFilesForHashes(folderUri, setOf("hash-match"))
+        val result = repository.findLocalAssetsForHashes(folderUri, setOf("hash-match"))
 
-        verify(exactly = 1) { LocalTrash.moveToTrash(context, folderUri, matching) }
-        verify(exactly = 0) { LocalTrash.moveToTrash(context, folderUri, other) }
+        assertEquals(listOf(matching), result)
     }
 
     @Test
-    fun `trashLocalFilesForHashes forwards a nested file's relativeDir unchanged`() = runTest {
-        val nested = testAsset("hash-nested", relativeDir = "Camera/2024/06")
-        every { LocalFolderScanner.scan(context, folderUri) } returns listOf(nested)
+    fun `findLocalAssetsForHashes is a no-op with no hashes to match`() = runTest {
+        val result = repository.findLocalAssetsForHashes(folderUri, emptySet())
+
+        assertTrue(result.isEmpty())
+        verify(exactly = 0) { LocalFolderScanner.scan(any(), any()) }
+    }
+
+    @Test
+    fun `trashLocalFilesInAppFolder moves each given asset into LocalTrash`() = runTest {
+        val matching = testAsset("hash-match")
         every { LocalTrash.moveToTrash(context, folderUri, any()) } returns true
 
-        repository.trashLocalFilesForHashes(folderUri, setOf("hash-nested"))
+        repository.trashLocalFilesInAppFolder(folderUri, listOf(matching))
+
+        verify(exactly = 1) { LocalTrash.moveToTrash(context, folderUri, matching) }
+    }
+
+    @Test
+    fun `trashLocalFilesInAppFolder forwards a nested file's relativeDir unchanged`() = runTest {
+        val nested = testAsset("hash-nested", relativeDir = "Camera/2024/06")
+        every { LocalTrash.moveToTrash(context, folderUri, any()) } returns true
+
+        repository.trashLocalFilesInAppFolder(folderUri, listOf(nested))
 
         // LocalTrash.resolveOrCreateDir (LocalTrashTest) is what actually mirrors this path under
         // .iPhotoTrash - this just guards against SyncRepository itself ever stripping it on the
@@ -282,10 +297,10 @@ class SyncRepositoryTest {
     }
 
     @Test
-    fun `trashLocalFilesForHashes is a no-op with no hashes to match`() = runTest {
-        repository.trashLocalFilesForHashes(folderUri, emptySet())
+    fun `trashLocalFilesInAppFolder is a no-op with nothing to trash`() = runTest {
+        repository.trashLocalFilesInAppFolder(folderUri, emptyList())
 
-        verify(exactly = 0) { LocalFolderScanner.scan(any(), any()) }
+        verify(exactly = 0) { LocalTrash.moveToTrash(any(), any(), any()) }
     }
 
     @Test

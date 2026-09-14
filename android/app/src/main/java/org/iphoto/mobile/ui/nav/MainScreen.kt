@@ -129,7 +129,20 @@ fun MainScreen(onLogout: () -> Unit) {
                     photoId = photoId,
                     albumId = albumId,
                     spaceId = spaceId,
-                    onBack = { navController.popBackStack() }
+                    onBack = { navController.popBackStack() },
+                    // Replaces this lightbox's own backstack entry with the sibling photo's,
+                    // rather than pushing a new one each time - Back still goes straight to the
+                    // grid no matter how many photos were paged through via the arrows.
+                    onNavigateToPhoto = { nextPhotoId ->
+                        val route = buildString {
+                            append("photo/$nextPhotoId?")
+                            if (albumId != null) append("albumId=$albumId&")
+                            if (spaceId != null) append("spaceId=$spaceId")
+                        }
+                        navController.navigate(route) {
+                            popUpTo("photo/{photoId}?albumId={albumId}&spaceId={spaceId}") { inclusive = true }
+                        }
+                    }
                 )
             }
         }
