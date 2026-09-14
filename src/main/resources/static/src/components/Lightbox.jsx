@@ -50,6 +50,13 @@ export default function Lightbox({
     const [newDate, setNewDate] = useState('');
     const [isEditingImage, setIsEditingImage] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
+    // Info panel (.metadata-sidebar) visibility - user-toggleable so the photo/video can take the
+    // full window on demand (mobile especially: the panel eats a chunk of the already-small
+    // screen). Not reset on photo navigation (prev/next reuses this same Lightbox instance without
+    // remounting), so a hidden/shown choice persists across the whole browsing session rather than
+    // snapping back open on every photo - the more expected behavior for a "collapse this panel"
+    // control.
+    const [showInfo, setShowInfo] = useState(true);
     const imageRef = useRef(null);
 
     // Ref to the cropperjs instance (react-cropper), used for the crop/rotate/zoom image editor
@@ -504,6 +511,26 @@ export default function Lightbox({
             `}</style>
             <div className="lightbox-container" onClick={e => e.stopPropagation()}>
                 <div className="lightbox-content" style={{position: 'relative'}}>
+                    {!isEditingImage && (
+                        // Always rendered here (not inside .metadata-sidebar), so both controls
+                        // stay reachable even when the info panel is hidden - without this,
+                        // hiding the panel would also hide its close button with no other way to
+                        // dismiss the Lightbox on a touch device (.lightbox-container itself stops
+                        // click propagation, so tapping the photo/backdrop never reaches
+                        // .lightbox-overlay's own onClose).
+                        <div className="lightbox-top-controls">
+                            <button
+                                className="lightbox-icon-btn"
+                                title={showInfo ? messages["hideInfo"] : messages["showInfo"]}
+                                onClick={() => setShowInfo(v => !v)}
+                            >
+                                <Info size={20}/>
+                            </button>
+                            <button className="lightbox-icon-btn" title={messages["close"]} onClick={onClose}>
+                                <X size={20}/>
+                            </button>
+                        </div>
+                    )}
                     {isLoading && (
                         <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0, 0, 0, 0.7)', display: 'flex', justifyContent: 'center', alignItems: 'center', color: 'white', fontSize: '24px', zIndex: 100 }}>
                             {messages["saving"]}
@@ -576,6 +603,7 @@ export default function Lightbox({
                     {hasPrevious && !isEditingImage && <button className="lightbox-nav-btn prev" onClick={handlePrevious}><ChevronLeft size={32}/></button>}
                     {hasNext && !isEditingImage && <button className="lightbox-nav-btn next" onClick={handleNext}><ChevronRight size={32}/></button>}
                 </div>
+                {showInfo && (
                 <div className="metadata-sidebar">
                     <div className="sidebar-header">
                         <h3>{messages["information"]}</h3>
@@ -695,6 +723,7 @@ export default function Lightbox({
                         {selectedPhoto.fileSystemCreationDate && <div className="metadata-group"><label><Calendar size={14}/> {messages["fileSystemDate"]}</label><p>{formatDateTime(selectedPhoto.fileSystemCreationDate)}</p></div>}
                     </div>
                 </div>
+                )}
             </div>
         </div>
         {mergePrompt && (

@@ -22,6 +22,7 @@ public class FaceThumbnailMigrationServiceImpl implements FaceThumbnailMigration
 
     @Override
     public FaceThumbnailMigrationSummaryDTO migrateAll() {
+        log.info("start to migrate faces");
         int scanned = 0, migrated = 0, failed = 0;
         // Deliberately no surrounding @Transactional here, same as StorageMigrationServiceImpl -
         // each faceRepository.save() below gets its own short transaction rather than one huge one
@@ -63,7 +64,7 @@ public class FaceThumbnailMigrationServiceImpl implements FaceThumbnailMigration
                 break;
             }
         }
-
+        log.info("finish faces migration scanned {}, migrated {}, failed {}", scanned, migrated, failed);
         return new FaceThumbnailMigrationSummaryDTO(scanned, migrated, failed);
     }
 }

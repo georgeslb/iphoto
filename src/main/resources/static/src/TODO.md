@@ -217,6 +217,34 @@ matters again; `specification.md` is the source of truth for current behavior.
   (`useDayIndexedPhotos.test.js#doesNotDoubleFetchWhenLoadDayPageIsCalledTwiceForTheSameDayBeforeTheFirstResolves`) -
   every prior test in that file always awaited one `loadDayPage` call before making the next,
   which is exactly why this never surfaced there.
+- **Lightbox mobile: couldn't scroll down to see video info in the metadata panel** (reported
+  2026-09-14 - the panel's own scroll area, `.sidebar-scroll-content`, only needs scrolling to
+  reach content further down the list, and a video has more fields above `videoInfo` than a photo
+  does, which is why this showed up specifically on videos). Root cause not fully pinned down
+  without a real mobile device to test against (headless Chromium couldn't reproduce it even with
+  a large intrinsic-size media element), but two real flexbox/mobile-Safari gotchas were fixed
+  defensively either way: (1) `.metadata-sidebar`/`.sidebar-scroll-content`/`.lightbox-content` are
+  all flex items with the default `min-height: auto`, which refuses to shrink below content size -
+  in `.lightbox-container`'s mobile column layout this could let a large video push
+  `.metadata-sidebar` (and specifically whatever sits near the bottom of its list, like video info)
+  below the visible viewport with no page-level scroll to reach it (`.lightbox-overlay` is a
+  `position: fixed` full-screen overlay) - fixed with explicit `min-height: 0` down that whole
+  chain; (2) `.sidebar-scroll-content` was missing `-webkit-overflow-scrolling: touch`, which older
+  iOS Safari has needed for a nested `overflow: auto` container inside a `position: fixed` ancestor
+  to actually respond to a finger-drag (same reasoning `.duplicate-chip-rail` already uses this
+  for). **Also added, per explicit user request** ("add a button to hide/unhide information bloc
+  so user can see full window photo"): an info-icon toggle (`showInfo` state,
+  `.lightbox-top-controls`) that shows/hides `.metadata-sidebar` entirely, letting the photo/video
+  use the full window - most useful on mobile, where the panel otherwise eats a large share of an
+  already-small screen. Deliberately NOT put the toggle/close buttons inside `.metadata-sidebar`
+  itself - they live in their own always-rendered floating group over the photo/video, since
+  `.lightbox-container` stops click propagation (tapping the backdrop never reaches
+  `.lightbox-overlay`'s own close-on-click) and Escape isn't reachable on a touch device, so hiding
+  the panel must never also remove the only way to close the Lightbox. Regression-tested
+  (`Lightbox.test.jsx`'s new "Lightbox info panel toggle" suite: default-shown + toggle hide/show,
+  and the persistent close button still working while the panel is hidden). **Worth a follow-up**:
+  confirm the original scroll complaint is actually gone on a real mobile device, since it couldn't
+  be reproduced here to verify the root cause with certainty.
 
 ### Duplicate detection
 - Two-tier detection: a tight global pHash/averageHash Hamming-distance match confirms directly;
@@ -428,7 +456,7 @@ matters again; `specification.md` is the source of truth for current behavior.
   detach/delete/merge path pulled every one of a person's full thumbnail blobs into memory, plus an
   N+1 on each face's lazy `photo` association inside `recalculateCoverFace`'s `getLastFaceForPerson`
   loop — invisible with a handful of faces, brutal for a heavily-photographed person with thousands).
-  Fixed: `FaceEntity.thumbnailPath` (new, migration `V8__add_faces_thumbnail_path.sql`) + new
+  Fixed: `FaceEntity.thumbnailPath` (new, migration `V9__add_faces_thumbnail_path.sql`) + new
   `FaceThumbnailStorageService`/`FaceStoragePathResolver`-style file storage under
   `iphoto.storage.faceThumbnails/{year}/{month}/`, same convention `PhotoStoragePathResolver`
   already uses; `FaceDetectionServiceImpl` writes straight to disk instead of the blob column;

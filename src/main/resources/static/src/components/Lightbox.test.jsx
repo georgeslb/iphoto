@@ -158,6 +158,52 @@ describe('Lightbox prev/next keyboard navigation', () => {
   });
 });
 
+// Regression tests for the info-panel (.metadata-sidebar) show/hide toggle - added alongside a fix
+// for the panel eating the whole screen on mobile with no way to see the full photo/video, and no
+// way to reach a video's metadata further down the panel without scrolling being reachable at all.
+// The toggle and close controls deliberately live in their own always-rendered
+// .lightbox-top-controls group (NOT inside .metadata-sidebar itself) specifically so hiding the
+// panel can never also strand the user with no way to close the Lightbox.
+describe('Lightbox info panel toggle', () => {
+  beforeEach(() => {
+    global.fetch = vi.fn(() => Promise.resolve({ ok: true, json: async () => ([]) }));
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('shows the info panel by default and hides/shows it on toggle click', () => {
+    const photo = makePhoto('p1');
+    const { container } = render(
+      <Lightbox {...baseProps()} selectedPhoto={photo} photos={[photo]} />,
+      { wrapper: localeWrapper }
+    );
+
+    expect(container.querySelector('.metadata-sidebar')).not.toBeNull();
+
+    const toggleBtn = container.querySelector('.lightbox-top-controls button');
+    fireEvent.click(toggleBtn);
+    expect(container.querySelector('.metadata-sidebar')).toBeNull();
+
+    fireEvent.click(toggleBtn);
+    expect(container.querySelector('.metadata-sidebar')).not.toBeNull();
+  });
+
+  it('keeps a working close button reachable even while the info panel is hidden', () => {
+    const onClose = vi.fn();
+    const photo = makePhoto('p1');
+    const { container } = render(
+      <Lightbox {...baseProps({ onClose })} selectedPhoto={photo} photos={[photo]} />,
+      { wrapper: localeWrapper }
+    );
+
+    fireEvent.click(container.querySelector('.lightbox-top-controls button')); // hide the panel
+    expect(container.querySelector('.metadata-sidebar')).toBeNull();
+
+    const topControlButtons = container.querySelectorAll('.lightbox-top-controls button');
+    fireEvent.click(topControlButtons[topControlButtons.length - 1]); // the persistent close button
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('Lightbox pan/zoom clamping', () => {
   beforeEach(() => {
     global.fetch = vi.fn(() => Promise.resolve({ ok: true, json: async () => ([]) }));
