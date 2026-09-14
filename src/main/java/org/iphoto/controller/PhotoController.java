@@ -12,6 +12,7 @@ import org.iphoto.model.request.CheckHashesRequest;
 import org.iphoto.model.request.PhotoEditRequest;
 import org.iphoto.model.request.UpdatePhotoDateRequest;
 import org.apache.commons.io.FilenameUtils;
+import org.iphoto.exception.SpaceSyncLockedException;
 import org.iphoto.repository.PhotoMetadataRepository;
 import org.iphoto.repository.UserRepository;
 import org.iphoto.service.PhotoService;
@@ -218,6 +219,10 @@ public class PhotoController {
             return ResponseEntity.ok(photo);
         } catch (NoSuchElementException e) {
             return ResponseEntity.notFound().build();
+        } catch (SpaceSyncLockedException e) {
+            // Must be re-thrown, not swallowed by the catch-all below - handled globally by
+            // GlobalExceptionHandler (-> 423), the same as every other space-lock rejection.
+            throw e;
         } catch (Exception e) {
             log.error(e.getMessage(), e);
             return ResponseEntity.internalServerError().build();

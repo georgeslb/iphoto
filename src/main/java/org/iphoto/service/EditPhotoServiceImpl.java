@@ -54,6 +54,7 @@ public class EditPhotoServiceImpl implements EditPhotoService {
     private DuplicationService duplicationService;
     private TaskMapper taskMapper;
     private PersonRecognitionService personRecognitionService;
+    private SpaceService spaceService;
 
     @Override
     @Transactional(isolation = Isolation.READ_COMMITTED)
@@ -73,6 +74,7 @@ public class EditPhotoServiceImpl implements EditPhotoService {
         if (!photoEntity.getSpace().getUser().getId().equals(user.getId())) {
             throw new AccessDeniedForPhotoChangesException();
         }
+        spaceService.assertSyncWritable(photoEntity.getSpace());
         String originalImagePath = photoEntity.getOriginalPath();
 
         File inputFile = new File(originalImagePath);

@@ -3,7 +3,9 @@ package org.iphoto.service.auth;
 import lombok.RequiredArgsConstructor;
 import org.iphoto.entities.DeviceTokenEntity;
 import org.iphoto.entities.UserEntity;
+import org.iphoto.event.DeviceTokenRevokedEvent;
 import org.iphoto.repository.DeviceTokenRepository;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -26,6 +28,7 @@ public class DeviceTokenServiceImpl implements DeviceTokenService {
     private static final int TOKEN_RANDOM_BYTES = 32;
 
     private final DeviceTokenRepository deviceTokenRepository;
+    private final ApplicationEventPublisher eventPublisher;
 
     @Override
     public IssuedToken issueToken(UserEntity user, String deviceName) {
@@ -69,6 +72,8 @@ public class DeviceTokenServiceImpl implements DeviceTokenService {
                 .orElseThrow(NoSuchElementException::new);
         token.setRevokedAt(LocalDateTime.now());
         deviceTokenRepository.save(token);
+        // "I lost my phone" escape hatch - see SpaceSyncLockListener.
+        eventPublisher.publishEvent(new DeviceTokenRevokedEvent(token.getId()));
     }
 
     private static String hash(String rawToken) {

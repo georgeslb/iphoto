@@ -88,6 +88,22 @@ class SyncPrefs internal constructor(private val prefs: SharedPreferences) {
     /** A photo tracked by hash so a later sync pass leaves it alone - see [excludedAssets]/[movedToMainAssets]. */
     data class TrackedAsset(val hash: String, val title: String, val photoId: String)
 
+    // Block/unblock-on-sync (see SyncViewModel): true once this device has actually confirmed the
+    // server-side lock for the current pairing (spaceId/folderUri above) - NOT just "a pairing is
+    // configured". Distinguishes two very different situations on the next app start:
+    //   - lockConfirmed == false: this pairing was never successfully locked yet (e.g. chosen
+    //     while offline) - just retry the lock silently, nothing to warn about.
+    //   - lockConfirmed == true, but the server now reports the space unlocked: someone unlocked
+    //     it from elsewhere (the web "I lost my phone" escape hatch, or this device's own token
+    //     being revoked) - THAT'S "sync was stopped", worth an explicit warning rather than
+    //     silently re-locking and carrying on as if nothing happened.
+    // Cleared both when a remote-stop is detected and handled, and when the user deliberately
+    // stops sync from this device itself (SyncViewModel#stopSync/unlockSpaceIfLocked) - a
+    // self-initiated unlock is never something to warn the user about on their own device.
+    var lockConfirmed: Boolean
+        get() = prefs.getBoolean(KEY_LOCK_CONFIRMED, false)
+        set(value) = prefs.edit().putBoolean(KEY_LOCK_CONFIRMED, value).apply()
+
     companion object {
         private const val PREFS_NAME = "iphoto_sync_prefs"
         private const val KEY_SPACE_ID = "space_id"
@@ -111,5 +127,7 @@ class SyncPrefs internal constructor(private val prefs: SharedPreferences) {
             if (parts.size != 3) return null
             return TrackedAsset(hash = parts[0], title = parts[1], photoId = parts[2])
         }
+
+        private const val KEY_LOCK_CONFIRMED = "lock_confirmed"
     }
 }

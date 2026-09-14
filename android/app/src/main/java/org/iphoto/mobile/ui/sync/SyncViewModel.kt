@@ -2,6 +2,7 @@ package org.iphoto.mobile.ui.sync
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -18,6 +19,8 @@ import org.iphoto.mobile.network.PhotoApi
 import org.iphoto.mobile.network.SpaceApi
 import org.iphoto.mobile.sync.SyncWorker
 
+private const val TAG = "SyncViewModel"
+
 data class SyncUiState(
     val spaces: List<SpaceDTO> = emptyList(),
     val selectedSpaceId: String? = null,
@@ -31,7 +34,13 @@ data class SyncUiState(
     // action) - shown here so the user has somewhere to undo it, since an excluded photo is
     // garbaged and no longer visible in the Space's own photo grid.
     val excludedAssets: List<TrackedAsset> = emptyList(),
-    val error: String? = null
+    val error: String? = null,
+    // Block/unblock-on-sync: true right after detecting, on app start, that the space this
+    // device WAS locked to has since been unlocked remotely (web "I lost my phone" escape hatch,
+    // or this device's own token being revoked) - see SyncPrefs.lockConfirmed. Drives a one-time
+    // warning dialog (SyncScreen) explaining sync was stopped; the pairing has already been
+    // cleared by the time this is true, so the form shows empty and ready to be filled in again.
+    val syncStoppedRemotely: Boolean = false
 )
 
 /**
@@ -62,6 +71,57 @@ class SyncViewModel(
     init {
         loadSpaces()
         observeWork()
+        checkSyncLockState()
+    }
+
+    // Block/unblock-on-sync: runs once per ViewModel creation (app start / re-entering this
+    // screen). See SyncPrefs.lockConfirmed's own comment for the two cases this tells apart -
+    // never-yet-locked (silently retry) vs. was-locked-but-now-isn't (warn + clear the pairing).
+    private fun checkSyncLockState() {
+        val spaceId = syncPrefs.spaceId
+        if (spaceId == null || syncPrefs.folderUri == null) return // no pairing configured at all
+
+        if (!syncPrefs.lockConfirmed) {
+            lockCurrentPairingIfComplete()
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                val space = spaceApi.get(spaceId)
+                if (space.syncLocked) {
+                    applyUpdatedSpace(space) // still locked (assumed still ours) - keep the UI fresh
+                } else {
+                    handleSyncStoppedRemotely()
+                }
+            } catch (e: Exception) {
+                // Transient network/auth error - don't clear local state on a guess; the next
+                // check (app restart, or another screen visit) gets another chance.
+                Log.w(TAG, "Failed to check sync-lock state for space $spaceId", e)
+            }
+        }
+    }
+
+    // The pairing was already cleared server-side (unlocked) by the time we notice - clear it
+    // locally too and surface a one-time warning, rather than silently re-locking and letting the
+    // user believe sync never stopped.
+    private fun handleSyncStoppedRemotely() {
+        Log.i(TAG, "Space ${syncPrefs.spaceId} was unlocked remotely - clearing the local sync pairing")
+        setAutoSyncEnabled(false)
+        syncPrefs.spaceId = null
+        syncPrefs.folderUri = null
+        syncPrefs.folderDisplayName = null
+        syncPrefs.lockConfirmed = false
+        _uiState.value = _uiState.value.copy(
+            selectedSpaceId = null,
+            folderUri = null,
+            folderDisplayName = null,
+            syncStoppedRemotely = true
+        )
+    }
+
+    fun dismissSyncStoppedWarning() {
+        _uiState.value = _uiState.value.copy(syncStoppedRemotely = false)
     }
 
     private fun loadSpaces() {
@@ -111,8 +171,16 @@ class SyncViewModel(
     }
 
     fun selectSpace(spaceId: String) {
+        val previousSpaceId = _uiState.value.selectedSpaceId
         syncPrefs.spaceId = spaceId
         _uiState.value = _uiState.value.copy(selectedSpaceId = spaceId)
+        // Switching to a different Space means the old one is no longer part of any pairing on
+        // this device - free its lock, or it would stay stuck locked with nothing syncing it any
+        // more. A no-op if it was never locked (unlockSync tolerates that server-side).
+        if (previousSpaceId != null && previousSpaceId != spaceId) {
+            unlockSpaceIfLocked(previousSpaceId)
+        }
+        lockCurrentPairingIfComplete()
     }
 
     fun selectFolder(uri: Uri, displayName: String) {
@@ -132,6 +200,65 @@ class SyncViewModel(
         if (syncPrefs.autoSyncEnabled) {
             SyncWorker.scheduleContentTrigger(appContext, uri)
         }
+        lockCurrentPairingIfComplete()
+    }
+
+    // Block/unblock-on-sync: a fully-chosen folder+Space pairing IS "sync is active" for this
+    // feature (not just while a sync run is actually in flight - see the server's own
+    // SpaceService#lockForSync comment), so this locks the moment both halves of the pairing are
+    // set. Idempotent server-side for the same device, so calling it from both selectSpace and
+    // selectFolder (whichever one happens to complete the pair) is safe either way.
+    private fun lockCurrentPairingIfComplete() {
+        val spaceId = _uiState.value.selectedSpaceId ?: return
+        if (_uiState.value.folderUri == null) return
+        viewModelScope.launch {
+            try {
+                applyUpdatedSpace(spaceApi.lockSync(spaceId))
+                syncPrefs.lockConfirmed = true
+            } catch (e: Exception) {
+                // Most likely 423 (already locked by a different device) or no network - surfaced
+                // to the user rather than swallowed, since it means sync won't actually be able to
+                // write once it next runs.
+                Log.w(TAG, "Failed to lock space $spaceId for sync", e)
+                _uiState.value = _uiState.value.copy(error = "Could not lock the space for sync: ${e.message}")
+            }
+        }
+    }
+
+    private fun unlockSpaceIfLocked(spaceId: String) {
+        viewModelScope.launch {
+            try {
+                applyUpdatedSpace(spaceApi.unlockSync(spaceId))
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to unlock space $spaceId from sync", e)
+            }
+        }
+    }
+
+    private fun applyUpdatedSpace(updated: SpaceDTO) {
+        _uiState.value = _uiState.value.copy(
+            spaces = _uiState.value.spaces.map { if (it.id == updated.id) updated else it }
+        )
+    }
+
+    // Explicit "stop sync" - the counterpart to lockCurrentPairingIfComplete: frees the current
+    // Space's sync lock and clears the folder<->Space pairing entirely (not just switching to a
+    // different one), so nothing on this device claims to be syncing it any more. Also turns off
+    // auto-sync, which would otherwise have nothing left to run against.
+    fun stopSync() {
+        _uiState.value.selectedSpaceId?.let { unlockSpaceIfLocked(it) }
+        setAutoSyncEnabled(false)
+        syncPrefs.spaceId = null
+        syncPrefs.folderUri = null
+        syncPrefs.folderDisplayName = null
+        // Deliberately stopped by the user on THIS device - not a remote stop, so nothing to warn
+        // about later (see checkSyncLockState/SyncPrefs.lockConfirmed's own comment).
+        syncPrefs.lockConfirmed = false
+        _uiState.value = _uiState.value.copy(
+            selectedSpaceId = null,
+            folderUri = null,
+            folderDisplayName = null
+        )
     }
 
     // Opt-in background sync - off by default (SyncPrefs.autoSyncEnabled). Requires a space and

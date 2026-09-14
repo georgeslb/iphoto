@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LinearProgressIndicator
@@ -140,6 +141,28 @@ fun SyncScreen() {
             Text(state.folderDisplayName ?: "Choose a folder…")
         }
 
+        // Block/unblock-on-sync status: the paired Space is locked against edits from outside
+        // this app for as long as the pairing exists - "Stop sync" is the way to free it again
+        // (see SyncViewModel#stopSync/lockCurrentPairingIfComplete).
+        if (state.selectedSpaceId != null && state.folderUri != null) {
+            val selectedSpace = state.spaces.find { it.id == state.selectedSpaceId }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    if (selectedSpace?.syncLocked == true) {
+                        "🔒 Locked for sync - no edits outside this app"
+                    } else {
+                        "Not yet locked - will retry automatically"
+                    },
+                    style = MaterialTheme.typography.bodySmall
+                )
+                TextButton(onClick = viewModel::stopSync) { Text("Stop sync") }
+            }
+        }
+
         Spacer(modifier = Modifier.height(24.dp))
 
         if (state.isSyncRunning) {
@@ -184,5 +207,25 @@ fun SyncScreen() {
                 }
             }
         }
+    }
+
+    // Block/unblock-on-sync: shown once, right after SyncViewModel notices on app start that this
+    // device's sync lock was released remotely (web "I lost my phone" unlock, or this device
+    // being revoked from Manage Devices) - the pairing above is already cleared by this point, so
+    // the Space/Folder fields already show empty and ready to be filled in again.
+    if (state.syncStoppedRemotely) {
+        AlertDialog(
+            onDismissRequest = viewModel::dismissSyncStoppedWarning,
+            title = { Text("Sync was stopped") },
+            text = {
+                Text(
+                    "This device's sync was stopped - the space was unlocked from another " +
+                        "device or the web app. Pick a space and folder again to resume syncing."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = viewModel::dismissSyncStoppedWarning) { Text("Got it") }
+            }
+        )
     }
 }

@@ -56,6 +56,20 @@ public final class SpaceEntity  implements Persistable<UUID> {
     @Column()
     private Boolean isGarbage;
 
+    // Block/unblock-on-sync feature: non-null while this Space is actively mirrored to an
+    // on-device folder by the Android app (see SyncScreen/SyncViewModel), pointing at the exact
+    // device token that owns the lock. SpaceService#assertSyncWritable rejects any write not
+    // authenticated as that same device - see its own comment and DeviceTokenAuthenticationFilter.
+    // Cleared on manual unlock (either that same device, or a web-session request from the
+    // space's own owner - the escape hatch for a lost/uninstalled device) and automatically when
+    // the device token itself is revoked (SpaceSyncLockListener).
+    // No @OnDelete here - the FK's ON DELETE SET NULL is hand-written directly in the V7 migration
+    // (Hibernate's @OnDelete annotation only supports generating CASCADE, not SET NULL, and this
+    // codebase hand-writes its DDL via Flyway rather than letting Hibernate generate any schema).
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "sync_locked_by_device_id")
+    private DeviceTokenEntity syncLockedByDevice;
+
     @Transient
     private boolean isNew = true;
 

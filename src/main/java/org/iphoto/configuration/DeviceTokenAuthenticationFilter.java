@@ -62,14 +62,22 @@ public class DeviceTokenAuthenticationFilter extends OncePerRequestFilter {
         }
 
         UserEntity user = deviceToken.get().getUser();
-        // Same authority shape UserDetailsServiceImpl builds for session-cookie auth, so every
-        // existing controller (AbstractBaseController.getCurrentUser() and everything built on
-        // it, plus role checks like /api/admin/** -> hasRole("ADMIN")) works unchanged for
-        // Bearer-authenticated requests.
-        List<GrantedAuthority> authorities = List.of(new SimpleGrantedAuthority("ROLE_" + user.getRole()));
-        SecurityContextHolder.getContext().setAuthentication(
-                new UsernamePasswordAuthenticationToken(user.getUsername(), null, authorities)
+        // Same ROLE_* authority shape UserDetailsServiceImpl builds for session-cookie auth, so
+        // every existing controller (AbstractBaseController.getCurrentUser() and everything built
+        // on it, plus role checks like /api/admin/** -> hasRole("ADMIN")) works unchanged for
+        // Bearer-authenticated requests. The extra DEVICE_AUTH authority (see DeviceAuthContext)
+        // is new: it's what lets SpaceService#assertSyncWritable tell "the Android app" apart from
+        // "a web session" for the block/unblock-on-sync feature - the token's own id goes in
+        // `details` (not a claim in the authorities list) since it identifies the specific device,
+        // not a role.
+        List<GrantedAuthority> authorities = List.of(
+                new SimpleGrantedAuthority("ROLE_" + user.getRole()),
+                new SimpleGrantedAuthority(DeviceAuthContext.DEVICE_AUTH_AUTHORITY)
         );
+        UsernamePasswordAuthenticationToken authentication =
+                new UsernamePasswordAuthenticationToken(user.getUsername(), null, authorities);
+        authentication.setDetails(deviceToken.get().getId());
+        SecurityContextHolder.getContext().setAuthentication(authentication);
 
         try {
             deviceTokenService.recordUsage(deviceToken.get());

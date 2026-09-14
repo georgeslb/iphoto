@@ -10,6 +10,7 @@ import org.iphoto.model.TaskType;
 import org.iphoto.model.UploadChunkResponse;
 import org.iphoto.properties.IPhotoProperties;
 import org.iphoto.repository.UserRepository; // Import UserRepository
+import org.iphoto.service.SpaceService;
 import org.iphoto.service.TaskManagerService;
 import org.iphoto.service.TaskService;
 import org.springframework.http.MediaType;
@@ -44,6 +45,7 @@ public class UploadController {
     private final IPhotoProperties iPhotoProperties;
     private final UserRepository userRepository; // Inject UserRepository
     private final TaskService taskService;
+    private final SpaceService spaceService;
 
     private UserEntity getCurrentUser() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
@@ -66,6 +68,16 @@ public class UploadController {
             @RequestParam("chunk") MultipartFile chunk) throws IOException {
 
         UserEntity currentUser = getCurrentUser(); // Get the current user
+
+        // Block/unblock-on-sync: reject before writing any chunk to disk, not just at final
+        // reassembly - a locked space's upload is fully rejected, not "accepted then discarded".
+        // No spaceId means this lands in the caller's MAIN space, which can never be sync-locked
+        // (see SpaceService#lockForSync), so there's nothing to check in that case.
+        if (spaceId != null) {
+            spaceService.getSpaceById(spaceId)
+                    .filter(space -> space.getUser().getId().equals(currentUser.getId()))
+                    .ifPresent(spaceService::assertSyncWritable);
+        }
 
         log.info("Received chunk {}/{} for uploadId: {} - fileName: {}", chunkIndex, totalChunks, uploadId, fileName);
 

@@ -314,6 +314,43 @@ This section describes the application's features. For the corresponding backend
 *   **Restore Space:** Spaces can be restored from the Garbage.
 *   **Permanent Delete Space:** Spaces in the Garbage can be permanently deleted; this cascades to
     permanently delete all photos still inside the space.
+*   **Block/unblock on device-folder sync** (`SpaceEntity.syncLockedByDevice`,
+    `SpaceService#lockForSync`/`unlockFromSync`/`assertSyncWritable`): a Space that the Android app
+    is actively mirroring to an on-device folder (`android/.../sync/`) is locked against writes
+    from anywhere *except* that exact device, for as long as the pairing exists — not just while a
+    sync run is actually in progress. This prevents a web-session edit from racing/corrupting the
+    phone↔Space mirror. Mechanism: `DeviceTokenAuthenticationFilter` (the app's Bearer-token auth,
+    distinct from the web's session-cookie auth) tags the request with a `DEVICE_AUTH` authority +
+    the device token's id (`DeviceAuthContext`); `assertSyncWritable` compares that against the
+    lock owner and is called from every service write that changes a Space's photo content
+    (upload, garbage/restore/permanent-delete, edit-in-place, date change, move-to-main out of the
+    space, deleting the space itself) — a rejected write returns `423 LOCKED` (`GET /api/spaces` /
+    `/{id}` surface this as `syncLocked` + `syncLockedByDeviceName`). Locking itself requires
+    device auth (a web session has no device identity to lock to — `403`); the MAIN space can't be
+    locked. Unlocking works two ways: the same device (normal "stop sync"), or — the "I lost my
+    phone" escape hatch — *any* web session from the space's own owner, always allowed regardless
+    of which device set the lock. Revoking the device from Manage Devices
+    (`DELETE /api/auth/mobile/devices/{id}`) also auto-clears any lock it held
+    (`DeviceTokenRevokedEvent` → `SpaceSyncLockListener`), so a lost/uninstalled device never
+    strands a Space locked forever. Android: `SyncViewModel` locks the moment both a Space and a
+    folder are chosen (`selectSpace`/`selectFolder`), re-asserts on every app start (idempotent),
+    and unlocks via the "Stop sync" action or when switching to a different Space.
+    **Web UI (`SpaceDetail.jsx`):** a locked space shows a badge next to its name (icon + the
+    locking device's name from `syncLockedByDeviceName`) with an "Unlock" button — the same
+    `DELETE /api/spaces/{id}/sync-lock` escape hatch, gated behind a `window.confirm` naming the
+    device, since it stops that device's sync outright.
+    **Detecting a remote unlock (Android, `SyncPrefs.lockConfirmed` / `SyncViewModel
+    #checkSyncLockState`):** the app can't just silently re-lock on every start — that would erase
+    the fact that someone (the web escape hatch, or a device revoke) stopped it, from the user's
+    perspective. `lockConfirmed` is set the moment a lock call actually succeeds and cleared on
+    every path that ends the pairing (self-initiated "Stop sync", or a detected remote stop) so it
+    always reflects "was I actually locked as of my last successful check". On each app start: if
+    `lockConfirmed` is false (never successfully locked yet, e.g. chosen while offline), retry the
+    lock quietly — nothing to warn about. If it's true, fetch the space fresh
+    (`GET /api/spaces/{id}`); if it now comes back unlocked, that's a genuine remote stop — the
+    pairing (space, folder, `autoSyncEnabled`) is cleared locally (so the sync form shows empty,
+    ready to be filled in again) and a one-time "Sync was stopped" dialog is shown
+    (`SyncUiState.syncStoppedRemotely`, `SyncScreen`'s own `AlertDialog`).
 
 ### 4.3. Smart Features
 
@@ -821,6 +858,11 @@ This section lists the primary API endpoints the frontend application calls to i
 *   `DELETE /api/spaces/{id}`: Moves a single space to the garbage.
 *   `POST /api/spaces/restore`: Restores a list of spaces from the garbage.
 *   `POST /api/spaces/permanent-delete`: Permanently deletes a list of spaces from the garbage.
+*   `POST /api/spaces/{id}/sync-lock`: Locks a space to the caller's device for the block/unblock-
+    on-sync feature (§4.2) — device-Bearer-auth only (`403` for a web session), `400` for the MAIN
+    space, `423` if already locked by a different device.
+*   `DELETE /api/spaces/{id}/sync-lock`: Unlocks — the owning device, or any web session from the
+    space's own owner (the "lost my phone" escape hatch); `423` for a different device.
 
 ### 5.5. Duplicate Management
 *   `GET /api/duplicates?page={n}`: Fetches a paginated list of duplicate photo groups.

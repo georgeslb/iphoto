@@ -2,7 +2,9 @@ package org.iphoto.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.iphoto.configuration.DeviceAuthContext;
 import org.iphoto.entities.BaseEntity;
+import org.iphoto.entities.DeviceTokenEntity;
 import org.iphoto.entities.SpaceEntity;
 import org.iphoto.entities.SpaceType;
 import org.iphoto.entities.UserEntity;
@@ -10,8 +12,10 @@ import org.iphoto.event.SpacePhotoCountChangedEvent;
 import org.iphoto.exception.MainSpaceDeletionConfigurationException;
 import org.iphoto.exception.NoMatchUserSpaceException;
 import org.iphoto.exception.NoPhotoInSpace;
+import org.iphoto.exception.SpaceSyncLockedException;
 import org.iphoto.model.SpaceDTO;
 import org.iphoto.model.request.SpaceCreateRequest;
+import org.iphoto.repository.DeviceTokenRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.repository.SpaceRepository;
 import org.springframework.context.ApplicationEventPublisher;
@@ -19,6 +23,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -30,6 +35,7 @@ public class SpaceServiceImpl implements SpaceService {
 
     private final SpaceRepository spaceRepository;
     private final PhotoRepository photoRepository;
+    private final DeviceTokenRepository deviceTokenRepository;
     private final ApplicationEventPublisher eventPublisher;
 
 
@@ -66,7 +72,10 @@ public class SpaceServiceImpl implements SpaceService {
     private SpaceDTO mapSpaceEntityToSpaceDto(SpaceEntity space) {
         boolean albumAllowed = space.getType() == SpaceType.MAIN;
         boolean allowCopyToMain = !albumAllowed; // Photos from non-main spaces can be copied to main
-        return new SpaceDTO(space.getId(), space.getName(), space.getPhotoCount(), space.getCreatedAt(), space.getUpdatedAt(), albumAllowed, allowCopyToMain, allowCopyToMain, space.getIsGarbage().equals(true));
+        DeviceTokenEntity syncLock = space.getSyncLockedByDevice();
+        return new SpaceDTO(space.getId(), space.getName(), space.getPhotoCount(), space.getCreatedAt(), space.getUpdatedAt(),
+                albumAllowed, allowCopyToMain, allowCopyToMain, space.getIsGarbage().equals(true),
+                syncLock != null, syncLock != null ? syncLock.getDeviceName() : null);
     }
 
 
@@ -83,6 +92,7 @@ public class SpaceServiceImpl implements SpaceService {
         if (space.getType() == SpaceType.MAIN) {
             throw new MainSpaceDeletionConfigurationException();
         }
+        assertSyncWritable(space);
         space.setIsGarbage(true);
         spaceRepository.save(space);
     }
@@ -129,5 +139,64 @@ public class SpaceServiceImpl implements SpaceService {
     @Override
     public void deleteSpace(UUID spaceId) {
         spaceRepository.deleteById(spaceId);
+    }
+
+    @Override
+    public SpaceDTO lockForSync(UUID spaceId, UserEntity user, UUID callerDeviceTokenId) {
+        if (callerDeviceTokenId == null) {
+            // Defensive - SpaceController already rejects a non-device-authenticated caller
+            // before this is reached, so this should be unreachable in practice.
+            throw new IllegalArgumentException("Only the mobile app can lock a space for sync");
+        }
+        SpaceEntity space = spaceRepository.findByIdAndUser(spaceId, user).orElseThrow(NoMatchUserSpaceException::new);
+        if (space.getType() == SpaceType.MAIN) {
+            // MAIN holds every album's referenced photos and can't itself be trashed/deleted - the
+            // same "not a normal mirror target" reasoning extends to sync locking.
+            throw new IllegalArgumentException("The MAIN space cannot be locked for sync");
+        }
+
+        DeviceTokenEntity currentLock = space.getSyncLockedByDevice();
+        if (currentLock != null && !currentLock.getId().equals(callerDeviceTokenId)) {
+            throw new SpaceSyncLockedException(space.getId(), currentLock.getDeviceName());
+        }
+        if (currentLock == null) {
+            DeviceTokenEntity deviceToken = deviceTokenRepository.findById(callerDeviceTokenId)
+                    .orElseThrow(() -> new NoSuchElementException("no device token found with id " + callerDeviceTokenId));
+            space.setSyncLockedByDevice(deviceToken);
+            spaceRepository.save(space);
+        }
+        // Already locked by this same device - idempotent no-op, matches "sync is active" being a
+        // persistent state the app can safely re-assert on every sync run, not a one-shot toggle.
+        return mapSpaceEntityToSpaceDto(space);
+    }
+
+    @Override
+    public SpaceDTO unlockFromSync(UUID spaceId, UserEntity user, UUID callerDeviceTokenId) {
+        SpaceEntity space = spaceRepository.findByIdAndUser(spaceId, user).orElseThrow(NoMatchUserSpaceException::new);
+        DeviceTokenEntity currentLock = space.getSyncLockedByDevice();
+        if (currentLock != null) {
+            boolean isOwningDevice = callerDeviceTokenId != null && currentLock.getId().equals(callerDeviceTokenId);
+            boolean isWebSessionEscapeHatch = callerDeviceTokenId == null;
+            if (!isOwningDevice && !isWebSessionEscapeHatch) {
+                throw new SpaceSyncLockedException(space.getId(), currentLock.getDeviceName());
+            }
+            space.setSyncLockedByDevice(null);
+            spaceRepository.save(space);
+        }
+        return mapSpaceEntityToSpaceDto(space);
+    }
+
+    @Override
+    public void assertSyncWritable(SpaceEntity space) {
+        DeviceTokenEntity lockedBy = space.getSyncLockedByDevice();
+        if (lockedBy == null) {
+            return;
+        }
+        boolean callerIsOwningDevice = DeviceAuthContext.currentDeviceTokenId()
+                .map(id -> id.equals(lockedBy.getId()))
+                .orElse(false);
+        if (!callerIsOwningDevice) {
+            throw new SpaceSyncLockedException(space.getId(), lockedBy.getDeviceName());
+        }
     }
 }
