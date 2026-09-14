@@ -1,5 +1,29 @@
 # Android TODO
 
+## Fixed: sync schedule went stale after code changes; video/sync connection contention — 2026-09-13
+
+Two separate fixes from the same debugging session:
+
+- **Periodic sync was never actually running.** `dumpsys jobscheduler` on a real device showed
+  the scheduled job's `Minimum latency` at over an hour, and zero `SyncWorker` log lines had ever
+  been emitted. Root cause: `enqueueUniquePeriodicWork` only applies new parameters (interval,
+  the content-uri trigger) when actually called again - the user had toggled auto-sync on once,
+  *before* this session changed the interval from 6h to 15min and added the content trigger, and
+  had no reason to re-toggle it afterward, so the device was silently stuck on the stale schedule.
+  Fixed by having `IPhotoApplication.onCreate()` re-assert the schedule on every process start
+  when auto-sync is enabled, not only when the switch is flipped - self-healing against this
+  exact class of drift for any future scheduling change. Verified for real: force-restarted the
+  app, confirmed via `dumpsys jobscheduler` both jobs now have correct constraints, and watched
+  real log output of it finding and working through an actual 748-item backlog.
+- **Video playback competing with sync uploads for OkHttp's connection budget.** `videoDataSourceFactory`
+  and sync's chunk uploads shared the same `OkHttpClient` (`ApiClient.httpClient`), and OkHttp
+  defaults to 5 concurrent requests per host *shared across everything using that client*. With
+  sync uploading up to 3 chunks concurrently, video's own buffering range requests were competing
+  for what was left. Added `ApiClient.videoHttpClient` - a genuinely separate client (own
+  `Dispatcher`/`ConnectionPool`, not `okHttpClient.newBuilder()`, which would have copied the same
+  underlying shared instances and defeated the point) - so video's request budget no longer
+  depends on how busy sync happens to be.
+
 ## Reverted: Main Space is not a valid sync target — 2026-09-13
 
 Follow-up to (and partial revert of) "Main Space sync" further below: that entry removed

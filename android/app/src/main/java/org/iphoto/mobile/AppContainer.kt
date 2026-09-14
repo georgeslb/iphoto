@@ -46,10 +46,13 @@ class AppContainer(private val context: Context) {
             .build()
     }
 
-    // shares the auth-carrying OkHttpClient so video streaming requests (ExoPlayer, lightbox video
-    // playback) authenticate the same way REST calls and thumbnail/original image requests do -
-    // see imageLoader above for the same pattern applied to Coil.
-    fun videoDataSourceFactory(): DataSource.Factory = OkHttpDataSource.Factory(apiClient.httpClient)
+    // Uses apiClient.videoHttpClient - a *separate* authenticated OkHttpClient from the one
+    // REST/thumbnail/sync-upload traffic shares, with its own connection pool - not
+    // apiClient.httpClient the way imageLoader above shares it for Coil. OkHttp defaults to 5
+    // concurrent requests per host shared across everything on one client; video's own range
+    // requests were competing with sync's concurrent chunk uploads for that budget, visibly
+    // slowing/stalling playback while a sync was active.
+    fun videoDataSourceFactory(): DataSource.Factory = OkHttpDataSource.Factory(apiClient.videoHttpClient)
 
     fun absoluteUrl(relativeUrlOrPath: String): String {
         if (relativeUrlOrPath.startsWith("http")) return relativeUrlOrPath

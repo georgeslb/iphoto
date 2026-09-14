@@ -1,6 +1,7 @@
 package org.iphoto.mobile.ui.photo
 
 import android.net.Uri
+import android.util.Log
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -12,11 +13,15 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
+
+private const val TAG = "VideoPlayer"
 
 /**
  * Lightbox video playback (PhotoDetailScreen) - the counterpart to the web app's own
@@ -34,12 +39,33 @@ import androidx.media3.ui.PlayerView
 fun VideoPlayer(streamUrl: String, dataSourceFactory: DataSource.Factory, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val exoPlayer = remember(streamUrl) {
+        Log.d(TAG, "Creating ExoPlayer for $streamUrl")
         ExoPlayer.Builder(context)
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
             .build()
             .apply {
                 setMediaItem(MediaItem.fromUri(Uri.parse(streamUrl)))
                 playWhenReady = true
+                addListener(object : Player.Listener {
+                    override fun onIsPlayingChanged(isPlaying: Boolean) {
+                        Log.d(TAG, "isPlaying=$isPlaying (playbackState=$playbackState, playWhenReady=$playWhenReady)")
+                    }
+
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        val name = when (playbackState) {
+                            Player.STATE_IDLE -> "IDLE"
+                            Player.STATE_BUFFERING -> "BUFFERING"
+                            Player.STATE_READY -> "READY"
+                            Player.STATE_ENDED -> "ENDED"
+                            else -> playbackState.toString()
+                        }
+                        Log.d(TAG, "playbackState=$name")
+                    }
+
+                    override fun onPlayerError(error: PlaybackException) {
+                        Log.e(TAG, "Player error (errorCode=${error.errorCodeName})", error)
+                    }
+                })
                 prepare()
             }
     }
@@ -57,12 +83,14 @@ fun VideoPlayer(streamUrl: String, dataSourceFactory: DataSource.Factory, modifi
         // coming back to a paused video and tapping play again (PlayerView's own controls) is a
         // simpler, safer contract than tracking "was this actually playing before we paused it".
         val observer = LifecycleEventObserver { _, event ->
+            Log.d(TAG, "Lifecycle event: $event")
             if (event == Lifecycle.Event.ON_PAUSE) {
                 exoPlayer.pause()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
+            Log.d(TAG, "Disposing/releasing player for $streamUrl")
             lifecycleOwner.lifecycle.removeObserver(observer)
             exoPlayer.release()
         }

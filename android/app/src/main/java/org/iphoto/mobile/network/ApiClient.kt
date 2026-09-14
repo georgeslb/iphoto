@@ -27,7 +27,10 @@ class ApiClient(private val tokenStore: TokenStore) {
     // is a known, loggable number rather than "whatever OkHttp defaults to this version".
     private val connectTimeoutSeconds = 10L
 
-    private val okHttpClient: OkHttpClient = OkHttpClient.Builder()
+    // Same auth/timeouts/logging every OkHttpClient this app builds needs - factored out so the
+    // video client below (which deliberately does NOT share connections with this one) doesn't
+    // duplicate/drift from this config.
+    private fun newClientBuilder(): OkHttpClient.Builder = OkHttpClient.Builder()
         .connectTimeout(connectTimeoutSeconds, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
         .writeTimeout(10, TimeUnit.SECONDS)
@@ -39,7 +42,19 @@ class ApiClient(private val tokenStore: TokenStore) {
                 })
             }
         }
-        .build()
+
+    private val okHttpClient: OkHttpClient = newClientBuilder().build()
+
+    // A second, fully independent client for video streaming (see AppContainer.videoDataSourceFactory)
+    // - deliberately built from a fresh Builder rather than okHttpClient.newBuilder(), since
+    // newBuilder() copies over the SAME underlying Dispatcher/ConnectionPool instances (they're
+    // shared, mutable objects, not just config values) and would defeat the whole point. OkHttp
+    // limits concurrent requests per host to 5 by default, shared across everything using one
+    // client - with sync uploading up to 3 chunks concurrently on okHttpClient, video's own range
+    // requests were competing for what was left, visibly slowing/stalling playback during a sync.
+    // Giving video its own Dispatcher/ConnectionPool means its request budget is independent of
+    // how busy sync happens to be right now.
+    val videoHttpClient: OkHttpClient by lazy { newClientBuilder().build() }
 
     @Volatile
     private var cachedBaseUrl: String? = null
