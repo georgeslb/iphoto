@@ -35,6 +35,25 @@ jobs:
           java-version: '25'
           cache: maven
 
+      # javacv's opencv-platform/ffmpeg-platform native .so files dlopen a handful of system
+      # libraries at load time (not just when their functionality is actually used - e.g.
+      # libopencv_highgui links GTK2 even though this app never opens a GUI window). The
+      # Dockerfile's runtime stage already documents the exact list, found by running `ldd`
+      # against every linux-x86_64 .so in these exact opencv/ffmpeg artifact versions - mirror it
+      # here rather than re-deriving it, since this runner and that image are both recent Ubuntu.
+      # Without this, any test that synchronously calls into ORB/highgui-adjacent OpenCV code
+      # fails with "UnsatisfiedLinkError: no jniopencv_highgui in java.library.path" - previously
+      # never caught here because the only code path that touched it (DuplicationServiceImpl,
+      # reached via async background task processing in every other test) silently swallowed the
+      # failure instead of failing a test.
+      - name: Install OpenCV/FFmpeg native runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgomp1 libsm6 libxext6 libxrender1 \
+            libgtk2.0-0t64 libcairo2 libgdk-pixbuf-2.0-0 libopenblas0 \
+            libva2 libva-drm2 libasound2t64 libpulse0
+
       # The backend's integration tests (src/test/java) spin up a real Postgres via
       # Testcontainers - this needs Docker, which GitHub-hosted ubuntu-latest runners already
       # have available out of the box, no extra setup required.
