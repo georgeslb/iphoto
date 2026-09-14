@@ -24,12 +24,12 @@ jobs:
       # (verified by running it with both files removed entirely - see TODO.md). Skipping the LFS
       # pull here avoids spending bandwidth against GitHub's small free LFS quota on every push for
       # files this job doesn't need - build-and-push below is where they actually matter.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Matches pom.xml's maven-compiler-plugin release (25) - not the project's
       # <java.version>21</java.version> property, which is a separate, older setting; see the
       # Dockerfile's top comment for the same note.
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '25'
@@ -75,7 +75,7 @@ jobs:
       # the real, production app image, which DOES need working ONNX models at runtime. Without
       # this the image would ship with the ~130-byte git-lfs pointer files instead of real models,
       # and face detection would fail the moment a real request hit it.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           lfs: true
 
