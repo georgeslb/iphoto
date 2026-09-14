@@ -1,6 +1,7 @@
 package org.iphoto.controller;
 
 import jakarta.servlet.http.HttpServletResponse;
+import org.iphoto.exception.SpaceSyncLockedException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -38,6 +39,21 @@ public class GlobalExceptionHandler {
         }
 
         return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+    }
+
+    // Global (not per-controller try/catch) since a locked Space's writes can be rejected from
+    // many different services/controllers (upload, garbage/restore/permanent-delete, edit,
+    // date-change, move-to-main, space deletion - see SpaceService#assertSyncWritable's own
+    // callers) - one handler here is less error-prone than remembering to catch it at every one of
+    // those call sites. 423 LOCKED is the standard HTTP status for "the resource is locked", which
+    // is exactly this case.
+    @ExceptionHandler(SpaceSyncLockedException.class)
+    public ResponseEntity<Map<String, Object>> handleSpaceSyncLocked(SpaceSyncLockedException ex) {
+        return ResponseEntity.status(HttpStatus.LOCKED).body(Map.of(
+                "error", "space_sync_locked",
+                "spaceId", ex.getSpaceId().toString(),
+                "lockedByDeviceName", ex.getLockedByDeviceName()
+        ));
     }
 
     @ExceptionHandler(Exception.class)

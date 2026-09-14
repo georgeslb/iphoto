@@ -34,6 +34,12 @@ and a compressed record of how we got here, not a second copy of the spec.
   web version's mobile styling (see compressed history below).
 
 ### Known gaps / cleanup
+- **Android side of block/unblock-on-sync is unverified by a real build** (2026-09-14): this dev
+  environment has no Gradle wrapper/Android SDK, so `SyncViewModel`/`SyncScreen`/`SpaceApi`/
+  `SyncPrefs` (lock on pairing, "Stop sync", remote-unlock detection + warning dialog) are
+  hand-reviewed only, not compiler-checked. Backend half (`SpaceService`, the two `/sync-lock`
+  endpoints, `SpaceSyncLockTest`) is fully green. Run a real `./gradlew` build in Android Studio
+  before trusting the Kotlin side.
 - **`App.jsx` selection state**: `selectedIds`/`selectedAlbumIds`/`selectedSpaceIds` and their
   setters are still threaded through as many individual props rather than one consolidated
   object. Deliberately deferred — touches the prop signature of most consumer components

@@ -2,7 +2,9 @@ package org.iphoto.controller;
 
 import lombok.AccessLevel;
 import lombok.experimental.FieldDefaults;
+import org.iphoto.configuration.DeviceAuthContext;
 import org.iphoto.entities.UserEntity;
+import org.iphoto.exception.NoMatchUserSpaceException;
 import org.iphoto.model.PageResponse;
 import org.iphoto.model.Photo;
 import org.iphoto.model.SpaceDTO;
@@ -113,5 +115,59 @@ public class SpaceController extends AbstractBaseController {
         } catch (NoSuchElementException e) {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
         }
+    }
+
+    // Mobile folder-sync only (see org.iphoto.mobile.sync on the Android side): lets a synced
+    // Space's garbage be reconciled against the device's local trash by fileHash, without paging
+    // through the cross-space day-indexed garbage view the web app uses.
+    @GetMapping("/{spaceId}/garbage")
+    public ResponseEntity<Page<Photo>> getSpaceGarbagePhotos(@PathVariable UUID spaceId, @PageableDefault(size = 50, sort = "dateTaken", direction = Sort.Direction.DESC) Pageable pageable) {
+        UserEntity currentUser = getCurrentUser();
+        try {
+            Page<Photo> photos = photoService.getSpaceGarbagePhotos(currentUser, spaceId, pageable);
+            return ResponseEntity.ok(photos);
+        } catch (NoSuchElementException e) {
+            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+        }
+    }
+
+    // Block/unblock-on-sync (see SpaceService#lockForSync/unlockFromSync, SpaceEntity.
+    // syncLockedByDevice): the Android app calls this the moment a folder<->Space sync pairing is
+    // configured/enabled, and the DELETE counterpart below the moment it's disabled - "locked
+    // whenever sync is active", not a per-upload toggle. Locking only makes sense from the app
+    // itself (a web session has no device identity to lock to), so it's rejected here before ever
+    // reaching the service.
+    @PostMapping("/{id}/sync-lock")
+    public ResponseEntity<SpaceDTO> lockForSync(@PathVariable UUID id) {
+        UserEntity currentUser = getCurrentUser();
+        UUID callerDeviceTokenId = DeviceAuthContext.currentDeviceTokenId().orElse(null);
+        if (callerDeviceTokenId == null) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+        try {
+            return ResponseEntity.ok(spaceService.lockForSync(id, currentUser, callerDeviceTokenId));
+        } catch (NoMatchUserSpaceException e) {
+            return ResponseEntity.notFound().build();
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().build();
+        }
+        // SpaceSyncLockedException (already locked by a different device) bubbles up to
+        // GlobalExceptionHandler -> 423.
+    }
+
+    // Unlike locking, this is reachable over a web session too - deliberately, as the "I lost my
+    // phone" escape hatch (see SpaceService#unlockFromSync's own comment): the space's owner can
+    // always clear a stuck lock from the browser, not just the device that set it.
+    @DeleteMapping("/{id}/sync-lock")
+    public ResponseEntity<SpaceDTO> unlockFromSync(@PathVariable UUID id) {
+        UserEntity currentUser = getCurrentUser();
+        UUID callerDeviceTokenId = DeviceAuthContext.currentDeviceTokenId().orElse(null);
+        try {
+            return ResponseEntity.ok(spaceService.unlockFromSync(id, currentUser, callerDeviceTokenId));
+        } catch (NoMatchUserSpaceException e) {
+            return ResponseEntity.notFound().build();
+        }
+        // SpaceSyncLockedException (a DIFFERENT device trying to unlock this one) bubbles up to
+        // GlobalExceptionHandler -> 423.
     }
 }

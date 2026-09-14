@@ -27,6 +27,11 @@ public interface PhotoRepository extends JpaRepository<PhotoEntity, UUID> {
 
     Page<PhotoEntity> findBySpaceIdAndIsGarbageFalse(UUID spaceId, Pageable pageable);
 
+    // Backs GET /api/spaces/{spaceId}/garbage (mobile folder-sync: reconciling a synced Space's
+    // garbage against the device's local trash needs each garbage photo's fileHash, scoped to one
+    // space - the cross-space day-indexed garbage views below don't expose that per-space slice).
+    Page<PhotoEntity> findBySpaceIdAndIsGarbageTrue(UUID spaceId, Pageable pageable);
+
     Page<PhotoEntity> findByIsGarbageFalseAndAlbums(Set<AlbumEntity> albums, Pageable pageable);
 
     // Day-index browsing (replaces the old month-timeline/jumpToMonth-cursor machinery, and now

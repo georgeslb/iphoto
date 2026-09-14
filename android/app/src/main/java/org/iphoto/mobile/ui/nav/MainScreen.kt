@@ -2,6 +2,7 @@ package org.iphoto.mobile.ui.nav
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ExitToApp
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.NavigationBar
@@ -29,6 +30,7 @@ import org.iphoto.mobile.ui.spaces.SpaceDetailScreen
 import org.iphoto.mobile.ui.spaces.SpacesScreen
 import org.iphoto.mobile.ui.sync.SyncScreen
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(onLogout: () -> Unit) {
     val navController = rememberNavController()
@@ -83,7 +85,7 @@ fun MainScreen(onLogout: () -> Unit) {
                 val albumId = backStackEntry.arguments?.getString("albumId").orEmpty()
                 AlbumDetailScreen(
                     albumId = albumId,
-                    onPhotoClick = { photoId -> navController.navigate("photo/$photoId") },
+                    onPhotoClick = { photoId -> navController.navigate("photo/$photoId?albumId=$albumId") },
                     onBack = { navController.popBackStack() }
                 )
             }
@@ -97,7 +99,7 @@ fun MainScreen(onLogout: () -> Unit) {
                 val spaceId = backStackEntry.arguments?.getString("spaceId").orEmpty()
                 SpaceDetailScreen(
                     spaceId = spaceId,
-                    onPhotoClick = { photoId -> navController.navigate("photo/$photoId") },
+                    onPhotoClick = { photoId -> navController.navigate("photo/$photoId?spaceId=$spaceId") },
                     onBack = { navController.popBackStack() }
                 )
             }
@@ -108,11 +110,40 @@ fun MainScreen(onLogout: () -> Unit) {
                 SyncScreen()
             }
             composable(
-                route = "photo/{photoId}",
-                arguments = listOf(navArgument("photoId") { type = NavType.StringType })
+                // albumId/spaceId are optional context the lightbox needs to know what it can act
+                // on - "remove from album" only makes sense when opened from AlbumDetailScreen,
+                // and mirroring "move to garbage" onto a synced folder's local trash only applies
+                // when opened from the Space currently synced to a device folder. Library's
+                // onPhotoClick passes neither.
+                route = "photo/{photoId}?albumId={albumId}&spaceId={spaceId}",
+                arguments = listOf(
+                    navArgument("photoId") { type = NavType.StringType },
+                    navArgument("albumId") { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("spaceId") { type = NavType.StringType; nullable = true; defaultValue = null }
+                )
             ) { backStackEntry ->
                 val photoId = backStackEntry.arguments?.getString("photoId").orEmpty()
-                PhotoDetailScreen(photoId = photoId, onBack = { navController.popBackStack() })
+                val albumId = backStackEntry.arguments?.getString("albumId")
+                val spaceId = backStackEntry.arguments?.getString("spaceId")
+                PhotoDetailScreen(
+                    photoId = photoId,
+                    albumId = albumId,
+                    spaceId = spaceId,
+                    onBack = { navController.popBackStack() },
+                    // Replaces this lightbox's own backstack entry with the sibling photo's,
+                    // rather than pushing a new one each time - Back still goes straight to the
+                    // grid no matter how many photos were paged through via the arrows.
+                    onNavigateToPhoto = { nextPhotoId ->
+                        val route = buildString {
+                            append("photo/$nextPhotoId?")
+                            if (albumId != null) append("albumId=$albumId&")
+                            if (spaceId != null) append("spaceId=$spaceId")
+                        }
+                        navController.navigate(route) {
+                            popUpTo("photo/{photoId}?albumId={albumId}&spaceId={spaceId}") { inclusive = true }
+                        }
+                    }
+                )
             }
         }
     }

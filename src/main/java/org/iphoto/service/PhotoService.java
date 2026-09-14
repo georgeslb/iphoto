@@ -53,6 +53,10 @@ public interface PhotoService {
 
     Page<Photo> getSpacePhotos(UserEntity currentUser, UUID spaceId, Pageable pageable);
 
+    // Space-scoped garbage listing (mobile folder-sync only - the web app uses the cross-space
+    // day-indexed getGarbagePhotosForDay above). No dedup treatment, unlike getSpacePhotos.
+    Page<Photo> getSpaceGarbagePhotos(UserEntity currentUser, UUID spaceId, Pageable pageable);
+
     void restoreAssetsFromGarbage(UserEntity currentUser, List<UUID> ids);
 
     void moveAssetsToGarbage(UserEntity currentUser, List<UUID> ids) throws Exception;

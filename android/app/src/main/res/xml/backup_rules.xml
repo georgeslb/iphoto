@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
-    <!-- token store is EncryptedSharedPreferences, whose key lives in this device's Keystore -
+    <!-- token store is KeystoreEncryptedPreferences, whose key lives in this device's Keystore -
          excluding it from backup avoids restoring an undecryptable token onto a new device -->
     <exclude domain="sharedpref" path="iphoto_secure_prefs.xml" />
 </full-backup-content>

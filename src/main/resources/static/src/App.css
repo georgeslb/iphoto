@@ -1164,6 +1164,30 @@ button.upload-item-name.upload-item-name-link:hover {
   color: var(--text-secondary);
 }
 
+/* SpaceDetail.jsx's block/unblock-on-sync badge - sits next to the space name, only rendered
+   while the space is locked to a device's folder sync (see specification.md §4.2). */
+.space-sync-lock-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--warning-tint);
+  color: var(--warning-color);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.space-unlock-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 4px;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 /* PersonDetail.jsx's editable page title — click-to-edit, same interaction pattern as the
    metadata-group .edit-icon fields in Lightbox.jsx, just full page-title sized. */
 .person-title-name {

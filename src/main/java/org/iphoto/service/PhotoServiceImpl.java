@@ -127,6 +127,12 @@ public class PhotoServiceImpl implements PhotoService {
     }
 
     @Override
+    public Page<Photo> getSpaceGarbagePhotos(UserEntity currentUser, UUID spaceId, Pageable pageable) {
+        SpaceDTO space = spaceService.getSpaceByIdForUser(spaceId, currentUser).orElseThrow(NoMatchUserSpaceException::new);
+        return photoRepository.findBySpaceIdAndIsGarbageTrue(space.id(), pageable).map(photoMapper::photoEntityToPhoto);
+    }
+
+    @Override
     @Transactional
     public void restoreAssetsFromGarbage(UserEntity currentUser, List<UUID> ids) {
         List<PhotoEntity> photos = photoRepository.findByIdIn(ids).stream().toList();
@@ -135,6 +141,7 @@ public class PhotoServiceImpl implements PhotoService {
             if (photo == null || !photo.getIsGarbage()) continue;
             SpaceEntity space = photo.getSpace();
             if (!space.getUser().getId().equals(currentUser.getId())) continue;
+            spaceService.assertSyncWritable(space);
 
             spaceService.increaseSpacePhotoCount(space);
             photo.setIsGarbage(false);
@@ -156,6 +163,7 @@ public class PhotoServiceImpl implements PhotoService {
             if (photo == null || photo.getIsGarbage()) continue;
             SpaceEntity space = photo.getSpace();
             if (!space.getUser().getId().equals(currentUser.getId())) continue;
+            spaceService.assertSyncWritable(space);
             spaceService.decreaseSpacePhotoCount(space);
             photo.setIsGarbage(true);
             photo.setGarbageAt(LocalDateTime.now());
@@ -222,6 +230,13 @@ public class PhotoServiceImpl implements PhotoService {
                 String thumbnailPath = photo.getThumbnailPath();
                 log.info("permanently deleting photo with id {}", photo.getId());
                 if (userSpaces == null || userSpaces.stream().anyMatch(userSpace -> userSpace.id().equals(photo.getSpace().getId()))) {
+                    // userSpaces == null is the internal/retention-driven path (TaskWorkerManagerImpl's
+                    // PERMANENT_DELETE task, no HTTP caller/SecurityContext at all) - deliberately not
+                    // guarded, same as its ownership check above being skipped: it isn't the "someone
+                    // edited outside the app" scenario this feature exists to prevent.
+                    if (userSpaces != null) {
+                        spaceService.assertSyncWritable(photo.getSpace());
+                    }
                     photoDeletionService.permanentDeleteAssets(photo.getId());
                     try {
                         Files.deleteIfExists(Paths.get(originalPath));
@@ -248,6 +263,7 @@ public class PhotoServiceImpl implements PhotoService {
         PhotoEntity photoEntity = photoRepository.findById(id)
                 .filter(p -> p.getSpace().getUser().getId().equals(user.getId()))
                 .orElseThrow(() -> new NoSuchElementException("Photo not found with ID: " + id));
+        spaceService.assertSyncWritable(photoEntity.getSpace());
         photoEntity.setDateTaken(newDate);
         photoRepository.save(photoEntity);
         // dateTaken drives groupedDay (see PhotoEntity.syncGroupedDay), so this can move the photo
@@ -308,6 +324,7 @@ public class PhotoServiceImpl implements PhotoService {
             // relocating another user's photo into the caller's main space (same guard
             // moveAssetsToGarbage/restoreAssetsFromGarbage already apply).
             if (!photo.getSpace().getUser().getId().equals(user.getId())) return;
+            spaceService.assertSyncWritable(photo.getSpace());
             UUID originalSpaceId = photo.getSpace().getId();
             try {
                 photo.setSpace(mainUserSpace);
