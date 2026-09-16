@@ -19,6 +19,7 @@ public class IPhotoProperties {
         String immichTemp;
         String photos;
         String thumbnails;
+        String faceThumbnails;
         String temp;
         String chunks;
     }

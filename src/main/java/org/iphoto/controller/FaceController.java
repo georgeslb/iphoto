@@ -1,6 +1,7 @@
 package org.iphoto.controller;
 
 import lombok.extern.slf4j.Slf4j;
+import org.iphoto.entities.FaceEntity;
 import org.iphoto.entities.UserEntity;
 import org.iphoto.exception.PersonNameCollisionException;
 import org.iphoto.exception.PersonNameCollisionsException;
@@ -16,14 +17,21 @@ import org.iphoto.model.request.PersonMergeRequest;
 import org.iphoto.model.request.PersonRenameRequest;
 import org.iphoto.repository.UserRepository;
 import org.iphoto.service.FaceService;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
@@ -51,6 +59,31 @@ public class FaceController extends AbstractBaseController {
         } catch (NoSuchElementException e) {
             return ResponseEntity.notFound().build();
         }
+    }
+
+    // Backs FaceDTO.image (see FaceServiceImpl#mapToDTO) - serves the cropped face JPEG straight
+    // from disk instead of inlining it as base64 in the JSON response. Falls back to the legacy
+    // DB-blob column for any face row not yet migrated by FaceThumbnailMigrationService.
+    @GetMapping("/{id}/thumbnail")
+    public ResponseEntity<Resource> getThumbnail(@PathVariable UUID id) {
+        UserEntity currentUser = getCurrentUser();
+        return faceService.findById(currentUser, id)
+                .map(this::serveThumbnail)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    private ResponseEntity<Resource> serveThumbnail(FaceEntity face) {
+        if (face.getThumbnailPath() != null) {
+            Path path = Paths.get(face.getThumbnailPath());
+            if (!Files.exists(path)) {
+                return ResponseEntity.notFound().build();
+            }
+            return ResponseEntity.ok().contentType(MediaType.IMAGE_JPEG).body(new FileSystemResource(path));
+        }
+        if (face.getFaceThumbnail() != null) {
+            return ResponseEntity.ok().contentType(MediaType.IMAGE_JPEG).body(new ByteArrayResource(face.getFaceThumbnail()));
+        }
+        return ResponseEntity.notFound().build();
     }
 
     @DeleteMapping("/{id}")

@@ -7,6 +7,7 @@ import org.apache.commons.collections4.SetUtils;
 import org.iphoto.entities.FaceStatus;
 import org.iphoto.entities.PhotoEntity;
 import org.iphoto.entities.TaskEntity;
+import org.iphoto.model.FaceThumbnailMigrationSummaryDTO;
 import org.iphoto.model.StorageMigrationSummaryDTO;
 import org.iphoto.model.TaskAdminDTO;
 import org.iphoto.model.TaskStatus;
@@ -44,6 +45,7 @@ public class AdminServiceImpl implements AdminService {
     private final PhotoRepository photoRepository;
     private final TaskRepository taskRepository;
     private final StorageMigrationService storageMigrationService;
+    private final FaceThumbnailMigrationService faceThumbnailMigrationService;
     private final ObjectMapper objectMapper;
     private final FaceRepository faceRepository;
     private final PersonRepository personRepository;
@@ -98,6 +100,11 @@ public class AdminServiceImpl implements AdminService {
     @Override
     public StorageMigrationSummaryDTO migrateFlatFilesToOrganizedStorage() {
         return storageMigrationService.migrateAllFlatPhotos();
+    }
+
+    @Override
+    public FaceThumbnailMigrationSummaryDTO migrateFaceThumbnailsToFilesystem() {
+        return faceThumbnailMigrationService.migrateAll();
     }
 
     @Override

@@ -29,7 +29,6 @@ import org.springframework.util.StringUtils;
 
 import java.time.LocalDate;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Optional;
@@ -47,6 +46,7 @@ public class FaceServiceImpl implements FaceService {
     private final FaceLinkExclusionRepository faceLinkExclusionRepository;
     private final PersonMergeSuggestionService personMergeSuggestionService;
     private final SpaceService spaceService;
+    private final FaceThumbnailStorageService faceThumbnailStorageService;
 
     @Override
     @Transactional
@@ -61,11 +61,15 @@ public class FaceServiceImpl implements FaceService {
                 .toList();
     }
 
+    // image is a URL to FaceController#getThumbnail rather than an inlined base64 data URI - the
+    // old approach meant every FaceDTO (Persons grid, Lightbox "Faces Detected" strip, merge-
+    // suggestion cover photos) paid to base64-encode a whole JPEG into the JSON response, on top of
+    // the ~33% size inflation base64 itself adds. A plain URL string here also means every other
+    // caller of mapToDTO never needs to touch faceEntity.getFaceThumbnail()'s BYTEA blob at all -
+    // FaceController#getThumbnail is the only place that still reads it (its legacy-row fallback).
     private FaceDTO mapToDTO(FaceEntity faceEntity) {
-        String base64Image = null;
-        if (faceEntity.getFaceThumbnail() != null) {
-            base64Image = "data:image/jpeg;base64," + Base64.getEncoder().encodeToString(faceEntity.getFaceThumbnail());
-        }
+        boolean hasThumbnail = faceEntity.getThumbnailPath() != null || faceEntity.getFaceThumbnail() != null;
+        String image = hasThumbnail ? "/api/faces/" + faceEntity.getId() + "/thumbnail" : null;
 
         String personName = faceEntity.getPerson() != null ? faceEntity.getPerson().getName() : null;
 
@@ -75,7 +79,7 @@ public class FaceServiceImpl implements FaceService {
                 faceEntity.getY(),
                 faceEntity.getWidth(),
                 faceEntity.getHeight(),
-                base64Image,
+                image,
                 personName
         );
     }
@@ -197,9 +201,17 @@ public class FaceServiceImpl implements FaceService {
         return personRepository.findAllById(ids).stream().map(this::mapToPerson).toList();
     }
 
+    // Used by FaceController#getThumbnail - scoped to the requesting user's own face the same way
+    // assertFaceOwnedBy is below (FaceEntity has no space_id of its own to filter on directly), so
+    // a caller can't fetch another user's face thumbnail by guessing its id. @Transactional (like
+    // getFacesForPhoto above) since the ownership check below dereferences face.photo.space.user,
+    // both lazy associations - without an open session here they'd throw
+    // LazyInitializationException once the repository call above returns.
     @Override
+    @Transactional
     public Optional<FaceEntity> findById(UserEntity user, UUID id) {
-        return faceRepository.findById(id);
+        return faceRepository.findById(id)
+                .filter(face -> face.getPhoto().getSpace().getUser().getId().equals(user.getId()));
     }
 
     // FaceEntity has no space_id of its own (it doesn't extend BaseEntity), so faceRepository
@@ -238,6 +250,7 @@ public class FaceServiceImpl implements FaceService {
         }
 
         faceRepository.delete(face);
+        faceThumbnailStorageService.delete(face.getThumbnailPath());
 
         // photoCount must be recalculated AFTER the face row is actually gone, not before - it
         // counts DISTINCT photos still reachable through this person's remaining faces.

@@ -488,6 +488,37 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 .lightbox-content { flex: 1; display: flex; align-items: center; justify-content: center; padding: 40px; position: relative; }
 .lightbox-content img, .lightbox-content video { max-width: 100%; max-height: 100%; object-fit: contain; }
 
+/* Info-panel toggle + always-reachable close, floating over the media itself rather than living
+   only inside .metadata-sidebar - hiding the panel must never also hide the only way to close the
+   Lightbox (.lightbox-container stops click propagation, so tapping the backdrop never reaches
+   .lightbox-overlay's own onClose, and Escape isn't reachable on a touch device). */
+.lightbox-top-controls {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: flex;
+  gap: 8px;
+  z-index: 20;
+}
+
+.lightbox-icon-btn {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.5);
+  color: white;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.lightbox-icon-btn:hover {
+  background: rgba(0, 0, 0, 0.75);
+}
+
 .metadata-sidebar {
   width: 360px; /* Slightly wider */
   background: var(--surface-color);
@@ -535,6 +566,11 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   flex: 1;
   overflow-y: auto;
   padding-right: 10px; /* Space for scrollbar */
+  /* iOS Safari has historically needed this explicit hint for a nested overflow:auto container
+     (one sitting inside a position:fixed ancestor, as .lightbox-overlay is) to actually respond to
+     a finger drag with native momentum scrolling - same reasoning as .duplicate-chip-rail's own
+     use of this below. */
+  -webkit-overflow-scrolling: touch;
 }
 
 .metadata-sidebar .sidebar-scroll-content::-webkit-scrollbar {
@@ -1888,6 +1924,13 @@ button.upload-item-name.upload-item-name-link:hover {
 
   .lightbox-content {
     padding: 16px;
+    /* Same flex min-height:auto trap as .metadata-sidebar below, other direction: a video/image
+       with a large intrinsic size can make this flex item (now stacked in a column, see
+       .lightbox-container below) refuse to shrink to its fair flex:1 share, pushing
+       .metadata-sidebar - and specifically whatever sits near the bottom of its scroll content,
+       e.g. a video's codec/frame-rate info - below the visible viewport with no way to reach it
+       (this is a position:fixed full-screen overlay, not a normal scrollable page). */
+    min-height: 0;
   }
 
   .lightbox-container {
@@ -1897,9 +1940,23 @@ button.upload-item-name.upload-item-name-link:hover {
   .metadata-sidebar {
     width: 100%;
     max-height: 45vh;
+    /* Flex items default to min-height: auto, which refuses to shrink below the content's
+       intrinsic height - without this, .lightbox-container's column layout let the sidebar grow
+       past max-height instead of actually capping there, so .sidebar-scroll-content's own
+       flex:1/overflow-y:auto (below) never got a bounded box to scroll within and any metadata
+       past the fold (video info near the bottom of a longer list) was simply unreachable, not
+       scrollable, on mobile only - desktop's row layout never hit this since cross-axis stretch
+       there sizes the sidebar off the full-height container, not off its own content. */
+    min-height: 0;
     border-left: none;
     border-top: 1px solid var(--border-color);
     padding: 16px;
+  }
+
+  .metadata-sidebar .sidebar-scroll-content {
+    /* Same min-height: auto trap one level down - the actual scrolling element needs to be
+       allowed to shrink too, or it just keeps expanding its parent instead of scrolling. */
+    min-height: 0;
   }
 
   .lightbox-nav-btn {

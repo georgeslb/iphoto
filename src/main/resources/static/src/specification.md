@@ -103,7 +103,7 @@ The application is a Single Page Application (SPA) with a consistent layout:
 *   **Sidebar:** A persistent navigation sidebar on the left, providing access to the main sections of the application (Library, Albums, Spaces, Map, etc.) and the logout button. **Responsive:** on screens ≤768px it becomes a collapsible drawer (`components/Sidebar.jsx` owns its own open/closed state) with a fixed hamburger toggle button, closing automatically on navigation.
 *   **Header:** A context-aware header that appears above the main content. It displays actions relevant to the current view and selection (e.g., "Delete", "Add to Album", "Upload"). **Button visibility is computed client-side** by `utils/selectionCapabilities.js` (a pure function; `hooks/useMenuSelection.js` maps the current route + selection onto its inputs). Given the current menu (`"library"`/`"album"`/`"albums"`/`"space"`/`"spaces"`/`"garbage"`, or `"lightbox"` whenever the Lightbox is open, overriding the underlying page's menu), which space/album the view is scoped to, and the selection, it returns capability flags (`canBeRestored`, `canBeDeleted`, `canBeMovedToMain`, `canBeMovedToAlbum`, `canBeRemovedFromAlbum`, `canBeSetAsCover`, `canBePermanentlyDeleted`, `canEditDate`, `canDownload`, `canBeModified`) plus a nested `menuSelection` object with menu-level flags (`canUpload`, `canCreateAlbum`, `canDeleteAlbum`, `canCreateSpace`, `canDeleteSpace`, `canRestoreSpace`, `canPermanentlyDeleteSpace`, `canAddAAShareLinkToAlbum`). `Header.jsx` renders buttons purely by reading these flags. These are cosmetic — every mutating endpoint enforces its own authorization server-side (there used to be a `POST /api/photos/selected` + `POST /api/menu/selected` round-trip for this; removed, since the flags never were a security boundary). The one server-provided input is `Photo.inMainSpace` (drives the Lightbox "Move to Main" button). The "delete/restore selected" menu flags (`canDeleteAlbum`/`canDeleteSpace`/`canRestoreSpace`/`canPermanentlyDeleteSpace`) are true exactly when the current list has ≥1 selected row the bulk action can act on — `canDeleteSpace` additionally excludes the MAIN space, which can never be removed (the old `POST /api/menu/selected` had these inverted, so the buttons never actually appeared for a real selection).
 *   **Main Content Area:** The central part of the screen that displays the primary content, such as photo grids, album details, or maps.
-*   **Lightbox:** A full-screen modal view for inspecting a single photo in detail. It provides navigation to the previous/next photo and access to actions for that specific photo. **Responsive:** the photo and the metadata sidebar sit side-by-side on desktop, but stack vertically on screens ≤768px (metadata panel becomes a scrollable panel below the photo, capped at 45vh).
+*   **Lightbox:** A full-screen modal view for inspecting a single photo in detail. It provides navigation to the previous/next photo and access to actions for that specific photo. **Responsive:** the photo and the metadata sidebar sit side-by-side on desktop, but stack vertically on screens ≤768px (metadata panel becomes a scrollable panel below the photo, capped at 45vh). The info panel (`.metadata-sidebar`) can be shown/hidden via a persistent info-icon toggle button (`.lightbox-top-controls`, floating over the photo/video, top-right) — hiding it lets the photo/video use the Lightbox's full window, most useful on mobile where the panel otherwise eats a large share of the screen. That control group also carries its own always-rendered close (X) button, deliberately independent of the one inside `.metadata-sidebar`'s header: `.lightbox-container` stops click propagation (so tapping the photo/backdrop never reaches `.lightbox-overlay`'s own close-on-click) and Escape isn't reachable on a touch device, so hiding the panel must never also remove the only way to close the Lightbox. Panel visibility is per-open-session state (`showInfo`), not reset when navigating prev/next within the same Lightbox instance.
 *   **Responsive design:** the app targets full phone support (breakpoints at 768px and 480px),
     not just desktop. See `App.css`'s "Responsive" section at the bottom of the file, plus
     per-page adjustments in `components/Login.css` and `components/UserManagement.css`.
@@ -440,11 +440,28 @@ This section describes the application's features. For the corresponding backend
         `FaceRecognitionService.groupFaces` clusters them into `PersonEntity`s. Before this was fixed
         (2026-09-11), the thumbnail was saved uncropped-to-size as a lossless PNG at the crop's full
         original-photo resolution — a single face could be 1+MB, and the Persons page fetches one per
-        person per page, which is what made `GET /api/faces/persons` balloon to ~70MB/7s to load; existing
-        already-stored thumbnails from before the fix remain oversized until re-processed (no migration
-        path yet — see `TODO.md`). (An earlier version of this pipeline used RetinaFace + PyTorch; replaced
-        outright, no compatibility shim — old `FaceEntity`/`PersonEntity` rows are meaningless against
-        the new embedding space and were truncated rather than migrated when this shipped.)
+        person per page, which is what made `GET /api/faces/persons` balloon to ~70MB/7s to load.
+        **Thumbnail storage moved from a DB `BYTEA` blob (`faces.face_thumbnail`) to a file on disk**
+        (`faces.thumbnail_path`, under `iphoto.storage.faceThumbnails/{year}/{month}/`, same layout
+        `PhotoStoragePathResolver` uses for photos — see `FaceThumbnailStorageService`) — inlining that
+        blob as base64 into every `FaceDTO` (Persons grid, Lightbox's "Faces Detected" strip,
+        merge-suggestion cover photos) made those responses slow to build/parse, and, separately, just
+        *touching* `PersonEntity.faces` (a plain lazy `@OneToMany`, no batch-fetch) during any
+        detach/delete/merge path pulled every one of a person's thumbnail blobs into memory — for a
+        heavily-photographed person this was a real, production-only, data-size-scaling slowdown (see
+        `TODO.md`). `FaceDTO.image` is now a URL (`GET /api/faces/{id}/thumbnail`, §5.6) instead of a
+        `data:image/jpeg;base64,...` string; `hibernate.default_batch_fetch_size=30` (application.yml)
+        was added alongside this to batch away the matching N+1 on each face's lazy `photo` association
+        (`recalculateCoverFace`'s per-face `getPhoto()` calls). `faces.face_thumbnail` itself is kept
+        (not dropped) for any row not yet migrated — `FaceController#getThumbnail` falls back to it, and
+        `POST /api/admin/storage/migrate-face-thumbnails` (§5.7) is the optional, admin-triggered,
+        idempotent backfill that moves each remaining row to disk, re-cropping/recompressing it through
+        the same pipeline along the way — this also closes the previously-open "oversized legacy PNG
+        thumbnails" gap noted here, since backfilled rows go through `generateFaceThumbnail` again
+        regardless of their original format/size. (An earlier version of this pipeline used RetinaFace +
+        PyTorch; replaced outright, no compatibility shim — old `FaceEntity`/`PersonEntity` rows are
+        meaningless against the new embedding space and were truncated rather than migrated when this
+        shipped.)
     *   **Small-face gating** (`FaceDetectionService`): faces under 60px (post-padding) are discarded
         outright unless they clear `MIN_FACE_SIZE=32` (hard floor — below this there's genuinely not
         enough resolution) **and** the detector's confidence is ≥`SMALL_FACE_MIN_CONFIDENCE=0.92`
@@ -888,6 +905,10 @@ Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
 *   `POST /api/admin/storage/migrate-flat-files`: One-time, idempotent backfill moving any
     pre-existing flat-stored photo/thumbnail into the `{year}/{month}` storage layout (see §6).
     Not run automatically — an admin triggers it explicitly.
+*   `POST /api/admin/storage/migrate-face-thumbnails`: One-time, idempotent backfill moving any
+    face thumbnail still stored as a `faces.face_thumbnail` DB blob onto disk
+    (`faces.thumbnail_path`), re-cropping/recompressing it through the same pipeline newly detected
+    faces use along the way (§4.3). Returns `{scanned, migrated, failed}`. Not run automatically.
 *   `GET /api/admin/tasks?status=&taskType=&page=&size=`: Paginated `TaskAdminDTO` list backing
     the Admin > Tasks page — `status`/`taskType` are both optional, independent filters (either or
     both may be omitted); sorted newest-first by default (`createdAt` desc, page/size otherwise
@@ -956,12 +977,16 @@ Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
 *   `GET /api/faces/persons/merge-suggestions?page=&size=`: Paginated `PersonMergeSuggestionDTO`
     list, most-similar first (§4.3) — written by an extra step alongside face recognition, not
     computed on request. The popup only ever shows one pair at a time, so the frontend always asks
-    for `size=1`; each entry embeds both persons' full base64 cover-face thumbnails, which is why
+    for `size=1`; each entry embeds both persons' cover-face thumbnail URLs, which is why
     this is paginated at all rather than the flat list it used to be (see §4.3's Persons View
     section for the full story on why that mattered).
 *   `GET /api/faces/photo/{id}`: Every face detected on a photo (backs the Lightbox's "Faces
     Detected" section).
-*   `DELETE /api/faces/{id}`: Delete one face detection (not the photo).
+*   `GET /api/faces/{id}/thumbnail`: The cropped face JPEG (`FaceDTO.image` points here) — served
+    straight from disk (`FaceEntity.thumbnailPath`), falling back to the legacy DB blob
+    (`faceThumbnail`) for any row not yet backfilled by the admin migration below (§4.3, §5.7).
+*   `DELETE /api/faces/{id}`: Delete one face detection (not the photo) — also deletes its
+    on-disk thumbnail file, if any.
 *   `PUT /api/faces/{id}/person`: Rename/reassign one face's person (`{name, confirmMerge}`) —
     409 + the colliding `PersonDTO` unless `confirmMerge: true` (§4.3).
 *   `DELETE /api/faces/{id}/person`: Unlink one face from its person, keeping the `FaceEntity`.

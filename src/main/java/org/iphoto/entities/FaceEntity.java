@@ -44,8 +44,24 @@ public class FaceEntity { // Extends BaseEntity
     @Column(columnDefinition = "BYTEA")
     private byte[] embedding; // Stores the 128-dimensional float array for recognition
 
+    // LEGACY - being migrated to filesystem storage (see thumbnailPath below and
+    // FaceThumbnailMigrationService). No longer written for newly detected faces
+    // (FaceDetectionServiceImpl writes straight to disk instead) - a face row still carrying a
+    // non-null value here predates that change and hasn't been backfilled yet. Kept (not dropped)
+    // until every existing row has been migrated, so old rows keep working via
+    // FaceController#getThumbnail's fallback in the meantime. Do not read this directly for new
+    // code - go through thumbnailPath / the /api/faces/{id}/thumbnail endpoint.
     @Column(columnDefinition = "BYTEA")
-    private byte[] faceThumbnail; // Stores the cropped JPEG image of the face for UI display
+    private byte[] faceThumbnail;
+
+    // Filesystem path to the cropped JPEG thumbnail (iphoto.storage.faceThumbnails, same
+    // {year}/{month} layout PhotoStoragePathResolver uses for photo originals/thumbnails) - moved
+    // out of the DB because base64-inlining a BYTEA blob into every FaceDTO (Persons grid, Lightbox
+    // "Faces Detected" strip, merge-suggestion cover photos) made those responses slow to build and
+    // slow to load on the frontend, and loading it as part of a person's `faces` collection (a
+    // plain lazy @OneToMany, no batch-fetch) meant every face-detach/delete path paid to pull every
+    // one of a person's thumbnails into memory just to recalculate a cover face - see TODO.md.
+    private String thumbnailPath;
 
     // NEW until one groupFaces() run has analysed it (matched, promoted, or left an unclustered
     // singleton), then flipped to OLD - see FaceStatus and FaceRecognitionServiceImpl's

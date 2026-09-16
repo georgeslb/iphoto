@@ -1,6 +1,7 @@
 package org.iphoto.controller;
 
 import org.iphoto.entities.UserEntity;
+import org.iphoto.model.FaceThumbnailMigrationSummaryDTO;
 import org.iphoto.model.PageResponse;
 import org.iphoto.model.StorageMigrationSummaryDTO;
 import org.iphoto.model.TaskAdminDTO;
@@ -58,6 +59,14 @@ public class AdminController extends AbstractBaseController {
     @PostMapping("/storage/migrate-flat-files")
     public StorageMigrationSummaryDTO migrateFlatFilesToOrganizedStorage() {
         return adminService.migrateFlatFilesToOrganizedStorage();
+    }
+
+    // Optional one-time backfill moving pre-existing face thumbnails out of the faces.face_thumbnail
+    // DB blob and onto disk (faces.thumbnail_path) - see FaceThumbnailMigrationService. Safe to
+    // call more than once.
+    @PostMapping("/storage/migrate-face-thumbnails")
+    public FaceThumbnailMigrationSummaryDTO migrateFaceThumbnailsToFilesystem() {
+        return adminService.migrateFaceThumbnailsToFilesystem();
     }
 
     // Admin > Tasks page (TaskManagement.jsx) - status/taskType are both optional filters; either
