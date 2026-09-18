@@ -1,5 +1,6 @@
 package org.iphoto.mobile.upload
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -23,7 +24,9 @@ fun UploadQueueMenu(uploadManager: UploadManager) {
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(8.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(

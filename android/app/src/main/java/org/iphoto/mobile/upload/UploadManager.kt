@@ -74,6 +74,7 @@ class UploadManager(private val context: Context) {
 
             val uploadWorkRequest = OneTimeWorkRequest.Builder(UploadWorker::class.java)
                 .setInputData(data)
+                .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
                 .build()
 
             workManager.enqueue(uploadWorkRequest)

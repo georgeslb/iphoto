@@ -12,6 +12,7 @@ import kotlinx.coroutines.delay
 import org.iphoto.mobile.AppContainer
 import org.iphoto.mobile.R
 import org.iphoto.mobile.data.repository.TaskRepository
+import androidx.work.OutOfQuotaPolicy
 import org.iphoto.mobile.data.repository.UploadRepository
 
 class UploadWorker(
@@ -26,12 +27,7 @@ class UploadWorker(
     private val notificationManager =
         appContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-    override suspend fun doWork(): Result {
-        val uriString = inputData.getString(KEY_URI) ?: return Result.failure()
-        val spaceId = inputData.getString(KEY_SPACE_ID) ?: return Result.failure()
-        val itemId = inputData.getString("upload_item_id") ?: return Result.failure()
-        val uri = Uri.parse(uriString)
-
+    override suspend fun getForegroundInfo(): ForegroundInfo {
         createNotificationChannel()
         val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
             .setContentTitle("Uploading file")
@@ -39,7 +35,14 @@ class UploadWorker(
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setOngoing(true)
             .build()
-        setForeground(ForegroundInfo(1, notification))
+        return ForegroundInfo(1, notification)
+    }
+
+    override suspend fun doWork(): Result {
+        val uriString = inputData.getString(KEY_URI) ?: return Result.failure()
+        val spaceId = inputData.getString(KEY_SPACE_ID) ?: return Result.failure()
+        val itemId = inputData.getString("upload_item_id") ?: return Result.failure()
+        val uri = Uri.parse(uriString)
 
         return try {
             uploadManager.updateUploadStatus(itemId, "UPLOADING")
