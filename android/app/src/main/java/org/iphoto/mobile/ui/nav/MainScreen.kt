@@ -10,9 +10,12 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavType
@@ -21,6 +24,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import org.iphoto.mobile.LocalAppContainer
 import org.iphoto.mobile.ui.albums.AlbumDetailScreen
 import org.iphoto.mobile.ui.albums.AlbumsScreen
 import org.iphoto.mobile.ui.library.LibraryScreen
@@ -29,11 +33,13 @@ import org.iphoto.mobile.ui.shares.SharesScreen
 import org.iphoto.mobile.ui.spaces.SpaceDetailScreen
 import org.iphoto.mobile.ui.spaces.SpacesScreen
 import org.iphoto.mobile.ui.sync.SyncScreen
+import org.iphoto.mobile.upload.UploadQueueMenu
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(onLogout: () -> Unit) {
     val navController = rememberNavController()
+    val container = LocalAppContainer.current
 
     Scaffold(
         topBar = {
@@ -67,83 +73,98 @@ fun MainScreen(onLogout: () -> Unit) {
             }
         }
     ) { padding ->
-        NavHost(
-            navController = navController,
-            startDestination = Destination.Library.route,
-            modifier = Modifier.padding(padding)
-        ) {
-            composable(Destination.Library.route) {
-                LibraryScreen(onPhotoClick = { photoId -> navController.navigate("photo/$photoId") })
-            }
-            composable(Destination.Albums.route) {
-                AlbumsScreen(onAlbumClick = { albumId -> navController.navigate("albums/$albumId") })
-            }
-            composable(
-                route = "albums/{albumId}",
-                arguments = listOf(navArgument("albumId") { type = NavType.StringType })
-            ) { backStackEntry ->
-                val albumId = backStackEntry.arguments?.getString("albumId").orEmpty()
-                AlbumDetailScreen(
-                    albumId = albumId,
-                    onPhotoClick = { photoId -> navController.navigate("photo/$photoId?albumId=$albumId") },
-                    onBack = { navController.popBackStack() }
-                )
-            }
-            composable(Destination.Spaces.route) {
-                SpacesScreen(onSpaceClick = { spaceId -> navController.navigate("spaces/$spaceId") })
-            }
-            composable(
-                route = "spaces/{spaceId}",
-                arguments = listOf(navArgument("spaceId") { type = NavType.StringType })
-            ) { backStackEntry ->
-                val spaceId = backStackEntry.arguments?.getString("spaceId").orEmpty()
-                SpaceDetailScreen(
-                    spaceId = spaceId,
-                    onPhotoClick = { photoId -> navController.navigate("photo/$photoId?spaceId=$spaceId") },
-                    onBack = { navController.popBackStack() }
-                )
-            }
-            composable(Destination.Shares.route) {
-                SharesScreen()
-            }
-            composable(Destination.Sync.route) {
-                SyncScreen()
-            }
-            composable(
-                // albumId/spaceId are optional context the lightbox needs to know what it can act
-                // on - "remove from album" only makes sense when opened from AlbumDetailScreen,
-                // and mirroring "move to garbage" onto a synced folder's local trash only applies
-                // when opened from the Space currently synced to a device folder. Library's
-                // onPhotoClick passes neither.
-                route = "photo/{photoId}?albumId={albumId}&spaceId={spaceId}",
-                arguments = listOf(
-                    navArgument("photoId") { type = NavType.StringType },
-                    navArgument("albumId") { type = NavType.StringType; nullable = true; defaultValue = null },
-                    navArgument("spaceId") { type = NavType.StringType; nullable = true; defaultValue = null }
-                )
-            ) { backStackEntry ->
-                val photoId = backStackEntry.arguments?.getString("photoId").orEmpty()
-                val albumId = backStackEntry.arguments?.getString("albumId")
-                val spaceId = backStackEntry.arguments?.getString("spaceId")
-                PhotoDetailScreen(
-                    photoId = photoId,
-                    albumId = albumId,
-                    spaceId = spaceId,
-                    onBack = { navController.popBackStack() },
-                    // Replaces this lightbox's own backstack entry with the sibling photo's,
-                    // rather than pushing a new one each time - Back still goes straight to the
-                    // grid no matter how many photos were paged through via the arrows.
-                    onNavigateToPhoto = { nextPhotoId ->
-                        val route = buildString {
-                            append("photo/$nextPhotoId?")
-                            if (albumId != null) append("albumId=$albumId&")
-                            if (spaceId != null) append("spaceId=$spaceId")
+        Box(modifier = Modifier.fillMaxSize()) {
+            NavHost(
+                navController = navController,
+                startDestination = Destination.Library.route,
+                modifier = Modifier.padding(padding)
+            ) {
+                composable(Destination.Library.route) {
+                    LibraryScreen(onPhotoClick = { photoId -> navController.navigate("photo/$photoId") })
+                }
+                composable(Destination.Albums.route) {
+                    AlbumsScreen(onAlbumClick = { albumId -> navController.navigate("albums/$albumId") })
+                }
+                composable(
+                    route = "albums/{albumId}",
+                    arguments = listOf(navArgument("albumId") { type = NavType.StringType })
+                ) { backStackEntry ->
+                    val albumId = backStackEntry.arguments?.getString("albumId").orEmpty()
+                    AlbumDetailScreen(
+                        albumId = albumId,
+                        onPhotoClick = { photoId -> navController.navigate("photo/$photoId?albumId=$albumId") },
+                        onBack = { navController.popBackStack() }
+                    )
+                }
+                composable(Destination.Spaces.route) {
+                    SpacesScreen(onSpaceClick = { spaceId -> navController.navigate("spaces/$spaceId") })
+                }
+                composable(
+                    route = "spaces/{spaceId}",
+                    arguments = listOf(navArgument("spaceId") { type = NavType.StringType })
+                ) { backStackEntry ->
+                    val spaceId = backStackEntry.arguments?.getString("spaceId").orEmpty()
+                    SpaceDetailScreen(
+                        spaceId = spaceId,
+                        onPhotoClick = { photoId -> navController.navigate("photo/$photoId?spaceId=$spaceId") },
+                        onBack = { navController.popBackStack() }
+                    )
+                }
+                composable(Destination.Shares.route) {
+                    SharesScreen()
+                }
+                composable(Destination.Sync.route) {
+                    SyncScreen()
+                }
+                composable(
+                    // albumId/spaceId are optional context the lightbox needs to know what it can act
+                    // on - "remove from album" only makes sense when opened from AlbumDetailScreen,
+                    // and mirroring "move to garbage" onto a synced folder's local trash only applies
+                    // when opened from the Space currently synced to a device folder. Library's
+                    // onPhotoClick passes neither.
+                    route = "photo/{photoId}?albumId={albumId}&spaceId={spaceId}",
+                    arguments = listOf(
+                        navArgument("photoId") { type = NavType.StringType },
+                        navArgument("albumId") {
+                            type = NavType.StringType; nullable = true; defaultValue = null
+                        },
+                        navArgument("spaceId") {
+                            type = NavType.StringType; nullable = true; defaultValue = null
                         }
-                        navController.navigate(route) {
-                            popUpTo("photo/{photoId}?albumId={albumId}&spaceId={spaceId}") { inclusive = true }
+                    )
+                ) { backStackEntry ->
+                    val photoId = backStackEntry.arguments?.getString("photoId").orEmpty()
+                    val albumId = backStackEntry.arguments?.getString("albumId")
+                    val spaceId = backStackEntry.arguments?.getString("spaceId")
+                    PhotoDetailScreen(
+                        photoId = photoId,
+                        albumId = albumId,
+                        spaceId = spaceId,
+                        onBack = { navController.popBackStack() },
+                        // Replaces this lightbox's own backstack entry with the sibling photo's,
+                        // rather than pushing a new one each time - Back still goes straight to the
+                        // grid no matter how many photos were paged through via the arrows.
+                        onNavigateToPhoto = { nextPhotoId ->
+                            val route = buildString {
+                                append("photo/$nextPhotoId?")
+                                if (albumId != null) append("albumId=$albumId&")
+                                if (spaceId != null) append("spaceId=$spaceId")
+                            }
+                            navController.navigate(route) {
+                                popUpTo("photo/{photoId}?albumId={albumId}&spaceId={spaceId}") {
+                                    inclusive = true
+                                }
+                            }
                         }
-                    }
-                )
+                    )
+                }
+            }
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = padding.calculateBottomPadding())
+            ) {
+                UploadQueueMenu(uploadManager = container.uploadManager)
             }
         }
     }

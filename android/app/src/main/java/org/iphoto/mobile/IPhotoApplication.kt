@@ -4,7 +4,6 @@ import android.app.Application
 import android.net.Uri
 import androidx.work.Configuration
 import org.iphoto.mobile.sync.SyncWorker
-import org.iphoto.mobile.sync.SyncWorkerFactory
 
 class IPhotoApplication : Application(), Configuration.Provider {
 
@@ -14,7 +13,7 @@ class IPhotoApplication : Application(), Configuration.Provider {
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
-            .setWorkerFactory(SyncWorkerFactory(container))
+            .setWorkerFactory(IphotoWorkerFactory(container))
             .build()
 
     override fun onCreate() {

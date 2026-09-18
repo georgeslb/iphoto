@@ -18,11 +18,13 @@ import org.iphoto.mobile.network.PhotoApi
 import org.iphoto.mobile.network.ShareApi
 import org.iphoto.mobile.network.SpaceApi
 import org.iphoto.mobile.network.TaskApi
+import org.iphoto.mobile.network.UploadApi
 import org.iphoto.mobile.sync.HashCache
 import org.iphoto.mobile.sync.SyncRepository
+import org.iphoto.mobile.upload.UploadManager
 
 /** Simple hand-rolled DI container - single Activity, small dependency graph, no DI framework needed. */
-class AppContainer(private val context: Context) {
+class AppContainer(val context: Context) {
     val tokenStore = TokenStore(context)
     val apiClient = ApiClient(tokenStore)
     val authRepository = AuthRepository(tokenStore, apiClient)
@@ -32,6 +34,9 @@ class AppContainer(private val context: Context) {
     val spaceApi: SpaceApi get() = apiClient.create()
     val shareApi: ShareApi get() = apiClient.create()
     val taskApi: TaskApi get() = apiClient.create()
+    val uploadApi: UploadApi get() = apiClient.create()
+
+    val uploadManager: UploadManager by lazy { UploadManager(context) }
 
     val syncPrefs = SyncPrefs(context)
     private val syncHashCache = HashCache(context)
