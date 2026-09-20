@@ -4,6 +4,7 @@ import android.content.ContentUris
 import android.content.Context
 import android.net.Uri
 import android.os.Build
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
@@ -270,30 +271,84 @@ class SyncRepository(
     // Resolves a scanned local [asset] (living under a SAF tree the user picked) to its MediaStore
     // content Uri, when that SAF location happens to also be MediaStore-indexed - true for standard
     // camera-roll locations like DCIM/Camera, which is what this feature is built for. Lets the
-    // caller use MediaStore.createTrashRequest to put the file in the phone's *real* system trash
-    // (Gallery/Photos "Recently deleted", recoverable there) instead of our own hidden .iPhotoTrash
-    // subfolder - requires API 29+ (getMediaUri itself), null below that or for a non-indexed
-    // location, both of which fall back to trashLocalFilesInAppFolder.
+    // caller use MediaStore.createTrashRequest or send to external editors (like Google Photos).
     fun toMediaStoreUri(asset: LocalAsset): Uri? {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
-        return try {
-            // getMediaUri returns a generic content://media/external/file/<id> Uri (the row ID in
-            // MediaStore's shared "files" table) - createTrashRequest rejects that with
-            // "All requested items must be Media items", it needs the type-specific Images/Video
-            // collection Uri instead. Same underlying row, just addressed through the collection
-            // createTrashRequest actually accepts.
-            val genericUri = MediaStore.getMediaUri(context, asset.uri) ?: return null
-            val id = ContentUris.parseId(genericUri)
-            val collection = if (asset.mimeType.startsWith("video/")) {
-                MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-            } else {
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-            }
-            ContentUris.withAppendedId(collection, id)
-        } catch (e: Exception) {
-            Log.w(TAG, "toMediaStoreUri: could not resolve a MediaStore uri for ${asset.uri}", e)
-            null
+        val collection = if (asset.mimeType.startsWith("video/")) {
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        } else {
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         }
+
+        // 1. Try to resolve real file path from document ID (e.g. primary:DCIM/Camera/IMG.jpg)
+        var filePath: String? = null
+        try {
+            if (DocumentsContract.isDocumentUri(context, asset.uri) || DocumentsContract.isTreeUri(asset.uri)) {
+                val docId = DocumentsContract.getDocumentId(asset.uri)
+                if (docId.startsWith("primary:")) {
+                    val relPath = docId.removePrefix("primary:")
+                    val file = java.io.File(android.os.Environment.getExternalStorageDirectory(), relPath)
+                    if (file.exists()) {
+                        filePath = file.absolutePath
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "toMediaStoreUri: could not parse filePath from docId: ${e.message}")
+        }
+
+        // 2. Query MediaStore by DATA (file path) if known
+        if (filePath != null) {
+            try {
+                val projection = arrayOf(MediaStore.MediaColumns._ID)
+                val selection = "${MediaStore.MediaColumns.DATA} = ?"
+                val selectionArgs = arrayOf(filePath)
+                context.contentResolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID))
+                        return ContentUris.withAppendedId(collection, id)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "toMediaStoreUri: DATA query failed: ${e.message}")
+            }
+        }
+
+        // 3. Query MediaStore by DISPLAY_NAME
+        try {
+            val projection = arrayOf(MediaStore.MediaColumns._ID)
+            val selection = "${MediaStore.MediaColumns.DISPLAY_NAME} = ?"
+            val selectionArgs = arrayOf(asset.displayName)
+            context.contentResolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID))
+                    return ContentUris.withAppendedId(collection, id)
+                }
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "toMediaStoreUri: DISPLAY_NAME query failed: ${e.message}")
+        }
+
+        // 4. Try MediaStore.getMediaUri on Android Q+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val docUri = if (DocumentsContract.isTreeUri(asset.uri)) {
+                    val docId = DocumentsContract.getDocumentId(asset.uri)
+                    DocumentsContract.buildDocumentUri(asset.uri.authority ?: "com.android.externalstorage.documents", docId)
+                } else {
+                    asset.uri
+                }
+                val genericUri = MediaStore.getMediaUri(context, docUri)
+                    ?: MediaStore.getMediaUri(context, asset.uri)
+                if (genericUri != null) {
+                    val id = ContentUris.parseId(genericUri)
+                    return ContentUris.withAppendedId(collection, id)
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "toMediaStoreUri: getMediaUri failed for ${asset.uri}: ${e.message}")
+            }
+        }
+
+        return null
     }
 
     private fun readFully(stream: InputStream, buffer: ByteArray): Int {

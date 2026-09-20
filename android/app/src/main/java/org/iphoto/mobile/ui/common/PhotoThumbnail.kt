@@ -57,13 +57,35 @@ fun PhotoThumbnail(
     isSelected: Boolean = false,
     onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit
+) = PhotoThumbnail(
+    imageModel = imageUrl as Any,
+    modifier = modifier,
+    isVideo = isVideo,
+    duration = duration,
+    isSelectionMode = isSelectionMode,
+    isSelected = isSelected,
+    onLongClick = onLongClick,
+    onClick = onClick
+)
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun PhotoThumbnail(
+    imageModel: Any,
+    modifier: Modifier = Modifier,
+    isVideo: Boolean = false,
+    duration: Long? = null,
+    isSelectionMode: Boolean = false,
+    isSelected: Boolean = false,
+    onLongClick: (() -> Unit)? = null,
+    onClick: () -> Unit
 ) {
     val imageLoader = LocalAppContainer.current.imageLoader
     Box(
         modifier = modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick)
     ) {
         AsyncImage(
-            model = imageUrl,
+            model = imageModel,
             imageLoader = imageLoader,
             contentDescription = null,
             contentScale = ContentScale.Crop,

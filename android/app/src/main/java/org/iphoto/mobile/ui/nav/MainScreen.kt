@@ -1,6 +1,8 @@
 package org.iphoto.mobile.ui.nav
 
 import android.content.res.Configuration
+import android.os.Build
+import androidx.annotation.RequiresApi
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -18,6 +20,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -25,6 +29,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import org.iphoto.mobile.LocalAppContainer
 import org.iphoto.mobile.ui.albums.AlbumDetailScreen
 import org.iphoto.mobile.ui.albums.AlbumsScreen
 import org.iphoto.mobile.ui.library.LibraryScreen
@@ -32,8 +37,12 @@ import org.iphoto.mobile.ui.photo.PhotoDetailScreen
 import org.iphoto.mobile.ui.shares.SharesScreen
 import org.iphoto.mobile.ui.spaces.SpaceDetailScreen
 import org.iphoto.mobile.ui.spaces.SpacesScreen
+import org.iphoto.mobile.ui.sync.AssetDetailScreen
 import org.iphoto.mobile.ui.sync.SyncScreen
+import org.iphoto.mobile.ui.sync.SyncViewModel
+import org.iphoto.mobile.ui.sync.SyncViewModelFactory
 
+@RequiresApi(Build.VERSION_CODES.P)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(onLogout: () -> Unit) {
@@ -79,6 +88,12 @@ fun MainScreen(onLogout: () -> Unit) {
             }
         }
     ) { padding ->
+        val context = LocalContext.current
+        val container = LocalAppContainer.current
+        val syncViewModel: SyncViewModel = viewModel(
+            factory = SyncViewModelFactory(context.applicationContext, container)
+        )
+
         NavHost(
             navController = navController,
             startDestination = Destination.Library.route,
@@ -119,7 +134,25 @@ fun MainScreen(onLogout: () -> Unit) {
                 SharesScreen()
             }
             composable(Destination.Sync.route) {
-                SyncScreen()
+                SyncScreen(
+                    viewModel = syncViewModel,
+                    onAssetClick = { asset ->
+                        syncViewModel.openAssetDetail(asset)
+                        navController.navigate("asset-detail")
+                    }
+                )
+            }
+            composable(route = "asset-detail") {
+                val asset = syncViewModel.selectedAssetForDetail
+                if (asset != null) {
+                    AssetDetailScreen(
+                        viewModel = syncViewModel,
+                        asset = asset,
+                        onBack = {
+                            navController.popBackStack()
+                        }
+                    )
+                }
             }
             composable(
                 // albumId/spaceId are optional context the lightbox needs to know what it can act

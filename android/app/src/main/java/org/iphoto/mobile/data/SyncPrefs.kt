@@ -78,6 +78,23 @@ class SyncPrefs internal constructor(private val prefs: SharedPreferences) {
         movedToMainAssets = movedToMainAssets.filterNot { it.hash == hash }.toSet() + TrackedAsset(hash, title, photoId)
     }
 
+    fun saveSelectedFolders(folders: List<org.iphoto.mobile.ui.sync.SelectedFolder>) {
+        val folderSet = folders.map { "${it.uri}$FIELD_SEPARATOR${it.name}" }.toSet()
+        prefs.edit().putStringSet(KEY_SELECTED_FOLDERS, folderSet).apply()
+    }
+
+    fun loadSelectedFolders(): List<org.iphoto.mobile.ui.sync.SelectedFolder> {
+        return prefs.getStringSet(KEY_SELECTED_FOLDERS, null)?.mapNotNull { raw ->
+            val parts = raw.split(FIELD_SEPARATOR)
+            if (parts.size != 2) return@mapNotNull null
+            try {
+                org.iphoto.mobile.ui.sync.SelectedFolder(android.net.Uri.parse(parts[0]), parts[1])
+            } catch (e: Exception) {
+                null
+            }
+        } ?: emptyList()
+    }
+
     private fun readTracked(key: String): Set<TrackedAsset> =
         prefs.getStringSet(key, null).orEmpty().mapNotNull(::decodeTracked).toSet()
 
@@ -113,6 +130,7 @@ class SyncPrefs internal constructor(private val prefs: SharedPreferences) {
         private const val KEY_AUTO_SYNC_ENABLED = "auto_sync_enabled"
         private const val KEY_EXCLUDED_ASSETS = "excluded_assets"
         private const val KEY_MOVED_TO_MAIN_ASSETS = "moved_to_main_assets"
+        private const val KEY_SELECTED_FOLDERS = "selected_folders"
 
         // Each entry is "hash<SEP>title<SEP>photoId" - a plain delimiter rather than a JSON
         // dependency this module otherwise has no need for. \u0001 (not a printable character)

@@ -1,231 +1,323 @@
 package org.iphoto.mobile.ui.sync
 
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.BottomAppBar
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Switch
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
-import androidx.lifecycle.viewmodel.compose.viewModel
-import org.iphoto.mobile.LocalAppContainer
-import java.text.DateFormat
-import java.util.Date
+import kotlinx.coroutines.launch
+import org.iphoto.mobile.sync.LocalAsset
+import org.iphoto.mobile.ui.common.PhotoThumbnail
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun SyncScreen() {
-    val context = LocalContext.current
-    val container = LocalAppContainer.current
-    val viewModel: SyncViewModel = viewModel(
-        factory = SyncViewModelFactory(
-            context.applicationContext,
-            container.spaceApi,
-            container.photoApi,
-            container.syncPrefs
-        )
-    )
+fun SyncScreen(
+    viewModel: SyncViewModel,
+    onAssetClick: (LocalAsset) -> Unit
+) {
     val state by viewModel.uiState.collectAsState()
-    var spaceMenuExpanded by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
+
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showSpacePicker by remember { mutableStateOf<((String) -> Unit)?>(null) }
+    var showUploadAndTrashConfirm by remember { mutableStateOf(false) }
 
     val folderPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
         if (uri != null) {
             val displayName = DocumentFile.fromTreeUri(context, uri)?.name ?: uri.lastPathSegment.orEmpty()
-            viewModel.selectFolder(uri, displayName)
+            viewModel.addFolder(uri, displayName)
         }
     }
 
-    // The screen used to be a plain Column with no scroll modifier at all - fine while it was
-    // short, but the description text plus a growing "Excluded from sync" list (unbounded, one
-    // row per excluded photo) could overflow the screen height with no way to reach the rest.
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp)
-    ) {
-        Text("Device folder sync", style = MaterialTheme.typography.titleLarge)
-        Text(
-            "Pick a Space and a folder on this phone. Turn on \"Sync automatically\" and this Space " +
-                "will mirror the folder on its own - usually within moments of a new photo/video " +
-                "showing up (works even if the app isn't running), with a check every 15 minutes as " +
-                "a backup in case that doesn't fire. New files upload a bit at a time (a large " +
-                "backlog is spread across several runs rather than sent all at once), and any that " +
-                "are no longer in the folder are moved to the Garbage (and restored back if the " +
-                "same file, or a garbaged photo, reappears). There's no manual \"sync now\" - only " +
-                "the automatic background job.",
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(top = 4.dp, bottom = 16.dp)
-        )
+    BackHandler(enabled = state.isSelectionMode) { viewModel.clearSelection() }
 
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Sync automatically", style = MaterialTheme.typography.labelLarge)
-                Text(
-                    "Runs roughly every 15 minutes in the background, network and battery permitting.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-            Switch(
-                checked = state.autoSyncEnabled,
-                onCheckedChange = viewModel::setAutoSyncEnabled,
-                enabled = state.selectedSpaceId != null && state.folderUri != null
-            )
-        }
-
-        Text("Space", style = MaterialTheme.typography.labelLarge)
-        Box {
-            OutlinedButton(
-                onClick = { spaceMenuExpanded = true },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                val selectedName = state.spaces.find { it.id == state.selectedSpaceId }?.name
-                Text(selectedName ?: "Choose a space…")
-            }
-            DropdownMenu(expanded = spaceMenuExpanded, onDismissRequest = { spaceMenuExpanded = false }) {
-                if (state.isLoadingSpaces) {
-                    DropdownMenuItem(text = { Text("Loading…") }, onClick = {}, enabled = false)
-                } else if (state.spaces.isEmpty()) {
-                    DropdownMenuItem(text = { Text("No spaces available") }, onClick = {}, enabled = false)
-                }
-                state.spaces.forEach { space ->
-                    DropdownMenuItem(
-                        text = { Text(space.name) },
-                        onClick = {
-                            viewModel.selectSpace(space.id)
-                            spaceMenuExpanded = false
+    Scaffold(
+        bottomBar = {
+            if (state.isSelectionMode) {
+                BottomAppBar {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = viewModel::clearSelection) {
+                                Icon(Icons.Default.Close, contentDescription = "Clear selection")
+                            }
+                            Text(
+                                text = "${state.selectedAssets.size} selected",
+                                style = MaterialTheme.typography.titleMedium
+                            )
                         }
+                        Row {
+                            IconButton(
+                                onClick = { showDeleteConfirm = true },
+                                enabled = state.selectedAssets.isNotEmpty() && !state.isUploading
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = "Move to trash")
+                            }
+                            IconButton(
+                                onClick = {
+                                    showSpacePicker = { spaceId ->
+                                        viewModel.uploadSelectedAssets(spaceId, deleteAfter = false)
+                                    }
+                                },
+                                enabled = state.selectedAssets.isNotEmpty() && !state.isUploading
+                            ) {
+                                Icon(Icons.Default.Upload, contentDescription = "Upload")
+                            }
+                            IconButton(
+                                onClick = { showUploadAndTrashConfirm = true },
+                                enabled = state.selectedAssets.isNotEmpty() && !state.isUploading
+                            ) {
+                                Icon(Icons.Default.DeleteForever, contentDescription = "Upload and Trash")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    ) { padding ->
+        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+            if (state.isUploading) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = { folderPicker.launch(null) }) {
+                    Icon(Icons.Default.Folder, contentDescription = "Select Folder")
+                }
+                Text("Select folders")
+            }
+
+            if (state.selectedFolders.isNotEmpty()) {
+                val pagerState = rememberPagerState { state.selectedFolders.size }
+
+                LaunchedEffect(pagerState.currentPage, state.selectedFolders) {
+                    if (state.selectedFolders.isNotEmpty()) {
+                        val folder = state.selectedFolders[pagerState.currentPage]
+                        viewModel.onTabSelected(folder)
+                    }
+                }
+
+                TabRow(selectedTabIndex = pagerState.currentPage) {
+                    state.selectedFolders.forEachIndexed { index, folder ->
+                        Tab(
+                            selected = pagerState.currentPage == index,
+                            onClick = { coroutineScope.launch { pagerState.animateScrollToPage(index) } },
+                            text = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(folder.name)
+                                    IconButton(onClick = { viewModel.removeFolder(folder) }) {
+                                        Icon(Icons.Default.Close, "Close Tab")
+                                    }
+                                }
+                            }
+                        )
+                    }
+                }
+
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier.fillMaxSize().weight(1f)
+                ) { pageIndex ->
+                    val folder = state.selectedFolders[pageIndex]
+                    FolderContentGrid(
+                        items = state.folderContents[folder.uri],
+                        isLoading = state.isLoadingFolderContents.contains(folder.uri),
+                        isSelectionMode = state.isSelectionMode,
+                        selectedAssetUris = state.selectedAssets,
+                        onAssetLongClick = viewModel::enterSelectionMode,
+                        onAssetClick = { asset ->
+                            if (state.isSelectionMode) {
+                                viewModel.toggleAssetSelection(asset)
+                            } else {
+                                onAssetClick(asset)
+                            }
+                        },
+                        onDayClick = viewModel::toggleDaySelection
                     )
                 }
             }
         }
+    }
 
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Text("Folder", style = MaterialTheme.typography.labelLarge)
-        OutlinedButton(
-            onClick = { folderPicker.launch(null) },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(state.folderDisplayName ?: "Choose a folder…")
-        }
-
-        // Block/unblock-on-sync status: the paired Space is locked against edits from outside
-        // this app for as long as the pairing exists - "Stop sync" is the way to free it again
-        // (see SyncViewModel#stopSync/lockCurrentPairingIfComplete).
-        if (state.selectedSpaceId != null && state.folderUri != null) {
-            val selectedSpace = state.spaces.find { it.id == state.selectedSpaceId }
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    if (selectedSpace?.syncLocked == true) {
-                        "🔒 Locked for sync - no edits outside this app"
-                    } else {
-                        "Not yet locked - will retry automatically"
-                    },
-                    style = MaterialTheme.typography.bodySmall
-                )
-                TextButton(onClick = viewModel::stopSync) { Text("Stop sync") }
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Move to Trash?") },
+            text = { Text("Move ${state.selectedAssets.size} selected file(s) to the local trash?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDeleteConfirm = false
+                    viewModel.deleteSelectedAssets()
+                }) { Text("Move to Trash") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") }
             }
+        )
+    }
+
+    if (showUploadAndTrashConfirm) {
+        AlertDialog(
+            onDismissRequest = { showUploadAndTrashConfirm = false },
+            title = { Text("Upload and Trash?") },
+            text = { Text("This will upload ${state.selectedAssets.size} selected file(s) and then move them to the local trash on your device. Are you sure?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showUploadAndTrashConfirm = false
+                    showSpacePicker = { spaceId ->
+                        viewModel.uploadSelectedAssets(spaceId, deleteAfter = true)
+                    }
+                }) { Text("Continue") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUploadAndTrashConfirm = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showSpacePicker != null) {
+        SpacePickerDialog(
+            spaces = state.spaces,
+            onDismiss = { showSpacePicker = null },
+            onConfirm = { spaceId ->
+                showSpacePicker?.invoke(spaceId)
+                showSpacePicker = null
+            }
+        )
+    }
+}
+
+@Composable
+fun FolderContentGrid(
+    items: List<GridItem>?,
+    isLoading: Boolean,
+    isSelectionMode: Boolean,
+    selectedAssetUris: Set<Uri>,
+    onAssetClick: (LocalAsset) -> Unit,
+    onAssetLongClick: (LocalAsset) -> Unit,
+    onDayClick: (List<LocalAsset>) -> Unit
+) {
+    if (isLoading) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
         }
+        return
+    }
 
-        Spacer(modifier = Modifier.height(24.dp))
-
-        if (state.isSyncRunning) {
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-            Text("Sync in progress…", modifier = Modifier.padding(top = 8.dp))
-        } else if (state.autoSyncEnabled) {
-            Text(
-                "Waiting for the next automatic sync…",
-                style = MaterialTheme.typography.bodyMedium
-            )
+    if (items.isNullOrEmpty()) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text("No media found.")
         }
+        return
+    }
 
-        if (state.lastSyncAt > 0) {
-            Text(
-                "Last synced: ${DateFormat.getDateTimeInstance().format(Date(state.lastSyncAt))}",
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(top = 12.dp)
-            )
-        }
-
-        state.error?.let {
-            Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 12.dp))
-        }
-
-        if (state.excludedAssets.isNotEmpty()) {
-            Spacer(modifier = Modifier.height(24.dp))
-            Text("Excluded from sync", style = MaterialTheme.typography.labelLarge)
-            Text(
-                "These photos were removed from the space but kept on this phone - they won't be " +
-                    "re-uploaded. Tap \"Include\" to bring one back into the space.",
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)
-            )
-            state.excludedAssets.forEach { asset ->
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(asset.title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                    TextButton(onClick = { viewModel.includeAsset(asset) }) { Text("Include") }
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(4),
+        contentPadding = PaddingValues(2.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+        modifier = Modifier.fillMaxSize()
+    ) {
+        items(
+            items = items,
+            key = { item ->
+                when (item) {
+                    is GridItem.Header -> item.text
+                    is GridItem.Asset -> item.asset.uri
+                }
+            },
+            contentType = { item ->
+                when (item) {
+                    is GridItem.Header -> "header"
+                    is GridItem.Asset -> "asset"
+                }
+            },
+            span = { item ->
+                when (item) {
+                    is GridItem.Header -> GridItemSpan(maxLineSpan)
+                    is GridItem.Asset -> GridItemSpan(1)
+                }
+            }
+        ) { item ->
+            when (item) {
+                is GridItem.Header -> {
+                    Text(
+                        text = item.text,
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.fillMaxWidth().clickable { onDayClick(item.assets) }.padding(horizontal = 6.dp, vertical = 10.dp)
+                    )
+                }
+                is GridItem.Asset -> {
+                    val asset = item.asset
+                    PhotoThumbnail(
+                        imageUrl = asset.uri.toString(),
+                        isVideo = asset.mimeType.startsWith("video/"),
+                        isSelectionMode = isSelectionMode,
+                        isSelected = selectedAssetUris.contains(asset.uri),
+                        onLongClick = { onAssetLongClick(asset) },
+                        modifier = Modifier.aspectRatio(1f),
+                        onClick = { onAssetClick(asset) }
+                    )
                 }
             }
         }
-    }
-
-    // Block/unblock-on-sync: shown once, right after SyncViewModel notices on app start that this
-    // device's sync lock was released remotely (web "I lost my phone" unlock, or this device
-    // being revoked from Manage Devices) - the pairing above is already cleared by this point, so
-    // the Space/Folder fields already show empty and ready to be filled in again.
-    if (state.syncStoppedRemotely) {
-        AlertDialog(
-            onDismissRequest = viewModel::dismissSyncStoppedWarning,
-            title = { Text("Sync was stopped") },
-            text = {
-                Text(
-                    "This device's sync was stopped - the space was unlocked from another " +
-                        "device or the web app. Pick a space and folder again to resume syncing."
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = viewModel::dismissSyncStoppedWarning) { Text("Got it") }
-            }
-        )
     }
 }

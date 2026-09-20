@@ -71,11 +71,14 @@ dependencies {
     // OkHttp support is now a separate artifact instead of being bundled in coil-compose.
     implementation("io.coil-kt.coil3:coil-compose:3.6.2")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.6.2")
+    implementation("io.coil-kt.coil3:coil-video:3.6.3")
+
+    implementation("me.saket.telephoto:zoomable-image-coil3:0.19.0")
 
     implementation("com.squareup.retrofit2:retrofit:3.0.0")
     implementation("com.squareup.retrofit2:converter-gson:3.0.0")
-    implementation("com.squareup.okhttp3:okhttp:5.1.0")
-    implementation("com.squareup.okhttp3:logging-interceptor:5.1.0")
+    implementation("com.squareup.okhttp3:okhttp:5.5.0")
+    implementation("com.squareup.okhttp3:logging-interceptor:5.5.0")
 
     // Lightbox video playback (PhotoDetailScreen) - Coil/AsyncImage, used for everything else in
     // the lightbox, has no video decode path at all; this is the counterpart to the web app's own

@@ -64,6 +64,7 @@ class AppContainer(private val context: Context) {
         ImageLoader.Builder(context)
             .components {
                 add(OkHttpNetworkFetcherFactory(callFactory = { apiClient.httpClient }))
+                add(coil3.video.VideoFrameDecoder.Factory())
             }
             .build()
     }
