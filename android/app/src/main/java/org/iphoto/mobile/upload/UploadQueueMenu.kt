@@ -71,6 +71,13 @@ fun UploadItemRow(item: UploadItem) {
         Column(modifier = Modifier.weight(1f)) {
             Text(item.fileName, maxLines = 1)
             Text(statusLabel, style = MaterialTheme.typography.bodySmall)
+            if (item.error != null) {
+                Text(
+                    item.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
         }
         if (item.status == "UPLOADING" || item.status == "PROCESSING") {
             LinearProgressIndicator(progress = { item.progress }, modifier = Modifier.width(100.dp))

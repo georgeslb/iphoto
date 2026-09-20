@@ -64,14 +64,14 @@ class UploadWorker(
                         return Result.success()
                     }
                     "FAILED" -> {
-                        uploadManager.updateUploadStatus(itemId, "FAILED", updatedTask.status)
+                        uploadManager.updateUploadStatus(itemId, "FAILED", "Task failed on server")
                         return Result.failure()
                     }
                 }
                 delay(2000)
             }
         } catch (e: Exception) {
-            uploadManager.updateUploadStatus(itemId, "FAILED", e.message)
+            uploadManager.updateUploadStatus(itemId, "FAILED", e.message ?: "An unknown error occurred")
             Result.failure()
         }
     }
