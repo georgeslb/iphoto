@@ -41,4 +41,9 @@ public class RootController {
     public String forward() {
         return "forward:/index.html";
     }
+
+    @RequestMapping("/share/**")
+    public String forwardShare() {
+        return "forward:/index.html";
+    }
 }
