@@ -34,7 +34,10 @@ public class RootController {
         return null; // No authenticated user
     }
 
-    @RequestMapping(value = {"/", "/{path:^(?!api|.*\\.\\w+$).*$}/**"})
+    @RequestMapping(value = {
+            "/{path:[^\\.]*}",
+            "/{path:^(?!api$).*$}/{path2:[^\\.]*}"
+    })
     public String forward() {
         return "forward:/index.html";
     }
