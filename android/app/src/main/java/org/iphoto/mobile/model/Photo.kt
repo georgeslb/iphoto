@@ -17,5 +17,6 @@ data class Photo(
     val width: Int?,
     val height: Int?,
     val fileSystemCreationDate: String?,
-    val duplicates: List<Photo>?
+    val duplicates: List<Photo>?,
+    val duration: Long? = null
 )

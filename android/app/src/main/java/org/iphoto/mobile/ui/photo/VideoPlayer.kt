@@ -8,7 +8,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -17,6 +16,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
@@ -36,15 +36,40 @@ private const val TAG = "VideoPlayer"
  */
 @OptIn(UnstableApi::class)
 @Composable
-fun VideoPlayer(streamUrl: String, dataSourceFactory: DataSource.Factory, modifier: Modifier = Modifier) {
+fun VideoPlayer(
+    streamUrl: String,
+    dataSourceFactory: DataSource.Factory,
+    modifier: Modifier = Modifier,
+    mimeType: String? = null
+) {
     val context = LocalContext.current
     val exoPlayer = remember(streamUrl) {
-        Log.d(TAG, "Creating ExoPlayer for $streamUrl")
+        Log.d(TAG, "Creating ExoPlayer for $streamUrl (mimeType=$mimeType)")
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                /* minBufferMs = */ 30_000,
+                /* maxBufferMs = */ 60_000,
+                /* bufferForPlaybackMs = */ 1_000,
+                /* bufferForPlaybackAfterRebufferMs = */ 2_000
+            )
+            .setBackBuffer(
+                /* backBufferDurationMs = */ 15_000,
+                /* retainBackBufferFromKeyframe = */ true
+            )
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+
+        val mediaItem = MediaItem.Builder()
+            .setUri(Uri.parse(streamUrl))
+            .apply { if (!mimeType.isNullOrBlank()) setMimeType(mimeType) }
+            .build()
+
         ExoPlayer.Builder(context)
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+            .setLoadControl(loadControl)
             .build()
             .apply {
-                setMediaItem(MediaItem.fromUri(Uri.parse(streamUrl)))
+                setMediaItem(mediaItem)
                 playWhenReady = true
                 addListener(object : Player.Listener {
                     override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -73,7 +98,7 @@ fun VideoPlayer(streamUrl: String, dataSourceFactory: DataSource.Factory, modifi
     // Tied to the ExoPlayer instance above (which itself is keyed on streamUrl), not just Unit -
     // navigating to a different photoId recreates both together rather than leaking the old
     // player's decoder/surface resources into the new one.
-    val lifecycleOwner = LocalLifecycleOwner.current
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     DisposableEffect(exoPlayer, lifecycleOwner) {
         // Composing this screen doesn't get torn down just because the app is backgrounded (the
         // user locks the screen, or switches away mid-video) - only navigating off this screen
@@ -102,6 +127,11 @@ fun VideoPlayer(streamUrl: String, dataSourceFactory: DataSource.Factory, modifi
             PlayerView(viewContext).apply {
                 player = exoPlayer
                 useController = true
+            }
+        },
+        update = { playerView ->
+            if (playerView.player != exoPlayer) {
+                playerView.player = exoPlayer
             }
         }
     )

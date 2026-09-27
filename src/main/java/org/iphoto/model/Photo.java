@@ -24,5 +24,6 @@ public record Photo(
     // the Lightbox "Move to Main" button's visibility client-side, since capability flags moved
     // off the backend (was POST /api/photos/selected).
     Boolean inMainSpace,
+    Long duration,
     Set<Photo> duplicates
 ) {}

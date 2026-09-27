@@ -2,22 +2,29 @@ package org.iphoto.mobile.ui.photo
 
 import android.content.res.Configuration
 import android.net.Uri
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.DriveFileMove
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.PhotoAlbum
 import androidx.compose.material.icons.filled.PlaylistRemove
@@ -30,6 +37,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -44,21 +52,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
-import android.util.Log
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil3.compose.AsyncImage
 import coil3.compose.AsyncImagePainter
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
 import org.iphoto.mobile.LocalAppContainer
 import org.iphoto.mobile.model.Photo
 import org.iphoto.mobile.ui.common.AlbumPickerDialog
 import org.iphoto.mobile.ui.common.DateTimePickerDialog
 import org.iphoto.mobile.ui.common.PhotoBrowsingContext
 import org.iphoto.mobile.ui.common.rememberDeviceTrashRequester
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 
 private const val TAG = "PhotoDetailScreen"
 
@@ -78,20 +86,22 @@ fun PhotoDetailScreen(
     // Same synced-space check as SpaceDetailScreen's banner - only set when this lightbox is
     // showing a photo from the Space currently synced to a device folder.
     val syncPrefs = container.syncPrefs
-    val isSyncedSpace = spaceId != null && syncPrefs.spaceId == spaceId && syncPrefs.folderUri != null
+    val isSyncedSpace =
+        spaceId != null && syncPrefs.spaceId == spaceId && syncPrefs.folderUri != null
     val syncedFolderUri = syncPrefs.folderUri
     val canMoveToMain = spaceId != null
     val deviceTrashRequester = rememberDeviceTrashRequester(container)
-    val onPhotoMovedToGarbage: (suspend (Photo) -> Unit)? = remember(spaceId, isSyncedSpace, syncedFolderUri, deviceTrashRequester) {
-        if (isSyncedSpace && syncedFolderUri != null) {
-            { photo: Photo ->
-                val hash = photo.fileHash?.takeIf(String::isNotBlank)
-                if (hash != null) {
-                    deviceTrashRequester.trash(Uri.parse(syncedFolderUri), setOf(hash))
+    val onPhotoMovedToGarbage: (suspend (Photo) -> Unit)? =
+        remember(spaceId, isSyncedSpace, syncedFolderUri, deviceTrashRequester) {
+            if (isSyncedSpace && syncedFolderUri != null) {
+                { photo: Photo ->
+                    val hash = photo.fileHash?.takeIf(String::isNotBlank)
+                    if (hash != null) {
+                        deviceTrashRequester.trash(Uri.parse(syncedFolderUri), setOf(hash))
+                    }
                 }
-            }
-        } else null
-    }
+            } else null
+        }
     // Mirrors SpaceDetailScreen's onPhotosExcludedFromSync/onPhotosMovedToMain, singular.
     val onPhotoExcludedFromSync: (suspend (Photo) -> Unit)? = remember(spaceId, isSyncedSpace) {
         if (isSyncedSpace) {
@@ -159,20 +169,54 @@ fun PhotoDetailScreen(
     val browsingIds = remember(photoId) { PhotoBrowsingContext.photoIds }
     val currentIndex = remember(photoId, browsingIds) { browsingIds.indexOf(photoId) }
     val previousPhotoId = currentIndex.takeIf { it > 0 }?.let { browsingIds[it - 1] }
-    val nextPhotoId = currentIndex.takeIf { it in browsingIds.indices && it < browsingIds.size - 1 }?.let { browsingIds[it + 1] }
+    val nextPhotoId = currentIndex.takeIf { it in browsingIds.indices && it < browsingIds.size - 1 }
+        ?.let { browsingIds[it + 1] }
+
+    val swipeModifier = Modifier.pointerInput(previousPhotoId, nextPhotoId) {
+        var totalDragX = 0f
+        detectHorizontalDragGestures(
+            onDragStart = { totalDragX = 0f },
+            onHorizontalDrag = { change, dragAmount ->
+                change.consume()
+                totalDragX += dragAmount
+            },
+            onDragEnd = {
+                val swipeThreshold = 50.dp.toPx()
+                if (totalDragX < -swipeThreshold && nextPhotoId != null) {
+                    onNavigateToPhoto(nextPhotoId)
+                } else if (totalDragX > swipeThreshold && previousPhotoId != null) {
+                    onNavigateToPhoto(previousPhotoId)
+                }
+                totalDragX = 0f
+            },
+            onDragCancel = {
+                totalDragX = 0f
+            }
+        )
+    }
 
     LaunchedEffect(state) {
         if (state is PhotoDetailUiState.Removed) onBack()
     }
 
     Scaffold(
+        contentWindowInsets = if (isLandscape) WindowInsets(
+            0,
+            0,
+            0,
+            0
+        ) else ScaffoldDefaults.contentWindowInsets,
         topBar = {
             if (!isLandscape) {
                 TopAppBar(
                     title = { Text("") },
                     navigationIcon = {
                         IconButton(onClick = onBack) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = Color.White
+                            )
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Black)
@@ -184,7 +228,10 @@ fun PhotoDetailScreen(
                 val loaded = state as? PhotoDetailUiState.Loaded
                 if (loaded != null) {
                     BottomAppBar(containerColor = Color.Black) {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly
+                        ) {
                             PhotoActionButtons(
                                 loaded = loaded,
                                 canRemoveFromAlbum = albumId != null,
@@ -204,40 +251,57 @@ fun PhotoDetailScreen(
         },
         containerColor = Color.Black
     ) { padding ->
-        Box(modifier = Modifier.padding(padding).fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .then(swipeModifier)
+        ) {
             when (val current = state) {
                 is PhotoDetailUiState.Loading, is PhotoDetailUiState.Removed ->
                     CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+
                 is PhotoDetailUiState.Failed ->
                     Text(
                         current.message,
                         color = Color.White,
-                        modifier = Modifier.align(Alignment.Center).padding(24.dp)
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(24.dp)
                     )
+
                 is PhotoDetailUiState.Loaded -> {
                     // In landscape the top/bottom bars are gone entirely (see Scaffold above), so
                     // the image itself is the only tap target left to collapse/reveal the overlay
                     // options bar below - portrait keeps the fixed bars and isn't tappable this way.
-                    val mediaModifier = if (isLandscape) {
-                        Modifier.fillMaxSize().clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null
-                        ) { controlsVisible = !controlsVisible }
-                    } else {
-                        Modifier.fillMaxSize()
-                    }
+                    val mediaModifier = Modifier
+                        .fillMaxSize()
+                        .then(swipeModifier)
+                        .then(
+                            if (isLandscape) {
+                                Modifier.clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) { controlsVisible = !controlsVisible }
+                            } else {
+                                Modifier
+                            }
+                        )
                     if (current.photo.contentType?.startsWith("video") == true) {
                         // Coil/AsyncImage (below) can't decode video at all - this mirrors the web
                         // app's own <video> element, both against the same /stream endpoint rather
                         // than /original (see VideoPlayer's kdoc).
-                        val streamUrl = container.absoluteUrl("/api/photos/${current.photo.id}/stream")
+                        val streamUrl =
+                            container.absoluteUrl("/api/photos/${current.photo.id}/stream")
                         VideoPlayer(
                             streamUrl = streamUrl,
                             dataSourceFactory = videoDataSourceFactory,
-                            modifier = mediaModifier
+                            modifier = mediaModifier,
+                            mimeType = current.photo.contentType
                         )
                     } else {
-                        val imageUrl = container.absoluteUrl("/api/photos/${current.photo.id}/original")
+                        val imageUrl =
+                            container.absoluteUrl("/api/photos/${current.photo.id}/original")
                         AsyncImage(
                             model = imageUrl,
                             imageLoader = container.imageLoader,
@@ -250,7 +314,12 @@ fun PhotoDetailScreen(
                                         "Failed to load $imageUrl (contentType=${current.photo.contentType})",
                                         state.result.throwable
                                     )
-                                    is AsyncImagePainter.State.Success -> Log.d(TAG, "Loaded $imageUrl")
+
+                                    is AsyncImagePainter.State.Success -> Log.d(
+                                        TAG,
+                                        "Loaded $imageUrl"
+                                    )
+
                                     else -> {}
                                 }
                             },
@@ -258,48 +327,77 @@ fun PhotoDetailScreen(
                         )
                     }
                     if (isLandscape && controlsVisible) {
+                        IconButton(
+                            onClick = onBack,
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .statusBarsPadding()
+                                .displayCutoutPadding()
+                                .padding(8.dp)
+                                .background(Color.Black.copy(alpha = 0.6f), CircleShape)
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = Color.White
+                            )
+                        }
                         Row(
                             modifier = Modifier
-                                .align(Alignment.TopCenter)
+                                .align(Alignment.BottomCenter)
                                 .fillMaxWidth()
                                 .background(Color.Black.copy(alpha = 0.6f))
-                                .padding(horizontal = 4.dp),
+                                .navigationBarsPadding()
+                                .displayCutoutPadding()
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            horizontalArrangement = Arrangement.SpaceEvenly
                         ) {
-                            IconButton(onClick = onBack) {
-                                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
-                            }
-                            Row(horizontalArrangement = Arrangement.SpaceEvenly) {
-                                PhotoActionButtons(
-                                    loaded = current,
-                                    canRemoveFromAlbum = albumId != null,
-                                    canExcludeFromSync = viewModel.canExcludeFromSync,
-                                    canMoveToMain = viewModel.canMoveToMain,
-                                    onEditDate = onEditDateClick,
-                                    onAddToAlbum = onAddToAlbumClick,
-                                    onRemoveFromAlbum = onRemoveFromAlbumClick,
-                                    onExcludeFromSync = onExcludeFromSyncClick,
-                                    onMoveToMain = onMoveToMainClick,
-                                    onMoveToGarbage = viewModel::moveToGarbage
-                                )
-                            }
+                            PhotoActionButtons(
+                                loaded = current,
+                                canRemoveFromAlbum = albumId != null,
+                                canExcludeFromSync = viewModel.canExcludeFromSync,
+                                canMoveToMain = viewModel.canMoveToMain,
+                                onEditDate = onEditDateClick,
+                                onAddToAlbum = onAddToAlbumClick,
+                                onRemoveFromAlbum = onRemoveFromAlbumClick,
+                                onExcludeFromSync = onExcludeFromSyncClick,
+                                onMoveToMain = onMoveToMainClick,
+                                onMoveToGarbage = viewModel::moveToGarbage
+                            )
                         }
                     }
-                    if (previousPhotoId != null) {
+                    val showNavigationArrows = !isLandscape || controlsVisible
+                    if (showNavigationArrows && previousPhotoId != null) {
                         IconButton(
                             onClick = { onNavigateToPhoto(previousPhotoId) },
-                            modifier = Modifier.align(Alignment.CenterStart).padding(4.dp).size(48.dp)
+                            modifier = Modifier
+                                .align(Alignment.CenterStart)
+                                .padding(8.dp)
+                                .size(48.dp)
+                                .background(Color.Black.copy(alpha = 0.4f), CircleShape)
                         ) {
-                            Icon(Icons.Filled.ChevronLeft, contentDescription = "Previous photo", tint = Color.White)
+                            Icon(
+                                Icons.Filled.ChevronLeft,
+                                contentDescription = "Previous photo",
+                                tint = Color.White
+                            )
                         }
                     }
-                    if (nextPhotoId != null) {
+                    if (showNavigationArrows && nextPhotoId != null) {
                         IconButton(
                             onClick = { onNavigateToPhoto(nextPhotoId) },
-                            modifier = Modifier.align(Alignment.CenterEnd).padding(4.dp).size(48.dp)
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .padding(8.dp)
+                                .size(48.dp)
+                                .background(Color.Black.copy(alpha = 0.4f), CircleShape)
                         ) {
-                            Icon(Icons.Filled.ChevronRight, contentDescription = "Next photo", tint = Color.White)
+                            Icon(
+                                Icons.Filled.ChevronRight,
+                                contentDescription = "Next photo",
+                                tint = Color.White
+                            )
                         }
                     }
                     if (current.actionError != null) {
@@ -324,9 +422,16 @@ fun PhotoDetailScreen(
                     onClick = onBack,
                     modifier = Modifier
                         .align(Alignment.TopStart)
-                        .background(Color.Black.copy(alpha = 0.6f))
+                        .statusBarsPadding()
+                        .displayCutoutPadding()
+                        .padding(4.dp)
+                        .background(Color.Black.copy(alpha = 0.6f), CircleShape)
                 ) {
-                    Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        tint = Color.White
+                    )
                 }
             }
         }
@@ -339,7 +444,7 @@ fun PhotoDetailScreen(
             text = {
                 Text(
                     "This Space is synced to a folder on this phone. Moving to Main Space keeps " +
-                        "the photo, but do you also want to remove the matching file on this phone?"
+                            "the photo, but do you also want to remove the matching file on this phone?"
                 )
             },
             confirmButton = {
@@ -376,7 +481,10 @@ fun PhotoDetailScreen(
         val loaded = state as? PhotoDetailUiState.Loaded
         if (loaded != null) {
             val initial = try {
-                LocalDateTime.parse(loaded.photo.fullDateTime, DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+                LocalDateTime.parse(
+                    loaded.photo.fullDateTime,
+                    DateTimeFormatter.ISO_LOCAL_DATE_TIME
+                )
             } catch (e: Exception) {
                 LocalDateTime.now()
             }
@@ -415,17 +523,29 @@ private fun PhotoActionButtons(
     }
     if (canRemoveFromAlbum) {
         IconButton(onClick = onRemoveFromAlbum, enabled = !loaded.isMutating) {
-            Icon(Icons.Filled.PlaylistRemove, contentDescription = "Remove from album", tint = Color.White)
+            Icon(
+                Icons.Filled.PlaylistRemove,
+                contentDescription = "Remove from album",
+                tint = Color.White
+            )
         }
     }
     if (canExcludeFromSync) {
         IconButton(onClick = onExcludeFromSync, enabled = !loaded.isMutating) {
-            Icon(Icons.Filled.VisibilityOff, contentDescription = "Exclude from sync", tint = Color.White)
+            Icon(
+                Icons.Filled.VisibilityOff,
+                contentDescription = "Exclude from sync",
+                tint = Color.White
+            )
         }
     }
     if (canMoveToMain) {
         IconButton(onClick = onMoveToMain, enabled = !loaded.isMutating) {
-            Icon(Icons.Filled.DriveFileMove, contentDescription = "Move to Main Space", tint = Color.White)
+            Icon(
+                Icons.AutoMirrored.Filled.DriveFileMove,
+                contentDescription = "Move to Main Space",
+                tint = Color.White
+            )
         }
     }
     IconButton(onClick = onMoveToGarbage, enabled = !loaded.isMutating) {
