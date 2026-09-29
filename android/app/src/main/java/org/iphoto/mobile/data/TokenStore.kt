@@ -26,17 +26,62 @@ class TokenStore internal constructor(private val prefs: SharedPreferences) {
 
     constructor(context: Context) : this(createEncryptedPrefs(context))
 
+    @Volatile
+    private var cachedServerUrl: String? = null
+    @Volatile
+    private var serverUrlLoaded = false
+
+    @Volatile
+    private var cachedToken: String? = null
+    @Volatile
+    private var tokenLoaded = false
+
+    @Volatile
+    private var cachedDeviceTokenId: String? = null
+    @Volatile
+    private var deviceTokenIdLoaded = false
+
     var serverUrl: String?
-        get() = prefs.getString(KEY_SERVER_URL, null)
-        set(value) = prefs.edit().putString(KEY_SERVER_URL, value).apply()
+        get() {
+            if (!serverUrlLoaded) {
+                cachedServerUrl = prefs.getString(KEY_SERVER_URL, null)
+                serverUrlLoaded = true
+            }
+            return cachedServerUrl
+        }
+        set(value) {
+            cachedServerUrl = value
+            serverUrlLoaded = true
+            prefs.edit().putString(KEY_SERVER_URL, value).apply()
+        }
 
     var token: String?
-        get() = prefs.getString(KEY_TOKEN, null)
-        set(value) = prefs.edit().putString(KEY_TOKEN, value).apply()
+        get() {
+            if (!tokenLoaded) {
+                cachedToken = prefs.getString(KEY_TOKEN, null)
+                tokenLoaded = true
+            }
+            return cachedToken
+        }
+        set(value) {
+            cachedToken = value
+            tokenLoaded = true
+            prefs.edit().putString(KEY_TOKEN, value).apply()
+        }
 
     var deviceTokenId: String?
-        get() = prefs.getString(KEY_DEVICE_TOKEN_ID, null)
-        set(value) = prefs.edit().putString(KEY_DEVICE_TOKEN_ID, value).apply()
+        get() {
+            if (!deviceTokenIdLoaded) {
+                cachedDeviceTokenId = prefs.getString(KEY_DEVICE_TOKEN_ID, null)
+                deviceTokenIdLoaded = true
+            }
+            return cachedDeviceTokenId
+        }
+        set(value) {
+            cachedDeviceTokenId = value
+            deviceTokenIdLoaded = true
+            prefs.edit().putString(KEY_DEVICE_TOKEN_ID, value).apply()
+        }
 
     // Whether the session set at the last login should survive the app process dying (the user
     // swiping it away, the OS reclaiming memory) - unchecked on LoginScreen's "Remember me" means
@@ -58,6 +103,10 @@ class TokenStore internal constructor(private val prefs: SharedPreferences) {
         get() = !token.isNullOrEmpty()
 
     fun clearSession() {
+        cachedToken = null
+        tokenLoaded = true
+        cachedDeviceTokenId = null
+        deviceTokenIdLoaded = true
         prefs.edit()
             .remove(KEY_TOKEN)
             .remove(KEY_DEVICE_TOKEN_ID)

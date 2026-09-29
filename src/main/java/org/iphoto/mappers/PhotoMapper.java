@@ -58,6 +58,7 @@ public interface PhotoMapper {
                 entity.getHeight(),
                 entity.getFileSystemCreationDate(),
                 inMainSpace,
+                entity.getDuration(),
                 duplicates) ;
     }
 }

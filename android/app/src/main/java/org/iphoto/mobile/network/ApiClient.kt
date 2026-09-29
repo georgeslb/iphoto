@@ -53,8 +53,24 @@ class ApiClient(private val tokenStore: TokenStore) {
     // client - with sync uploading up to 3 chunks concurrently on okHttpClient, video's own range
     // requests were competing for what was left, visibly slowing/stalling playback during a sync.
     // Giving video its own Dispatcher/ConnectionPool means its request budget is independent of
-    // how busy sync happens to be right now.
-    val videoHttpClient: OkHttpClient by lazy { newClientBuilder().build() }
+    // how busy sync happens to be right now. Timeouts are relaxed (30s connect, 60s read) so
+    // continuous buffering doesn't trip aggressive 10s socket read timeouts.
+    val videoHttpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .connectionPool(okhttp3.ConnectionPool(10, 5, TimeUnit.MINUTES))
+            .addInterceptor(AuthInterceptor(tokenStore))
+            .apply {
+                if (BuildConfig.DEBUG) {
+                    addInterceptor(HttpLoggingInterceptor().apply {
+                        level = HttpLoggingInterceptor.Level.HEADERS
+                    })
+                }
+            }
+            .build()
+    }
 
     @Volatile
     private var cachedBaseUrl: String? = null

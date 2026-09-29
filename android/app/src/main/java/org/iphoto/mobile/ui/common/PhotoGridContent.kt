@@ -101,6 +101,7 @@ fun PhotoGridContent(
                                 PhotoThumbnail(
                                     imageUrl = container.absoluteUrl(photo.url),
                                     isVideo = photo.contentType?.startsWith("video") == true,
+                                    duration = photo.duration,
                                     isSelectionMode = state.isSelectionMode,
                                     isSelected = isSelected,
                                     onLongClick = { viewModel.toggleSelection(photo.id) },

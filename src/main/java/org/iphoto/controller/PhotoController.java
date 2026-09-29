@@ -421,8 +421,22 @@ public class PhotoController {
         PhotoEntity photo = photoService.findById(id).filter(this::callerMayAccess).orElse(null);
         if (photo == null || photo.getOriginalPath() == null) return ResponseEntity.notFound().build();
         Path path = Paths.get(photo.getOriginalPath());
+        if (!Files.exists(path)) return ResponseEntity.notFound().build();
         Resource video = new FileSystemResource(path);
-        return ResponseEntity.status(HttpStatus.PARTIAL_CONTENT).contentType(MediaType.parseMediaType(photo.getContentType())).body(resourceRegion(video, headers));
+        MediaType mediaType;
+        try {
+            mediaType = StringUtils.hasText(photo.getContentType())
+                    ?
+                    MediaType.parseMediaType(photo.getContentType())
+                    :
+                    MediaType.APPLICATION_OCTET_STREAM;
+        } catch (Exception e) {
+            mediaType = MediaType.APPLICATION_OCTET_STREAM;
+        }
+        return ResponseEntity.status(HttpStatus.PARTIAL_CONTENT)
+                .header(HttpHeaders.ACCEPT_RANGES, "bytes")
+                .contentType(mediaType)
+                .body(resourceRegion(video, headers));
     }
 
     private ResourceRegion resourceRegion(Resource video, HttpHeaders headers) throws IOException {
@@ -431,9 +445,9 @@ public class PhotoController {
         if (range != null) {
             long start = range.getRangeStart(len);
             long end = range.getRangeEnd(len);
-            return new ResourceRegion(video, start, Math.min(1024 * 1024L, end - start + 1));
+            return new ResourceRegion(video, start, end - start + 1);
         }
-        return new ResourceRegion(video, 0, Math.min(1024 * 1024L, len));
+        return new ResourceRegion(video, 0, len);
     }
 
     private ResponseEntity<Resource> serveFile(PhotoEntity photo, boolean isThumbnail) {
