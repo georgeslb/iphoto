@@ -1,10 +1,14 @@
 package org.iphoto.mobile.ui.sync
 
+import android.app.Activity
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.provider.MediaStore
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
 import androidx.compose.foundation.layout.Arrangement
@@ -26,6 +30,7 @@ import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -51,6 +56,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil3.imageLoader
+import kotlinx.coroutines.launch
 import me.saket.telephoto.zoomable.coil3.ZoomableAsyncImage
 import org.iphoto.mobile.sync.LocalAsset
 
@@ -65,8 +71,8 @@ fun AssetDetailScreen(
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
-    val state by viewModel.uiState.collectAsState()
     val coroutineScope = rememberCoroutineScope()
+    val state by viewModel.uiState.collectAsState()
 
     val folder = viewModel.findAssetAndFolder(asset.uri)?.second
     val assetsInFolder = remember(folder, state.folderContents) {
@@ -86,6 +92,7 @@ fun AssetDetailScreen(
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showSpacePicker by remember { mutableStateOf<((String) -> Unit)?>(null) }
     var showUploadAndTrashConfirm by remember { mutableStateOf(false) }
+    var isUploading by remember { mutableStateOf(false) }
 
     val editLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -96,6 +103,30 @@ fun AssetDetailScreen(
             loader.diskCache?.clear()
         }
         viewModel.refreshAllFolders()
+    }
+
+    val trashLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            viewModel.onAssetsTrashed(listOf(currentAsset))
+            onBack()
+        }
+    }
+
+    fun handleSingleAssetTrash() {
+        val mediaUris = viewModel.getMediaUrisForAssets(listOf(currentAsset))
+        if (mediaUris.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val pendingIntent = MediaStore.createTrashRequest(context.contentResolver, mediaUris, true)
+                trashLauncher.launch(IntentSenderRequest.Builder(pendingIntent.intentSender).build())
+                return
+            } catch (e: Exception) {
+                Log.w(TAG, "createTrashRequest failed: ${e.message}")
+            }
+        }
+        viewModel.trashAssetsDirectly(listOf(currentAsset))
+        onBack()
     }
 
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -155,51 +186,89 @@ fun AssetDetailScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceAround
                 ) {
-                    IconButton(onClick = { showDeleteConfirm = true }) {
-                        Icon(Icons.Default.Delete, contentDescription = "Delete")
+                    IconButton(
+                        enabled = !isUploading,
+                        onClick = { showDeleteConfirm = true }
+                    ) {
+                        Icon(Icons.Default.Delete, contentDescription = "Move to Trash")
                     }
-                    IconButton(onClick = { launchSystemEditor() }) {
+                    IconButton(
+                        enabled = !isUploading,
+                        onClick = { launchSystemEditor() }
+                    ) {
                         Icon(Icons.Default.Edit, contentDescription = "Edit")
                     }
-                    IconButton(onClick = {
-                        showSpacePicker = { spaceId ->
-                            viewModel.uploadSingleAsset(currentAsset.uri, spaceId, false)
+                    IconButton(
+                        enabled = !isUploading,
+                        onClick = {
+                            showSpacePicker = { spaceId ->
+                                coroutineScope.launch {
+                                    isUploading = true
+                                    try {
+                                        val verified = viewModel.uploadAndVerify(listOf(currentAsset), spaceId)
+                                        isUploading = false
+                                        if (verified.isNotEmpty()) {
+                                            Toast.makeText(context, "Uploaded successfully", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            Toast.makeText(context, "Upload failed on server", Toast.LENGTH_SHORT).show()
+                                        }
+                                    } catch (e: Exception) {
+                                        isUploading = false
+                                        Toast.makeText(context, "Upload failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
                         }
-                    }) {
+                    ) {
                         Icon(Icons.Default.Upload, contentDescription = "Upload")
                     }
-                    IconButton(onClick = { showUploadAndTrashConfirm = true }) {
+                    IconButton(
+                        enabled = !isUploading,
+                        onClick = { showUploadAndTrashConfirm = true }
+                    ) {
                         Icon(Icons.Default.DeleteForever, contentDescription = "Upload and Trash")
                     }
                 }
             }
         }
     ) { padding ->
-        HorizontalPager(
-            state = pagerState,
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-        ) { pageIndex ->
-            val pageAsset = assetsInFolder[pageIndex]
-            val isVideo = pageAsset.mimeType.startsWith("video/")
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                if (isVideo) {
-                    LocalVideoPlayer(
-                        uri = pageAsset.uri,
-                        isCurrentPage = (pageIndex == pagerState.currentPage),
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else {
-                    ZoomableAsyncImage(
-                        model = pageAsset.uri,
-                        contentDescription = pageAsset.displayName,
-                        modifier = Modifier.fillMaxSize()
-                    )
+        ) {
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize()
+            ) { pageIndex ->
+                val pageAsset = assetsInFolder[pageIndex]
+                val isVideo = pageAsset.mimeType.startsWith("video/")
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (isVideo) {
+                        LocalVideoPlayer(
+                            uri = pageAsset.uri,
+                            isCurrentPage = (pageIndex == pagerState.currentPage),
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        ZoomableAsyncImage(
+                            model = pageAsset.uri,
+                            contentDescription = pageAsset.displayName,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
                 }
+            }
+
+            if (isUploading) {
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.TopCenter)
+                )
             }
         }
     }
@@ -212,10 +281,7 @@ fun AssetDetailScreen(
             confirmButton = {
                 TextButton(onClick = {
                     showDeleteConfirm = false
-                    viewModel.trashSingleAsset(currentAsset)
-                    if (assetsInFolder.size <= 1) {
-                        onBack()
-                    }
+                    handleSingleAssetTrash()
                 }) { Text("Move to Trash") }
             },
             dismissButton = { TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") } }
@@ -224,21 +290,40 @@ fun AssetDetailScreen(
 
     if (showUploadAndTrashConfirm) {
         AlertDialog(
-            onDismissRequest = { showUploadAndTrashConfirm = false },
-            title = { Text("Upload and Delete?") },
-            text = { Text("This will upload '${currentAsset.displayName}' and then move it to the local trash on your device. Are you sure?") },
+            onDismissRequest = { if (!isUploading) showUploadAndTrashConfirm = false },
+            title = { Text("Upload and Trash?") },
+            text = { Text("This will upload '${currentAsset.displayName}' to the selected Space, verify server response, and then move it to the trash. Continue?") },
             confirmButton = {
-                TextButton(onClick = {
-                    showUploadAndTrashConfirm = false
-                    showSpacePicker = { spaceId ->
-                        viewModel.uploadSingleAsset(currentAsset.uri, spaceId, true)
-                        if (assetsInFolder.size <= 1) {
-                            onBack()
+                TextButton(
+                    enabled = !isUploading,
+                    onClick = {
+                        showUploadAndTrashConfirm = false
+                        showSpacePicker = { spaceId ->
+                            coroutineScope.launch {
+                                isUploading = true
+                                try {
+                                    val verified = viewModel.uploadAndVerify(listOf(currentAsset), spaceId)
+                                    isUploading = false
+                                    if (verified.isNotEmpty()) {
+                                        handleSingleAssetTrash()
+                                    } else {
+                                        Toast.makeText(context, "Upload failed on server", Toast.LENGTH_SHORT).show()
+                                    }
+                                } catch (e: Exception) {
+                                    isUploading = false
+                                    Toast.makeText(context, "Upload failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                                }
+                            }
                         }
                     }
-                }) { Text("Continue") }
+                ) { Text("Continue") }
             },
-            dismissButton = { TextButton(onClick = { showUploadAndTrashConfirm = false }) { Text("Cancel") } }
+            dismissButton = {
+                TextButton(
+                    enabled = !isUploading,
+                    onClick = { showUploadAndTrashConfirm = false }
+                ) { Text("Cancel") }
+            }
         )
     }
 
@@ -265,15 +350,17 @@ private fun LocalVideoPlayer(
     val exoPlayer = remember(uri) {
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(MediaItem.fromUri(uri))
-            playWhenReady = false
+            playWhenReady = true // Automatically starts playing
             prepare()
         }
     }
 
-    // Auto-pause video when the user swipes away to another asset
+    // Auto-pause video when the user swipes away to another asset, resume when swiping back
     LaunchedEffect(isCurrentPage) {
         if (!isCurrentPage) {
             exoPlayer.pause()
+        } else {
+            exoPlayer.play()
         }
     }
 

@@ -1,8 +1,14 @@
 package org.iphoto.mobile.ui.sync
 
+import android.app.Activity
 import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
+import android.util.Log
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
@@ -28,18 +34,18 @@ import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -52,9 +58,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.launch
 import org.iphoto.mobile.sync.LocalAsset
 import org.iphoto.mobile.ui.common.PhotoThumbnail
+
+private const val TAG = "SyncScreen"
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -69,6 +80,7 @@ fun SyncScreen(
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showSpacePicker by remember { mutableStateOf<((String) -> Unit)?>(null) }
     var showUploadAndTrashConfirm by remember { mutableStateOf(false) }
+    var pendingTrashAssets by remember { mutableStateOf<List<LocalAsset>?>(null) }
 
     val folderPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
@@ -79,10 +91,47 @@ fun SyncScreen(
         }
     }
 
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
-        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+    val trashLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val assetsToTrash = pendingTrashAssets ?: state.folderContents.values.flatten()
+                .filterIsInstance<GridItem.Asset>()
+                .map { it.asset }
+                .filter { it.uri in state.selectedAssets }
+            viewModel.onAssetsTrashed(assetsToTrash)
+        }
+        pendingTrashAssets = null
+    }
+
+    fun handleMoveToTrash(targetAssets: List<LocalAsset>? = null) {
+        val selected = state.selectedAssets
+        val assets = targetAssets ?: state.folderContents.values.flatten()
+            .filterIsInstance<GridItem.Asset>()
+            .map { it.asset }
+            .filter { it.uri in selected }
+
+        if (assets.isEmpty()) return
+
+        pendingTrashAssets = assets
+        val mediaUris = viewModel.getMediaUrisForAssets(assets)
+        if (mediaUris.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val pendingIntent = MediaStore.createTrashRequest(context.contentResolver, mediaUris, true)
+                trashLauncher.launch(IntentSenderRequest.Builder(pendingIntent.intentSender).build())
+                return
+            } catch (e: Exception) {
+                Log.w(TAG, "createTrashRequest failed: ${e.message}")
+            }
+        }
+        viewModel.trashAssetsDirectly(assets)
+        pendingTrashAssets = null
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
                 viewModel.refreshAllFolders()
             }
         }
@@ -94,61 +143,15 @@ fun SyncScreen(
 
     BackHandler(enabled = state.isSelectionMode) { viewModel.clearSelection() }
 
-    Scaffold(
-        bottomBar = {
-            if (state.isSelectionMode) {
-                BottomAppBar {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(onClick = viewModel::clearSelection) {
-                                Icon(Icons.Default.Close, contentDescription = "Clear selection")
-                            }
-                            Text(
-                                text = "${state.selectedAssets.size} selected",
-                                style = MaterialTheme.typography.titleMedium
-                            )
-                        }
-                        Row {
-                            IconButton(
-                                onClick = { showDeleteConfirm = true },
-                                enabled = state.selectedAssets.isNotEmpty() && !state.isUploading
-                            ) {
-                                Icon(Icons.Default.Delete, contentDescription = "Move to trash")
-                            }
-                            IconButton(
-                                onClick = {
-                                    showSpacePicker = { spaceId ->
-                                        viewModel.uploadSelectedAssets(spaceId, deleteAfter = false)
-                                    }
-                                },
-                                enabled = state.selectedAssets.isNotEmpty() && !state.isUploading
-                            ) {
-                                Icon(Icons.Default.Upload, contentDescription = "Upload")
-                            }
-                            IconButton(
-                                onClick = { showUploadAndTrashConfirm = true },
-                                enabled = state.selectedAssets.isNotEmpty() && !state.isUploading
-                            ) {
-                                Icon(Icons.Default.DeleteForever, contentDescription = "Upload and Trash")
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    ) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
             if (state.isUploading) {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
             Row(
-                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 0.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(onClick = { folderPicker.launch(null) }) {
@@ -195,6 +198,13 @@ fun SyncScreen(
                         isSelectionMode = state.isSelectionMode,
                         selectedAssetUris = state.selectedAssets,
                         onAssetLongClick = viewModel::enterSelectionMode,
+                        onAssetSelectClick = { asset ->
+                            if (!state.isSelectionMode) {
+                                viewModel.enterSelectionMode(asset)
+                            } else {
+                                viewModel.toggleAssetSelection(asset)
+                            }
+                        },
                         onAssetClick = { asset ->
                             if (state.isSelectionMode) {
                                 viewModel.toggleAssetSelection(asset)
@@ -204,6 +214,70 @@ fun SyncScreen(
                         },
                         onDayClick = viewModel::toggleDaySelection
                     )
+                }
+            }
+        }
+
+        // Selection Action Bar at the bottom
+        if (state.isSelectionMode) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter),
+                tonalElevation = 3.dp,
+                shadowElevation = 8.dp
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = viewModel::clearSelection) {
+                            Icon(Icons.Default.Close, contentDescription = "Clear selection")
+                        }
+                        Text(
+                            text = "${state.selectedAssets.size} selected",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                    }
+                    Row {
+                        IconButton(
+                            onClick = { showDeleteConfirm = true },
+                            enabled = state.selectedAssets.isNotEmpty() && !state.isUploading
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = "Move to trash")
+                        }
+                        IconButton(
+                            onClick = {
+                                showSpacePicker = { spaceId ->
+                                    coroutineScope.launch {
+                                        val selected = state.selectedAssets
+                                        val assets = state.folderContents.values.flatten()
+                                            .filterIsInstance<GridItem.Asset>()
+                                            .map { it.asset }
+                                            .filter { it.uri in selected }
+                                        val verified = viewModel.uploadAndVerify(assets, spaceId)
+                                        if (verified.isNotEmpty()) {
+                                            Toast.makeText(context, "Uploaded ${verified.size} photo(s)", Toast.LENGTH_SHORT).show()
+                                            viewModel.clearSelection()
+                                        }
+                                    }
+                                }
+                            },
+                            enabled = state.selectedAssets.isNotEmpty() && !state.isUploading
+                        ) {
+                            Icon(Icons.Default.Upload, contentDescription = "Upload")
+                        }
+                        IconButton(
+                            onClick = { showUploadAndTrashConfirm = true },
+                            enabled = state.selectedAssets.isNotEmpty() && !state.isUploading
+                        ) {
+                            Icon(Icons.Default.DeleteForever, contentDescription = "Upload and Trash")
+                        }
+                    }
                 }
             }
         }
@@ -217,7 +291,7 @@ fun SyncScreen(
             confirmButton = {
                 TextButton(onClick = {
                     showDeleteConfirm = false
-                    viewModel.deleteSelectedAssets()
+                    handleMoveToTrash()
                 }) { Text("Move to Trash") }
             },
             dismissButton = {
@@ -228,19 +302,47 @@ fun SyncScreen(
 
     if (showUploadAndTrashConfirm) {
         AlertDialog(
-            onDismissRequest = { showUploadAndTrashConfirm = false },
+            onDismissRequest = { if (!state.isUploading) showUploadAndTrashConfirm = false },
             title = { Text("Upload and Trash?") },
-            text = { Text("This will upload ${state.selectedAssets.size} selected file(s) and then move them to the local trash on your device. Are you sure?") },
+            text = { Text("This will upload ${state.selectedAssets.size} selected file(s) to the selected Space, verify server response, and then move them to the trash. Continue?") },
             confirmButton = {
-                TextButton(onClick = {
-                    showUploadAndTrashConfirm = false
-                    showSpacePicker = { spaceId ->
-                        viewModel.uploadSelectedAssets(spaceId, deleteAfter = true)
+                TextButton(
+                    enabled = !state.isUploading,
+                    onClick = {
+                        showUploadAndTrashConfirm = false
+                        showSpacePicker = { spaceId ->
+                            coroutineScope.launch {
+                                val selected = state.selectedAssets
+                                val assets = state.folderContents.values.flatten()
+                                    .filterIsInstance<GridItem.Asset>()
+                                    .map { it.asset }
+                                    .filter { it.uri in selected }
+
+                                // Step 1: Upload chunks. Step 2: Poll back office task until finished.
+                                val verified = viewModel.uploadAndVerify(assets, spaceId)
+
+                                if (verified.size == assets.size) {
+                                    handleMoveToTrash(verified)
+                                } else if (verified.isNotEmpty()) {
+                                    Toast.makeText(
+                                        context,
+                                        "Uploaded ${verified.size} of ${assets.size} files. Moving ${verified.size} to trash.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                    handleMoveToTrash(verified)
+                                } else {
+                                    Toast.makeText(context, "Upload failed on server. No files were moved to trash.", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
                     }
-                }) { Text("Continue") }
+                ) { Text("Continue") }
             },
             dismissButton = {
-                TextButton(onClick = { showUploadAndTrashConfirm = false }) { Text("Cancel") }
+                TextButton(
+                    enabled = !state.isUploading,
+                    onClick = { showUploadAndTrashConfirm = false }
+                ) { Text("Cancel") }
             }
         )
     }
@@ -265,6 +367,7 @@ fun FolderContentGrid(
     selectedAssetUris: Set<Uri>,
     onAssetClick: (LocalAsset) -> Unit,
     onAssetLongClick: (LocalAsset) -> Unit,
+    onAssetSelectClick: (LocalAsset) -> Unit,
     onDayClick: (List<LocalAsset>) -> Unit
 ) {
     if (isLoading) {
@@ -325,6 +428,7 @@ fun FolderContentGrid(
                         isSelectionMode = isSelectionMode,
                         isSelected = selectedAssetUris.contains(asset.uri),
                         onLongClick = { onAssetLongClick(asset) },
+                        onSelectClick = { onAssetSelectClick(asset) },
                         modifier = Modifier.aspectRatio(1f),
                         onClick = { onAssetClick(asset) }
                     )

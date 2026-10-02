@@ -72,6 +72,36 @@ class UploadManager(
         queueChannel.trySend(Unit)
     }
 
+    fun registerOrUpdate(item: UploadItem) {
+        _uploadQueue.update { list ->
+            val index = list.indexOfFirst { it.id == item.id || it.asset.uri == item.asset.uri }
+            if (index >= 0) {
+                list.toMutableList().apply { set(index, item) }
+            } else {
+                list + item
+            }
+        }
+    }
+
+    fun updateProgress(itemId: String, progress: Float) {
+        updateItem(itemId) { it.copy(progress = progress, status = UploadStatus.UPLOADING) }
+    }
+
+    fun updateStatus(itemId: String, status: UploadStatus, taskId: String? = null, photoId: String? = null) {
+        updateItem(itemId) {
+            it.copy(
+                status = status,
+                taskId = taskId ?: it.taskId,
+                photoId = photoId ?: it.photoId,
+                progress = 1f
+            )
+        }
+    }
+
+    fun updateFailed(itemId: String, error: String) {
+        updateItem(itemId) { it.copy(status = UploadStatus.FAILED, error = error) }
+    }
+
     fun clearFinished() {
         _uploadQueue.update { list ->
             list.filter {
@@ -144,21 +174,36 @@ class UploadManager(
             // If user clicked Upload & Trash: if server answered and status is NOT a FAILURE, move asset to trash
             if (item.deleteAfter && status != UploadStatus.FAILED) {
                 withContext(Dispatchers.IO) {
-                    try {
-                        var trashed = false
-                        if (item.folderUri != null) {
+                    var trashed = false
+                    if (item.folderUri != null) {
+                        try {
                             trashed = LocalTrash.moveToTrash(context, item.folderUri, item.asset)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "LocalTrash.moveToTrash failed: ${e.message}")
                         }
-                        if (!trashed) {
-                            val deleted = DocumentsContract.deleteDocument(context.contentResolver, item.asset.uri)
-                            if (!deleted) {
-                                DocumentFile.fromSingleUri(context, item.asset.uri)?.delete()
-                            }
-                        }
-                        item.folderUri?.let { onFolderChanged?.invoke(it) }
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Failed to trash asset after upload: ${item.asset.uri}", e)
                     }
+                    if (!trashed && item.folderUri != null) {
+                        try {
+                            val root = DocumentFile.fromTreeUri(context, item.folderUri)
+                            if (root != null) {
+                                val sourceDir = if (item.asset.relativeDir.isEmpty()) root else LocalTrash.resolveOrCreateDir(root, item.asset.relativeDir)
+                                val file = sourceDir?.findFile(item.asset.displayName)
+                                if (file != null && file.exists()) {
+                                    trashed = file.delete()
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "TreeDocumentFile find & delete failed: ${e.message}")
+                        }
+                    }
+                    if (!trashed) {
+                        try {
+                            trashed = DocumentsContract.deleteDocument(context.contentResolver, item.asset.uri)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "DocumentsContract.deleteDocument failed: ${e.message}")
+                        }
+                    }
+                    item.folderUri?.let { onFolderChanged?.invoke(it) }
                 }
             }
         } catch (e: Exception) {

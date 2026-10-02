@@ -28,6 +28,8 @@ import org.iphoto.mobile.sync.LocalAsset
 import org.iphoto.mobile.sync.LocalFolderScanner
 import org.iphoto.mobile.sync.LocalTrash
 import org.iphoto.mobile.sync.SyncRepository
+import org.iphoto.mobile.sync.UploadItem
+import org.iphoto.mobile.sync.UploadStatus
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
@@ -78,6 +80,108 @@ class SyncViewModel(
     }
 
     fun getMediaStoreUri(asset: LocalAsset): Uri? = syncRepository.toMediaStoreUri(asset)
+
+    fun getMediaUrisForAssets(assets: List<LocalAsset>): List<Uri> {
+        return assets.mapNotNull { getMediaStoreUri(it) }
+    }
+
+    fun onAssetsTrashed(assets: List<LocalAsset>) {
+        val assetUris = assets.map { it.uri }.toSet()
+        _uiState.update { current ->
+            val updated = current.folderContents.mapValues { (_, items) ->
+                items.filter { !(it is GridItem.Asset && it.asset.uri in assetUris) }
+            }
+            val remainingSelected = current.selectedAssets - assetUris
+            current.copy(
+                folderContents = updated,
+                isSelectionMode = remainingSelected.isNotEmpty(),
+                selectedAssets = remainingSelected
+            )
+        }
+        refreshAllFolders()
+    }
+
+    fun trashAssetsDirectly(assets: List<LocalAsset>) {
+        onAssetsTrashed(assets)
+        viewModelScope.launch {
+            assets.forEach { asset ->
+                findAssetAndFolder(asset.uri)?.let { (targetAsset, folder) ->
+                    try {
+                        val deleted = DocumentsContract.deleteDocument(appContext.contentResolver, targetAsset.uri)
+                        if (!deleted) {
+                            LocalTrash.moveToTrash(appContext, folder.uri, targetAsset)
+                        }
+                    } catch (e: Exception) {
+                        try {
+                            LocalTrash.moveToTrash(appContext, folder.uri, targetAsset)
+                        } catch (e2: Exception) {
+                            Log.w(TAG, "Failed to trash asset: ${targetAsset.uri}", e2)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    suspend fun uploadAssetDirectly(asset: LocalAsset, spaceId: String): org.iphoto.mobile.model.TaskDTO? {
+        val task = syncRepository.uploadAsset(asset, spaceId)
+        if (task != null && task.status != "FAILED") {
+            container?.notifyLibraryChanged()
+        }
+        return task
+    }
+
+    suspend fun uploadAndVerify(assets: List<LocalAsset>, spaceId: String): List<LocalAsset> {
+        val successful = mutableListOf<LocalAsset>()
+        _uiState.update { it.copy(isUploading = true, error = null) }
+        try {
+            for (asset in assets) {
+                val folderUri = findAssetAndFolder(asset.uri)?.second?.uri
+                val uploadItem = UploadItem(
+                    asset = asset,
+                    folderUri = folderUri,
+                    spaceId = spaceId,
+                    status = UploadStatus.UPLOADING
+                )
+                container?.uploadManager?.registerOrUpdate(uploadItem)
+
+                try {
+                    // Step 1: Upload chunks. Step 2: Poll back office task until finished.
+                    val task = syncRepository.uploadAsset(
+                        asset = asset,
+                        spaceId = spaceId,
+                        onProgress = { uploaded, total ->
+                            val fraction = uploaded.toFloat() / maxOf(1, total)
+                            container?.uploadManager?.updateProgress(uploadItem.id, fraction)
+                        },
+                        onTaskCreated = { taskId ->
+                            container?.uploadManager?.updateStatus(uploadItem.id, UploadStatus.PROCESSING, taskId)
+                        }
+                    )
+                    if (task != null && task.status != "FAILED") {
+                        successful.add(asset)
+                        val terminalStatus = when (task.status) {
+                            "IGNORED" -> UploadStatus.IGNORED
+                            "TRASHED" -> UploadStatus.TRASHED
+                            else -> UploadStatus.COMPLETED
+                        }
+                        container?.uploadManager?.updateStatus(uploadItem.id, terminalStatus, task.id, task.photoId)
+                    } else {
+                        container?.uploadManager?.updateFailed(uploadItem.id, "Import failed on server")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to upload and verify ${asset.displayName}", e)
+                    container?.uploadManager?.updateFailed(uploadItem.id, e.message ?: "Upload failed")
+                }
+            }
+        } finally {
+            _uiState.update { it.copy(isUploading = false) }
+            if (successful.isNotEmpty()) {
+                container?.notifyLibraryChanged()
+            }
+        }
+        return successful
+    }
 
     fun getFolderRelativePath(folderUri: Uri): String? {
         return try {

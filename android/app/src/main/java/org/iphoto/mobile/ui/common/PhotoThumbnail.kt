@@ -51,11 +51,10 @@ fun PhotoThumbnail(
     modifier: Modifier = Modifier,
     isVideo: Boolean = false,
     duration: Long? = null,
-    // Selection mode is opt-in: callers that don't pass onLongClick (e.g. AlbumRow's cover
-    // thumbnail) get plain tap-to-open behavior, unchanged from before selection existed.
     isSelectionMode: Boolean = false,
     isSelected: Boolean = false,
     onLongClick: (() -> Unit)? = null,
+    onSelectClick: (() -> Unit)? = null,
     onClick: () -> Unit
 ) = PhotoThumbnail(
     imageModel = imageUrl as Any,
@@ -65,6 +64,7 @@ fun PhotoThumbnail(
     isSelectionMode = isSelectionMode,
     isSelected = isSelected,
     onLongClick = onLongClick,
+    onSelectClick = onSelectClick,
     onClick = onClick
 )
 
@@ -78,6 +78,7 @@ fun PhotoThumbnail(
     isSelectionMode: Boolean = false,
     isSelected: Boolean = false,
     onLongClick: (() -> Unit)? = null,
+    onSelectClick: (() -> Unit)? = null,
     onClick: () -> Unit
 ) {
     val container = LocalAppContainer.current
@@ -136,27 +137,45 @@ fun PhotoThumbnail(
                 )
             }
         }
-        // Empty outline once selection mode is active on the grid (even for un-selected photos,
-        // so it's clear tapping selects them), filled once this one is picked - same affordance
-        // shape stock Google Photos uses.
-        if (isSelectionMode) {
+        // Selection button in the top-left corner:
+        // When clicked, toggles selection and enters selection mode.
+        if (onSelectClick != null || isSelectionMode) {
+            val selectAction = onSelectClick ?: onClick
             Box(
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(6.dp)
-                    .size(22.dp)
-                    .background(
-                        if (isSelected) Color.Transparent else Color.Black.copy(alpha = 0.35f),
-                        CircleShape
-                    )
-                    .border(1.5.dp, Color.White, CircleShape)
+                    .size(40.dp)
+                    .combinedClickable(onClick = selectAction, onLongClick = onLongClick)
+                    .padding(6.dp),
+                contentAlignment = Alignment.Center
             ) {
-                if (isSelected) {
-                    Icon(
-                        imageVector = Icons.Filled.CheckCircle,
-                        contentDescription = "Selected",
-                        tint = Color.White,
-                        modifier = Modifier.fillMaxSize()
+                if (isSelectionMode || isSelected) {
+                    Box(
+                        modifier = Modifier
+                            .size(22.dp)
+                            .background(
+                                if (isSelected) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.35f),
+                                CircleShape
+                            )
+                            .border(1.5.dp, Color.White, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (isSelected) {
+                            Icon(
+                                imageVector = Icons.Filled.CheckCircle,
+                                contentDescription = "Selected",
+                                tint = Color.White,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                    }
+                } else {
+                    // Visible affordance in top-left corner so user can easily tap to select
+                    Box(
+                        modifier = Modifier
+                            .size(22.dp)
+                            .background(Color.Black.copy(alpha = 0.25f), CircleShape)
+                            .border(1.dp, Color.White.copy(alpha = 0.7f), CircleShape)
                     )
                 }
             }
