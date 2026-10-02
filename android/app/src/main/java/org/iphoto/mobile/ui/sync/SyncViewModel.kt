@@ -15,11 +15,13 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.iphoto.mobile.AppContainer
 import org.iphoto.mobile.data.SyncPrefs
 import org.iphoto.mobile.model.SpaceDTO
@@ -304,8 +306,10 @@ class SyncViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(isLoadingFolderContents = it.isLoadingFolderContents + uri) }
             try {
-                val assets = LocalFolderScanner.scan(appContext, uri)
-                    .sortedByDescending { asset -> asset.lastModified }
+                val assets = withContext(Dispatchers.IO) {
+                    LocalFolderScanner.scan(appContext, uri)
+                        .sortedByDescending { asset -> asset.lastModified }
+                }
 
                 val groupedAndFlattened = assets.groupBy {
                     val date = java.time.Instant.ofEpochMilli(it.lastModified).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
