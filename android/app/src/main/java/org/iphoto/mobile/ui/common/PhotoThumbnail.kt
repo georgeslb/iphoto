@@ -80,7 +80,10 @@ fun PhotoThumbnail(
     onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit
 ) {
-    val imageLoader = LocalAppContainer.current.imageLoader
+    val container = LocalAppContainer.current
+    val isRemote = imageModel is String && (imageModel.startsWith("http://") || imageModel.startsWith("https://") || imageModel.startsWith("/"))
+    val imageLoader = if (isRemote) container.imageLoader else container.localImageLoader
+
     Box(
         modifier = modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick)
     ) {

@@ -2,8 +2,12 @@ package org.iphoto.mobile.ui.sync
 
 import android.content.Context
 import android.content.Intent
+import android.database.ContentObserver
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.provider.DocumentsContract
+import android.provider.MediaStore
 import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -55,7 +59,8 @@ class SyncViewModel(
     private val appContext: Context,
     private val spaceApi: SpaceApi,
     private val syncRepository: SyncRepository,
-    private val syncPrefs: SyncPrefs
+    private val syncPrefs: SyncPrefs,
+    private val container: AppContainer? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SyncUiState())
@@ -74,9 +79,99 @@ class SyncViewModel(
 
     fun getMediaStoreUri(asset: LocalAsset): Uri? = syncRepository.toMediaStoreUri(asset)
 
+    fun getFolderRelativePath(folderUri: Uri): String? {
+        return try {
+            val treeDocId = DocumentsContract.getTreeDocumentId(folderUri)
+            if (treeDocId.startsWith("primary:")) {
+                val raw = treeDocId.removePrefix("primary:").trim('/')
+                if (raw.isEmpty()) "" else "$raw/"
+            } else null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    suspend fun prepareMediaStoreUriForEditing(asset: LocalAsset): Uri? {
+        val folder = findAssetAndFolder(asset.uri)?.second
+        val folderRelPath = folder?.let { getFolderRelativePath(it.uri) }
+        val targetRelPath = if (!folderRelPath.isNullOrEmpty()) {
+            if (asset.relativeDir.isNotEmpty()) {
+                "$folderRelPath${asset.relativeDir.trim('/')}/"
+            } else {
+                folderRelPath
+            }
+        } else null
+        return syncRepository.getOrScanMediaStoreUri(asset, targetRelPath)
+    }
+
+    private var contentObserver: ContentObserver? = null
+
     init {
         loadSpaces()
         loadPersistedFolders()
+        setupMediaStoreObserver()
+        setupFolderChangeObserver()
+    }
+
+    private fun setupFolderChangeObserver() {
+        if (container != null) {
+            viewModelScope.launch {
+                container.folderChangeTrigger.collect { folderUri ->
+                    _uiState.value.selectedFolders.find { it.uri == folderUri }?.let { folder ->
+                        refreshFolder(folder.uri, folder.name)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun setupMediaStoreObserver() {
+        try {
+            val looper = Looper.getMainLooper() ?: return
+            val handler = Handler(looper)
+            val observer = object : ContentObserver(handler) {
+                private var refreshJob: kotlinx.coroutines.Job? = null
+                override fun onChange(selfChange: Boolean, uri: Uri?) {
+                    super.onChange(selfChange, uri)
+                    // Debounce rapid changes (e.g. saving file + generating thumbnail in MediaStore)
+                    refreshJob?.cancel()
+                    refreshJob = viewModelScope.launch {
+                        kotlinx.coroutines.delay(800)
+                        refreshAllFolders()
+                    }
+                }
+            }
+            contentObserver = observer
+            appContext.contentResolver.registerContentObserver(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                true,
+                observer
+            )
+            appContext.contentResolver.registerContentObserver(
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                true,
+                observer
+            )
+        } catch (e: Throwable) {
+            Log.w(TAG, "Failed to register MediaStore content observer: ${e.message}")
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        contentObserver?.let {
+            try {
+                appContext.contentResolver.unregisterContentObserver(it)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to unregister MediaStore content observer", e)
+            }
+        }
+    }
+
+    fun refreshAllFolders() {
+        _uiState.value.selectedFolders.forEach { folder ->
+            refreshFolder(folder.uri, folder.name)
+        }
     }
 
     private fun loadPersistedFolders() {
@@ -128,7 +223,17 @@ class SyncViewModel(
     }
 
     fun addFolder(uri: Uri, displayName: String) {
-        appContext.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        try {
+            appContext.contentResolver.takePersistableUriPermission(uri, flags)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to take read/write persistable permission, falling back to read: ${e.message}")
+            try {
+                appContext.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (e2: Exception) {
+                Log.e(TAG, "Failed to take read persistable permission", e2)
+            }
+        }
         val folder = SelectedFolder(uri, displayName)
         val updatedFolders = _uiState.value.selectedFolders + folder
         _uiState.update { it.copy(selectedFolders = updatedFolders) }
@@ -187,19 +292,32 @@ class SyncViewModel(
 
     fun uploadSingleAsset(assetUri: Uri, spaceId: String, deleteAfter: Boolean) {
         findAssetAndFolder(assetUri)?.let { (asset, folder) ->
-            viewModelScope.launch {
-                _uiState.update { it.copy(isUploading = true, error = null) }
-                try {
-                    syncRepository.uploadAsset(asset, spaceId)
-                    if (deleteAfter) {
-                        LocalTrash.moveToTrash(appContext, folder.uri, asset)
+            if (deleteAfter) {
+                // Optimistically remove from state in memory immediately
+                _uiState.update { current ->
+                    val updatedContents = current.folderContents.mapValues { (_, items) ->
+                        items.filter { !(it is GridItem.Asset && it.asset.uri == asset.uri) }
                     }
-                } catch (e: Exception) {
-                    _uiState.update { it.copy(error = "Upload failed: ${e.message}") }
-                } finally {
-                    _uiState.update { it.copy(isUploading = false) }
-                    if (deleteAfter) {
-                        refreshFolder(folder.uri, folder.name)
+                    current.copy(folderContents = updatedContents)
+                }
+            }
+            if (container != null) {
+                container.uploadManager.enqueue(asset, folder.uri, spaceId, deleteAfter)
+            } else {
+                viewModelScope.launch {
+                    _uiState.update { it.copy(isUploading = true, error = null) }
+                    try {
+                        syncRepository.uploadAsset(asset, spaceId)
+                        if (deleteAfter) {
+                            LocalTrash.moveToTrash(appContext, folder.uri, asset)
+                        }
+                    } catch (e: Exception) {
+                        _uiState.update { it.copy(error = "Upload failed: ${e.message}") }
+                    } finally {
+                        _uiState.update { it.copy(isUploading = false) }
+                        if (deleteAfter) {
+                            refreshFolder(folder.uri, folder.name)
+                        }
                     }
                 }
             }
@@ -207,53 +325,47 @@ class SyncViewModel(
     }
 
     fun uploadSelectedAssets(spaceId: String, deleteAfter: Boolean) {
-        val assetsToUpload = mutableListOf<LocalAsset>()
-        val assetToFolderMap = mutableMapOf<Uri, Uri>()
+        val assetsWithFolder = mutableListOf<Pair<LocalAsset, Uri?>>()
+        val selected = _uiState.value.selectedAssets
 
         _uiState.value.folderContents.forEach { (folderUri, items) ->
             items.filterIsInstance<GridItem.Asset>().forEach { gridAsset ->
-                if (_uiState.value.selectedAssets.contains(gridAsset.asset.uri)) {
-                    assetsToUpload.add(gridAsset.asset)
-                    assetToFolderMap[gridAsset.asset.uri] = folderUri
+                if (selected.contains(gridAsset.asset.uri)) {
+                    assetsWithFolder.add(gridAsset.asset to folderUri)
                 }
             }
         }
 
-        if (assetsToUpload.isEmpty()) {
+        if (assetsWithFolder.isEmpty()) {
             clearSelection()
             return
         }
 
-        viewModelScope.launch {
-            _uiState.update { it.copy(isUploading = true, error = null) }
-            var successCount = 0
-            val foldersToRefresh = mutableSetOf<Uri>()
-            try {
-                assetsToUpload.forEach { asset ->
-                    syncRepository.uploadAsset(asset, spaceId)
-                    if (deleteAfter) {
-                        val folderUri = assetToFolderMap[asset.uri]
-                        if (folderUri != null) {
-                            LocalTrash.moveToTrash(appContext, folderUri, asset)
-                            foldersToRefresh.add(folderUri)
-                        } else {
-                            Log.w(TAG, "Could not find folderUri for asset ${asset.uri} to trash it.")
-                        }
-                    }
-                    successCount++
+        if (deleteAfter) {
+            // Optimistically remove from state in memory immediately
+            _uiState.update { current ->
+                val updatedContents = current.folderContents.mapValues { (_, items) ->
+                    items.filter { !(it is GridItem.Asset && it.asset.uri in selected) }
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Upload failed after $successCount successes", e)
-                _uiState.update { it.copy(error = "Upload failed: ${e.message}") }
-            } finally {
-                _uiState.update { it.copy(isUploading = false) }
-                clearSelection()
-                if (deleteAfter) {
-                    foldersToRefresh.forEach { folderUri ->
-                        _uiState.value.selectedFolders.find { it.uri == folderUri }?.let { folder ->
-                            refreshFolder(folder.uri, folder.name)
-                        }
+                current.copy(folderContents = updatedContents, isSelectionMode = false, selectedAssets = emptySet())
+            }
+        } else {
+            clearSelection()
+        }
+
+        if (container != null) {
+            container.uploadManager.enqueueAll(assetsWithFolder, spaceId, deleteAfter)
+        } else {
+            viewModelScope.launch {
+                _uiState.update { it.copy(isUploading = true, error = null) }
+                try {
+                    assetsWithFolder.forEach { (asset, _) ->
+                        syncRepository.uploadAsset(asset, spaceId)
                     }
+                } catch (e: Exception) {
+                    _uiState.update { it.copy(error = "Upload failed: ${e.message}") }
+                } finally {
+                    _uiState.update { it.copy(isUploading = false) }
                 }
             }
         }
@@ -266,6 +378,8 @@ class SyncViewModel(
             return
         }
 
+        val targets = selected.mapNotNull { findAssetAndFolder(it) }
+
         // Optimistically remove from state in memory so UI updates instantly
         _uiState.update { current ->
             val updatedContents = current.folderContents.mapValues { (_, items) ->
@@ -275,19 +389,24 @@ class SyncViewModel(
         }
 
         viewModelScope.launch {
-            selected.forEach { assetUri ->
-                findAssetAndFolder(assetUri)?.let { (asset, folder) ->
+            targets.forEach { (asset, folder) ->
+                try {
+                    val deleted = DocumentsContract.deleteDocument(appContext.contentResolver, asset.uri)
+                    if (!deleted) {
+                        LocalTrash.moveToTrash(appContext, folder.uri, asset)
+                    }
+                } catch (e: SecurityException) {
+                    Log.w(TAG, "deleteDocument SecurityException, falling back to LocalTrash: ${e.message}")
                     try {
-                        val deleted = DocumentsContract.deleteDocument(appContext.contentResolver, asset.uri)
-                        if (!deleted) {
-                            LocalTrash.moveToTrash(appContext, folder.uri, asset)
-                        }
-                    } catch (e: Exception) {
-                        try {
-                            LocalTrash.moveToTrash(appContext, folder.uri, asset)
-                        } catch (e2: Exception) {
-                            Log.e(TAG, "Failed to delete or trash asset: ${asset.uri}", e2)
-                        }
+                        LocalTrash.moveToTrash(appContext, folder.uri, asset)
+                    } catch (e2: Throwable) {
+                        Log.e(TAG, "Failed to move to trash after SecurityException: ${asset.uri}", e2)
+                    }
+                } catch (e: Throwable) {
+                    try {
+                        LocalTrash.moveToTrash(appContext, folder.uri, asset)
+                    } catch (e2: Throwable) {
+                        Log.e(TAG, "Failed to delete or trash asset: ${asset.uri}", e2)
                     }
                 }
             }
@@ -295,6 +414,8 @@ class SyncViewModel(
     }
 
     fun trashSingleAsset(asset: LocalAsset) {
+        val targetPair = findAssetAndFolder(asset.uri)
+
         // Optimistically remove from state in memory so UI updates instantly
         _uiState.update { current ->
             val updatedContents = current.folderContents.mapValues { (_, items) ->
@@ -303,16 +424,23 @@ class SyncViewModel(
             current.copy(folderContents = updatedContents)
         }
         viewModelScope.launch {
-            findAssetAndFolder(asset.uri)?.let { (targetAsset, folder) ->
+            targetPair?.let { (targetAsset, folder) ->
                 try {
                     val deleted = DocumentsContract.deleteDocument(appContext.contentResolver, targetAsset.uri)
                     if (!deleted) {
                         LocalTrash.moveToTrash(appContext, folder.uri, targetAsset)
                     }
-                } catch (e: Exception) {
+                } catch (e: SecurityException) {
+                    Log.w(TAG, "deleteDocument SecurityException, falling back to LocalTrash: ${e.message}")
                     try {
                         LocalTrash.moveToTrash(appContext, folder.uri, targetAsset)
-                    } catch (e2: Exception) {
+                    } catch (e2: Throwable) {
+                        Log.e(TAG, "Failed to move to trash after SecurityException: ${targetAsset.uri}", e2)
+                    }
+                } catch (e: Throwable) {
+                    try {
+                        LocalTrash.moveToTrash(appContext, folder.uri, targetAsset)
+                    } catch (e2: Throwable) {
                         Log.e(TAG, "Failed to delete or trash asset: ${targetAsset.uri}", e2)
                     }
                 }
@@ -348,6 +476,7 @@ class SyncViewModelFactory(
             appContext,
             container.spaceApi,
             container.syncRepository(),
-            container.syncPrefs
+            container.syncPrefs,
+            container
         ) as T
 }

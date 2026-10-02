@@ -2,6 +2,7 @@ package org.iphoto.mobile.sync
 
 import android.content.ContentUris
 import android.content.Context
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.provider.DocumentsContract
@@ -9,6 +10,7 @@ import android.provider.MediaStore
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
@@ -20,6 +22,7 @@ import org.iphoto.mobile.network.PhotoApi
 import org.iphoto.mobile.network.TaskApi
 import java.io.InputStream
 import java.util.UUID
+import kotlin.coroutines.resume
 import kotlin.math.ceil
 
 /** A remote Space photo, reduced to the fields the sync diff actually needs. */
@@ -167,7 +170,12 @@ class SyncRepository(
         return all
     }
 
-    suspend fun uploadAsset(asset: LocalAsset, spaceId: String) = withContext(Dispatchers.IO) {
+    suspend fun uploadAsset(
+        asset: LocalAsset,
+        spaceId: String,
+        onProgress: ((uploadedChunks: Int, totalChunks: Int) -> Unit)? = null,
+        onTaskCreated: ((taskId: String) -> Unit)? = null
+    ): TaskDTO? = withContext(Dispatchers.IO) {
         val uploadId = UUID.randomUUID().toString()
         val totalChunks = maxOf(1, ceil(asset.size.toDouble() / CHUNK_SIZE).toInt())
         val mediaType = asset.mimeType.toMediaTypeOrNull()
@@ -198,20 +206,25 @@ class SyncRepository(
                     spaceId = spaceId.toPlainRequestBody(),
                     chunk = part
                 )
-                completionTask = response.task
                 chunkIndex++
+                onProgress?.invoke(chunkIndex, totalChunks)
+                completionTask = response.task
             }
         }
 
-        completionTask?.let { waitForProcessing(it.id) }
+        completionTask?.let { task ->
+            onTaskCreated?.invoke(task.id)
+            return@withContext waitForProcessing(task.id)
+        }
+        null
     }
 
-    private suspend fun waitForProcessing(taskId: String) {
+    private suspend fun waitForProcessing(taskId: String): TaskDTO {
         val deadline = System.currentTimeMillis() + TASK_POLL_TIMEOUT_MS
         while (System.currentTimeMillis() < deadline) {
             val task = taskApi.get(taskId)
             when (task.status) {
-                "COMPLETED" -> return
+                "COMPLETED", "IGNORED", "TRASHED" -> return task
                 "FAILED" -> throw IllegalStateException("Server failed to process upload (task $taskId)")
                 else -> delay(TASK_POLL_INTERVAL_MS)
             }
@@ -268,25 +281,48 @@ class SyncRepository(
         hashCache.persist()
     }
 
+    fun resolveRelativePath(asset: LocalAsset): String? {
+        try {
+            if (DocumentsContract.isDocumentUri(context, asset.uri) || DocumentsContract.isTreeUri(asset.uri)) {
+                val docId = DocumentsContract.getDocumentId(asset.uri)
+                if (docId.startsWith("primary:")) {
+                    val rawPath = docId.removePrefix("primary:")
+                    val file = java.io.File(android.os.Environment.getExternalStorageDirectory(), rawPath)
+                    val parent = file.parentFile
+                    if (parent != null) {
+                        val base = android.os.Environment.getExternalStorageDirectory().absolutePath
+                        if (parent.absolutePath.startsWith(base)) {
+                            val rel = parent.absolutePath.removePrefix(base).trim('/')
+                            return if (rel.isEmpty()) "" else "$rel/"
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "resolveRelativePath failed: ${e.message}")
+        }
+        return null
+    }
+
     // Resolves a scanned local [asset] (living under a SAF tree the user picked) to its MediaStore
     // content Uri, when that SAF location happens to also be MediaStore-indexed - true for standard
     // camera-roll locations like DCIM/Camera, which is what this feature is built for. Lets the
     // caller use MediaStore.createTrashRequest or send to external editors (like Google Photos).
-    fun toMediaStoreUri(asset: LocalAsset): Uri? {
+    fun toMediaStoreUri(asset: LocalAsset, preferredRelPath: String? = null): Uri? {
         val collection = if (asset.mimeType.startsWith("video/")) {
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI
         } else {
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         }
 
-        // 1. Try to resolve real file path from document ID (e.g. primary:DCIM/Camera/IMG.jpg)
+        val relPath = preferredRelPath ?: resolveRelativePath(asset)
         var filePath: String? = null
         try {
             if (DocumentsContract.isDocumentUri(context, asset.uri) || DocumentsContract.isTreeUri(asset.uri)) {
                 val docId = DocumentsContract.getDocumentId(asset.uri)
                 if (docId.startsWith("primary:")) {
-                    val relPath = docId.removePrefix("primary:")
-                    val file = java.io.File(android.os.Environment.getExternalStorageDirectory(), relPath)
+                    val rawPath = docId.removePrefix("primary:")
+                    val file = java.io.File(android.os.Environment.getExternalStorageDirectory(), rawPath)
                     if (file.exists()) {
                         filePath = file.absolutePath
                     }
@@ -296,7 +332,7 @@ class SyncRepository(
             Log.d(TAG, "toMediaStoreUri: could not parse filePath from docId: ${e.message}")
         }
 
-        // 2. Query MediaStore by DATA (file path) if known
+        // 1. Query MediaStore by DATA (file path) if known
         if (filePath != null) {
             try {
                 val projection = arrayOf(MediaStore.MediaColumns._ID)
@@ -313,7 +349,24 @@ class SyncRepository(
             }
         }
 
-        // 3. Query MediaStore by DISPLAY_NAME
+        // 2. Query MediaStore by DISPLAY_NAME and RELATIVE_PATH
+        if (relPath != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val projection = arrayOf(MediaStore.MediaColumns._ID)
+                val selection = "${MediaStore.MediaColumns.DISPLAY_NAME} = ? AND ${MediaStore.MediaColumns.RELATIVE_PATH} = ?"
+                val selectionArgs = arrayOf(asset.displayName, relPath)
+                context.contentResolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID))
+                        return ContentUris.withAppendedId(collection, id)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "toMediaStoreUri: DISPLAY_NAME + RELATIVE_PATH query failed: ${e.message}")
+            }
+        }
+
+        // 3. Query MediaStore by DISPLAY_NAME alone
         try {
             val projection = arrayOf(MediaStore.MediaColumns._ID)
             val selection = "${MediaStore.MediaColumns.DISPLAY_NAME} = ?"
@@ -345,6 +398,52 @@ class SyncRepository(
                 }
             } catch (e: Exception) {
                 Log.d(TAG, "toMediaStoreUri: getMediaUri failed for ${asset.uri}: ${e.message}")
+            }
+        }
+
+        return null
+    }
+
+    fun resolveFilePath(asset: LocalAsset): String? {
+        try {
+            if (DocumentsContract.isDocumentUri(context, asset.uri) || DocumentsContract.isTreeUri(asset.uri)) {
+                val docId = DocumentsContract.getDocumentId(asset.uri)
+                if (docId.startsWith("primary:")) {
+                    val rawPath = docId.removePrefix("primary:")
+                    val file = java.io.File(android.os.Environment.getExternalStorageDirectory(), rawPath)
+                    return file.absolutePath
+                }
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "resolveFilePath failed: ${e.message}")
+        }
+        return null
+    }
+
+    // Resolves a scanned local [asset] to its MediaStore content Uri.
+    // If not yet indexed in MediaStore, asks Android's MediaScanner to index the original physical file,
+    // avoiding creating any duplicate copies of the file before editing.
+    suspend fun getOrScanMediaStoreUri(asset: LocalAsset, preferredRelPath: String? = null): Uri? {
+        // 1. Check if it's already indexed in MediaStore
+        val existingUri = toMediaStoreUri(asset, preferredRelPath)
+        if (existingUri != null) {
+            return existingUri
+        }
+
+        // 2. Scan the original file directly with MediaScannerConnection so MediaStore indexes it in-place
+        val filePath = resolveFilePath(asset)
+        if (filePath != null) {
+            try {
+                val scannedUri = suspendCancellableCoroutine<Uri?> { cont ->
+                    MediaScannerConnection.scanFile(context, arrayOf(filePath), arrayOf(asset.mimeType)) { _, uri ->
+                        if (cont.isActive) cont.resume(uri)
+                    }
+                }
+                if (scannedUri != null) {
+                    return scannedUri
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "MediaScannerConnection.scanFile failed for $filePath", e)
             }
         }
 

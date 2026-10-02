@@ -16,6 +16,10 @@ import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import org.iphoto.mobile.auth.AuthRepository
 import org.iphoto.mobile.data.SyncPrefs
 import org.iphoto.mobile.data.TokenStore
@@ -58,12 +62,32 @@ class AppContainer(private val context: Context) {
     // Fresh each call, like the *Api properties above - always bound to today's server URL/token.
     fun syncRepository(): SyncRepository = SyncRepository(context, photoApi, taskApi, syncHashCache)
 
+    val uploadManager: org.iphoto.mobile.sync.UploadManager by lazy {
+        org.iphoto.mobile.sync.UploadManager(
+            context = context,
+            syncRepositoryProvider = { syncRepository() },
+            onLibraryChanged = { notifyLibraryChanged() },
+            onFolderChanged = { notifyFolderChanged(it) },
+            scope = applicationScope
+        )
+    }
+
     // shares the auth-carrying OkHttpClient so thumbnail/original image requests authenticate
-    // the same way REST calls do
+    // the same way REST calls do. Kept clean without VideoFrameDecoder so remote video thumbnail
+    // images are always decoded as images without failing on MediaMetadataRetriever.
     val imageLoader: ImageLoader by lazy {
         ImageLoader.Builder(context)
             .components {
                 add(OkHttpNetworkFetcherFactory(callFactory = { apiClient.httpClient }))
+            }
+            .build()
+    }
+
+    // Used for local device media in the Sync tab - includes VideoFrameDecoder to extract
+    // thumbnails from local video files on device.
+    val localImageLoader: ImageLoader by lazy {
+        ImageLoader.Builder(context)
+            .components {
                 add(coil3.video.VideoFrameDecoder.Factory())
             }
             .build()
@@ -95,6 +119,22 @@ class AppContainer(private val context: Context) {
             .setCache(videoCache)
             .setUpstreamDataSourceFactory(upstream)
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+    }
+
+    private val _libraryChangeVersion = MutableStateFlow(0)
+    val libraryChangeVersion: StateFlow<Int> = _libraryChangeVersion.asStateFlow()
+
+    fun notifyLibraryChanged() {
+        _libraryChangeVersion.update { it + 1 }
+    }
+
+    val folderChangeTrigger = kotlinx.coroutines.flow.MutableSharedFlow<android.net.Uri>(
+        extraBufferCapacity = 16,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST
+    )
+
+    fun notifyFolderChanged(folderUri: android.net.Uri) {
+        folderChangeTrigger.tryEmit(folderUri)
     }
 
     fun absoluteUrl(relativeUrlOrPath: String): String {

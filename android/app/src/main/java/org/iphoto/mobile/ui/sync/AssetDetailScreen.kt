@@ -1,15 +1,10 @@
 package org.iphoto.mobile.ui.sync
 
-import android.app.Activity
-import android.content.ClipData
-import android.content.Intent
 import android.net.Uri
 import android.os.Build
-import android.provider.MediaStore
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
 import androidx.compose.foundation.layout.Arrangement
@@ -56,8 +51,6 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil3.imageLoader
-import coil3.memory.MemoryCache
-import kotlinx.coroutines.launch
 import me.saket.telephoto.zoomable.coil3.ZoomableAsyncImage
 import org.iphoto.mobile.sync.LocalAsset
 
@@ -97,16 +90,24 @@ fun AssetDetailScreen(
     val editLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) {
-        // Invalidate Coil cache for this asset in case it was modified in-place by the editor
+        // Clear Coil cache so updated image is reloaded
         context.imageLoader.let { loader ->
-            loader.memoryCache?.remove(MemoryCache.Key(currentAsset.uri.toString()))
-            loader.diskCache?.remove(currentAsset.uri.toString())
+            loader.memoryCache?.clear()
+            loader.diskCache?.clear()
         }
-        // Refresh the folder in ViewModel so any changes are immediately re-scanned
-        coroutineScope.launch {
-            viewModel.findAssetAndFolder(currentAsset.uri)?.let { (_, f) ->
-                viewModel.refreshFolder(f.uri, f.name)
+        viewModel.refreshAllFolders()
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshAllFolders()
             }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
 
@@ -115,32 +116,17 @@ fun AssetDetailScreen(
         val mimeType = currentAsset.mimeType.ifBlank {
             context.contentResolver.getType(mediaUri) ?: if (currentAsset.mimeType.startsWith("video/")) "video/*" else "image/*"
         }
-        val editIntent = Intent(Intent.ACTION_EDIT).apply {
-            setDataAndType(mediaUri, mimeType)
-            clipData = ClipData.newRawUri("media", mediaUri)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-        }
-        val viewIntent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(mediaUri, mimeType)
-            clipData = ClipData.newRawUri("media", mediaUri)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-        }
+        val editIntent = SystemEditorHelper.buildEditIntent(mediaUri, mimeType)
+        val viewIntent = SystemEditorHelper.buildViewIntent(mediaUri, mimeType)
+
         try {
-            val resolveList = context.packageManager.queryIntentActivities(editIntent, 0)
-            if (resolveList.isNotEmpty()) {
-                val chooser = Intent.createChooser(editIntent, "Edit photo")
-                chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(viewIntent))
-                editLauncher.launch(chooser)
-            } else {
-                val chooser = Intent.createChooser(viewIntent, "Open with")
-                editLauncher.launch(chooser)
-            }
+            val chooser = SystemEditorHelper.resolveTargetIntent(context.packageManager, editIntent, viewIntent)
+            editLauncher.launch(chooser)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to launch editor chooser", e)
             try {
-                context.startActivity(viewIntent)
+                editLauncher.launch(viewIntent)
             } catch (e2: Exception) {
-                Log.e(TAG, "Failed to start viewIntent directly", e2)
                 Toast.makeText(context, "No gallery or editor app found on device", Toast.LENGTH_SHORT).show()
             }
         }
