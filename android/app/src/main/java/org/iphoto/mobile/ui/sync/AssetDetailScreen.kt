@@ -2,6 +2,7 @@ package org.iphoto.mobile.ui.sync
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
@@ -49,6 +50,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.media3.common.MediaItem
@@ -58,6 +60,7 @@ import androidx.media3.ui.PlayerView
 import coil3.imageLoader
 import kotlinx.coroutines.launch
 import me.saket.telephoto.zoomable.coil3.ZoomableAsyncImage
+import org.iphoto.mobile.data.SyncPrefs
 import org.iphoto.mobile.sync.LocalAsset
 
 private const val TAG = "AssetDetailScreen"
@@ -73,6 +76,7 @@ fun AssetDetailScreen(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val state by viewModel.uiState.collectAsState()
+    val syncPrefs = remember { SyncPrefs(context) }
 
     val folder = viewModel.findAssetAndFolder(asset.uri)?.second
     val assetsInFolder = remember(folder, state.folderContents) {
@@ -93,6 +97,9 @@ fun AssetDetailScreen(
     var showSpacePicker by remember { mutableStateOf<((String) -> Unit)?>(null) }
     var showUploadAndTrashConfirm by remember { mutableStateOf(false) }
     var isUploading by remember { mutableStateOf(false) }
+    var showEditorPicker by remember { mutableStateOf(false) }
+    var availableEditors by remember { mutableStateOf<List<ExternalEditorApp>>(emptyList()) }
+    var pendingEditorApp by remember { mutableStateOf<ExternalEditorApp?>(null) }
 
     val editLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -142,24 +149,92 @@ fun AssetDetailScreen(
         }
     }
 
-    fun launchSystemEditor() {
+    val mediaPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        if (currentAsset.mimeType.startsWith("video/")) android.Manifest.permission.READ_MEDIA_VIDEO
+        else android.Manifest.permission.READ_MEDIA_IMAGES
+    } else {
+        android.Manifest.permission.READ_EXTERNAL_STORAGE
+    }
+
+    fun hasMediaPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            context,
+            mediaPermission
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    fun executeEditorLaunch(app: ExternalEditorApp) {
+        coroutineScope.launch {
+            val isMediaPermGranted = hasMediaPermission()
+            val targetUri = if (isMediaPermGranted) {
+                viewModel.prepareMediaStoreUriForEditing(currentAsset) ?: currentAsset.uri
+            } else {
+                currentAsset.uri
+            }
+
+            val mimeType = currentAsset.mimeType.ifBlank {
+                if (currentAsset.mimeType.startsWith("video/")) "video/*" else "image/*"
+            }
+
+            val intent = SystemEditorHelper.buildTargetIntent(app, targetUri, mimeType)
+            try {
+                editLauncher.launch(intent)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to launch editor ${app.packageName} with $targetUri", e)
+                if (targetUri != currentAsset.uri) {
+                    try {
+                        val safIntent = SystemEditorHelper.buildTargetIntent(app, currentAsset.uri, mimeType)
+                        editLauncher.launch(safIntent)
+                        return@launch
+                    } catch (e2: Exception) {
+                        Log.e(TAG, "Fallback to SAF Uri also failed", e2)
+                    }
+                }
+                Toast.makeText(context, "Failed to open ${app.label}: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        pendingEditorApp?.let { app ->
+            executeEditorLaunch(app)
+        }
+        pendingEditorApp = null
+    }
+
+    fun launchTargetEditor(app: ExternalEditorApp) {
+        if (!hasMediaPermission()) {
+            pendingEditorApp = app
+            permissionLauncher.launch(mediaPermission)
+        } else {
+            executeEditorLaunch(app)
+        }
+    }
+
+    fun handleEditClick(forceShowPicker: Boolean = false) {
         val mediaUri = viewModel.getMediaStoreUri(currentAsset) ?: currentAsset.uri
         val mimeType = currentAsset.mimeType.ifBlank {
             context.contentResolver.getType(mediaUri) ?: if (currentAsset.mimeType.startsWith("video/")) "video/*" else "image/*"
         }
-        val editIntent = SystemEditorHelper.buildEditIntent(mediaUri, mimeType)
-        val viewIntent = SystemEditorHelper.buildViewIntent(mediaUri, mimeType)
+        val editors = SystemEditorHelper.queryAvailableEditors(context, mediaUri, mimeType)
+        availableEditors = editors
 
-        try {
-            val chooser = SystemEditorHelper.resolveTargetIntent(context.packageManager, editIntent, viewIntent)
-            editLauncher.launch(chooser)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to launch editor chooser", e)
-            try {
-                editLauncher.launch(viewIntent)
-            } catch (e2: Exception) {
-                Toast.makeText(context, "No gallery or editor app found on device", Toast.LENGTH_SHORT).show()
-            }
+        if (editors.isEmpty()) {
+            Toast.makeText(context, "No gallery or editor app found on device", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val savedPackage = syncPrefs.defaultEditorPackage
+        val savedApp = if (!forceShowPicker && savedPackage != null) {
+            editors.find { it.packageName == savedPackage }
+        } else null
+
+        if (savedApp != null) {
+            launchTargetEditor(savedApp)
+        } else {
+            showEditorPicker = true
         }
     }
 
@@ -194,7 +269,7 @@ fun AssetDetailScreen(
                     }
                     IconButton(
                         enabled = !isUploading,
-                        onClick = { launchSystemEditor() }
+                        onClick = { handleEditClick(forceShowPicker = false) }
                     ) {
                         Icon(Icons.Default.Edit, contentDescription = "Edit")
                     }
@@ -323,6 +398,26 @@ fun AssetDetailScreen(
                     enabled = !isUploading,
                     onClick = { showUploadAndTrashConfirm = false }
                 ) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showEditorPicker) {
+        EditorPickerDialog(
+            apps = availableEditors,
+            hasSavedDefault = syncPrefs.defaultEditorPackage != null,
+            onDismiss = { showEditorPicker = false },
+            onResetDefault = {
+                syncPrefs.defaultEditorPackage = null
+                showEditorPicker = false
+                Toast.makeText(context, "Default editor reset", Toast.LENGTH_SHORT).show()
+            },
+            onSelectApp = { app, rememberChoice ->
+                if (rememberChoice) {
+                    syncPrefs.defaultEditorPackage = app.packageName
+                }
+                showEditorPicker = false
+                launchTargetEditor(app)
             }
         )
     }

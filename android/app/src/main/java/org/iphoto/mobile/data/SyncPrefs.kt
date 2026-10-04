@@ -121,6 +121,10 @@ class SyncPrefs internal constructor(private val prefs: SharedPreferences) {
         get() = prefs.getBoolean(KEY_LOCK_CONFIRMED, false)
         set(value) = prefs.edit().putBoolean(KEY_LOCK_CONFIRMED, value).apply()
 
+    var defaultEditorPackage: String?
+        get() = prefs.getString(KEY_DEFAULT_EDITOR_PACKAGE, null)
+        set(value) = prefs.edit().putString(KEY_DEFAULT_EDITOR_PACKAGE, value).apply()
+
     companion object {
         private const val PREFS_NAME = "iphoto_sync_prefs"
         private const val KEY_SPACE_ID = "space_id"
@@ -131,6 +135,7 @@ class SyncPrefs internal constructor(private val prefs: SharedPreferences) {
         private const val KEY_EXCLUDED_ASSETS = "excluded_assets"
         private const val KEY_MOVED_TO_MAIN_ASSETS = "moved_to_main_assets"
         private const val KEY_SELECTED_FOLDERS = "selected_folders"
+        private const val KEY_DEFAULT_EDITOR_PACKAGE = "default_editor_package"
 
         // Each entry is "hash<SEP>title<SEP>photoId" - a plain delimiter rather than a JSON
         // dependency this module otherwise has no need for. \u0001 (not a printable character)

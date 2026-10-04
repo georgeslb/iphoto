@@ -1,19 +1,26 @@
 package org.iphoto.mobile.ui.sync
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SystemEditorHelperTest {
 
     @Test
-    fun `decideLaunchMode chooses EDIT when edit activities exist`() {
-        val mode = SystemEditorHelper.decideLaunchMode(hasEditActivities = true)
-        assertEquals(EditorLaunchMode.EDIT, mode)
-    }
+    fun `ExternalEditorApp holds properties correctly`() {
+        val app = ExternalEditorApp(
+            packageName = "com.google.android.apps.photos",
+            activityName = "com.google.android.apps.photos.editor.PhotoEditorActivity",
+            label = "Google Photos",
+            icon = null,
+            isEditAction = true
+        )
 
-    @Test
-    fun `decideLaunchMode chooses VIEW when no edit activities exist`() {
-        val mode = SystemEditorHelper.decideLaunchMode(hasEditActivities = false)
-        assertEquals(EditorLaunchMode.VIEW, mode)
+        assertEquals("com.google.android.apps.photos", app.packageName)
+        assertEquals("com.google.android.apps.photos.editor.PhotoEditorActivity", app.activityName)
+        assertEquals("Google Photos", app.label)
+        assertNull(app.icon)
+        assertTrue(app.isEditAction)
     }
 }

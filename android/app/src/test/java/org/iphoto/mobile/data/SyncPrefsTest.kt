@@ -157,4 +157,16 @@ class SyncPrefsTest {
 
         assertEquals(setOf("hash-1"), second.movedToMainHashes)
     }
+
+    @Test
+    fun `defaultEditorPackage persists and resets correctly`() {
+        val syncPrefs = newPrefs()
+        org.junit.Assert.assertNull(syncPrefs.defaultEditorPackage)
+
+        syncPrefs.defaultEditorPackage = "com.google.android.apps.photos"
+        assertEquals("com.google.android.apps.photos", syncPrefs.defaultEditorPackage)
+
+        syncPrefs.defaultEditorPackage = null
+        org.junit.Assert.assertNull(syncPrefs.defaultEditorPackage)
+    }
 }
