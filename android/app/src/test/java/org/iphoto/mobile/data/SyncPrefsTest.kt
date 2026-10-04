@@ -169,4 +169,15 @@ class SyncPrefsTest {
         syncPrefs.defaultEditorPackage = null
         org.junit.Assert.assertNull(syncPrefs.defaultEditorPackage)
     }
+
+    @Test
+    fun `recordUploadedAsset stores tab, path and names correctly`() {
+        val syncPrefs = newPrefs()
+        assertTrue(syncPrefs.getUploadedAssetKeys().isEmpty())
+
+        syncPrefs.recordUploadedAsset("content://tree/primary:DCIM", "Camera", "IMG_0001.jpg")
+        val expectedKey = SyncPrefs.encodeUploadedKey("content://tree/primary:DCIM", "Camera", "IMG_0001.jpg")
+
+        assertEquals(setOf(expectedKey), syncPrefs.getUploadedAssetKeys())
+    }
 }

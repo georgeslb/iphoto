@@ -62,6 +62,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.launch
+import org.iphoto.mobile.data.SyncPrefs
 import org.iphoto.mobile.sync.LocalAsset
 import org.iphoto.mobile.ui.common.PhotoThumbnail
 
@@ -193,10 +194,12 @@ fun SyncScreen(
                 ) { pageIndex ->
                     val folder = state.selectedFolders[pageIndex]
                     FolderContentGrid(
+                        folderUri = folder.uri,
                         items = state.folderContents[folder.uri],
                         isLoading = state.isLoadingFolderContents.contains(folder.uri),
                         isSelectionMode = state.isSelectionMode,
                         selectedAssetUris = state.selectedAssets,
+                        uploadedAssetKeys = state.uploadedAssetKeys,
                         onAssetLongClick = viewModel::enterSelectionMode,
                         onAssetSelectClick = { asset ->
                             if (!state.isSelectionMode) {
@@ -361,10 +364,12 @@ fun SyncScreen(
 
 @Composable
 fun FolderContentGrid(
+    folderUri: Uri,
     items: List<GridItem>?,
     isLoading: Boolean,
     isSelectionMode: Boolean,
     selectedAssetUris: Set<Uri>,
+    uploadedAssetKeys: Set<String>,
     onAssetClick: (LocalAsset) -> Unit,
     onAssetLongClick: (LocalAsset) -> Unit,
     onAssetSelectClick: (LocalAsset) -> Unit,
@@ -422,11 +427,16 @@ fun FolderContentGrid(
                 }
                 is GridItem.Asset -> {
                     val asset = item.asset
+                    val exactKey = SyncPrefs.encodeUploadedKey(folderUri.toString(), asset.relativeDir, asset.displayName)
+                    val decodedKey = SyncPrefs.encodeUploadedKey(Uri.decode(folderUri.toString()), asset.relativeDir, asset.displayName)
+                    val isUploaded = uploadedAssetKeys.contains(exactKey) || uploadedAssetKeys.contains(decodedKey)
                     PhotoThumbnail(
                         imageUrl = asset.uri.toString(),
                         isVideo = asset.mimeType.startsWith("video/"),
+                        duration = asset.duration,
                         isSelectionMode = isSelectionMode,
                         isSelected = selectedAssetUris.contains(asset.uri),
+                        isUploaded = isUploaded,
                         onLongClick = { onAssetLongClick(asset) },
                         onSelectClick = { onAssetSelectClick(asset) },
                         modifier = Modifier.aspectRatio(1f),

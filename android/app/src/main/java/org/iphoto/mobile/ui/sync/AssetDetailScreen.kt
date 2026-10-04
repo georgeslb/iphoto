@@ -280,7 +280,7 @@ fun AssetDetailScreen(
                                 coroutineScope.launch {
                                     isUploading = true
                                     try {
-                                        val verified = viewModel.uploadAndVerify(listOf(currentAsset), spaceId)
+                                        val verified = viewModel.uploadAndVerify(listOf(currentAsset), spaceId, targetFolderUri = folder?.uri)
                                         isUploading = false
                                         if (verified.isNotEmpty()) {
                                             Toast.makeText(context, "Uploaded successfully", Toast.LENGTH_SHORT).show()
@@ -377,7 +377,7 @@ fun AssetDetailScreen(
                             coroutineScope.launch {
                                 isUploading = true
                                 try {
-                                    val verified = viewModel.uploadAndVerify(listOf(currentAsset), spaceId)
+                                    val verified = viewModel.uploadAndVerify(listOf(currentAsset), spaceId, targetFolderUri = folder?.uri)
                                     isUploading = false
                                     if (verified.isNotEmpty()) {
                                         handleSingleAssetTrash()

@@ -1,6 +1,7 @@
 package org.iphoto.mobile.sync
 
 import android.content.Context
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 
@@ -38,6 +39,9 @@ object LocalFolderScanner {
                 else -> {
                     val mimeType = child.mimeType.orEmpty()
                     if (mimeType.startsWith("image/") || mimeType.startsWith("video/")) {
+                        val duration = if (mimeType.startsWith("video/")) {
+                            extractVideoDuration(context, child.uri)
+                        } else null
                         out.add(
                             LocalAsset(
                                 uri = child.uri,
@@ -45,12 +49,28 @@ object LocalFolderScanner {
                                 size = child.size,
                                 lastModified = child.lastModified,
                                 mimeType = mimeType,
-                                relativeDir = relativeDir
+                                relativeDir = relativeDir,
+                                duration = duration
                             )
                         )
                     }
                 }
             }
+        }
+    }
+
+    private fun extractVideoDuration(context: Context, uri: Uri): Long? {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(context, uri)
+            val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+            durationStr?.toLongOrNull()
+        } catch (_: Exception) {
+            null
+        } finally {
+            try {
+                retriever.release()
+            } catch (_: Exception) {}
         }
     }
 }

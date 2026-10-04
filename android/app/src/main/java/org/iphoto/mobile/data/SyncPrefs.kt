@@ -125,6 +125,18 @@ class SyncPrefs internal constructor(private val prefs: SharedPreferences) {
         get() = prefs.getString(KEY_DEFAULT_EDITOR_PACKAGE, null)
         set(value) = prefs.edit().putString(KEY_DEFAULT_EDITOR_PACKAGE, value).apply()
 
+    fun recordUploadedAsset(folderUri: String, relativeDir: String, displayName: String) {
+        val key = encodeUploadedKey(folderUri, relativeDir, displayName)
+        val current = getUploadedAssetKeys().toMutableSet()
+        current.add(key)
+        prefs.edit().putStringSet(KEY_UPLOADED_ASSETS, current).commit()
+    }
+
+    fun getUploadedAssetKeys(): Set<String> {
+        val set = prefs.getStringSet(KEY_UPLOADED_ASSETS, null)
+        return set?.toSet() ?: emptySet()
+    }
+
     companion object {
         private const val PREFS_NAME = "iphoto_sync_prefs"
         private const val KEY_SPACE_ID = "space_id"
@@ -136,6 +148,10 @@ class SyncPrefs internal constructor(private val prefs: SharedPreferences) {
         private const val KEY_MOVED_TO_MAIN_ASSETS = "moved_to_main_assets"
         private const val KEY_SELECTED_FOLDERS = "selected_folders"
         private const val KEY_DEFAULT_EDITOR_PACKAGE = "default_editor_package"
+        private const val KEY_UPLOADED_ASSETS = "uploaded_assets"
+
+        fun encodeUploadedKey(folderUri: String, relativeDir: String, displayName: String): String =
+            "$folderUri$FIELD_SEPARATOR$relativeDir$FIELD_SEPARATOR$displayName"
 
         // Each entry is "hash<SEP>title<SEP>photoId" - a plain delimiter rather than a JSON
         // dependency this module otherwise has no need for. \u0001 (not a printable character)

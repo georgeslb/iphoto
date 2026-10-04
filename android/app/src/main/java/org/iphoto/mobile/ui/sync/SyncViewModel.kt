@@ -57,6 +57,7 @@ data class SyncUiState(
     val selectedAssets: Set<Uri> = emptySet(),
     val isUploading: Boolean = false,
     val error: String? = null,
+    val uploadedAssetKeys: Set<String> = emptySet(),
 )
 
 class SyncViewModel(
@@ -133,12 +134,16 @@ class SyncViewModel(
         return task
     }
 
-    suspend fun uploadAndVerify(assets: List<LocalAsset>, spaceId: String): List<LocalAsset> {
+    suspend fun uploadAndVerify(
+        assets: List<LocalAsset>,
+        spaceId: String,
+        targetFolderUri: Uri? = null
+    ): List<LocalAsset> {
         val successful = mutableListOf<LocalAsset>()
         _uiState.update { it.copy(isUploading = true, error = null) }
         try {
             for (asset in assets) {
-                val folderUri = findAssetAndFolder(asset.uri)?.second?.uri
+                val folderUri = targetFolderUri ?: findAssetAndFolder(asset.uri)?.second?.uri
                 val uploadItem = UploadItem(
                     asset = asset,
                     folderUri = folderUri,
@@ -162,6 +167,11 @@ class SyncViewModel(
                     )
                     if (task != null && task.status != "FAILED") {
                         successful.add(asset)
+                        val folderUriStr = folderUri?.toString().orEmpty()
+                        syncPrefs.recordUploadedAsset(folderUriStr, asset.relativeDir, asset.displayName)
+                        val key = SyncPrefs.encodeUploadedKey(folderUriStr, asset.relativeDir, asset.displayName)
+                        _uiState.update { it.copy(uploadedAssetKeys = it.uploadedAssetKeys + key) }
+
                         val terminalStatus = when (task.status) {
                             "IGNORED" -> UploadStatus.IGNORED
                             "TRASHED" -> UploadStatus.TRASHED
@@ -215,8 +225,21 @@ class SyncViewModel(
     init {
         loadSpaces()
         loadPersistedFolders()
+        loadUploadedAssets()
         setupMediaStoreObserver()
         setupFolderChangeObserver()
+    }
+
+    private fun loadUploadedAssets() {
+        _uiState.update { it.copy(uploadedAssetKeys = syncPrefs.getUploadedAssetKeys()) }
+    }
+
+    fun isAssetUploaded(folderUri: Uri, asset: LocalAsset): Boolean {
+        val exactKey = SyncPrefs.encodeUploadedKey(folderUri.toString(), asset.relativeDir, asset.displayName)
+        if (_uiState.value.uploadedAssetKeys.contains(exactKey)) return true
+        val decodedFolder = Uri.decode(folderUri.toString())
+        val fallbackKey = SyncPrefs.encodeUploadedKey(decodedFolder, asset.relativeDir, asset.displayName)
+        return _uiState.value.uploadedAssetKeys.contains(fallbackKey)
     }
 
     private fun setupFolderChangeObserver() {

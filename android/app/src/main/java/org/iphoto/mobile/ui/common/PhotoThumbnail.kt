@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -53,6 +54,7 @@ fun PhotoThumbnail(
     duration: Long? = null,
     isSelectionMode: Boolean = false,
     isSelected: Boolean = false,
+    isUploaded: Boolean = false,
     onLongClick: (() -> Unit)? = null,
     onSelectClick: (() -> Unit)? = null,
     onClick: () -> Unit
@@ -63,6 +65,7 @@ fun PhotoThumbnail(
     duration = duration,
     isSelectionMode = isSelectionMode,
     isSelected = isSelected,
+    isUploaded = isUploaded,
     onLongClick = onLongClick,
     onSelectClick = onSelectClick,
     onClick = onClick
@@ -77,6 +80,7 @@ fun PhotoThumbnail(
     duration: Long? = null,
     isSelectionMode: Boolean = false,
     isSelected: Boolean = false,
+    isUploaded: Boolean = false,
     onLongClick: (() -> Unit)? = null,
     onSelectClick: (() -> Unit)? = null,
     onClick: () -> Unit
@@ -98,6 +102,26 @@ fun PhotoThumbnail(
         if (isSelected) {
             Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.3f)))
         }
+
+        // Uploaded status cloud icon badge in the top-right corner
+        if (isUploaded && !isSelectionMode) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(5.dp)
+                    .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                    .padding(3.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.CloudDone,
+                    contentDescription = "Uploaded",
+                    tint = Color.White,
+                    modifier = Modifier.size(13.dp)
+                )
+            }
+        }
+
         // Standard Photos-app grid convention: video thumbnails show a badge with video length
         // (if known) to the left of the play glyph, matching Google Photos / Apple Photos. Hidden
         // once selection mode is on so it doesn't fight visually with the selection checkmark.
