@@ -8,9 +8,19 @@
 #     (rsync below has no --delete for this leg) - iphoto itself never deletes originals either
 #     (see Dockerfile's iphoto-logs comment), so this backup shouldn't silently start deleting the
 #     one copy that would let you undo a mistake.
-#   - Postgres dumps: kept for DB_DUMP_RETENTION_DAYS days (default 30) and then pruned, both
-#     locally and on the NAS, since keeping every nightly dump forever forever is unbounded growth
-#     for no benefit a 30-day window doesn't already cover.
+#   - Postgres dumps: a gzipped plain-text dump is created locally, moved to the NAS, and the
+#     local copy is removed. Dumps older than DB_DUMP_RETENTION_DAYS (default 30) are pruned
+#     from the NAS.
+#
+# To restore a database dump:
+#   1. Copy the desired dump file from the NAS (e.g., iphoto-2026-10-11_020000.sql.gz).
+#   2. Run the following command, replacing placeholders for your environment. This example
+#      uses `docker exec` to run psql inside the running database container (likely 'iphoto-db').
+#      gunzip -c iphoto-2026-10-11_020000.sql.gz | docker exec -i iphoto-db psql -U "${PGUSER}" -d "${PGDATABASE}"
+#
+#   3. Alternatively, if connecting directly to the database from a machine with psql:
+#      gunzip -c iphoto-2026-10-11_020000.sql.gz | psql -h "${PGHOST}" -p "${PGPORT:-5432}" -U "${PGUSER}" -d "${PGDATABASE}"
+#
 set -uo pipefail
 
 # --- config / validation -----------------------------------------------------------------------
@@ -44,7 +54,7 @@ REPORT_DIR="/backup/reports"
 
 RUN_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 RUN_STAMP="$(date -u +%Y-%m-%d_%H%M%S)"
-DUMP_FILE="${DUMP_DIR}/iphoto-${RUN_STAMP}.dump"
+DUMP_FILE="${DUMP_DIR}/iphoto-${RUN_STAMP}.sql.gz"
 REPORT_FILE="${REPORT_DIR}/report-${RUN_STAMP}.txt"
 ASSETS_RSYNC_LOG="$(mktemp)"
 
@@ -100,9 +110,8 @@ rm -f "${ASSETS_RSYNC_LOG}"
 # --- 2. dump the full iphoto database -----------------------------------------------------------
 echo "== database dump ==" | tee -a "${REPORT_FILE}"
 export PGPASSWORD
-# Custom format (-Fc): compressed on its own and restorable selectively with pg_restore, unlike a
-# plain SQL dump piped through gzip.
-if pg_dump -h "${PGHOST}" -p "${PGPORT:-5432}" -U "${PGUSER}" -d "${PGDATABASE}" -Fc -f "${DUMP_FILE}"; then
+# Create a plain-text SQL dump and compress it with gzip.
+if pg_dump -h "${PGHOST}" -p "${PGPORT:-5432}" -U "${PGUSER}" -d "${PGDATABASE}" | gzip > "${DUMP_FILE}"; then
     DUMP_SIZE="$(du -h "${DUMP_FILE}" | cut -f1)"
     echo "dump file: ${DUMP_FILE} (${DUMP_SIZE})" >> "${REPORT_FILE}"
 else
@@ -111,31 +120,80 @@ else
 fi
 echo >> "${REPORT_FILE}"
 
-# --- 3. enforce the dump retention window, then mirror the dump directory to the NAS ------------
-# Locally: delete dumps older than the retention window before syncing, so a stale local disk
-# never accumulates them either.
-echo "== dump retention (${DB_DUMP_RETENTION_DAYS} days) ==" | tee -a "${REPORT_FILE}"
-PRUNED="$(find "${DUMP_DIR}" -maxdepth 1 -name 'iphoto-*.dump' -mtime "+${DB_DUMP_RETENTION_DAYS}" -print -delete)"
-if [ -n "${PRUNED}" ]; then
-    echo "pruned locally (older than ${DB_DUMP_RETENTION_DAYS}d):" >> "${REPORT_FILE}"
-    echo "${PRUNED}" | sed 's/^/  /' >> "${REPORT_FILE}"
+# --- 3. sync dump to NAS, then prune old dumps --------------------------------------------------
+echo "== database sync and prune ==" | tee -a "${REPORT_FILE}"
+
+# Sync the new dump to the NAS. If successful, remove the local copy.
+if rsync -a --human-readable \
+        -e "${RSYNC_SSH}" \
+        "${DUMP_FILE}" "${REMOTE}:${NAS_DB_DUMPS_PATH}/" >> "${REPORT_FILE}" 2>&1; then
+    echo "dump sync to NAS: OK" >> "${REPORT_FILE}"
+    rm -f "${DUMP_FILE}"
 else
-    echo "nothing to prune locally" >> "${REPORT_FILE}"
+    fail "rsync of ${DUMP_FILE} to ${REMOTE}:${NAS_DB_DUMPS_PATH} failed"
 fi
 
-# Remote: --delete here is intentional and scoped to ONLY the db-dumps path (never the assets
-# leg above) - it mirrors the already-pruned local directory, so dumps older than the retention
-# window are removed from the NAS too instead of accumulating there forever.
-if rsync -a --human-readable --delete \
-        -e "${RSYNC_SSH}" \
-        "${DUMP_DIR}/" "${REMOTE}:${NAS_DB_DUMPS_PATH}/" >> "${REPORT_FILE}" 2>&1; then
-    echo "dump sync: OK" >> "${REPORT_FILE}"
+# Prune old dumps from the NAS directly.
+echo "pruning old dumps on NAS (older than ${DB_DUMP_RETENTION_DAYS} days)..." >> "${REPORT_FILE}"
+SSH_CMD_STR="find '${NAS_DB_DUMPS_PATH}' -maxdepth 1 -name 'iphoto-*.sql.gz' -mtime '+${DB_DUMP_RETENTION_DAYS}' -print -delete"
+PRUNED_REMOTE="$(ssh "${SSH_OPTS[@]}" "${REMOTE}" "${SSH_CMD_STR}")"
+SSH_EXIT_CODE=$?
+
+if [ ${SSH_EXIT_CODE} -eq 0 ]; then
+    if [ -n "${PRUNED_REMOTE}" ]; then
+        echo "pruned from NAS:" >> "${REPORT_FILE}"
+        echo "${PRUNED_REMOTE}" | sed 's/^/  /' >> "${REPORT_FILE}"
+    else
+        echo "nothing to prune on NAS" >> "${REPORT_FILE}"
+    fi
 else
-    fail "rsync of ${DUMP_DIR} to ${REMOTE}:${NAS_DB_DUMPS_PATH} failed"
+    # NB: `find` can exit with a non-zero status for various reasons, but with `-delete`,
+    # a non-zero exit usually indicates a more significant error than "not found".
+    fail "remote pruning on ${REMOTE} failed with exit code ${SSH_EXIT_CODE}"
 fi
 echo >> "${REPORT_FILE}"
 
-# --- 4. finalize and ship the report itself -----------------------------------------------------
+# --- 4. Report Retention ------------------------------------------------------------------------
+{
+    echo "== report retention =="
+    echo
+    echo "--- local reports ---"
+    echo "pruning local reports older than 10 days..."
+    PRUNED_LOCAL_REPORTS="$(find "${REPORT_DIR}" -maxdepth 1 -name 'report-*.txt' -mtime +9 -print -delete)"
+    if [ -n "${PRUNED_LOCAL_REPORTS}" ]; then
+        echo "pruned from local server:"
+        echo "${PRUNED_LOCAL_REPORTS}" | sed 's/^/  /'
+    else
+        echo "nothing to prune locally"
+    fi
+    echo
+
+    echo "--- remote reports (NAS) ---"
+    echo "gzipping reports older than 10 days, deleting reports older than 60 days..."
+    REMOTE_CMD="
+find '${NAS_REPORTS_PATH}' -maxdepth 1 -name 'report-*.txt' -mtime +9 -print -exec gzip {} +;
+find '${NAS_REPORTS_PATH}' -maxdepth 1 -name 'report-*.txt*' -mtime +59 -print -delete;
+"
+    REMOTE_RETENTION_OUTPUT="$(ssh "${SSH_OPTS[@]}" "${REMOTE}" "${REMOTE_CMD}")"
+    SSH_EXIT_CODE=${?}
+
+    if [ ${SSH_EXIT_CODE} -eq 0 ]; then
+        if [ -n "${REMOTE_RETENTION_OUTPUT}" ]; then
+            echo "actions on NAS:"
+            echo "${REMOTE_RETENTION_OUTPUT}" | sed 's/^/  /'
+        else
+            echo "no reports to gzip or delete on NAS"
+        fi
+    else
+        echo "ERROR: remote report management on ${REMOTE} failed with exit code ${SSH_EXIT_CODE}"
+        # Not using fail() here because we want to finalize the report first.
+        STATUS=1
+    fi
+} >> "${REPORT_FILE}"
+echo >> "${REPORT_FILE}"
+
+
+# --- 5. Finalize and ship report ----------------------------------------------------------------
 {
     echo "== summary =="
     echo "run finished: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -146,10 +204,14 @@ echo >> "${REPORT_FILE}"
     fi
 } >> "${REPORT_FILE}"
 
+# Output the full report to the container's logs
 cat "${REPORT_FILE}"
 
+# Finally, copy the report to the NAS.
 if ! rsync -a -e "${RSYNC_SSH}" "${REPORT_FILE}" "${REMOTE}:${NAS_REPORTS_PATH}/"; then
     echo "WARNING: failed to copy report to ${REMOTE}:${NAS_REPORTS_PATH}" >&2
+    # If this fails, the overall run is still a success if everything else worked.
+    # The error is logged, which is sufficient.
 fi
 
 exit "${STATUS}"
