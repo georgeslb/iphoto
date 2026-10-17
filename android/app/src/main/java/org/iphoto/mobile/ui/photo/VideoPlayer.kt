@@ -46,22 +46,20 @@ fun VideoPlayer(
     val exoPlayer = remember(streamUrl) {
         Log.d(TAG, "Creating ExoPlayer for $streamUrl (mimeType=$mimeType)")
         val renderersFactory = androidx.media3.exoplayer.DefaultRenderersFactory(context).apply {
-            forceEnableMediaCodecAsynchronousQueueing()
             setEnableDecoderFallback(true)
         }
 
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                /* minBufferMs = */ 30_000,
-                /* maxBufferMs = */ 60_000,
-                /* bufferForPlaybackMs = */ 2_500,
-                /* bufferForPlaybackAfterRebufferMs = */ 5_000
+                /* minBufferMs = */ 15_000,
+                /* maxBufferMs = */ 30_000,
+                /* bufferForPlaybackMs = */ 500,
+                /* bufferForPlaybackAfterRebufferMs = */ 1_500
             )
             .setBackBuffer(
-                /* backBufferDurationMs = */ 15_000,
+                /* backBufferDurationMs = */ 5_000,
                 /* retainBackBufferFromKeyframe = */ true
             )
-            .setTargetBufferBytes(128 * 1024 * 1024)
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
 
@@ -70,15 +68,24 @@ fun VideoPlayer(
             .apply { if (!mimeType.isNullOrBlank()) setMimeType(mimeType) }
             .build()
 
+        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+            .setLoadErrorHandlingPolicy(
+                androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy(/* minimumLoadableRetryCount = */ 10)
+            )
+
         ExoPlayer.Builder(context, renderersFactory)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+            .setMediaSourceFactory(mediaSourceFactory)
             .setLoadControl(loadControl)
             .build()
             .apply {
                 setMediaItem(mediaItem)
                 playWhenReady = true
+                var errorRecoveryCount = 0
                 addListener(object : Player.Listener {
                     override fun onIsPlayingChanged(isPlaying: Boolean) {
+                        if (isPlaying) {
+                            errorRecoveryCount = 0
+                        }
                         Log.d(TAG, "isPlaying=$isPlaying (playbackState=$playbackState, playWhenReady=$playWhenReady)")
                     }
 
@@ -95,6 +102,12 @@ fun VideoPlayer(
 
                     override fun onPlayerError(error: PlaybackException) {
                         Log.e(TAG, "Player error (errorCode=${error.errorCodeName})", error)
+                        if (errorRecoveryCount < 3 && playWhenReady) {
+                            errorRecoveryCount++
+                            Log.w(TAG, "Attempting player recovery ($errorRecoveryCount/3) at pos=$currentPosition")
+                            seekTo(currentPosition.coerceAtLeast(0L))
+                            prepare()
+                        }
                     }
                 })
                 prepare()
@@ -133,6 +146,7 @@ fun VideoPlayer(
             PlayerView(viewContext).apply {
                 player = exoPlayer
                 useController = true
+                setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
             }
         },
         update = { playerView ->

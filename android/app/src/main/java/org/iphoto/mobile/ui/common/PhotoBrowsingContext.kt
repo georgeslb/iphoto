@@ -1,5 +1,7 @@
 package org.iphoto.mobile.ui.common
 
+import org.iphoto.mobile.model.Photo
+
 /**
  * Ordered photo IDs currently shown in whichever grid (Library/Album/Space) the lightbox was
  * opened from - lets PhotoDetailScreen show next/previous arrows without threading the whole,
@@ -13,4 +15,12 @@ package org.iphoto.mobile.ui.common
  */
 object PhotoBrowsingContext {
     var photoIds: List<String> = emptyList()
+    private var photosById: Map<String, Photo> = emptyMap()
+
+    fun updatePhotos(photos: List<Photo>) {
+        photoIds = photos.map { it.id }
+        photosById = photos.associateBy { it.id }
+    }
+
+    fun getPhoto(id: String): Photo? = photosById[id]
 }
