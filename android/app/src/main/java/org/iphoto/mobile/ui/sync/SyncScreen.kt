@@ -83,7 +83,6 @@ fun SyncScreen(
 
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showSpacePicker by remember { mutableStateOf<((String) -> Unit)?>(null) }
-    var showUploadAndTrashConfirm by remember { mutableStateOf(false) }
     var pendingTrashAssets by remember { mutableStateOf<List<LocalAsset>?>(null) }
 
     val mediaPermissionLauncher = rememberLauncherForActivityResult(
@@ -131,7 +130,7 @@ fun SyncScreen(
         pendingTrashAssets = null
     }
 
-    fun handleMoveToTrash(targetAssets: List<LocalAsset>? = null) {
+    fun handleMoveToTrash(targetAssets: List<LocalAsset>? = null, confirmFallback: Boolean = false) {
         val selected = state.selectedAssets
         val assets = targetAssets ?: state.folderContents.values.flatten()
             .filterIsInstance<GridItem.Asset>()
@@ -150,6 +149,10 @@ fun SyncScreen(
             } catch (e: Exception) {
                 Log.w(TAG, "createTrashRequest failed: ${e.message}")
             }
+        }
+        if (confirmFallback) {
+            showDeleteConfirm = true
+            return
         }
         viewModel.trashAssetsDirectly(assets)
         pendingTrashAssets = null
@@ -274,7 +277,7 @@ fun SyncScreen(
                     }
                     Row {
                         IconButton(
-                            onClick = { showDeleteConfirm = true },
+                            onClick = { handleMoveToTrash(confirmFallback = true) },
                             enabled = state.selectedAssets.isNotEmpty() && !state.isUploading
                         ) {
                             Icon(Icons.Default.Delete, contentDescription = "Move to trash")
@@ -303,7 +306,34 @@ fun SyncScreen(
                             Icon(Icons.Default.Upload, contentDescription = "Upload")
                         }
                         IconButton(
-                            onClick = { showUploadAndTrashConfirm = true },
+                            onClick = {
+                                showSpacePicker = { spaceId ->
+                                    coroutineScope.launch {
+                                        val selected = state.selectedAssets
+                                        val assets = state.folderContents.values.flatten()
+                                            .filterIsInstance<GridItem.Asset>()
+                                            .map { it.asset }
+                                            .filter { it.uri in selected }
+
+                                        // Step 1: Upload chunks. Step 2: Poll back office task until finished.
+                                        val verified = viewModel.uploadAndVerify(assets, spaceId)
+
+                                        if (verified.size == assets.size) {
+                                            Toast.makeText(context, "${verified.summaryMessage()}. Moving to trash.", Toast.LENGTH_SHORT).show()
+                                            handleMoveToTrash(verified.allVerified)
+                                        } else if (verified.isNotEmpty()) {
+                                            Toast.makeText(
+                                                context,
+                                                "${verified.summaryMessage()} (${verified.size}/${assets.size}). Moving ${verified.size} to trash.",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                            handleMoveToTrash(verified.allVerified)
+                                        } else {
+                                            Toast.makeText(context, "Upload failed on server. No files were moved to trash.", Toast.LENGTH_LONG).show()
+                                        }
+                                    }
+                                }
+                            },
                             enabled = state.selectedAssets.isNotEmpty() && !state.isUploading
                         ) {
                             Icon(Icons.Default.DeleteForever, contentDescription = "Upload and Trash")
@@ -316,65 +346,28 @@ fun SyncScreen(
 
     if (showDeleteConfirm) {
         AlertDialog(
-            onDismissRequest = { showDeleteConfirm = false },
+            onDismissRequest = {
+                showDeleteConfirm = false
+                pendingTrashAssets = null
+            },
             title = { Text("Move to Trash?") },
             text = { Text("Move ${state.selectedAssets.size} selected file(s) to the local trash?") },
             confirmButton = {
                 TextButton(onClick = {
                     showDeleteConfirm = false
-                    handleMoveToTrash()
+                    val assets = pendingTrashAssets ?: state.folderContents.values.flatten()
+                        .filterIsInstance<GridItem.Asset>()
+                        .map { it.asset }
+                        .filter { it.uri in state.selectedAssets }
+                    pendingTrashAssets = null
+                    viewModel.trashAssetsDirectly(assets)
                 }) { Text("Move to Trash") }
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") }
-            }
-        )
-    }
-
-    if (showUploadAndTrashConfirm) {
-        AlertDialog(
-            onDismissRequest = { if (!state.isUploading) showUploadAndTrashConfirm = false },
-            title = { Text("Upload and Trash?") },
-            text = { Text("This will upload ${state.selectedAssets.size} selected file(s) to the selected Space, verify server response, and then move them to the trash. Continue?") },
-            confirmButton = {
-                TextButton(
-                    enabled = !state.isUploading,
-                    onClick = {
-                        showUploadAndTrashConfirm = false
-                        showSpacePicker = { spaceId ->
-                            coroutineScope.launch {
-                                val selected = state.selectedAssets
-                                val assets = state.folderContents.values.flatten()
-                                    .filterIsInstance<GridItem.Asset>()
-                                    .map { it.asset }
-                                    .filter { it.uri in selected }
-
-                                // Step 1: Upload chunks. Step 2: Poll back office task until finished.
-                                val verified = viewModel.uploadAndVerify(assets, spaceId)
-
-                                if (verified.size == assets.size) {
-                                    Toast.makeText(context, "${verified.summaryMessage()}. Moving to trash.", Toast.LENGTH_SHORT).show()
-                                    handleMoveToTrash(verified.allVerified)
-                                } else if (verified.isNotEmpty()) {
-                                    Toast.makeText(
-                                        context,
-                                        "${verified.summaryMessage()} (${verified.size}/${assets.size}). Moving ${verified.size} to trash.",
-                                        Toast.LENGTH_LONG
-                                    ).show()
-                                    handleMoveToTrash(verified.allVerified)
-                                } else {
-                                    Toast.makeText(context, "Upload failed on server. No files were moved to trash.", Toast.LENGTH_LONG).show()
-                                }
-                            }
-                        }
-                    }
-                ) { Text("Continue") }
-            },
-            dismissButton = {
-                TextButton(
-                    enabled = !state.isUploading,
-                    onClick = { showUploadAndTrashConfirm = false }
-                ) { Text("Cancel") }
+                TextButton(onClick = {
+                    showDeleteConfirm = false
+                    pendingTrashAssets = null
+                }) { Text("Cancel") }
             }
         )
     }

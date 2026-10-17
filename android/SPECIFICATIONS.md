@@ -185,13 +185,12 @@ NavHost
      - Displays status feedback aligned with the Web UI: `"Uploaded X photo(s)"` / `"Uploaded successfully"` (`COMPLETED`), `"Already imported"` (`IGNORED` duplicate MD5), or `"Already imported and in trash"` (`TRASHED` duplicate MD5).
      - Updates local uploaded indicator badge (`SyncPrefs`) once confirmed by server.
   2. **Upload & Trash (Téléverser et supprimer):**
-     - Opens confirmation dialog, then Space Picker dialog (refreshing the Spaces list).
+     - Opens Space Picker dialog directly (refreshing the Spaces list) without a redundant pre-upload confirmation dialog.
      - Uploads asset(s) concurrently and polls backend processing task (`/api/tasks/{id}`).
-     - Upon verified server response (`COMPLETED`, `IGNORED`, or `TRASHED`), moves local file(s) to device trash and removes their uploaded state from `SyncPrefs`.
+     - Upon verified server response (`COMPLETED`, `IGNORED`, or `TRASHED`), requests native OS trash confirmation via `MediaStore.createTrashRequest` (API 30+, showing a single system confirmation prompt) or moves local file(s) to `.iPhotoTrash` fallback, and removes their uploaded state from `SyncPrefs` and `HashCache`.
   3. **Delete / Move to Trash (Supprimer):**
-     - Confirms deletion.
-     - Requests native OS trash confirmation via `MediaStore.createTrashRequest` (API 30+).
-     - Fallback to hidden `.iPhotoTrash` directory in folder root for non-MediaStore URIs or API < 30.
+     - Requests native OS trash confirmation directly via `MediaStore.createTrashRequest` (API 30+) so only a single confirmation dialog is displayed.
+     - Fallback to confirmation dialog + hidden `.iPhotoTrash` directory in folder root for non-MediaStore URIs or API < 30.
      - Automatically removes the deleted file's uploaded-to-cloud state from `SyncPrefs` and purges its cached MD5 hash from `HashCache` (`sync_hash_cache.json`) on the device (also pruned during folder scans if deleted externally or when a folder tab is closed).
 
 ---

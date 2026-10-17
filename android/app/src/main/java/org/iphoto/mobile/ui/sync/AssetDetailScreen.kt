@@ -89,7 +89,6 @@ fun AssetDetailScreen(
 
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showSpacePicker by remember { mutableStateOf<((String) -> Unit)?>(null) }
-    var showUploadAndTrashConfirm by remember { mutableStateOf(false) }
     var isUploading by remember { mutableStateOf(false) }
 
     val trashLauncher = rememberLauncherForActivityResult(
@@ -101,7 +100,7 @@ fun AssetDetailScreen(
         }
     }
 
-    fun handleSingleAssetTrash() {
+    fun handleSingleAssetTrash(confirmFallback: Boolean = false) {
         val mediaUris = viewModel.getMediaUrisForAssets(listOf(currentAsset))
         if (mediaUris.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             try {
@@ -111,6 +110,10 @@ fun AssetDetailScreen(
             } catch (e: Exception) {
                 Log.w(TAG, "createTrashRequest failed: ${e.message}")
             }
+        }
+        if (confirmFallback) {
+            showDeleteConfirm = true
+            return
         }
         viewModel.trashAssetsDirectly(listOf(currentAsset))
         onBack()
@@ -154,7 +157,7 @@ fun AssetDetailScreen(
                 ) {
                     IconButton(
                         enabled = !isUploading,
-                        onClick = { showDeleteConfirm = true }
+                        onClick = { handleSingleAssetTrash(confirmFallback = true) }
                     ) {
                         Icon(Icons.Default.Delete, contentDescription = "Move to Trash")
                     }
@@ -184,7 +187,34 @@ fun AssetDetailScreen(
                     }
                     IconButton(
                         enabled = !isUploading,
-                        onClick = { showUploadAndTrashConfirm = true }
+                        onClick = {
+                            showSpacePicker = { spaceId ->
+                                coroutineScope.launch {
+                                    isUploading = true
+                                    try {
+                                        val verified = viewModel.uploadAndVerify(
+                                            listOf(currentAsset),
+                                            spaceId,
+                                            targetFolderUri = folder?.uri
+                                        )
+                                        isUploading = false
+                                        if (verified.isNotEmpty()) {
+                                            Toast.makeText(
+                                                context,
+                                                "${verified.summaryMessage(singleAsset = true)} - moved to trash",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                            handleSingleAssetTrash()
+                                        } else {
+                                            Toast.makeText(context, "Upload verification failed", Toast.LENGTH_SHORT).show()
+                                        }
+                                    } catch (e: Exception) {
+                                        isUploading = false
+                                        Toast.makeText(context, "Failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+                        }
                     ) {
                         Icon(Icons.Default.DeleteForever, contentDescription = "Upload and Trash")
                     }
@@ -241,53 +271,12 @@ fun AssetDetailScreen(
             confirmButton = {
                 TextButton(onClick = {
                     showDeleteConfirm = false
-                    handleSingleAssetTrash()
+                    viewModel.trashAssetsDirectly(listOf(currentAsset))
+                    onBack()
                 }) { Text("Move to Trash") }
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") }
-            }
-        )
-    }
-
-    if (showUploadAndTrashConfirm) {
-        AlertDialog(
-            onDismissRequest = { showUploadAndTrashConfirm = false },
-            title = { Text("Upload and Trash?") },
-            text = { Text("Upload '${currentAsset.displayName}' to server, and if verified, move it to the local trash?") },
-            confirmButton = {
-                TextButton(onClick = {
-                    showUploadAndTrashConfirm = false
-                    showSpacePicker = { spaceId ->
-                        coroutineScope.launch {
-                            isUploading = true
-                            try {
-                                val verified = viewModel.uploadAndVerify(
-                                    listOf(currentAsset),
-                                    spaceId,
-                                    targetFolderUri = folder?.uri
-                                )
-                                isUploading = false
-                                if (verified.isNotEmpty()) {
-                                    Toast.makeText(
-                                        context,
-                                        "${verified.summaryMessage(singleAsset = true)} - moved to trash",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                    handleSingleAssetTrash()
-                                } else {
-                                    Toast.makeText(context, "Upload verification failed", Toast.LENGTH_SHORT).show()
-                                }
-                            } catch (e: Exception) {
-                                isUploading = false
-                                Toast.makeText(context, "Failed: ${e.message}", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    }
-                }) { Text("Continue") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showUploadAndTrashConfirm = false }) { Text("Cancel") }
             }
         )
     }
