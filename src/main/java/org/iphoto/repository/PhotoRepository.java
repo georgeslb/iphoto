@@ -146,7 +146,7 @@ public interface PhotoRepository extends JpaRepository<PhotoEntity, UUID> {
     // inconsistent with what will actually happen when it uploads. A projection to just the hash
     // string, never the photo id/owner, keeps this from becoming a cross-user existence oracle
     // beyond "this exact byte content is stored somewhere."
-    @Query("SELECT p.fileHash FROM PhotoEntity p WHERE p.fileHash IN :hashes")
+    @Query("SELECT DISTINCT p.fileHash FROM PhotoEntity p WHERE p.fileHash IN :hashes")
     List<String> findExistingFileHashes(@Param("hashes") Collection<String> hashes);
 
     Set<PhotoEntity> findByIdIn(List<UUID> photoId);

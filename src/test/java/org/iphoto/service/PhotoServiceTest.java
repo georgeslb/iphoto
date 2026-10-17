@@ -374,8 +374,12 @@ class PhotoServiceTest extends AbstractIntegrationTest {
                         .content(objectMapper.writeValueAsString(new CheckHashesRequest(List.of(hash, "not-a-real-hash")))))
                 .andExpect(status().isOk())
                 .andReturn();
-        JsonNode existingHashes = objectMapper.readTree(hashesResult.getResponse().getContentAsString()).get("existingHashes");
+        JsonNode responseTree = objectMapper.readTree(hashesResult.getResponse().getContentAsString());
+        JsonNode existingHashes = responseTree.get("existingHashes");
         assertThat(existingHashes).extracting(JsonNode::asText).contains(hash).doesNotContain("not-a-real-hash");
+        JsonNode statuses = responseTree.get("statuses");
+        assertThat(statuses.get(hash).asBoolean()).isTrue();
+        assertThat(statuses.get("not-a-real-hash").asBoolean()).isFalse();
     }
 
     @Test
