@@ -2,6 +2,8 @@ package org.iphoto.mobile.network
 
 import okhttp3.MultipartBody
 import okhttp3.RequestBody
+import org.iphoto.mobile.model.CheckHashesRequest
+import org.iphoto.mobile.model.CheckHashesResponse
 import org.iphoto.mobile.model.Photo
 import org.iphoto.mobile.model.PhotoPageResponse
 import org.iphoto.mobile.model.SpringPage
@@ -64,6 +66,9 @@ interface PhotoApi {
         @Part("spaceId") spaceId: RequestBody,
         @Part chunk: MultipartBody.Part
     ): UploadChunkResponse
+
+    @POST("api/photos/check-hashes")
+    suspend fun checkHashes(@Body request: CheckHashesRequest): CheckHashesResponse
 
     @POST("api/photos/garbage")
     suspend fun moveToGarbage(@Body ids: List<String>)

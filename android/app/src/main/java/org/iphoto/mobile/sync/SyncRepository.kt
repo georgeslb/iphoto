@@ -8,6 +8,7 @@ import android.os.Build
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -16,6 +17,7 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.iphoto.mobile.model.CheckHashesRequest
 import org.iphoto.mobile.model.Photo
 import org.iphoto.mobile.model.TaskDTO
 import org.iphoto.mobile.network.PhotoApi
@@ -142,9 +144,92 @@ class SyncRepository(
 
     private suspend fun hashOf(asset: LocalAsset): String =
         hashCache.get(asset.uri.toString(), asset.size, asset.lastModified)
-            ?: FileHasher.md5(context, asset.uri).also {
+            ?: FileHasher.md5(
+                context,
+                asset.uri,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) toMediaStoreUri(asset) else null
+            ).also {
                 hashCache.put(asset.uri.toString(), asset.size, asset.lastModified, it)
             }
+
+    /**
+     * Queries `POST /api/photos/check-hashes` for a single batch of MD5 hashes and returns
+     * a map of each hash to its server existence boolean.
+     */
+    suspend fun checkHashesBatch(hashes: List<String>): Map<String, Boolean> {
+        if (hashes.isEmpty()) return emptyMap()
+        val response = photoApi.checkHashes(CheckHashesRequest(hashes))
+        return hashes.associateWith { hash -> response.isExisting(hash) }
+    }
+
+    /**
+     * Computes MD5 hashes for [assets] (using [hashCache] first and persisting newly computed
+     * hashes to local storage) and queries the remote server in batches of [batchSize] (50 by
+     * default) via `POST /api/photos/check-hashes`. Invokes [onBatchVerified] after each batch
+     * with the per-asset existence status returned by the server.
+     */
+    suspend fun verifyFolderAssetsHashesInBatches(
+        assets: List<LocalAsset>,
+        batchSize: Int = HASH_CHECK_BATCH_SIZE,
+        onBatchVerified: suspend (List<Pair<LocalAsset, Boolean>>) -> Unit
+    ) = withContext(Dispatchers.IO) {
+        if (assets.isEmpty()) return@withContext
+        val effectiveBatchSize = maxOf(1, batchSize)
+        val pendingBatch = mutableListOf<Pair<LocalAsset, String>>()
+
+        suspend fun flushBatch() {
+            if (pendingBatch.isEmpty()) return
+            hashCache.persist()
+            val batchSnapshot = pendingBatch.toList()
+            pendingBatch.clear()
+            val distinctHashes = batchSnapshot.map { it.second }.distinct()
+            try {
+                val statusByHash = checkHashesBatch(distinctHashes)
+                val results = batchSnapshot.map { (asset, hash) ->
+                    asset to (statusByHash[hash] == true)
+                }
+                onBatchVerified(results)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "verifyFolderAssetsHashesInBatches: checkHashes failed for batch of ${batchSnapshot.size}: ${e.message}")
+            }
+        }
+
+        for (asset in assets) {
+            val hash = try {
+                hashOf(asset)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "verifyFolderAssetsHashesInBatches: failed to hash ${asset.displayName}: ${e.message}")
+                null
+            }
+            if (hash != null) {
+                pendingBatch.add(asset to hash)
+                if (pendingBatch.size >= effectiveBatchSize) {
+                    flushBatch()
+                }
+            }
+        }
+        flushBatch()
+    }
+
+    fun removeCachedHashesForAssets(assets: List<LocalAsset>) {
+        if (assets.isEmpty()) return
+        hashCache.removeAll(assets.map { it.uri.toString() })
+    }
+
+    fun removeCachedHashesForFolder(folderUri: Uri) {
+        hashCache.removeForFolder(folderUri.toString())
+    }
+
+    fun retainCachedHashesForFolder(folderUri: Uri, existingAssets: List<LocalAsset>) {
+        hashCache.retainForFolder(
+            folderUri.toString(),
+            existingAssets.map { it.uri.toString() }.toSet()
+        )
+    }
 
     private suspend fun fetchAllSpacePhotos(spaceId: String): List<Photo> {
         val all = mutableListOf<Photo>()
@@ -181,7 +266,8 @@ class SyncRepository(
         val mediaType = asset.mimeType.toMediaTypeOrNull()
 
         var completionTask: TaskDTO? = null
-        val input = context.contentResolver.openInputStream(asset.uri)
+        val mediaStoreUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) toMediaStoreUri(asset) else null
+        val input = FileHasher.openUnredactedInputStream(context, asset.uri, mediaStoreUri)
             ?: throw IllegalStateException("Cannot open ${asset.uri}")
         input.use { stream ->
             val buffer = ByteArray(CHUNK_SIZE)
@@ -464,6 +550,7 @@ class SyncRepository(
 
     companion object {
         private const val TAG = "SyncRepository"
+        const val HASH_CHECK_BATCH_SIZE = 50
         private const val SPACE_PAGE_SIZE = 200
         private const val CHUNK_SIZE = 1 * 1024 * 1024
         private const val TASK_POLL_INTERVAL_MS = 1000L

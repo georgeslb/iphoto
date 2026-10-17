@@ -12,8 +12,10 @@ import java.io.File
  * re-hashing an entire camera roll (including large videos) on every tap would still be a real,
  * avoidable battery/time cost.
  */
-class HashCache(context: Context) {
-    private val file = File(context.applicationContext.filesDir, "sync_hash_cache.json")
+class HashCache internal constructor(private val file: File) {
+    constructor(context: Context) :
+        this(File(context.applicationContext.filesDir, "sync_hash_cache.json"))
+
     private val gson = Gson()
     private val type = object : TypeToken<MutableMap<String, CachedHash>>() {}.type
 
@@ -37,6 +39,54 @@ class HashCache(context: Context) {
     @Synchronized
     fun put(uri: String, size: Long, lastModified: Long, hash: String) {
         entries[uri] = CachedHash(size, lastModified, hash)
+    }
+
+    @Synchronized
+    fun removeAll(uris: Collection<String>): Boolean {
+        if (uris.isEmpty()) return false
+        var changed = false
+        for (uri in uris) {
+            if (entries.remove(uri) != null) {
+                changed = true
+            }
+        }
+        if (changed) {
+            persist()
+        }
+        return changed
+    }
+
+    @Synchronized
+    fun removeForFolder(folderUri: String): Boolean {
+        if (folderUri.isBlank()) return false
+        val prefixes = folderPrefixes(folderUri)
+        val changed = entries.keys.removeAll { key -> prefixes.any { key.startsWith(it) } }
+        if (changed) {
+            persist()
+        }
+        return changed
+    }
+
+    @Synchronized
+    fun retainForFolder(folderUri: String, existingAssetUris: Set<String>): Boolean {
+        if (folderUri.isBlank()) return false
+        val prefixes = folderPrefixes(folderUri)
+        val changed = entries.keys.removeAll { key ->
+            prefixes.any { key.startsWith(it) } && key !in existingAssetUris
+        }
+        if (changed) {
+            persist()
+        }
+        return changed
+    }
+
+    private fun folderPrefixes(folderUri: String): Set<String> {
+        val decoded = try {
+            android.net.Uri.decode(folderUri) ?: folderUri
+        } catch (_: Throwable) {
+            folderUri
+        }
+        return setOf(folderUri, decoded).filter { it.isNotBlank() }.toSet()
     }
 
     /** Written once per sync run rather than on every [put], to keep disk churn low. */

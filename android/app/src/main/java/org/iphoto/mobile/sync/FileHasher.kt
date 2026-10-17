@@ -2,6 +2,9 @@ package org.iphoto.mobile.sync
 
 import android.content.Context
 import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
+import java.io.InputStream
 import java.security.MessageDigest
 
 /**
@@ -13,9 +16,28 @@ import java.security.MessageDigest
 object FileHasher {
     private const val BUFFER_SIZE = 64 * 1024
 
-    fun md5(context: Context, uri: Uri): String {
+    fun openUnredactedInputStream(context: Context, uri: Uri, mediaStoreUri: Uri? = null): InputStream? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val targetMediaUri = mediaStoreUri ?: try {
+                    MediaStore.getMediaUri(context, uri)
+                } catch (_: Throwable) {
+                    null
+                }
+                if (targetMediaUri != null) {
+                    val originalUri = MediaStore.setRequireOriginal(targetMediaUri)
+                    context.contentResolver.openInputStream(originalUri)?.let { return it }
+                }
+            } catch (_: Throwable) {
+                // Fall back to opening the document URI directly if ACCESS_MEDIA_LOCATION is not granted
+            }
+        }
+        return context.contentResolver.openInputStream(uri)
+    }
+
+    fun md5(context: Context, uri: Uri, mediaStoreUri: Uri? = null): String {
         val digest = MessageDigest.getInstance("MD5")
-        val stream = context.contentResolver.openInputStream(uri)
+        val stream = openUnredactedInputStream(context, uri, mediaStoreUri)
             ?: throw IllegalStateException("Cannot open $uri")
         stream.use { input ->
             val buffer = ByteArray(BUFFER_SIZE)

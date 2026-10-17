@@ -1,8 +1,6 @@
 package org.iphoto.mobile.ui.sync
 
 import android.app.Activity
-import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
@@ -24,7 +22,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteForever
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.BottomAppBar
@@ -49,18 +46,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
-import coil3.imageLoader
 import kotlinx.coroutines.launch
 import me.saket.telephoto.zoomable.coil3.ZoomableAsyncImage
-import org.iphoto.mobile.data.SyncPrefs
 import org.iphoto.mobile.sync.LocalAsset
 
 private const val TAG = "AssetDetailScreen"
@@ -76,7 +71,6 @@ fun AssetDetailScreen(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val state by viewModel.uiState.collectAsState()
-    val syncPrefs = remember { SyncPrefs(context) }
 
     val folder = viewModel.findAssetAndFolder(asset.uri)?.second
     val assetsInFolder = remember(folder, state.folderContents) {
@@ -97,20 +91,6 @@ fun AssetDetailScreen(
     var showSpacePicker by remember { mutableStateOf<((String) -> Unit)?>(null) }
     var showUploadAndTrashConfirm by remember { mutableStateOf(false) }
     var isUploading by remember { mutableStateOf(false) }
-    var showEditorPicker by remember { mutableStateOf(false) }
-    var availableEditors by remember { mutableStateOf<List<ExternalEditorApp>>(emptyList()) }
-    var pendingEditorApp by remember { mutableStateOf<ExternalEditorApp?>(null) }
-
-    val editLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) {
-        // Clear Coil cache so updated image is reloaded
-        context.imageLoader.let { loader ->
-            loader.memoryCache?.clear()
-            loader.diskCache?.clear()
-        }
-        viewModel.refreshAllFolders()
-    }
 
     val trashLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
@@ -149,95 +129,6 @@ fun AssetDetailScreen(
         }
     }
 
-    val mediaPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        if (currentAsset.mimeType.startsWith("video/")) android.Manifest.permission.READ_MEDIA_VIDEO
-        else android.Manifest.permission.READ_MEDIA_IMAGES
-    } else {
-        android.Manifest.permission.READ_EXTERNAL_STORAGE
-    }
-
-    fun hasMediaPermission(): Boolean {
-        return ContextCompat.checkSelfPermission(
-            context,
-            mediaPermission
-        ) == PackageManager.PERMISSION_GRANTED
-    }
-
-    fun executeEditorLaunch(app: ExternalEditorApp) {
-        coroutineScope.launch {
-            val isMediaPermGranted = hasMediaPermission()
-            val targetUri = if (isMediaPermGranted) {
-                viewModel.prepareMediaStoreUriForEditing(currentAsset) ?: currentAsset.uri
-            } else {
-                currentAsset.uri
-            }
-
-            val mimeType = currentAsset.mimeType.ifBlank {
-                if (currentAsset.mimeType.startsWith("video/")) "video/*" else "image/*"
-            }
-
-            val intent = SystemEditorHelper.buildTargetIntent(app, targetUri, mimeType)
-            try {
-                editLauncher.launch(intent)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to launch editor ${app.packageName} with $targetUri", e)
-                if (targetUri != currentAsset.uri) {
-                    try {
-                        val safIntent = SystemEditorHelper.buildTargetIntent(app, currentAsset.uri, mimeType)
-                        editLauncher.launch(safIntent)
-                        return@launch
-                    } catch (e2: Exception) {
-                        Log.e(TAG, "Fallback to SAF Uri also failed", e2)
-                    }
-                }
-                Toast.makeText(context, "Failed to open ${app.label}: ${e.message}", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        pendingEditorApp?.let { app ->
-            executeEditorLaunch(app)
-        }
-        pendingEditorApp = null
-    }
-
-    fun launchTargetEditor(app: ExternalEditorApp) {
-        if (!hasMediaPermission()) {
-            pendingEditorApp = app
-            permissionLauncher.launch(mediaPermission)
-        } else {
-            executeEditorLaunch(app)
-        }
-    }
-
-    fun handleEditClick(forceShowPicker: Boolean = false) {
-        val mediaUri = viewModel.getMediaStoreUri(currentAsset) ?: currentAsset.uri
-        val mimeType = currentAsset.mimeType.ifBlank {
-            context.contentResolver.getType(mediaUri) ?: if (currentAsset.mimeType.startsWith("video/")) "video/*" else "image/*"
-        }
-        val editors = SystemEditorHelper.queryAvailableEditors(context, mediaUri, mimeType)
-        availableEditors = editors
-
-        if (editors.isEmpty()) {
-            Toast.makeText(context, "No gallery or editor app found on device", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val savedPackage = syncPrefs.defaultEditorPackage
-        val savedApp = if (!forceShowPicker && savedPackage != null) {
-            editors.find { it.packageName == savedPackage }
-        } else null
-
-        if (savedApp != null) {
-            launchTargetEditor(savedApp)
-        } else {
-            showEditorPicker = true
-        }
-    }
-
     Scaffold(
         topBar = {
             TopAppBar(
@@ -269,12 +160,6 @@ fun AssetDetailScreen(
                     }
                     IconButton(
                         enabled = !isUploading,
-                        onClick = { handleEditClick(forceShowPicker = false) }
-                    ) {
-                        Icon(Icons.Default.Edit, contentDescription = "Edit")
-                    }
-                    IconButton(
-                        enabled = !isUploading,
                         onClick = {
                             showSpacePicker = { spaceId ->
                                 coroutineScope.launch {
@@ -283,7 +168,7 @@ fun AssetDetailScreen(
                                         val verified = viewModel.uploadAndVerify(listOf(currentAsset), spaceId, targetFolderUri = folder?.uri)
                                         isUploading = false
                                         if (verified.isNotEmpty()) {
-                                            Toast.makeText(context, "Uploaded successfully", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, verified.summaryMessage(singleAsset = true), Toast.LENGTH_SHORT).show()
                                         } else {
                                             Toast.makeText(context, "Upload failed on server", Toast.LENGTH_SHORT).show()
                                         }
@@ -359,70 +244,58 @@ fun AssetDetailScreen(
                     handleSingleAssetTrash()
                 }) { Text("Move to Trash") }
             },
-            dismissButton = { TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") } }
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") }
+            }
         )
     }
 
     if (showUploadAndTrashConfirm) {
         AlertDialog(
-            onDismissRequest = { if (!isUploading) showUploadAndTrashConfirm = false },
+            onDismissRequest = { showUploadAndTrashConfirm = false },
             title = { Text("Upload and Trash?") },
-            text = { Text("This will upload '${currentAsset.displayName}' to the selected Space, verify server response, and then move it to the trash. Continue?") },
+            text = { Text("Upload '${currentAsset.displayName}' to server, and if verified, move it to the local trash?") },
             confirmButton = {
-                TextButton(
-                    enabled = !isUploading,
-                    onClick = {
-                        showUploadAndTrashConfirm = false
-                        showSpacePicker = { spaceId ->
-                            coroutineScope.launch {
-                                isUploading = true
-                                try {
-                                    val verified = viewModel.uploadAndVerify(listOf(currentAsset), spaceId, targetFolderUri = folder?.uri)
-                                    isUploading = false
-                                    if (verified.isNotEmpty()) {
-                                        handleSingleAssetTrash()
-                                    } else {
-                                        Toast.makeText(context, "Upload failed on server", Toast.LENGTH_SHORT).show()
-                                    }
-                                } catch (e: Exception) {
-                                    isUploading = false
-                                    Toast.makeText(context, "Upload failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                TextButton(onClick = {
+                    showUploadAndTrashConfirm = false
+                    showSpacePicker = { spaceId ->
+                        coroutineScope.launch {
+                            isUploading = true
+                            try {
+                                val verified = viewModel.uploadAndVerify(
+                                    listOf(currentAsset),
+                                    spaceId,
+                                    targetFolderUri = folder?.uri
+                                )
+                                isUploading = false
+                                if (verified.isNotEmpty()) {
+                                    Toast.makeText(
+                                        context,
+                                        "${verified.summaryMessage(singleAsset = true)} - moved to trash",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    handleSingleAssetTrash()
+                                } else {
+                                    Toast.makeText(context, "Upload verification failed", Toast.LENGTH_SHORT).show()
                                 }
+                            } catch (e: Exception) {
+                                isUploading = false
+                                Toast.makeText(context, "Failed: ${e.message}", Toast.LENGTH_SHORT).show()
                             }
                         }
                     }
-                ) { Text("Continue") }
+                }) { Text("Continue") }
             },
             dismissButton = {
-                TextButton(
-                    enabled = !isUploading,
-                    onClick = { showUploadAndTrashConfirm = false }
-                ) { Text("Cancel") }
-            }
-        )
-    }
-
-    if (showEditorPicker) {
-        EditorPickerDialog(
-            apps = availableEditors,
-            hasSavedDefault = syncPrefs.defaultEditorPackage != null,
-            onDismiss = { showEditorPicker = false },
-            onResetDefault = {
-                syncPrefs.defaultEditorPackage = null
-                showEditorPicker = false
-                Toast.makeText(context, "Default editor reset", Toast.LENGTH_SHORT).show()
-            },
-            onSelectApp = { app, rememberChoice ->
-                if (rememberChoice) {
-                    syncPrefs.defaultEditorPackage = app.packageName
-                }
-                showEditorPicker = false
-                launchTargetEditor(app)
+                TextButton(onClick = { showUploadAndTrashConfirm = false }) { Text("Cancel") }
             }
         )
     }
 
     if (showSpacePicker != null) {
+        LaunchedEffect(Unit) {
+            viewModel.refreshSpaces()
+        }
         SpacePickerDialog(
             spaces = state.spaces,
             onDismiss = { showSpacePicker = null },
@@ -445,7 +318,7 @@ private fun LocalVideoPlayer(
     val exoPlayer = remember(uri) {
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(MediaItem.fromUri(uri))
-            playWhenReady = true // Automatically starts playing
+            playWhenReady = true
             prepare()
         }
     }

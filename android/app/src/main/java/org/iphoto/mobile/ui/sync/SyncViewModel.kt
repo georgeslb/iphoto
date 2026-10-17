@@ -16,11 +16,19 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.iphoto.mobile.AppContainer
 import org.iphoto.mobile.data.SyncPrefs
@@ -30,8 +38,10 @@ import org.iphoto.mobile.sync.LocalAsset
 import org.iphoto.mobile.sync.LocalFolderScanner
 import org.iphoto.mobile.sync.LocalTrash
 import org.iphoto.mobile.sync.SyncRepository
+import org.iphoto.mobile.sync.UploadForegroundService
 import org.iphoto.mobile.sync.UploadItem
 import org.iphoto.mobile.sync.UploadStatus
+import java.util.Collections
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
@@ -60,12 +70,49 @@ data class SyncUiState(
     val uploadedAssetKeys: Set<String> = emptySet(),
 )
 
+data class UploadVerificationResult(
+    val uploaded: List<LocalAsset> = emptyList(),
+    val alreadyImported: List<LocalAsset> = emptyList(),
+    val alreadyInTrash: List<LocalAsset> = emptyList()
+) {
+    val allVerified: List<LocalAsset>
+        get() = uploaded + alreadyImported + alreadyInTrash
+
+    val size: Int
+        get() = allVerified.size
+
+    fun isNotEmpty(): Boolean = allVerified.isNotEmpty()
+
+    fun summaryMessage(singleAsset: Boolean = false): String {
+        val uploadedCount = uploaded.size
+        val ignoredCount = alreadyImported.size
+        val trashedCount = alreadyInTrash.size
+        if (singleAsset && size == 1) {
+            return when {
+                ignoredCount == 1 -> "Already imported"
+                trashedCount == 1 -> "Already imported and in trash"
+                else -> "Uploaded successfully"
+            }
+        }
+        val parts = mutableListOf<String>()
+        if (uploadedCount > 0) parts.add("Uploaded $uploadedCount photo(s)")
+        if (ignoredCount > 0) {
+            parts.add(if (uploadedCount == 0 && trashedCount == 0 && ignoredCount == 1) "Already imported" else "$ignoredCount already imported")
+        }
+        if (trashedCount > 0) {
+            parts.add(if (uploadedCount == 0 && ignoredCount == 0 && trashedCount == 1) "Already imported and in trash" else "$trashedCount already imported and in trash")
+        }
+        return parts.joinToString(", ").ifEmpty { "Upload failed on server" }
+    }
+}
+
 class SyncViewModel(
     private val appContext: Context,
     private val spaceApi: SpaceApi,
     private val syncRepository: SyncRepository,
     private val syncPrefs: SyncPrefs,
-    private val container: AppContainer? = null
+    private val container: AppContainer? = null,
+    private val ioDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SyncUiState())
@@ -88,7 +135,24 @@ class SyncViewModel(
         return assets.mapNotNull { getMediaStoreUri(it) }
     }
 
+    private fun clearUploadedStatusForAssets(assets: List<LocalAsset>, explicitFolderUri: Uri? = null) {
+        if (assets.isEmpty()) return
+        syncRepository.removeCachedHashesForAssets(assets)
+        assets.forEach { asset ->
+            val matchedFolderUri = explicitFolderUri ?: findAssetAndFolder(asset.uri)?.second?.uri
+            if (matchedFolderUri != null) {
+                syncPrefs.removeUploadedAsset(matchedFolderUri.toString(), asset.relativeDir, asset.displayName)
+            } else {
+                _uiState.value.selectedFolders.forEach { folder ->
+                    syncPrefs.removeUploadedAsset(folder.uri.toString(), asset.relativeDir, asset.displayName)
+                }
+            }
+        }
+        _uiState.update { it.copy(uploadedAssetKeys = syncPrefs.getUploadedAssetKeys()) }
+    }
+
     fun onAssetsTrashed(assets: List<LocalAsset>) {
+        clearUploadedStatusForAssets(assets)
         val assetUris = assets.map { it.uri }.toSet()
         _uiState.update { current ->
             val updated = current.folderContents.mapValues { (_, items) ->
@@ -105,21 +169,20 @@ class SyncViewModel(
     }
 
     fun trashAssetsDirectly(assets: List<LocalAsset>) {
+        val targets = assets.mapNotNull { findAssetAndFolder(it.uri) }
         onAssetsTrashed(assets)
         viewModelScope.launch {
-            assets.forEach { asset ->
-                findAssetAndFolder(asset.uri)?.let { (targetAsset, folder) ->
+            targets.forEach { (targetAsset, folder) ->
+                try {
+                    val deleted = DocumentsContract.deleteDocument(appContext.contentResolver, targetAsset.uri)
+                    if (!deleted) {
+                        LocalTrash.moveToTrash(appContext, folder.uri, targetAsset)
+                    }
+                } catch (e: Exception) {
                     try {
-                        val deleted = DocumentsContract.deleteDocument(appContext.contentResolver, targetAsset.uri)
-                        if (!deleted) {
-                            LocalTrash.moveToTrash(appContext, folder.uri, targetAsset)
-                        }
-                    } catch (e: Exception) {
-                        try {
-                            LocalTrash.moveToTrash(appContext, folder.uri, targetAsset)
-                        } catch (e2: Exception) {
-                            Log.w(TAG, "Failed to trash asset: ${targetAsset.uri}", e2)
-                        }
+                        LocalTrash.moveToTrash(appContext, folder.uri, targetAsset)
+                    } catch (e2: Exception) {
+                        Log.w(TAG, "Failed to trash asset: ${targetAsset.uri}", e2)
                     }
                 }
             }
@@ -138,61 +201,84 @@ class SyncViewModel(
         assets: List<LocalAsset>,
         spaceId: String,
         targetFolderUri: Uri? = null
-    ): List<LocalAsset> {
-        val successful = mutableListOf<LocalAsset>()
+    ): UploadVerificationResult = withContext(Dispatchers.IO) {
+        val uploaded = Collections.synchronizedList(mutableListOf<LocalAsset>())
+        val alreadyImported = Collections.synchronizedList(mutableListOf<LocalAsset>())
+        val alreadyInTrash = Collections.synchronizedList(mutableListOf<LocalAsset>())
         _uiState.update { it.copy(isUploading = true, error = null) }
+        UploadForegroundService.start(appContext)
+
+        val semaphore = Semaphore(3)
         try {
-            for (asset in assets) {
-                val folderUri = targetFolderUri ?: findAssetAndFolder(asset.uri)?.second?.uri
-                val uploadItem = UploadItem(
-                    asset = asset,
-                    folderUri = folderUri,
-                    spaceId = spaceId,
-                    status = UploadStatus.UPLOADING
-                )
-                container?.uploadManager?.registerOrUpdate(uploadItem)
+            coroutineScope {
+                assets.map { asset ->
+                    async {
+                        semaphore.withPermit {
+                            val folderUri = targetFolderUri ?: findAssetAndFolder(asset.uri)?.second?.uri
+                            val uploadItem = UploadItem(
+                                asset = asset,
+                                folderUri = folderUri,
+                                spaceId = spaceId,
+                                status = UploadStatus.UPLOADING
+                            )
+                            container?.uploadManager?.registerOrUpdate(uploadItem)
 
-                try {
-                    // Step 1: Upload chunks. Step 2: Poll back office task until finished.
-                    val task = syncRepository.uploadAsset(
-                        asset = asset,
-                        spaceId = spaceId,
-                        onProgress = { uploaded, total ->
-                            val fraction = uploaded.toFloat() / maxOf(1, total)
-                            container?.uploadManager?.updateProgress(uploadItem.id, fraction)
-                        },
-                        onTaskCreated = { taskId ->
-                            container?.uploadManager?.updateStatus(uploadItem.id, UploadStatus.PROCESSING, taskId)
-                        }
-                    )
-                    if (task != null && task.status != "FAILED") {
-                        successful.add(asset)
-                        val folderUriStr = folderUri?.toString().orEmpty()
-                        syncPrefs.recordUploadedAsset(folderUriStr, asset.relativeDir, asset.displayName)
-                        val key = SyncPrefs.encodeUploadedKey(folderUriStr, asset.relativeDir, asset.displayName)
-                        _uiState.update { it.copy(uploadedAssetKeys = it.uploadedAssetKeys + key) }
+                            try {
+                                // Step 1: Upload chunks. Step 2: Poll back office task until finished.
+                                val task = syncRepository.uploadAsset(
+                                    asset = asset,
+                                    spaceId = spaceId,
+                                    onProgress = { uploadedChunks, total ->
+                                        val fraction = uploadedChunks.toFloat() / maxOf(1, total)
+                                        container?.uploadManager?.updateProgress(uploadItem.id, fraction)
+                                    },
+                                    onTaskCreated = { taskId ->
+                                        container?.uploadManager?.updateStatus(uploadItem.id, UploadStatus.PROCESSING, taskId)
+                                    }
+                                )
+                                if (task != null && task.status != "FAILED") {
+                                    val folderUriStr = folderUri?.toString().orEmpty()
+                                    syncPrefs.recordUploadedAsset(folderUriStr, asset.relativeDir, asset.displayName)
+                                    val key = SyncPrefs.encodeUploadedKey(folderUriStr, asset.relativeDir, asset.displayName)
+                                    _uiState.update { it.copy(uploadedAssetKeys = it.uploadedAssetKeys + key) }
 
-                        val terminalStatus = when (task.status) {
-                            "IGNORED" -> UploadStatus.IGNORED
-                            "TRASHED" -> UploadStatus.TRASHED
-                            else -> UploadStatus.COMPLETED
+                                    val terminalStatus = when (task.status) {
+                                        "IGNORED" -> {
+                                            alreadyImported.add(asset)
+                                            UploadStatus.IGNORED
+                                        }
+                                        "TRASHED" -> {
+                                            alreadyInTrash.add(asset)
+                                            UploadStatus.TRASHED
+                                        }
+                                        else -> {
+                                            uploaded.add(asset)
+                                            UploadStatus.COMPLETED
+                                        }
+                                    }
+                                    container?.uploadManager?.updateStatus(uploadItem.id, terminalStatus, task.id, task.photoId)
+                                } else {
+                                    container?.uploadManager?.updateFailed(uploadItem.id, "Import failed on server")
+                                }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Failed to upload and verify ${asset.displayName}", e)
+                                container?.uploadManager?.updateFailed(uploadItem.id, e.message ?: "Upload failed")
+                            }
                         }
-                        container?.uploadManager?.updateStatus(uploadItem.id, terminalStatus, task.id, task.photoId)
-                    } else {
-                        container?.uploadManager?.updateFailed(uploadItem.id, "Import failed on server")
                     }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to upload and verify ${asset.displayName}", e)
-                    container?.uploadManager?.updateFailed(uploadItem.id, e.message ?: "Upload failed")
-                }
+                }.awaitAll()
             }
         } finally {
             _uiState.update { it.copy(isUploading = false) }
-            if (successful.isNotEmpty()) {
+            if (uploaded.isNotEmpty() || alreadyImported.isNotEmpty() || alreadyInTrash.isNotEmpty()) {
                 container?.notifyLibraryChanged()
             }
         }
-        return successful
+        UploadVerificationResult(
+            uploaded = uploaded.toList(),
+            alreadyImported = alreadyImported.toList(),
+            alreadyInTrash = alreadyInTrash.toList()
+        )
     }
 
     fun getFolderRelativePath(folderUri: Uri): String? {
@@ -221,6 +307,8 @@ class SyncViewModel(
     }
 
     private var contentObserver: ContentObserver? = null
+    private val folderHashJobs = mutableMapOf<Uri, Job>()
+    private val hashCheckMutex = Mutex()
 
     init {
         loadSpaces()
@@ -228,6 +316,7 @@ class SyncViewModel(
         loadUploadedAssets()
         setupMediaStoreObserver()
         setupFolderChangeObserver()
+        refreshAllFolders()
     }
 
     private fun loadUploadedAssets() {
@@ -288,6 +377,8 @@ class SyncViewModel(
 
     override fun onCleared() {
         super.onCleared()
+        folderHashJobs.values.forEach { it.cancel() }
+        folderHashJobs.clear()
         contentObserver?.let {
             try {
                 appContext.contentResolver.unregisterContentObserver(it)
@@ -306,6 +397,10 @@ class SyncViewModel(
     private fun loadPersistedFolders() {
         val folders = syncPrefs.loadSelectedFolders()
         _uiState.update { it.copy(selectedFolders = folders) }
+    }
+
+    fun refreshSpaces() {
+        loadSpaces()
     }
 
     private fun loadSpaces() {
@@ -329,9 +424,15 @@ class SyncViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(isLoadingFolderContents = it.isLoadingFolderContents + uri) }
             try {
-                val assets = withContext(Dispatchers.IO) {
-                    LocalFolderScanner.scan(appContext, uri)
+                val assets = withContext(ioDispatcher) {
+                    val scanned = LocalFolderScanner.scan(appContext, uri)
                         .sortedByDescending { asset -> asset.lastModified }
+                    syncPrefs.retainUploadedAssetsForFolder(
+                        uri.toString(),
+                        scanned.map { it.relativeDir to it.displayName }.toSet()
+                    )
+                    syncRepository.retainCachedHashesForFolder(uri, scanned)
+                    scanned
                 }
 
                 val groupedAndFlattened = assets.groupBy {
@@ -341,14 +442,38 @@ class SyncViewModel(
                     listOf(GridItem.Header(header, dayAssets)) + dayAssets.map { GridItem.Asset(it) }
                 }
 
+                val currentUploadedKeys = syncPrefs.getUploadedAssetKeys()
                 _uiState.update {
                     it.copy(
                         folderContents = it.folderContents + (uri to groupedAndFlattened),
-                        isLoadingFolderContents = it.isLoadingFolderContents - uri
+                        isLoadingFolderContents = it.isLoadingFolderContents - uri,
+                        uploadedAssetKeys = currentUploadedKeys
                     )
                 }
+
+                verifyFolderHashesInBackground(uri, assets)
             } catch (e: Exception) {
                 _uiState.update { it.copy(error = "Failed to scan folder \"$displayName\"", isLoadingFolderContents = it.isLoadingFolderContents - uri) }
+            }
+        }
+    }
+
+    private fun verifyFolderHashesInBackground(folderUri: Uri, assets: List<LocalAsset>) {
+        folderHashJobs.remove(folderUri)?.cancel()
+        if (assets.isEmpty()) return
+        folderHashJobs[folderUri] = viewModelScope.launch {
+            hashCheckMutex.withLock {
+                syncRepository.verifyFolderAssetsHashesInBatches(
+                    assets = assets,
+                    batchSize = SyncRepository.HASH_CHECK_BATCH_SIZE
+                ) { batchResults ->
+                    val statuses = batchResults.map { (asset, existsOnServer) ->
+                        (asset.relativeDir to asset.displayName) to existsOnServer
+                    }
+                    syncPrefs.applyBatchHashCheckStatuses(folderUri.toString(), statuses)
+                    val updatedKeys = syncPrefs.getUploadedAssetKeys()
+                    _uiState.update { it.copy(uploadedAssetKeys = updatedKeys) }
+                }
             }
         }
     }
@@ -373,12 +498,17 @@ class SyncViewModel(
     }
 
     fun removeFolder(folder: SelectedFolder) {
+        folderHashJobs.remove(folder.uri)?.cancel()
         val updatedFolders = _uiState.value.selectedFolders - folder
         syncPrefs.saveSelectedFolders(updatedFolders)
+        syncPrefs.removeUploadedAssetsForFolder(folder.uri.toString())
+        syncRepository.removeCachedHashesForFolder(folder.uri)
+        val updatedUploadedKeys = syncPrefs.getUploadedAssetKeys()
         _uiState.update {
             it.copy(
                 selectedFolders = updatedFolders,
-                folderContents = it.folderContents - folder.uri
+                folderContents = it.folderContents - folder.uri,
+                uploadedAssetKeys = updatedUploadedKeys
             )
         }
     }
@@ -424,6 +554,7 @@ class SyncViewModel(
     fun uploadSingleAsset(assetUri: Uri, spaceId: String, deleteAfter: Boolean) {
         findAssetAndFolder(assetUri)?.let { (asset, folder) ->
             if (deleteAfter) {
+                clearUploadedStatusForAssets(listOf(asset), folder.uri)
                 // Optimistically remove from state in memory immediately
                 _uiState.update { current ->
                     val updatedContents = current.folderContents.mapValues { (_, items) ->
@@ -473,6 +604,9 @@ class SyncViewModel(
         }
 
         if (deleteAfter) {
+            assetsWithFolder.forEach { (asset, folderUri) ->
+                clearUploadedStatusForAssets(listOf(asset), folderUri)
+            }
             // Optimistically remove from state in memory immediately
             _uiState.update { current ->
                 val updatedContents = current.folderContents.mapValues { (_, items) ->
@@ -510,6 +644,9 @@ class SyncViewModel(
         }
 
         val targets = selected.mapNotNull { findAssetAndFolder(it) }
+        targets.forEach { (asset, folder) ->
+            clearUploadedStatusForAssets(listOf(asset), folder.uri)
+        }
 
         // Optimistically remove from state in memory so UI updates instantly
         _uiState.update { current ->
@@ -546,6 +683,7 @@ class SyncViewModel(
 
     fun trashSingleAsset(asset: LocalAsset) {
         val targetPair = findAssetAndFolder(asset.uri)
+        clearUploadedStatusForAssets(listOf(asset), targetPair?.second?.uri)
 
         // Optimistically remove from state in memory so UI updates instantly
         _uiState.update { current ->
@@ -580,8 +718,10 @@ class SyncViewModel(
     }
 
     fun deletePermanently(asset: LocalAsset) {
+        val targetPair = findAssetAndFolder(asset.uri)
+        clearUploadedStatusForAssets(listOf(asset), targetPair?.second?.uri)
         viewModelScope.launch {
-            findAssetAndFolder(asset.uri)?.let { (targetAsset, folder) ->
+            targetPair?.let { (targetAsset, folder) ->
                 try {
                     val deleted = DocumentsContract.deleteDocument(appContext.contentResolver, targetAsset.uri)
                     if (!deleted) {

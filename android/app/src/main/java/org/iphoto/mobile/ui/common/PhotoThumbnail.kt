@@ -104,7 +104,7 @@ fun PhotoThumbnail(
         }
 
         // Uploaded status cloud icon badge in the top-right corner
-        if (isUploaded && !isSelectionMode) {
+        if (isUploaded) {
             Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)

@@ -314,4 +314,41 @@ class SyncRepositoryTest {
         verify(exactly = 1) { LocalTrash.restoreFromTrash(context, folderUri, asset1) }
         verify(exactly = 1) { LocalTrash.restoreFromTrash(context, folderUri, asset2) }
     }
+
+    @Test
+    fun `verifyFolderAssetsHashesInBatches splits 55 assets into batches of 50 and 5, persists hashCache, and maps server statuses`() = runTest {
+        val assets = (1..55).map { i -> testAsset("md5-$i", name = "photo-$i.jpg") }
+        val firstBatchHashes = (1..50).map { "md5-$it" }
+        val secondBatchHashes = (51..55).map { "md5-$it" }
+
+        coEvery {
+            photoApi.checkHashes(org.iphoto.mobile.model.CheckHashesRequest(firstBatchHashes))
+        } returns org.iphoto.mobile.model.CheckHashesResponse(
+            existingHashes = listOf("md5-1", "md5-50"),
+            statuses = firstBatchHashes.associateWith { it == "md5-1" || it == "md5-50" }
+        )
+
+        coEvery {
+            photoApi.checkHashes(org.iphoto.mobile.model.CheckHashesRequest(secondBatchHashes))
+        } returns org.iphoto.mobile.model.CheckHashesResponse(
+            existingHashes = listOf("md5-53"),
+            statuses = secondBatchHashes.associateWith { it == "md5-53" }
+        )
+
+        val receivedBatches = mutableListOf<List<Pair<LocalAsset, Boolean>>>()
+        repository.verifyFolderAssetsHashesInBatches(assets, batchSize = 50) { batch ->
+            receivedBatches.add(batch)
+        }
+
+        assertEquals(2, receivedBatches.size)
+        assertEquals(50, receivedBatches[0].size)
+        assertEquals(5, receivedBatches[1].size)
+
+        val allVerifiedTrue = receivedBatches.flatten().filter { it.second }.map { it.first.displayName }
+        assertEquals(listOf("photo-1.jpg", "photo-50.jpg", "photo-53.jpg"), allVerifiedTrue)
+
+        coVerify(exactly = 1) { photoApi.checkHashes(org.iphoto.mobile.model.CheckHashesRequest(firstBatchHashes)) }
+        coVerify(exactly = 1) { photoApi.checkHashes(org.iphoto.mobile.model.CheckHashesRequest(secondBatchHashes)) }
+        verify(exactly = 2) { hashCache.persist() }
+    }
 }

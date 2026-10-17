@@ -1,6 +1,8 @@
 package org.iphoto.mobile.ui.sync
 
+import android.Manifest
 import android.app.Activity
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
@@ -57,6 +59,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -82,6 +85,29 @@ fun SyncScreen(
     var showSpacePicker by remember { mutableStateOf<((String) -> Unit)?>(null) }
     var showUploadAndTrashConfirm by remember { mutableStateOf(false) }
     var pendingTrashAssets by remember { mutableStateOf<List<LocalAsset>?>(null) }
+
+    val mediaPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { /* Best-effort permission grant for unredacted media location bytes */ }
+
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val needed = buildList {
+                add(Manifest.permission.ACCESS_MEDIA_LOCATION)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    add(Manifest.permission.READ_MEDIA_IMAGES)
+                    add(Manifest.permission.READ_MEDIA_VIDEO)
+                } else {
+                    add(Manifest.permission.READ_EXTERNAL_STORAGE)
+                }
+            }.filter {
+                ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
+            }
+            if (needed.isNotEmpty()) {
+                mediaPermissionLauncher.launch(needed.toTypedArray())
+            }
+        }
+    }
 
     val folderPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
@@ -264,8 +290,10 @@ fun SyncScreen(
                                             .filter { it.uri in selected }
                                         val verified = viewModel.uploadAndVerify(assets, spaceId)
                                         if (verified.isNotEmpty()) {
-                                            Toast.makeText(context, "Uploaded ${verified.size} photo(s)", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, verified.summaryMessage(), Toast.LENGTH_SHORT).show()
                                             viewModel.clearSelection()
+                                        } else {
+                                            Toast.makeText(context, "Upload failed on server", Toast.LENGTH_SHORT).show()
                                         }
                                     }
                                 }
@@ -325,14 +353,15 @@ fun SyncScreen(
                                 val verified = viewModel.uploadAndVerify(assets, spaceId)
 
                                 if (verified.size == assets.size) {
-                                    handleMoveToTrash(verified)
+                                    Toast.makeText(context, "${verified.summaryMessage()}. Moving to trash.", Toast.LENGTH_SHORT).show()
+                                    handleMoveToTrash(verified.allVerified)
                                 } else if (verified.isNotEmpty()) {
                                     Toast.makeText(
                                         context,
-                                        "Uploaded ${verified.size} of ${assets.size} files. Moving ${verified.size} to trash.",
+                                        "${verified.summaryMessage()} (${verified.size}/${assets.size}). Moving ${verified.size} to trash.",
                                         Toast.LENGTH_LONG
                                     ).show()
-                                    handleMoveToTrash(verified)
+                                    handleMoveToTrash(verified.allVerified)
                                 } else {
                                     Toast.makeText(context, "Upload failed on server. No files were moved to trash.", Toast.LENGTH_LONG).show()
                                 }
@@ -351,6 +380,9 @@ fun SyncScreen(
     }
 
     if (showSpacePicker != null) {
+        LaunchedEffect(Unit) {
+            viewModel.refreshSpaces()
+        }
         SpacePickerDialog(
             spaces = state.spaces,
             onDismiss = { showSpacePicker = null },
