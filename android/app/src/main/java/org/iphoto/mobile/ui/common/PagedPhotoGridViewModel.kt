@@ -42,39 +42,9 @@ data class PagedPhotosUiState(
  */
 class PagedPhotoGridViewModel(
     private val loadPage: suspend (page: Int, size: Int) -> Pair<List<Photo>, Boolean>,
-    // Set only by AlbumDetailScreen - lets PhotoGridContent offer "remove from album" alongside
-    // the garbage/album/date actions that apply everywhere else too.
     val albumId: String? = null,
-    // Set only by SpaceDetailScreen/PhotoDetailScreen when its Space is the one currently synced to
-    // a device folder (see SyncPrefs) - mirrors a "move to garbage" onto the matching local file
-    // right away (DeviceTrashRequester: prefers the phone's real system trash via
-    // MediaStore.createTrashRequest, falling back to the app's own LocalTrash folder), instead of
-    // waiting for the next sync pass to notice the Space photo is gone. Suspend and awaited inline
-    // on viewModelScope - it needs an ActivityResultLauncher to show the system trash confirmation
-    // dialog, which only makes sense tied to this screen being alive, not a background scope; the
-    // scan behind it is now fast (SafDir's batched query, not a per-file walk) so the window where
-    // navigating away mid-flight would cancel it is small, and cancelling it here is actually
-    // correct anyway since the dialog can't be shown for a screen that's gone.
-    private val onPhotosMovedToGarbage: (suspend (List<Photo>) -> Unit)? = null,
-    // Also only set for the currently synced Space - records each excluded photo's hash (see
-    // SyncPrefs.excludedAssets) so a later sync leaves its still-present local file alone, rather
-    // than mirroring the removal onto the phone the way onPhotosMovedToGarbage does. Exposed via
-    // canExcludeFromSync so PhotoGridContent only offers the action where it's meaningful.
-    private val onPhotosExcludedFromSync: (suspend (List<Photo>) -> Unit)? = null,
-    // Set only by SpaceDetailScreen (any Space, synced or not - "move to Main Space" is a general
-    // Space feature, see specification.md) so PhotoGridContent offers the action there and nowhere
-    // else (moving a Library/Album photo to Main is meaningless - it's either already there, or, for
-    // an album, only ever references a Main Space photo to begin with).
-    val canMoveToMain: Boolean = false,
-    // Only set (in addition to canMoveToMain) for the currently synced Space - records each moved
-    // photo's hash (see SyncPrefs.movedToMainAssets) for the same reason onPhotosExcludedFromSync
-    // does: without it, the next sync pass would see the still-present local file, find its hash no
-    // longer active in *this* Space, and re-upload it as if new - duplicating a photo that now just
-    // lives in Main instead.
-    private val onPhotosMovedToMain: (suspend (List<Photo>) -> Unit)? = null
+    val canMoveToMain: Boolean = false
 ) : ViewModel() {
-
-    val canExcludeFromSync: Boolean get() = onPhotosExcludedFromSync != null
 
     private val _uiState = MutableStateFlow(PagedPhotosUiState())
     val uiState: StateFlow<PagedPhotosUiState> = _uiState.asStateFlow()
@@ -172,20 +142,10 @@ class PagedPhotoGridViewModel(
     fun moveSelectionToGarbage(photoApi: PhotoApi) {
         val ids = _uiState.value.selectedIds.toList()
         if (ids.isEmpty()) return
-        val selectedPhotos = _uiState.value.photos.filter { it.id in _uiState.value.selectedIds }
         _uiState.value = _uiState.value.copy(isMutating = true, actionError = null)
         viewModelScope.launch {
             try {
                 photoApi.moveToGarbage(ids)
-                // Best-effort: the server-side move already succeeded above regardless of whether
-                // this (removing the matching local file, possibly via a system trash dialog)
-                // fails or the user declines it - so a failure here shouldn't surface as if the
-                // garbage action itself failed, and the reload below still happens.
-                try {
-                    onPhotosMovedToGarbage?.invoke(selectedPhotos)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to remove the local file for a garbaged photo", e)
-                }
                 loadFirstPage()
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
@@ -196,61 +156,16 @@ class PagedPhotoGridViewModel(
         }
     }
 
-    // Removes the selection from this Space (garbaged server-side, same as moveSelectionToGarbage)
-    // without mirroring anything onto the phone - the local file stays exactly where it is.
-    // Distinct from moveSelectionToGarbage: that action's local-trash mirror means "this file is
-    // gone", while excluding means "keep the file, just stop syncing it into this Space".
-    fun excludeSelectionFromSync(photoApi: PhotoApi) {
-        val ids = _uiState.value.selectedIds.toList()
-        if (ids.isEmpty()) return
-        val selectedPhotos = _uiState.value.photos.filter { it.id in _uiState.value.selectedIds }
-        _uiState.value = _uiState.value.copy(isMutating = true, actionError = null)
-        viewModelScope.launch {
-            try {
-                photoApi.moveToGarbage(ids)
-                onPhotosExcludedFromSync?.invoke(selectedPhotos)
-                loadFirstPage()
-            } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(
-                    isMutating = false,
-                    actionError = e.message ?: "Failed to exclude from sync"
-                )
-            }
-        }
-    }
-
     // Moves the selection to the Main Space (Albums hold references to Main Space photos, Spaces
     // own them - this actually transfers ownership, unlike addSelectionToAlbum below). The photos
     // leave this Space entirely, so this reloads the same way moveSelectionToGarbage does.
-    //
-    // alsoRemoveFromDevice: the user's answer to "also remove this from your phone?" (asked by
-    // PhotoGridContent only when canExcludeFromSync - i.e. this Space is the one currently synced
-    // to a device folder, the only case where a matching local file could even exist). When true,
-    // this reuses onPhotosMovedToGarbage - the exact same "move this file to .iPhotoTrash" mirror
-    // moveSelectionToGarbage uses - since it's the same underlying operation either way.
-    fun moveSelectionToMain(photoApi: PhotoApi, alsoRemoveFromDevice: Boolean = false) {
+    fun moveSelectionToMain(photoApi: PhotoApi) {
         val ids = _uiState.value.selectedIds.toList()
         if (ids.isEmpty()) return
-        val selectedPhotos = _uiState.value.photos.filter { it.id in _uiState.value.selectedIds }
         _uiState.value = _uiState.value.copy(isMutating = true, actionError = null)
         viewModelScope.launch {
             try {
                 photoApi.moveToMain(ids)
-                // Best-effort: if this throws, the photo is still moved server-side, and the next
-                // sync pass would just re-upload the local file once more before settling - not
-                // silent data loss, just a wasted upload.
-                try {
-                    onPhotosMovedToMain?.invoke(selectedPhotos)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to record move-to-Main for the synced folder", e)
-                }
-                if (alsoRemoveFromDevice) {
-                    try {
-                        onPhotosMovedToGarbage?.invoke(selectedPhotos)
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Failed to remove the local file after move-to-Main", e)
-                    }
-                }
                 loadFirstPage()
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
@@ -264,13 +179,14 @@ class PagedPhotoGridViewModel(
     // Adding to an album only creates references (Albums hold references to Main Space photos,
     // they don't own them) - the photos stay exactly where they are in Library/Space, so no
     // reload is needed here, just clearing the selection.
-    fun addSelectionToAlbum(albumApi: AlbumApi, albumId: String) {
+    fun addSelectionToAlbum(albumApi: AlbumApi, albumId: String, onAlbumsChanged: () -> Unit = {}) {
         val ids = _uiState.value.selectedIds.toList()
         if (ids.isEmpty()) return
         _uiState.value = _uiState.value.copy(isMutating = true, actionError = null)
         viewModelScope.launch {
             try {
                 albumApi.addPhotos(albumId, AlbumPhotoRequest(ids))
+                onAlbumsChanged()
                 _uiState.value = _uiState.value.copy(isMutating = false, selectedIds = emptySet())
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
@@ -281,7 +197,7 @@ class PagedPhotoGridViewModel(
         }
     }
 
-    fun createAlbumAndAddSelection(albumApi: AlbumApi, albumName: String) {
+    fun createAlbumAndAddSelection(albumApi: AlbumApi, albumName: String, onAlbumsChanged: () -> Unit = {}) {
         val ids = _uiState.value.selectedIds.toList()
         if (ids.isEmpty()) return
         _uiState.value = _uiState.value.copy(isMutating = true, actionError = null)
@@ -289,6 +205,7 @@ class PagedPhotoGridViewModel(
             try {
                 val album = albumApi.create(AlbumCreateRequest(name = albumName))
                 albumApi.addPhotos(album.id, AlbumPhotoRequest(ids))
+                onAlbumsChanged()
                 _uiState.value = _uiState.value.copy(isMutating = false, selectedIds = emptySet())
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
@@ -323,7 +240,7 @@ class PagedPhotoGridViewModel(
     // Only meaningful when albumId is set (AlbumDetailScreen) - removing a reference from this
     // album doesn't touch the photo's Main Space ownership, but it does disappear from *this*
     // view, so a reload is needed the same way garbage/date-update need one.
-    fun removeSelectionFromAlbum(albumApi: AlbumApi) {
+    fun removeSelectionFromAlbum(albumApi: AlbumApi, onAlbumsChanged: () -> Unit = {}) {
         val id = albumId ?: return
         val ids = _uiState.value.selectedIds.toList()
         if (ids.isEmpty()) return
@@ -331,6 +248,7 @@ class PagedPhotoGridViewModel(
         viewModelScope.launch {
             try {
                 albumApi.removePhotos(id, AlbumPhotoRequest(ids))
+                onAlbumsChanged()
                 loadFirstPage()
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
@@ -353,19 +271,9 @@ class PagedPhotoGridViewModel(
 class PagedPhotoGridViewModelFactory(
     private val loadPage: suspend (page: Int, size: Int) -> Pair<List<Photo>, Boolean>,
     private val albumId: String? = null,
-    private val onPhotosMovedToGarbage: (suspend (List<Photo>) -> Unit)? = null,
-    private val onPhotosExcludedFromSync: (suspend (List<Photo>) -> Unit)? = null,
-    private val canMoveToMain: Boolean = false,
-    private val onPhotosMovedToMain: (suspend (List<Photo>) -> Unit)? = null
+    private val canMoveToMain: Boolean = false
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T =
-        PagedPhotoGridViewModel(
-            loadPage,
-            albumId,
-            onPhotosMovedToGarbage,
-            onPhotosExcludedFromSync,
-            canMoveToMain,
-            onPhotosMovedToMain
-        ) as T
+        PagedPhotoGridViewModel(loadPage, albumId, canMoveToMain) as T
 }

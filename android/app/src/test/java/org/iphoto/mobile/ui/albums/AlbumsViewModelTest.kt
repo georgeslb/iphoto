@@ -83,4 +83,21 @@ class AlbumsViewModelTest {
         assertNull(state.error)
         assertEquals(listOf("a1"), state.albums.map { it.id })
     }
+
+    @Test
+    fun `loads and sorts albums by creation date descending`() = runTest {
+        val albumApi = mockk<AlbumApi>()
+        coEvery { albumApi.list() } returns listOf(
+            testAlbum("oldest", createdAt = "2026-01-01T10:00:00"),
+            testAlbum("newest", createdAt = "2026-03-15T18:30:00"),
+            testAlbum("middle", createdAt = "2026-02-10T09:15:00")
+        )
+
+        val viewModel = AlbumsViewModel(albumApi)
+
+        assertEquals(
+            listOf("newest", "middle", "oldest"),
+            viewModel.uiState.value.albums.map { it.id }
+        )
+    }
 }

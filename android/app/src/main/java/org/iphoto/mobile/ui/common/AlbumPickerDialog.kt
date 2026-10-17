@@ -42,7 +42,7 @@ fun AlbumPickerDialog(
 
     LaunchedEffect(Unit) {
         try {
-            albums = albumApi.list()
+            albums = albumApi.list().sortedByDescending { it.createdAt }
         } catch (e: Exception) {
             loadError = e.message ?: "Failed to load albums"
         }

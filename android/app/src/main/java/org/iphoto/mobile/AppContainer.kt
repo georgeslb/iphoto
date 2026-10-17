@@ -5,7 +5,7 @@ import androidx.annotation.OptIn
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
-import androidx.media3.datasource.okhttp.OkHttpDataSource
+import org.iphoto.mobile.network.ChunkedVideoDataSource
 import coil3.ImageLoader
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import kotlinx.coroutines.CoroutineScope
@@ -98,7 +98,7 @@ class AppContainer(private val context: Context) {
     // on non-faststart MP4s (e.g. smartphone recordings with moov atom at the end of the file).
     @OptIn(UnstableApi::class)
     fun videoDataSourceFactory(): DataSource.Factory {
-        return OkHttpDataSource.Factory(apiClient.videoHttpClient)
+        return ChunkedVideoDataSource.Factory(apiClient.videoHttpClient)
     }
 
     private val _libraryChangeVersion = MutableStateFlow(0)
@@ -106,6 +106,13 @@ class AppContainer(private val context: Context) {
 
     fun notifyLibraryChanged() {
         _libraryChangeVersion.update { it + 1 }
+    }
+
+    private val _albumsChangeVersion = MutableStateFlow(0)
+    val albumsChangeVersion: StateFlow<Int> = _albumsChangeVersion.asStateFlow()
+
+    fun notifyAlbumsChanged() {
+        _albumsChangeVersion.update { it + 1 }
     }
 
     val folderChangeTrigger = kotlinx.coroutines.flow.MutableSharedFlow<android.net.Uri>(

@@ -63,11 +63,10 @@ fun PhotoGridContent(
     val container = LocalAppContainer.current
     var showAlbumPicker by remember { mutableStateOf(false) }
     var showDatePicker by remember { mutableStateOf(false) }
-    var showMoveToMainDeviceConfirm by remember { mutableStateOf(false) }
 
     // Keeps PhotoBrowsingContext in sync with what's actually on screen, so the lightbox's
     // next/previous arrows always reflect this grid's current (possibly paginated) order.
-    LaunchedEffect(state.photos) { PhotoBrowsingContext.photoIds = state.photos.map { it.id } }
+    LaunchedEffect(state.photos) { PhotoBrowsingContext.updatePhotos(state.photos) }
 
     BackHandler(enabled = state.isSelectionMode) { viewModel.clearSelection() }
 
@@ -151,23 +150,10 @@ fun PhotoGridContent(
                 onAddToAlbum = { showAlbumPicker = true },
                 onEditDate = { showDatePicker = true },
                 onRemoveFromAlbum = if (viewModel.albumId != null) {
-                    { viewModel.removeSelectionFromAlbum(container.albumApi) }
-                } else null,
-                onExcludeFromSync = if (viewModel.canExcludeFromSync) {
-                    { viewModel.excludeSelectionFromSync(container.photoApi) }
+                    { viewModel.removeSelectionFromAlbum(container.albumApi, container::notifyAlbumsChanged) }
                 } else null,
                 onMoveToMain = if (viewModel.canMoveToMain) {
-                    {
-                        // Only ask "also remove from device?" when this Space is actually the one
-                        // synced to a device folder (canExcludeFromSync doubles as that signal) -
-                        // otherwise there's no local file this could ever apply to, so skip
-                        // straight to the move like any other action.
-                        if (viewModel.canExcludeFromSync) {
-                            showMoveToMainDeviceConfirm = true
-                        } else {
-                            viewModel.moveSelectionToMain(container.photoApi)
-                        }
-                    }
+                    { viewModel.moveSelectionToMain(container.photoApi) }
                 } else null
             )
         }
@@ -178,38 +164,12 @@ fun PhotoGridContent(
             albumApi = container.albumApi,
             onDismiss = { showAlbumPicker = false },
             onAlbumPicked = { albumId ->
-                viewModel.addSelectionToAlbum(container.albumApi, albumId)
+                viewModel.addSelectionToAlbum(container.albumApi, albumId, container::notifyAlbumsChanged)
                 showAlbumPicker = false
             },
             onCreateAlbum = { name ->
-                viewModel.createAlbumAndAddSelection(container.albumApi, name)
+                viewModel.createAlbumAndAddSelection(container.albumApi, name, container::notifyAlbumsChanged)
                 showAlbumPicker = false
-            }
-        )
-    }
-
-    if (showMoveToMainDeviceConfirm) {
-        AlertDialog(
-            onDismissRequest = { showMoveToMainDeviceConfirm = false },
-            title = { Text("Remove from this phone too?") },
-            text = {
-                Text(
-                    "This Space is synced to a folder on this phone. Moving to Main Space keeps " +
-                        "the photo, but do you also want to move the matching file on this phone " +
-                        "to this app's local trash?"
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    viewModel.moveSelectionToMain(container.photoApi, alsoRemoveFromDevice = true)
-                    showMoveToMainDeviceConfirm = false
-                }) { Text("Remove from device") }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    viewModel.moveSelectionToMain(container.photoApi, alsoRemoveFromDevice = false)
-                    showMoveToMainDeviceConfirm = false
-                }) { Text("Keep on device") }
             }
         )
     }
