@@ -77,19 +77,18 @@ class ApiClient(private val tokenStore: TokenStore) {
     // how busy sync happens to be right now. Timeouts are relaxed (30s connect, 60s read) so
     // continuous buffering doesn't trip aggressive 10s socket read timeouts.
     val videoHttpClient: OkHttpClient by lazy {
+        val dispatcher = okhttp3.Dispatcher().apply {
+            maxRequests = 32
+            maxRequestsPerHost = 16
+        }
         OkHttpClient.Builder()
+            .dispatcher(dispatcher)
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
-            .connectionPool(okhttp3.ConnectionPool(10, 5, TimeUnit.MINUTES))
+            .connectionPool(okhttp3.ConnectionPool(16, 5, TimeUnit.MINUTES))
             .addInterceptor(AuthInterceptor(tokenStore))
-            .apply {
-                if (BuildConfig.DEBUG) {
-                    addInterceptor(HttpLoggingInterceptor().apply {
-                        level = HttpLoggingInterceptor.Level.HEADERS
-                    })
-                }
-            }
+            .retryOnConnectionFailure(true)
             .build()
     }
 

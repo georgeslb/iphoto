@@ -45,17 +45,23 @@ fun VideoPlayer(
     val context = LocalContext.current
     val exoPlayer = remember(streamUrl) {
         Log.d(TAG, "Creating ExoPlayer for $streamUrl (mimeType=$mimeType)")
+        val renderersFactory = androidx.media3.exoplayer.DefaultRenderersFactory(context).apply {
+            forceEnableMediaCodecAsynchronousQueueing()
+            setEnableDecoderFallback(true)
+        }
+
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
                 /* minBufferMs = */ 30_000,
                 /* maxBufferMs = */ 60_000,
-                /* bufferForPlaybackMs = */ 1_000,
-                /* bufferForPlaybackAfterRebufferMs = */ 2_000
+                /* bufferForPlaybackMs = */ 2_500,
+                /* bufferForPlaybackAfterRebufferMs = */ 5_000
             )
             .setBackBuffer(
                 /* backBufferDurationMs = */ 15_000,
                 /* retainBackBufferFromKeyframe = */ true
             )
+            .setTargetBufferBytes(128 * 1024 * 1024)
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
 
@@ -64,7 +70,7 @@ fun VideoPlayer(
             .apply { if (!mimeType.isNullOrBlank()) setMimeType(mimeType) }
             .build()
 
-        ExoPlayer.Builder(context)
+        ExoPlayer.Builder(context, renderersFactory)
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
             .setLoadControl(loadControl)
             .build()
