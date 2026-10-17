@@ -131,10 +131,16 @@ class SyncPrefs internal constructor(private val prefs: SharedPreferences) {
         return set?.toSet() ?: emptySet()
     }
 
+    /** Package name of the external photo editor the user chose to "always use" from the Lightbox. */
+    var defaultEditorPackage: String?
+        get() = prefs.getString(KEY_DEFAULT_EDITOR_PACKAGE, null)
+        set(value) = prefs.edit().putString(KEY_DEFAULT_EDITOR_PACKAGE, value).apply()
+
     companion object {
         private const val PREFS_NAME = "iphoto_sync_prefs"
         private const val KEY_SELECTED_FOLDERS = "selected_folders"
         private const val KEY_UPLOADED_ASSETS = "uploaded_assets"
+        private const val KEY_DEFAULT_EDITOR_PACKAGE = "default_editor_package"
         private const val FIELD_SEPARATOR = '\u0001'
 
         fun encodeUploadedKey(folderUri: String, relativeDir: String, displayName: String): String =

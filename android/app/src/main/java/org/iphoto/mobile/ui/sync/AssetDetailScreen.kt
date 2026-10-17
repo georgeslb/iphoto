@@ -56,8 +56,18 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import android.content.pm.PackageManager
+import androidx.compose.material.icons.filled.Edit
+import androidx.core.content.ContextCompat
+import coil3.SingletonImageLoader
 import me.saket.telephoto.zoomable.coil3.ZoomableAsyncImage
+import org.iphoto.mobile.LocalAppContainer
 import org.iphoto.mobile.data.SyncPrefs
+import org.iphoto.mobile.sync.EditSnapshot
+import org.iphoto.mobile.sync.EditedMediaRelocator
+import org.iphoto.mobile.sync.EditedOutput
 import org.iphoto.mobile.sync.LocalAsset
 
 private const val TAG = "AssetDetailScreen"
@@ -135,6 +145,164 @@ fun AssetDetailScreen(
         onBack()
     }
 
+    // ---- External editor (ACTION_EDIT) -------------------------------------------------------
+    val syncPrefs = remember { SyncPrefs(context) }
+    val appContainer = LocalAppContainer.current
+    var showEditorPicker by remember { mutableStateOf(false) }
+    var availableEditors by remember { mutableStateOf<List<ExternalEditorApp>>(emptyList()) }
+    var pendingEditorApp by remember { mutableStateOf<ExternalEditorApp?>(null) }
+    var editSnapshot by remember { mutableStateOf<EditSnapshot?>(null) }
+    var pendingEditOutputs by remember { mutableStateOf<List<EditedOutput>>(emptyList()) }
+
+    fun finishEdit(message: String?) {
+        // Drop cached bitmaps so an original edited in place is redrawn.
+        SingletonImageLoader.get(context).memoryCache?.clear()
+        appContainer.localImageLoader.memoryCache?.clear()
+        editSnapshot = null
+        pendingEditOutputs = emptyList()
+        viewModel.refreshAllFolders()
+        message?.let { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
+    }
+
+    fun applyEditedOutputFix() {
+        val snapshot = editSnapshot
+        val outputs = pendingEditOutputs
+        if (snapshot == null || outputs.isEmpty()) {
+            finishEdit(null)
+            return
+        }
+        coroutineScope.launch {
+            val fixed = withContext(Dispatchers.IO) {
+                EditedMediaRelocator.applyOriginalProperties(context, snapshot, outputs)
+            }
+            finishEdit(
+                if (fixed > 0) "Edited photo saved next to the original"
+                else "Could not move the edited photo next to the original"
+            )
+        }
+    }
+
+    // Single system prompt granting us write access to the editor's output so we can move it
+    // into the original folder and restore its dates/location.
+    val editWriteLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) applyEditedOutputFix() else finishEdit(null)
+    }
+
+    val editLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        val snapshot = editSnapshot
+        if (snapshot == null) {
+            finishEdit(null)
+        } else {
+            coroutineScope.launch {
+                val outputs = withContext(Dispatchers.IO) {
+                    EditedMediaRelocator.findEditedOutputs(context, snapshot)
+                }
+                if (outputs.isEmpty()) {
+                    finishEdit(null)
+                    return@launch
+                }
+                pendingEditOutputs = outputs
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    try {
+                        val pendingIntent = MediaStore.createWriteRequest(
+                            context.contentResolver,
+                            outputs.map { it.uri }
+                        )
+                        editWriteLauncher.launch(IntentSenderRequest.Builder(pendingIntent.intentSender).build())
+                        return@launch
+                    } catch (e: Exception) {
+                        Log.w(TAG, "createWriteRequest failed: ${e.message}")
+                    }
+                }
+                applyEditedOutputFix()
+            }
+        }
+    }
+
+    val mediaPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        if (currentAsset.mimeType.startsWith("video/")) android.Manifest.permission.READ_MEDIA_VIDEO
+        else android.Manifest.permission.READ_MEDIA_IMAGES
+    } else {
+        android.Manifest.permission.READ_EXTERNAL_STORAGE
+    }
+
+    fun hasMediaPermission(): Boolean =
+        ContextCompat.checkSelfPermission(context, mediaPermission) == PackageManager.PERMISSION_GRANTED
+
+    fun executeEditorLaunch(app: ExternalEditorApp) {
+        val assetToEdit = currentAsset
+        coroutineScope.launch {
+            val mediaUri = if (hasMediaPermission()) viewModel.prepareMediaStoreUriForEditing(assetToEdit) else null
+            val targetUri = mediaUri ?: assetToEdit.uri
+            val isVideo = assetToEdit.mimeType.startsWith("video/")
+            val mimeType = assetToEdit.mimeType.ifBlank { if (isVideo) "video/*" else "image/*" }
+
+            // Remember where/when the original lives so the edited copy can be put back there.
+            editSnapshot = if (mediaUri != null) {
+                withContext(Dispatchers.IO) {
+                    EditedMediaRelocator.snapshot(
+                        context = context,
+                        mediaUri = mediaUri,
+                        isVideo = isVideo,
+                        fileLastModifiedMs = assetToEdit.lastModified,
+                        editorPackage = app.packageName
+                    )
+                }
+            } else null
+
+            try {
+                editLauncher.launch(SystemEditorHelper.buildTargetIntent(app, targetUri, mimeType))
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to launch editor ${app.packageName} with $targetUri", e)
+                if (targetUri != assetToEdit.uri) {
+                    try {
+                        editLauncher.launch(SystemEditorHelper.buildTargetIntent(app, assetToEdit.uri, mimeType))
+                        return@launch
+                    } catch (e2: Exception) {
+                        Log.e(TAG, "Fallback to SAF Uri also failed", e2)
+                    }
+                }
+                editSnapshot = null
+                Toast.makeText(context, "Failed to open ${app.label}: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { _ ->
+        pendingEditorApp?.let { executeEditorLaunch(it) }
+        pendingEditorApp = null
+    }
+
+    fun launchTargetEditor(app: ExternalEditorApp) {
+        if (!hasMediaPermission()) {
+            pendingEditorApp = app
+            permissionLauncher.launch(mediaPermission)
+        } else {
+            executeEditorLaunch(app)
+        }
+    }
+
+    fun handleEditClick() {
+        val mediaUri = viewModel.getMediaStoreUri(currentAsset) ?: currentAsset.uri
+        val mimeType = currentAsset.mimeType.ifBlank {
+            context.contentResolver.getType(mediaUri)
+                ?: if (currentAsset.mimeType.startsWith("video/")) "video/*" else "image/*"
+        }
+        val editors = SystemEditorHelper.queryAvailableEditors(context, mediaUri, mimeType)
+        availableEditors = editors
+        if (editors.isEmpty()) {
+            Toast.makeText(context, "No gallery or editor app found on device", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val savedApp = syncPrefs.defaultEditorPackage?.let { pkg -> editors.find { it.packageName == pkg } }
+        if (savedApp != null) launchTargetEditor(savedApp) else showEditorPicker = true
+    }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -172,6 +340,12 @@ fun AssetDetailScreen(
                         onClick = { handleSingleAssetTrash(confirmFallback = true) }
                     ) {
                         Icon(Icons.Default.Delete, contentDescription = "Move to Trash")
+                    }
+                    IconButton(
+                        enabled = !isUploading,
+                        onClick = { handleEditClick() }
+                    ) {
+                        Icon(Icons.Default.Edit, contentDescription = "Edit")
                     }
                     IconButton(
                         enabled = !isUploading,
@@ -289,6 +463,24 @@ fun AssetDetailScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showEditorPicker) {
+        EditorPickerDialog(
+            apps = availableEditors,
+            hasSavedDefault = syncPrefs.defaultEditorPackage != null,
+            onDismiss = { showEditorPicker = false },
+            onResetDefault = {
+                syncPrefs.defaultEditorPackage = null
+                showEditorPicker = false
+                Toast.makeText(context, "Default editor reset", Toast.LENGTH_SHORT).show()
+            },
+            onSelectApp = { app, rememberChoice ->
+                if (rememberChoice) syncPrefs.defaultEditorPackage = app.packageName
+                showEditorPicker = false
+                launchTargetEditor(app)
             }
         )
     }

@@ -125,3 +125,19 @@ Depuis **Android 10 (API 29 / Scoped Storage)**, le `MediaProvider` d'Android (`
    - `verifyFolderHashesInBackground` conserve le job de vérification MD5 en cours si la liste des signatures `(uri, size, lastModified)` du dossier n'a pas changé.
 3. **Affichage de l'icône Cloud dans [`AssetDetailScreen.kt`](file:///C:/Users/georg/StudioProjects/iphoto/android/app/src/main/java/org/iphoto/mobile/ui/sync/AssetDetailScreen.kt)** :
    - Calcul réactif de `isCurrentAssetUploaded` pour la page courante du `HorizontalPager` à partir de `state.uploadedAssetKeys`, et affichage de `Icons.Filled.CloudDone` dans les `actions` de la `TopAppBar` de la Lightbox locale.
+
+---
+
+## ADR-007 : Restauration du bouton Édition de la Lightbox Sync et ré-alignement de la photo éditée sur l'original
+
+### Contexte & Problème
+1. **Régression** : le bouton **Edit** de la Lightbox locale ([`AssetDetailScreen.kt`](file:///C:/Users/georg/StudioProjects/iphoto/android/app/src/main/java/org/iphoto/mobile/ui/sync/AssetDetailScreen.kt)) introduit par `652d392` a disparu lors des commits `1b13f0a` (suppression du bouton, du flux d'édition et de `SyncPrefs.defaultEditorPackage`) et `3d17202` (suppression de `SystemEditorHelper.kt`, `EditorPickerDialog.kt` et de leur test), basés sur un état de travail antérieur à la fonctionnalité.
+2. Les éditeurs externes (Google Photos, Samsung Gallery…) enregistrent généralement la photo modifiée comme **nouveau fichier**, parfois dans un autre dossier (`Pictures/…`), avec une date de modification « maintenant » : la photo éditée n'apparaissait donc pas à côté de l'original dans l'onglet Sync et perdait ses propriétés.
+
+### Décision Technique
+1. Restauration de [`SystemEditorHelper.kt`](file:///C:/Users/georg/StudioProjects/iphoto/android/app/src/main/java/org/iphoto/mobile/ui/sync/SystemEditorHelper.kt), [`EditorPickerDialog.kt`](file:///C:/Users/georg/StudioProjects/iphoto/android/app/src/main/java/org/iphoto/mobile/ui/sync/EditorPickerDialog.kt), de `SyncPrefs.defaultEditorPackage` et du bouton **Edit** dans la barre inférieure de la Lightbox.
+2. Nouveau [`EditedMediaRelocator.kt`](file:///C:/Users/georg/StudioProjects/iphoto/android/app/src/main/java/org/iphoto/mobile/sync/EditedMediaRelocator.kt) :
+   - **Avant le lancement** : capture d'un `EditSnapshot` de l'original (`RELATIVE_PATH`, `DATE_TAKEN`, `DATE_MODIFIED`, taille, `lastModified` du fichier, tags EXIF date/heure/fuseau/appareil/GPS lus via le flux non masqué).
+   - **Au retour de l'éditeur** : recherche dans `MediaStore` des fichiers ajoutés depuis le lancement et appartenant à l'éditeur (`OWNER_PACKAGE_NAME`), ou de l'original réécrit sur place (taille/date modifiée), avec quelques tentatives pour les écritures différées (`IS_PENDING`).
+   - **Une seule confirmation système** `MediaStore.createWriteRequest` (API 30+) puis : copie des tags EXIF de l'original, mise à jour `RELATIVE_PATH` (déplacement dans le dossier de l'original) et `DATE_TAKEN`, restauration de la date de modification du fichier (`File.setLastModified`) et re-scan `MediaScannerConnection`.
+   - La logique de décision (`isNewEditorOutput`, `isOriginalOverwritten`, `planFix`) est pure et couverte par [`EditedMediaRelocatorTest.kt`](file:///C:/Users/georg/StudioProjects/iphoto/android/app/src/test/java/org/iphoto/mobile/sync/EditedMediaRelocatorTest.kt).

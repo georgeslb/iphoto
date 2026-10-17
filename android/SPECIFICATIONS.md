@@ -177,6 +177,7 @@ NavHost
   - Fullscreen zoomable image viewer or inline video player for local files.
   - Horizontal swipe pager to navigate through folder assets.
   - Displays the uploaded cloud indicator icon (`Icons.Filled.CloudDone`) in the top app bar whenever the currently viewed asset is already uploaded on the remote server.
+  - **Edit (external editor):** bottom-bar Edit button opens the photo/video in the device's editor app (`ACTION_EDIT`, e.g. Google Photos) via `EditorPickerDialog` (with "Always use this app" persisted in `SyncPrefs.defaultEditorPackage`). When the editor returns, `EditedMediaRelocator` detects the saved output (new file owned by the editor, or the original overwritten in place), asks for a single `MediaStore.createWriteRequest` confirmation (API 30+), then moves the edited file into the **same folder as the original** (`RELATIVE_PATH`) and restores the original's properties: `DATE_TAKEN`, file modification time, and EXIF date/time, timezone offsets, camera make/model and GPS tags.
 - **Parallel Uploads & Background Persistence:**
   - Concurrent upload engine: up to 3 files uploaded simultaneously in parallel to saturate available bandwidth.
   - Screen-off & Background Reliability: `UploadForegroundService` promotes process to `dataSync` foreground service with persistent notification and partial `WakeLock`. Prevents Android Doze mode from shutting down radio, dropping sockets, or causing DNS "server unreachable" errors when the device screen turns off.
