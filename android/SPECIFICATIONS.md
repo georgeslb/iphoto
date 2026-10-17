@@ -155,11 +155,14 @@ NavHost
 ### 5.6 Sync Tab (`SyncScreen`, `AssetDetailScreen`, `SyncViewModel`, `UploadManager`, `UploadForegroundService`)
 - **Unredacted Media Access (`ACCESS_MEDIA_LOCATION`):**
   - Requests `android.permission.ACCESS_MEDIA_LOCATION` on Android 10+ (API 29+) and opens media streams via `MediaStore.setRequireOriginal` (`FileHasher.openUnredactedInputStream`) so Android's Scoped Storage `MediaProvider` does not zero out EXIF/MP4 GPS metadata bytes on the fly. This preserves GPS coordinates and guarantees that the server-side MD5 hash matches uploads from the Web UI.
-- **Startup Background Batched (50) MD5 Verification (`HashCache` + `POST /api/photos/check-hashes`):**
+- **Startup Background Batched (50) Dual-MD5 Verification (`HashCache` + `POST /api/photos/check-hashes`):**
   - At app startup (and when scanning Sync folders), `SyncViewModel` scans the configured Sync folders in the background (`Dispatchers.IO`).
-  - Computes MD5 hashes for local photos/videos via `FileHasher.md5` and persists them locally in `HashCache` (`sync_hash_cache.json`, keyed by `(uri, size, lastModified)`) so unchanged files are never re-read from flash storage on subsequent launches.
-  - Queries the backend endpoint `POST /api/photos/check-hashes` in batches of **50 hashes** (plus the final remainder $< 50$). The backend returns per-hash existence statuses (`statuses: Map<String, Boolean>`).
-  - Updates `SyncPrefs` (`applyBatchHashCheckStatuses`) and `SyncUiState.uploadedAssetKeys` after each batch so the cloud indicator badge (`Icons.Filled.CloudDone`) automatically appears on any photo/video already present on the server (including media uploaded via the Web UI).
+  - Computes **two MD5 hashes** in a single streaming pass for each local photo/video via `FileHasher.computeHashes`:
+    1. `realMd5`: the unredacted MD5 (with localization metadata intact).
+    2. `redactedMd5`: the MD5 without localization (with EXIF GPS tags, MP4 `©xyz`/`loci`/`gps ` boxes, and XMP GPS tags zeroed out the exact way Android's `MediaProvider` redacts them when `ACCESS_MEDIA_LOCATION` is not granted), to match assets uploaded before `ACCESS_MEDIA_LOCATION` was enabled.
+  - Persists both hashes locally in `HashCache` (`sync_hash_cache.json`, keyed by `(uri, size, lastModified)`) so unchanged files are never re-read from flash storage on subsequent launches (and legacy single-hash cache entries are automatically upgraded).
+  - Queries the backend endpoint `POST /api/photos/check-hashes` in batches of **50 assets** (sending both `realMd5` and `redactedMd5` when they differ). The backend returns per-hash existence statuses (`statuses: Map<String, Boolean>`).
+  - Marks an asset as uploaded (`true`) if **either** `realMd5` **or** `redactedMd5` exists on the remote server, updating `SyncPrefs` (`applyBatchHashCheckStatuses`) and `SyncUiState.uploadedAssetKeys` after each batch so the cloud indicator badge (`Icons.Filled.CloudDone`) automatically appears.
 - **Folder Tabs:**
   - Add folder via SAF tree picker (`OpenDocumentTree`).
   - Close/remove folder tab (automatically cleans up persisted uploaded-asset keys for that folder in `SyncPrefs`).

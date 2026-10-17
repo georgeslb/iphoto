@@ -83,4 +83,34 @@ class HashCacheTest {
         assertNull(reloaded.get("content://folder/camera/2", 200L, 2000L))
         assertEquals("md5-other", reloaded.get("content://folder/screenshots/1", 300L, 3000L))
     }
+
+    @Test
+    fun `putHashes and getHashes persist both realMd5 and without-localization redactedMd5`() {
+        val cacheFile = tempFolder.newFile("sync_hash_cache.json")
+        val cache = HashCache(cacheFile)
+
+        val dualHashes = AssetHashes(realMd5 = "real-md5-1", redactedMd5 = "redacted-md5-1")
+        cache.putHashes("content://folder/camera/gps-photo", 500L, 5000L, dualHashes)
+        cache.persist()
+
+        val reloaded = HashCache(cacheFile)
+        val loaded = reloaded.getHashes("content://folder/camera/gps-photo", 500L, 5000L)
+        assertEquals(dualHashes, loaded)
+        assertEquals(listOf("real-md5-1", "redacted-md5-1"), loaded?.allDistinct())
+    }
+
+    @Test
+    fun `legacy cache entry without redactedHash returns null from getHashes until upgraded`() {
+        val cacheFile = tempFolder.newFile("sync_hash_cache.json")
+        val cache = HashCache(cacheFile)
+
+        // Legacy entry without redactedHash
+        cache.put("content://folder/camera/legacy", 100L, 1000L, "real-md5-only")
+        cache.persist()
+
+        val reloaded = HashCache(cacheFile)
+        assertEquals("real-md5-only", reloaded.get("content://folder/camera/legacy", 100L, 1000L))
+        assertNull(reloaded.getHashes("content://folder/camera/legacy", 100L, 1000L))
+    }
 }
+

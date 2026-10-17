@@ -61,7 +61,12 @@ class SyncRepositoryTest {
     // stubbed for toString via the normal every {} API).
     private var nextAssetSize = 100L
 
-    private fun testAsset(hash: String, name: String = "asset-$hash.jpg", relativeDir: String = ""): LocalAsset {
+    private fun testAsset(
+        hash: String,
+        name: String = "asset-$hash.jpg",
+        relativeDir: String = "",
+        redactedHash: String? = null
+    ): LocalAsset {
         val size = nextAssetSize++
         val asset = LocalAsset(
             uri = mockk(relaxed = true),
@@ -72,6 +77,10 @@ class SyncRepositoryTest {
             relativeDir = relativeDir
         )
         every { hashCache.get(any(), size, 1_000L) } returns hash
+        every { hashCache.getHashes(any(), size, 1_000L) } returns AssetHashes(
+            realMd5 = hash,
+            redactedMd5 = redactedHash ?: hash
+        )
         return asset
     }
 
@@ -351,4 +360,90 @@ class SyncRepositoryTest {
         coVerify(exactly = 1) { photoApi.checkHashes(org.iphoto.mobile.model.CheckHashesRequest(secondBatchHashes)) }
         verify(exactly = 2) { hashCache.persist() }
     }
+
+    @Test
+    fun `verifyFolderAssetsHashesInBatches checks both realMd5 and without-localization redactedMd5 and returns true if either matches`() = runTest {
+        val uploadedWithGps = testAsset(
+            hash = "real-md5-1",
+            name = "uploaded-with-gps.jpg",
+            redactedHash = "redacted-md5-1"
+        )
+        val uploadedWithoutGps = testAsset(
+            hash = "real-md5-2",
+            name = "uploaded-without-localization.jpg",
+            redactedHash = "redacted-md5-2"
+        )
+        val notUploaded = testAsset(
+            hash = "real-md5-3",
+            name = "not-uploaded.jpg",
+            redactedHash = "redacted-md5-3"
+        )
+        val noGpsMetadata = testAsset(
+            hash = "same-md5-4",
+            name = "no-gps.jpg",
+            redactedHash = "same-md5-4"
+        )
+
+        val expectedHashesSent = listOf(
+            "real-md5-1", "redacted-md5-1",
+            "real-md5-2", "redacted-md5-2",
+            "real-md5-3", "redacted-md5-3",
+            "same-md5-4"
+        )
+
+        coEvery {
+            photoApi.checkHashes(org.iphoto.mobile.model.CheckHashesRequest(expectedHashesSent))
+        } returns org.iphoto.mobile.model.CheckHashesResponse(
+            existingHashes = listOf("real-md5-1", "redacted-md5-2"),
+            statuses = mapOf(
+                "real-md5-1" to true,
+                "redacted-md5-1" to false,
+                "real-md5-2" to false,
+                "redacted-md5-2" to true,
+                "real-md5-3" to false,
+                "redacted-md5-3" to false,
+                "same-md5-4" to false
+            )
+        )
+
+        val verified = mutableMapOf<String, Boolean>()
+        repository.verifyFolderAssetsHashesInBatches(
+            listOf(uploadedWithGps, uploadedWithoutGps, notUploaded, noGpsMetadata),
+            batchSize = 50
+        ) { batch ->
+            for ((asset, exists) in batch) {
+                verified[asset.displayName] = exists
+            }
+        }
+
+        assertEquals(
+            mapOf(
+                "uploaded-with-gps.jpg" to true,
+                "uploaded-without-localization.jpg" to true,
+                "not-uploaded.jpg" to false,
+                "no-gps.jpg" to false
+            ),
+            verified
+        )
+    }
+
+    @Test
+    fun `computeDiff recognizes remote photo whose hash matches local asset without-localization redactedMd5`() = runTest {
+        stubEmptySpace()
+        val localAsset = testAsset(
+            hash = "real-md5-with-gps",
+            name = "photo.jpg",
+            redactedHash = "redacted-md5-without-gps"
+        )
+        every { LocalFolderScanner.scan(context, folderUri) } returns listOf(localAsset)
+        coEvery { photoApi.listForSpace(SPACE_ID, 0, any()) } returns onePage(
+            listOf(testPhoto(id = "remote-1", fileHash = "redacted-md5-without-gps"))
+        )
+
+        val diff = repository.computeDiff(SPACE_ID, folderUri)
+
+        assertTrue(diff.toUpload.isEmpty())
+        assertTrue(diff.toRemove.isEmpty())
+    }
 }
+

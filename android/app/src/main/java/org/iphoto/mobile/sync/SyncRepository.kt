@@ -80,27 +80,38 @@ class SyncRepository(
             .toMap()
 
         val localAssets = LocalFolderScanner.scan(context, folderUri)
-        val localHashToAsset = mutableMapOf<String, LocalAsset>()
+        val localHashToEntry = LinkedHashMap<String, Pair<LocalAsset, AssetHashes>>()
         for (asset in localAssets) {
-            localHashToAsset[hashOf(asset)] = asset
+            val hashes = hashesOf(asset)
+            localHashToEntry[hashes.realMd5] = asset to hashes
         }
+        val allLocalHashes = localHashToEntry.values
+            .flatMap { (_, hashes) -> hashes.allDistinct() }
+            .toSet()
 
         // Computed before toRemove below specifically so a file sitting only in the trash (not the
         // root) can be excluded from it - see toRemove's own comment for why.
         val trashAssets = LocalTrash.scan(context, folderUri)
-        val trashHashToAsset = mutableMapOf<String, LocalAsset>()
+        val trashHashToEntry = LinkedHashMap<String, Pair<LocalAsset, AssetHashes>>()
         for (asset in trashAssets) {
-            trashHashToAsset[hashOf(asset)] = asset
+            val hashes = hashesOf(asset)
+            trashHashToEntry[hashes.realMd5] = asset to hashes
         }
+        val allTrashHashes = trashHashToEntry.values
+            .flatMap { (_, hashes) -> hashes.allDistinct() }
+            .toSet()
 
         val toUpload = mutableListOf<LocalAsset>()
         val toRestore = mutableListOf<RemotePhotoRef>()
-        for ((hash, asset) in localHashToAsset) {
-            if (hash in skipHashes) continue
-            val garbageId = garbageIdByHash[hash]
+        for ((asset, hashes) in localHashToEntry.values) {
+            val candidateHashes = hashes.allDistinct()
+            if (candidateHashes.any { it in skipHashes }) continue
+            val matchedGarbage = candidateHashes.firstNotNullOfOrNull { h ->
+                garbageIdByHash[h]?.let { id -> RemotePhotoRef(id, h) }
+            }
             when {
-                garbageId != null -> toRestore.add(RemotePhotoRef(garbageId, hash))
-                hash !in remoteHashes -> toUpload.add(asset)
+                matchedGarbage != null -> toRestore.add(matchedGarbage)
+                candidateHashes.none { it in remoteHashes } -> toUpload.add(asset)
             }
         }
 
@@ -108,17 +119,24 @@ class SyncRepository(
         // is always set by the upload/edit pipeline, so a null here means "don't know", not "gone
         // from the phone", and this mirror should never delete something on an "I'm not sure". A
         // photo whose file is sitting in the local trash (not the root) isn't "gone from the
-        // phone" either, even though it's absent from localHashToAsset - it's still tracked there
+        // phone" either, even though it's absent from localHashToEntry - it's still tracked there
         // and about to be moved back to the root by toLocalRestore below, so garbaging it here
         // would just get undone (and the file re-trashed, then re-restored) over the next couple
         // of sync passes instead of settling in this one.
         val toRemove = remotePhotos
-            .filter { !it.fileHash.isNullOrBlank() && it.fileHash !in localHashToAsset.keys && it.fileHash !in trashHashToAsset.keys }
+            .filter {
+                !it.fileHash.isNullOrBlank() &&
+                    it.fileHash !in allLocalHashes &&
+                    it.fileHash !in allTrashHashes
+            }
             .map { RemotePhotoRef(it.id, it.fileHash) }
 
-        val toLocalRestore = trashHashToAsset
-            .filter { (hash, _) -> hash in remoteHashes && hash !in localHashToAsset.keys }
-            .values.toList()
+        val toLocalRestore = trashHashToEntry.values
+            .filter { (_, hashes) ->
+                val candidateHashes = hashes.allDistinct()
+                candidateHashes.any { it in remoteHashes } && candidateHashes.none { it in allLocalHashes }
+            }
+            .map { it.first }
 
         hashCache.persist()
 
@@ -142,14 +160,15 @@ class SyncRepository(
         return batch
     }
 
-    private suspend fun hashOf(asset: LocalAsset): String =
-        hashCache.get(asset.uri.toString(), asset.size, asset.lastModified)
-            ?: FileHasher.md5(
-                context,
-                asset.uri,
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) toMediaStoreUri(asset) else null
+    private suspend fun hashesOf(asset: LocalAsset): AssetHashes =
+        hashCache.getHashes(asset.uri.toString(), asset.size, asset.lastModified)
+            ?: FileHasher.computeHashes(
+                context = context,
+                uri = asset.uri,
+                mediaStoreUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) toMediaStoreUri(asset) else null,
+                mimeType = asset.mimeType
             ).also {
-                hashCache.put(asset.uri.toString(), asset.size, asset.lastModified, it)
+                hashCache.putHashes(asset.uri.toString(), asset.size, asset.lastModified, it)
             }
 
     /**
@@ -163,10 +182,12 @@ class SyncRepository(
     }
 
     /**
-     * Computes MD5 hashes for [assets] (using [hashCache] first and persisting newly computed
-     * hashes to local storage) and queries the remote server in batches of [batchSize] (50 by
-     * default) via `POST /api/photos/check-hashes`. Invokes [onBatchVerified] after each batch
-     * with the per-asset existence status returned by the server.
+     * Computes dual MD5 hashes ([AssetHashes.realMd5] and [AssetHashes.redactedMd5] without
+     * localization) for [assets] (using [hashCache] first and persisting newly computed hashes to
+     * local storage) and queries the remote server in batches of [batchSize] (50 by default) via
+     * `POST /api/photos/check-hashes`. Invokes [onBatchVerified] after each batch with the
+     * per-asset existence status (`true` if either the real MD5 or the without-localization MD5
+     * exists on the server).
      */
     suspend fun verifyFolderAssetsHashesInBatches(
         assets: List<LocalAsset>,
@@ -175,18 +196,18 @@ class SyncRepository(
     ) = withContext(Dispatchers.IO) {
         if (assets.isEmpty()) return@withContext
         val effectiveBatchSize = maxOf(1, batchSize)
-        val pendingBatch = mutableListOf<Pair<LocalAsset, String>>()
+        val pendingBatch = mutableListOf<Pair<LocalAsset, AssetHashes>>()
 
         suspend fun flushBatch() {
             if (pendingBatch.isEmpty()) return
             hashCache.persist()
             val batchSnapshot = pendingBatch.toList()
             pendingBatch.clear()
-            val distinctHashes = batchSnapshot.map { it.second }.distinct()
+            val distinctHashes = batchSnapshot.flatMap { it.second.allDistinct() }.distinct()
             try {
                 val statusByHash = checkHashesBatch(distinctHashes)
-                val results = batchSnapshot.map { (asset, hash) ->
-                    asset to (statusByHash[hash] == true)
+                val results = batchSnapshot.map { (asset, assetHashes) ->
+                    asset to assetHashes.allDistinct().any { statusByHash[it] == true }
                 }
                 onBatchVerified(results)
             } catch (e: CancellationException) {
@@ -197,16 +218,16 @@ class SyncRepository(
         }
 
         for (asset in assets) {
-            val hash = try {
-                hashOf(asset)
+            val hashes = try {
+                hashesOf(asset)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.w(TAG, "verifyFolderAssetsHashesInBatches: failed to hash ${asset.displayName}: ${e.message}")
                 null
             }
-            if (hash != null) {
-                pendingBatch.add(asset to hash)
+            if (hashes != null) {
+                pendingBatch.add(asset to hashes)
                 if (pendingBatch.size >= effectiveBatchSize) {
                     flushBatch()
                 }
@@ -347,7 +368,7 @@ class SyncRepository(
         Log.d(TAG, "findLocalAssetsForHashes: scanning $folderUri for ${hashes.size} hash(es)")
         val localAssets = LocalFolderScanner.scan(context, folderUri)
         Log.d(TAG, "findLocalAssetsForHashes: scanned ${localAssets.size} local asset(s)")
-        val matched = localAssets.filter { hashOf(it) in hashes }
+        val matched = localAssets.filter { asset -> hashesOf(asset).allDistinct().any { it in hashes } }
         Log.d(TAG, "findLocalAssetsForHashes: matched ${matched.size} of ${hashes.size} requested hash(es)")
         matched
     }

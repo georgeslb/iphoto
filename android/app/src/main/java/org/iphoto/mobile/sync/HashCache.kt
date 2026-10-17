@@ -36,9 +36,32 @@ class HashCache internal constructor(private val file: File) {
         return if (cached.size == size && cached.lastModified == lastModified) cached.hash else null
     }
 
+    /**
+     * Returns the cached [AssetHashes] (`realMd5` + `redactedMd5`) if present and up-to-date.
+     * Legacy cache entries that do not yet have `redactedHash` populated return `null` so that the
+     * caller recomputes and upgrades the entry with both hashes.
+     */
     @Synchronized
-    fun put(uri: String, size: Long, lastModified: Long, hash: String) {
-        entries[uri] = CachedHash(size, lastModified, hash)
+    fun getHashes(uri: String, size: Long, lastModified: Long): AssetHashes? {
+        val cached = entries[uri] ?: return null
+        if (cached.size != size || cached.lastModified != lastModified) return null
+        val redacted = cached.redactedHash ?: return null
+        return AssetHashes(realMd5 = cached.hash, redactedMd5 = redacted)
+    }
+
+    @Synchronized
+    fun put(uri: String, size: Long, lastModified: Long, hash: String, redactedHash: String? = null) {
+        entries[uri] = CachedHash(size, lastModified, hash, redactedHash)
+    }
+
+    @Synchronized
+    fun putHashes(uri: String, size: Long, lastModified: Long, hashes: AssetHashes) {
+        entries[uri] = CachedHash(
+            size = size,
+            lastModified = lastModified,
+            hash = hashes.realMd5,
+            redactedHash = hashes.redactedMd5 ?: hashes.realMd5
+        )
     }
 
     @Synchronized
@@ -95,5 +118,11 @@ class HashCache internal constructor(private val file: File) {
         file.writeText(gson.toJson(entries))
     }
 
-    private data class CachedHash(val size: Long, val lastModified: Long, val hash: String)
+    private data class CachedHash(
+        val size: Long,
+        val lastModified: Long,
+        val hash: String,
+        val redactedHash: String? = null
+    )
 }
+
