@@ -74,77 +74,6 @@ class PhotoDetailViewModelTest {
     }
 
     @Test
-    fun `moveToGarbage invokes onPhotoMovedToGarbage with the loaded photo after the api call`() = runTest {
-        val photoApi = mockk<PhotoApi>()
-        val photo = testPhoto("1")
-        coEvery { photoApi.get("1") } returns photo
-        coEvery { photoApi.moveToGarbage(listOf("1")) } returns Unit
-        var invokedWith: Photo? = null
-        val viewModel = PhotoDetailViewModel(photoApi, "1", onPhotoMovedToGarbage = { invokedWith = it })
-
-        viewModel.moveToGarbage()
-
-        assertEquals(photo, invokedWith)
-        assertTrue(viewModel.uiState.value is PhotoDetailUiState.Removed)
-    }
-
-    @Test
-    fun `moveToGarbage still transitions to Removed when onPhotoMovedToGarbage throws`() = runTest {
-        val photoApi = mockk<PhotoApi>()
-        coEvery { photoApi.get("1") } returns testPhoto("1")
-        coEvery { photoApi.moveToGarbage(listOf("1")) } returns Unit
-        val viewModel = PhotoDetailViewModel(
-            photoApi,
-            "1",
-            onPhotoMovedToGarbage = { throw RuntimeException("local trash unavailable") }
-        )
-
-        viewModel.moveToGarbage()
-
-        assertTrue(viewModel.uiState.value is PhotoDetailUiState.Removed)
-    }
-
-    @Test
-    fun `canExcludeFromSync is true only when onPhotoExcludedFromSync is set`() = runTest {
-        val photoApi = mockk<PhotoApi>()
-        coEvery { photoApi.get("1") } returns testPhoto("1")
-
-        val without = PhotoDetailViewModel(photoApi, "1")
-        val with = PhotoDetailViewModel(photoApi, "1", onPhotoExcludedFromSync = {})
-
-        assertFalse(without.canExcludeFromSync)
-        assertTrue(with.canExcludeFromSync)
-    }
-
-    @Test
-    fun `excludeFromSync moves to garbage, invokes the callback, and transitions to Removed`() = runTest {
-        val photoApi = mockk<PhotoApi>()
-        val photo = testPhoto("1")
-        coEvery { photoApi.get("1") } returns photo
-        coEvery { photoApi.moveToGarbage(listOf("1")) } returns Unit
-        var invokedWith: Photo? = null
-        val viewModel = PhotoDetailViewModel(photoApi, "1", onPhotoExcludedFromSync = { invokedWith = it })
-
-        viewModel.excludeFromSync(photoApi)
-
-        assertEquals(photo, invokedWith)
-        assertTrue(viewModel.uiState.value is PhotoDetailUiState.Removed)
-    }
-
-    @Test
-    fun `excludeFromSync surfaces the error and stays Loaded on failure`() = runTest {
-        val photoApi = mockk<PhotoApi>()
-        coEvery { photoApi.get("1") } returns testPhoto("1")
-        coEvery { photoApi.moveToGarbage(any()) } throws RuntimeException("boom")
-        val viewModel = PhotoDetailViewModel(photoApi, "1", onPhotoExcludedFromSync = {})
-
-        viewModel.excludeFromSync(photoApi)
-
-        val state = viewModel.uiState.value as PhotoDetailUiState.Loaded
-        assertEquals("boom", state.actionError)
-    }
-
-    @Test
     fun `moveToMain calls the api and transitions to Removed`() = runTest {
         val photoApi = mockk<PhotoApi>()
         coEvery { photoApi.get("1") } returns testPhoto("1")
@@ -154,45 +83,6 @@ class PhotoDetailViewModelTest {
         viewModel.moveToMain(photoApi)
 
         coVerify(exactly = 1) { photoApi.moveToMain(listOf("1")) }
-        assertTrue(viewModel.uiState.value is PhotoDetailUiState.Removed)
-    }
-
-    @Test
-    fun `moveToMain with alsoRemoveFromDevice invokes onPhotoMovedToGarbage`() = runTest {
-        val photoApi = mockk<PhotoApi>()
-        val photo = testPhoto("1")
-        coEvery { photoApi.get("1") } returns photo
-        coEvery { photoApi.moveToMain(listOf("1")) } returns Unit
-        var invokedWith: Photo? = null
-        val viewModel = PhotoDetailViewModel(
-            photoApi,
-            "1",
-            onPhotoMovedToGarbage = { invokedWith = it },
-            canMoveToMain = true
-        )
-
-        viewModel.moveToMain(photoApi, alsoRemoveFromDevice = true)
-
-        assertEquals(photo, invokedWith)
-        assertTrue(viewModel.uiState.value is PhotoDetailUiState.Removed)
-    }
-
-    @Test
-    fun `moveToMain without alsoRemoveFromDevice does not invoke onPhotoMovedToGarbage`() = runTest {
-        val photoApi = mockk<PhotoApi>()
-        coEvery { photoApi.get("1") } returns testPhoto("1")
-        coEvery { photoApi.moveToMain(listOf("1")) } returns Unit
-        var invoked = false
-        val viewModel = PhotoDetailViewModel(
-            photoApi,
-            "1",
-            onPhotoMovedToGarbage = { invoked = true },
-            canMoveToMain = true
-        )
-
-        viewModel.moveToMain(photoApi, alsoRemoveFromDevice = false)
-
-        assertFalse(invoked)
         assertTrue(viewModel.uiState.value is PhotoDetailUiState.Removed)
     }
 
@@ -210,17 +100,19 @@ class PhotoDetailViewModelTest {
     }
 
     @Test
-    fun `removeFromAlbum calls the api with this photo's id and transitions to Removed`() = runTest {
+    fun `removeFromAlbum calls the api with this photo's id, notifies onAlbumsChanged, and transitions to Removed`() = runTest {
         val photoApi = mockk<PhotoApi>()
         coEvery { photoApi.get("1") } returns testPhoto("1")
         val albumApi = mockk<AlbumApi>()
         coEvery { albumApi.removePhotos("album-1", AlbumPhotoRequest(listOf("1"))) } returns
             AlbumDTO("album-1", "Trip", null, null, 0, "now", "now")
         val viewModel = PhotoDetailViewModel(photoApi, "1", albumId = "album-1")
+        var albumsChangedCount = 0
 
-        viewModel.removeFromAlbum(albumApi)
+        viewModel.removeFromAlbum(albumApi, onAlbumsChanged = { albumsChangedCount++ })
 
         coVerify(exactly = 1) { albumApi.removePhotos("album-1", AlbumPhotoRequest(listOf("1"))) }
+        assertEquals(1, albumsChangedCount)
         assertTrue(viewModel.uiState.value is PhotoDetailUiState.Removed)
     }
 
@@ -253,24 +145,26 @@ class PhotoDetailViewModelTest {
     }
 
     @Test
-    fun `addToAlbum calls the api with this photo's id`() = runTest {
+    fun `addToAlbum calls the api with this photo's id and notifies onAlbumsChanged`() = runTest {
         val photoApi = mockk<PhotoApi>()
         coEvery { photoApi.get("1") } returns testPhoto("1")
         val albumApi = mockk<AlbumApi>()
         coEvery { albumApi.addPhotos("album-1", AlbumPhotoRequest(listOf("1"))) } returns
             AlbumDTO("album-1", "Trip", null, null, 1, "now", "now")
         val viewModel = PhotoDetailViewModel(photoApi, "1")
+        var albumsChangedCount = 0
 
-        viewModel.addToAlbum(albumApi, "album-1")
+        viewModel.addToAlbum(albumApi, "album-1", onAlbumsChanged = { albumsChangedCount++ })
 
         coVerify(exactly = 1) { albumApi.addPhotos("album-1", AlbumPhotoRequest(listOf("1"))) }
+        assertEquals(1, albumsChangedCount)
         val state = viewModel.uiState.value as PhotoDetailUiState.Loaded
         assertFalse(state.isMutating)
         assertNull(state.actionError)
     }
 
     @Test
-    fun `createAlbumAndAdd creates the album then adds this photo`() = runTest {
+    fun `createAlbumAndAdd creates the album then adds this photo and notifies onAlbumsChanged`() = runTest {
         val photoApi = mockk<PhotoApi>()
         coEvery { photoApi.get("1") } returns testPhoto("1")
         val albumApi = mockk<AlbumApi>()
@@ -278,10 +172,12 @@ class PhotoDetailViewModelTest {
         coEvery { albumApi.create(any()) } returns created
         coEvery { albumApi.addPhotos("new-album", AlbumPhotoRequest(listOf("1"))) } returns created
         val viewModel = PhotoDetailViewModel(photoApi, "1")
+        var albumsChangedCount = 0
 
-        viewModel.createAlbumAndAdd(albumApi, "Trip")
+        viewModel.createAlbumAndAdd(albumApi, "Trip", onAlbumsChanged = { albumsChangedCount++ })
 
         coVerify(exactly = 1) { albumApi.addPhotos("new-album", AlbumPhotoRequest(listOf("1"))) }
+        assertEquals(1, albumsChangedCount)
     }
 
     @Test

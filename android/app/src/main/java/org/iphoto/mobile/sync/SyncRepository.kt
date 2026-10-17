@@ -2,23 +2,29 @@ package org.iphoto.mobile.sync
 
 import android.content.ContentUris
 import android.content.Context
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.iphoto.mobile.model.CheckHashesRequest
 import org.iphoto.mobile.model.Photo
 import org.iphoto.mobile.model.TaskDTO
 import org.iphoto.mobile.network.PhotoApi
 import org.iphoto.mobile.network.TaskApi
 import java.io.InputStream
 import java.util.UUID
+import kotlin.coroutines.resume
 import kotlin.math.ceil
 
 /** A remote Space photo, reduced to the fields the sync diff actually needs. */
@@ -74,27 +80,38 @@ class SyncRepository(
             .toMap()
 
         val localAssets = LocalFolderScanner.scan(context, folderUri)
-        val localHashToAsset = mutableMapOf<String, LocalAsset>()
+        val localHashToEntry = LinkedHashMap<String, Pair<LocalAsset, AssetHashes>>()
         for (asset in localAssets) {
-            localHashToAsset[hashOf(asset)] = asset
+            val hashes = hashesOf(asset)
+            localHashToEntry[hashes.realMd5] = asset to hashes
         }
+        val allLocalHashes = localHashToEntry.values
+            .flatMap { (_, hashes) -> hashes.allDistinct() }
+            .toSet()
 
         // Computed before toRemove below specifically so a file sitting only in the trash (not the
         // root) can be excluded from it - see toRemove's own comment for why.
         val trashAssets = LocalTrash.scan(context, folderUri)
-        val trashHashToAsset = mutableMapOf<String, LocalAsset>()
+        val trashHashToEntry = LinkedHashMap<String, Pair<LocalAsset, AssetHashes>>()
         for (asset in trashAssets) {
-            trashHashToAsset[hashOf(asset)] = asset
+            val hashes = hashesOf(asset)
+            trashHashToEntry[hashes.realMd5] = asset to hashes
         }
+        val allTrashHashes = trashHashToEntry.values
+            .flatMap { (_, hashes) -> hashes.allDistinct() }
+            .toSet()
 
         val toUpload = mutableListOf<LocalAsset>()
         val toRestore = mutableListOf<RemotePhotoRef>()
-        for ((hash, asset) in localHashToAsset) {
-            if (hash in skipHashes) continue
-            val garbageId = garbageIdByHash[hash]
+        for ((asset, hashes) in localHashToEntry.values) {
+            val candidateHashes = hashes.allDistinct()
+            if (candidateHashes.any { it in skipHashes }) continue
+            val matchedGarbage = candidateHashes.firstNotNullOfOrNull { h ->
+                garbageIdByHash[h]?.let { id -> RemotePhotoRef(id, h) }
+            }
             when {
-                garbageId != null -> toRestore.add(RemotePhotoRef(garbageId, hash))
-                hash !in remoteHashes -> toUpload.add(asset)
+                matchedGarbage != null -> toRestore.add(matchedGarbage)
+                candidateHashes.none { it in remoteHashes } -> toUpload.add(asset)
             }
         }
 
@@ -102,17 +119,24 @@ class SyncRepository(
         // is always set by the upload/edit pipeline, so a null here means "don't know", not "gone
         // from the phone", and this mirror should never delete something on an "I'm not sure". A
         // photo whose file is sitting in the local trash (not the root) isn't "gone from the
-        // phone" either, even though it's absent from localHashToAsset - it's still tracked there
+        // phone" either, even though it's absent from localHashToEntry - it's still tracked there
         // and about to be moved back to the root by toLocalRestore below, so garbaging it here
         // would just get undone (and the file re-trashed, then re-restored) over the next couple
         // of sync passes instead of settling in this one.
         val toRemove = remotePhotos
-            .filter { !it.fileHash.isNullOrBlank() && it.fileHash !in localHashToAsset.keys && it.fileHash !in trashHashToAsset.keys }
+            .filter {
+                !it.fileHash.isNullOrBlank() &&
+                    it.fileHash !in allLocalHashes &&
+                    it.fileHash !in allTrashHashes
+            }
             .map { RemotePhotoRef(it.id, it.fileHash) }
 
-        val toLocalRestore = trashHashToAsset
-            .filter { (hash, _) -> hash in remoteHashes && hash !in localHashToAsset.keys }
-            .values.toList()
+        val toLocalRestore = trashHashToEntry.values
+            .filter { (_, hashes) ->
+                val candidateHashes = hashes.allDistinct()
+                candidateHashes.any { it in remoteHashes } && candidateHashes.none { it in allLocalHashes }
+            }
+            .map { it.first }
 
         hashCache.persist()
 
@@ -136,11 +160,97 @@ class SyncRepository(
         return batch
     }
 
-    private suspend fun hashOf(asset: LocalAsset): String =
-        hashCache.get(asset.uri.toString(), asset.size, asset.lastModified)
-            ?: FileHasher.md5(context, asset.uri).also {
-                hashCache.put(asset.uri.toString(), asset.size, asset.lastModified, it)
+    private suspend fun hashesOf(asset: LocalAsset): AssetHashes =
+        hashCache.getHashes(asset.uri.toString(), asset.size, asset.lastModified)
+            ?: FileHasher.computeHashes(
+                context = context,
+                uri = asset.uri,
+                mediaStoreUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) toMediaStoreUri(asset) else null,
+                mimeType = asset.mimeType
+            ).also {
+                hashCache.putHashes(asset.uri.toString(), asset.size, asset.lastModified, it)
             }
+
+    /**
+     * Queries `POST /api/photos/check-hashes` for a single batch of MD5 hashes and returns
+     * a map of each hash to its server existence boolean.
+     */
+    suspend fun checkHashesBatch(hashes: List<String>): Map<String, Boolean> {
+        if (hashes.isEmpty()) return emptyMap()
+        val response = photoApi.checkHashes(CheckHashesRequest(hashes))
+        return hashes.associateWith { hash -> response.isExisting(hash) }
+    }
+
+    /**
+     * Computes dual MD5 hashes ([AssetHashes.realMd5] and [AssetHashes.redactedMd5] without
+     * localization) for [assets] (using [hashCache] first and persisting newly computed hashes to
+     * local storage) and queries the remote server in batches of [batchSize] (50 by default) via
+     * `POST /api/photos/check-hashes`. Invokes [onBatchVerified] after each batch with the
+     * per-asset existence status (`true` if either the real MD5 or the without-localization MD5
+     * exists on the server).
+     */
+    suspend fun verifyFolderAssetsHashesInBatches(
+        assets: List<LocalAsset>,
+        batchSize: Int = HASH_CHECK_BATCH_SIZE,
+        onBatchVerified: suspend (List<Pair<LocalAsset, Boolean>>) -> Unit
+    ) = withContext(Dispatchers.IO) {
+        if (assets.isEmpty()) return@withContext
+        val effectiveBatchSize = maxOf(1, batchSize)
+        val pendingBatch = mutableListOf<Pair<LocalAsset, AssetHashes>>()
+
+        suspend fun flushBatch() {
+            if (pendingBatch.isEmpty()) return
+            hashCache.persist()
+            val batchSnapshot = pendingBatch.toList()
+            pendingBatch.clear()
+            val distinctHashes = batchSnapshot.flatMap { it.second.allDistinct() }.distinct()
+            try {
+                val statusByHash = checkHashesBatch(distinctHashes)
+                val results = batchSnapshot.map { (asset, assetHashes) ->
+                    asset to assetHashes.allDistinct().any { statusByHash[it] == true }
+                }
+                onBatchVerified(results)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "verifyFolderAssetsHashesInBatches: checkHashes failed for batch of ${batchSnapshot.size}: ${e.message}")
+            }
+        }
+
+        for (asset in assets) {
+            val hashes = try {
+                hashesOf(asset)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "verifyFolderAssetsHashesInBatches: failed to hash ${asset.displayName}: ${e.message}")
+                null
+            }
+            if (hashes != null) {
+                pendingBatch.add(asset to hashes)
+                if (pendingBatch.size >= effectiveBatchSize) {
+                    flushBatch()
+                }
+            }
+        }
+        flushBatch()
+    }
+
+    fun removeCachedHashesForAssets(assets: List<LocalAsset>) {
+        if (assets.isEmpty()) return
+        hashCache.removeAll(assets.map { it.uri.toString() })
+    }
+
+    fun removeCachedHashesForFolder(folderUri: Uri) {
+        hashCache.removeForFolder(folderUri.toString())
+    }
+
+    fun retainCachedHashesForFolder(folderUri: Uri, existingAssets: List<LocalAsset>) {
+        hashCache.retainForFolder(
+            folderUri.toString(),
+            existingAssets.map { it.uri.toString() }.toSet()
+        )
+    }
 
     private suspend fun fetchAllSpacePhotos(spaceId: String): List<Photo> {
         val all = mutableListOf<Photo>()
@@ -166,13 +276,19 @@ class SyncRepository(
         return all
     }
 
-    suspend fun uploadAsset(asset: LocalAsset, spaceId: String) = withContext(Dispatchers.IO) {
+    suspend fun uploadAsset(
+        asset: LocalAsset,
+        spaceId: String,
+        onProgress: ((uploadedChunks: Int, totalChunks: Int) -> Unit)? = null,
+        onTaskCreated: ((taskId: String) -> Unit)? = null
+    ): TaskDTO? = withContext(Dispatchers.IO) {
         val uploadId = UUID.randomUUID().toString()
         val totalChunks = maxOf(1, ceil(asset.size.toDouble() / CHUNK_SIZE).toInt())
         val mediaType = asset.mimeType.toMediaTypeOrNull()
 
         var completionTask: TaskDTO? = null
-        val input = context.contentResolver.openInputStream(asset.uri)
+        val mediaStoreUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) toMediaStoreUri(asset) else null
+        val input = FileHasher.openUnredactedInputStream(context, asset.uri, mediaStoreUri)
             ?: throw IllegalStateException("Cannot open ${asset.uri}")
         input.use { stream ->
             val buffer = ByteArray(CHUNK_SIZE)
@@ -197,20 +313,25 @@ class SyncRepository(
                     spaceId = spaceId.toPlainRequestBody(),
                     chunk = part
                 )
-                completionTask = response.task
                 chunkIndex++
+                onProgress?.invoke(chunkIndex, totalChunks)
+                completionTask = response.task
             }
         }
 
-        completionTask?.let { waitForProcessing(it.id) }
+        completionTask?.let { task ->
+            onTaskCreated?.invoke(task.id)
+            return@withContext waitForProcessing(task.id)
+        }
+        null
     }
 
-    private suspend fun waitForProcessing(taskId: String) {
+    private suspend fun waitForProcessing(taskId: String): TaskDTO {
         val deadline = System.currentTimeMillis() + TASK_POLL_TIMEOUT_MS
         while (System.currentTimeMillis() < deadline) {
             val task = taskApi.get(taskId)
             when (task.status) {
-                "COMPLETED" -> return
+                "COMPLETED", "IGNORED", "TRASHED" -> return task
                 "FAILED" -> throw IllegalStateException("Server failed to process upload (task $taskId)")
                 else -> delay(TASK_POLL_INTERVAL_MS)
             }
@@ -247,7 +368,7 @@ class SyncRepository(
         Log.d(TAG, "findLocalAssetsForHashes: scanning $folderUri for ${hashes.size} hash(es)")
         val localAssets = LocalFolderScanner.scan(context, folderUri)
         Log.d(TAG, "findLocalAssetsForHashes: scanned ${localAssets.size} local asset(s)")
-        val matched = localAssets.filter { hashOf(it) in hashes }
+        val matched = localAssets.filter { asset -> hashesOf(asset).allDistinct().any { it in hashes } }
         Log.d(TAG, "findLocalAssetsForHashes: matched ${matched.size} of ${hashes.size} requested hash(es)")
         matched
     }
@@ -267,33 +388,173 @@ class SyncRepository(
         hashCache.persist()
     }
 
+    fun resolveRelativePath(asset: LocalAsset): String? {
+        try {
+            if (DocumentsContract.isDocumentUri(context, asset.uri) || DocumentsContract.isTreeUri(asset.uri)) {
+                val docId = DocumentsContract.getDocumentId(asset.uri)
+                if (docId.startsWith("primary:")) {
+                    val rawPath = docId.removePrefix("primary:")
+                    val file = java.io.File(android.os.Environment.getExternalStorageDirectory(), rawPath)
+                    val parent = file.parentFile
+                    if (parent != null) {
+                        val base = android.os.Environment.getExternalStorageDirectory().absolutePath
+                        if (parent.absolutePath.startsWith(base)) {
+                            val rel = parent.absolutePath.removePrefix(base).trim('/')
+                            return if (rel.isEmpty()) "" else "$rel/"
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "resolveRelativePath failed: ${e.message}")
+        }
+        return null
+    }
+
     // Resolves a scanned local [asset] (living under a SAF tree the user picked) to its MediaStore
     // content Uri, when that SAF location happens to also be MediaStore-indexed - true for standard
     // camera-roll locations like DCIM/Camera, which is what this feature is built for. Lets the
-    // caller use MediaStore.createTrashRequest to put the file in the phone's *real* system trash
-    // (Gallery/Photos "Recently deleted", recoverable there) instead of our own hidden .iPhotoTrash
-    // subfolder - requires API 29+ (getMediaUri itself), null below that or for a non-indexed
-    // location, both of which fall back to trashLocalFilesInAppFolder.
-    fun toMediaStoreUri(asset: LocalAsset): Uri? {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
-        return try {
-            // getMediaUri returns a generic content://media/external/file/<id> Uri (the row ID in
-            // MediaStore's shared "files" table) - createTrashRequest rejects that with
-            // "All requested items must be Media items", it needs the type-specific Images/Video
-            // collection Uri instead. Same underlying row, just addressed through the collection
-            // createTrashRequest actually accepts.
-            val genericUri = MediaStore.getMediaUri(context, asset.uri) ?: return null
-            val id = ContentUris.parseId(genericUri)
-            val collection = if (asset.mimeType.startsWith("video/")) {
-                MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-            } else {
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-            }
-            ContentUris.withAppendedId(collection, id)
-        } catch (e: Exception) {
-            Log.w(TAG, "toMediaStoreUri: could not resolve a MediaStore uri for ${asset.uri}", e)
-            null
+    // caller use MediaStore.createTrashRequest or send to external editors (like Google Photos).
+    fun toMediaStoreUri(asset: LocalAsset, preferredRelPath: String? = null): Uri? {
+        val collection = if (asset.mimeType.startsWith("video/")) {
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        } else {
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         }
+
+        val relPath = preferredRelPath ?: resolveRelativePath(asset)
+        var filePath: String? = null
+        try {
+            if (DocumentsContract.isDocumentUri(context, asset.uri) || DocumentsContract.isTreeUri(asset.uri)) {
+                val docId = DocumentsContract.getDocumentId(asset.uri)
+                if (docId.startsWith("primary:")) {
+                    val rawPath = docId.removePrefix("primary:")
+                    val file = java.io.File(android.os.Environment.getExternalStorageDirectory(), rawPath)
+                    if (file.exists()) {
+                        filePath = file.absolutePath
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "toMediaStoreUri: could not parse filePath from docId: ${e.message}")
+        }
+
+        // 1. Query MediaStore by DATA (file path) if known
+        if (filePath != null) {
+            try {
+                val projection = arrayOf(MediaStore.MediaColumns._ID)
+                val selection = "${MediaStore.MediaColumns.DATA} = ?"
+                val selectionArgs = arrayOf(filePath)
+                context.contentResolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID))
+                        return ContentUris.withAppendedId(collection, id)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "toMediaStoreUri: DATA query failed: ${e.message}")
+            }
+        }
+
+        // 2. Query MediaStore by DISPLAY_NAME and RELATIVE_PATH
+        if (relPath != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val projection = arrayOf(MediaStore.MediaColumns._ID)
+                val selection = "${MediaStore.MediaColumns.DISPLAY_NAME} = ? AND ${MediaStore.MediaColumns.RELATIVE_PATH} = ?"
+                val selectionArgs = arrayOf(asset.displayName, relPath)
+                context.contentResolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID))
+                        return ContentUris.withAppendedId(collection, id)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "toMediaStoreUri: DISPLAY_NAME + RELATIVE_PATH query failed: ${e.message}")
+            }
+        }
+
+        // 3. Query MediaStore by DISPLAY_NAME alone
+        try {
+            val projection = arrayOf(MediaStore.MediaColumns._ID)
+            val selection = "${MediaStore.MediaColumns.DISPLAY_NAME} = ?"
+            val selectionArgs = arrayOf(asset.displayName)
+            context.contentResolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID))
+                    return ContentUris.withAppendedId(collection, id)
+                }
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "toMediaStoreUri: DISPLAY_NAME query failed: ${e.message}")
+        }
+
+        // 4. Try MediaStore.getMediaUri on Android Q+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val docUri = if (DocumentsContract.isTreeUri(asset.uri)) {
+                    val docId = DocumentsContract.getDocumentId(asset.uri)
+                    DocumentsContract.buildDocumentUri(asset.uri.authority ?: "com.android.externalstorage.documents", docId)
+                } else {
+                    asset.uri
+                }
+                val genericUri = MediaStore.getMediaUri(context, docUri)
+                    ?: MediaStore.getMediaUri(context, asset.uri)
+                if (genericUri != null) {
+                    val id = ContentUris.parseId(genericUri)
+                    return ContentUris.withAppendedId(collection, id)
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "toMediaStoreUri: getMediaUri failed for ${asset.uri}: ${e.message}")
+            }
+        }
+
+        return null
+    }
+
+    fun resolveFilePath(asset: LocalAsset): String? {
+        try {
+            if (DocumentsContract.isDocumentUri(context, asset.uri) || DocumentsContract.isTreeUri(asset.uri)) {
+                val docId = DocumentsContract.getDocumentId(asset.uri)
+                if (docId.startsWith("primary:")) {
+                    val rawPath = docId.removePrefix("primary:")
+                    val file = java.io.File(android.os.Environment.getExternalStorageDirectory(), rawPath)
+                    return file.absolutePath
+                }
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "resolveFilePath failed: ${e.message}")
+        }
+        return null
+    }
+
+    // Resolves a scanned local [asset] to its MediaStore content Uri.
+    // If not yet indexed in MediaStore, asks Android's MediaScanner to index the original physical file,
+    // avoiding creating any duplicate copies of the file before editing.
+    suspend fun getOrScanMediaStoreUri(asset: LocalAsset, preferredRelPath: String? = null): Uri? {
+        // 1. Check if it's already indexed in MediaStore
+        val existingUri = toMediaStoreUri(asset, preferredRelPath)
+        if (existingUri != null) {
+            return existingUri
+        }
+
+        // 2. Scan the original file directly with MediaScannerConnection so MediaStore indexes it in-place
+        val filePath = resolveFilePath(asset)
+        if (filePath != null) {
+            try {
+                val scannedUri = suspendCancellableCoroutine<Uri?> { cont ->
+                    MediaScannerConnection.scanFile(context, arrayOf(filePath), arrayOf(asset.mimeType)) { _, uri ->
+                        if (cont.isActive) cont.resume(uri)
+                    }
+                }
+                if (scannedUri != null) {
+                    return scannedUri
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "MediaScannerConnection.scanFile failed for $filePath", e)
+            }
+        }
+
+        return null
     }
 
     private fun readFully(stream: InputStream, buffer: ByteArray): Int {
@@ -310,6 +571,7 @@ class SyncRepository(
 
     companion object {
         private const val TAG = "SyncRepository"
+        const val HASH_CHECK_BATCH_SIZE = 50
         private const val SPACE_PAGE_SIZE = 200
         private const val CHUNK_SIZE = 1 * 1024 * 1024
         private const val TASK_POLL_INTERVAL_MS = 1000L

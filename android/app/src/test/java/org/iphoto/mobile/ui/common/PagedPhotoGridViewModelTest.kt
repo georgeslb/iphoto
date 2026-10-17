@@ -272,73 +272,6 @@ class PagedPhotoGridViewModelTest {
     }
 
     @Test
-    fun `canExcludeFromSync is false unless onPhotosExcludedFromSync is set`() {
-        val loadPage: suspend (Int, Int) -> Pair<List<Photo>, Boolean> = { _, _ -> emptyList<Photo>() to true }
-        val viewModel = PagedPhotoGridViewModel(loadPage)
-
-        assertFalse(viewModel.canExcludeFromSync)
-    }
-
-    @Test
-    fun `excludeSelectionFromSync garbages the selection and invokes the exclude callback, without the garbage callback`() =
-        runTest {
-            val loadPage: suspend (Int, Int) -> Pair<List<Photo>, Boolean> =
-                { _, _ -> listOf(testPhoto("1"), testPhoto("2")) to true }
-            var garbageCallbackPhotos: List<Photo>? = null
-            var excludeCallbackPhotos: List<Photo>? = null
-            val viewModel = PagedPhotoGridViewModel(
-                loadPage,
-                onPhotosMovedToGarbage = { garbageCallbackPhotos = it },
-                onPhotosExcludedFromSync = { excludeCallbackPhotos = it }
-            )
-            viewModel.toggleSelection("1")
-            val photoApi = mockk<PhotoApi>()
-            coEvery { photoApi.moveToGarbage(listOf("1")) } returns Unit
-
-            assertTrue(viewModel.canExcludeFromSync)
-            viewModel.excludeSelectionFromSync(photoApi)
-
-            coVerify(exactly = 1) { photoApi.moveToGarbage(listOf("1")) }
-            assertEquals(listOf("1"), excludeCallbackPhotos?.map { it.id })
-            assertNull("excluding must never invoke the local-trash mirror", garbageCallbackPhotos)
-            val state = viewModel.uiState.value
-            assertTrue(state.selectedIds.isEmpty())
-            assertFalse(state.isMutating)
-            assertNull(state.actionError)
-        }
-
-    @Test
-    fun `excludeSelectionFromSync surfaces an error and stops mutating on failure`() = runTest {
-        val viewModel = PagedPhotoGridViewModel(
-            { _, _ -> listOf(testPhoto("1")) to true },
-            onPhotosExcludedFromSync = { }
-        )
-        viewModel.toggleSelection("1")
-        val photoApi = mockk<PhotoApi>()
-        coEvery { photoApi.moveToGarbage(any()) } throws RuntimeException("network down")
-
-        viewModel.excludeSelectionFromSync(photoApi)
-
-        val state = viewModel.uiState.value
-        assertEquals("network down", state.actionError)
-        assertFalse(state.isMutating)
-        assertEquals(setOf("1"), state.selectedIds)
-    }
-
-    @Test
-    fun `excludeSelectionFromSync is a no-op with nothing selected`() = runTest {
-        val viewModel = PagedPhotoGridViewModel(
-            { _, _ -> listOf(testPhoto("1")) to true },
-            onPhotosExcludedFromSync = { }
-        )
-        val photoApi = mockk<PhotoApi>()
-
-        viewModel.excludeSelectionFromSync(photoApi)
-
-        coVerify(exactly = 0) { photoApi.moveToGarbage(any()) }
-    }
-
-    @Test
     fun `canMoveToMain defaults to false`() {
         val viewModel = PagedPhotoGridViewModel({ _, _ -> emptyList<Photo>() to true })
 
@@ -346,12 +279,10 @@ class PagedPhotoGridViewModelTest {
     }
 
     @Test
-    fun `moveSelectionToMain moves the selection and invokes the moved-to-main callback`() = runTest {
-        var movedToMainCallbackPhotos: List<Photo>? = null
+    fun `moveSelectionToMain moves the selection`() = runTest {
         val viewModel = PagedPhotoGridViewModel(
             { _, _ -> listOf(testPhoto("1"), testPhoto("2")) to true },
-            canMoveToMain = true,
-            onPhotosMovedToMain = { movedToMainCallbackPhotos = it }
+            canMoveToMain = true
         )
         viewModel.toggleSelection("1")
         val photoApi = mockk<PhotoApi>()
@@ -361,27 +292,10 @@ class PagedPhotoGridViewModelTest {
         viewModel.moveSelectionToMain(photoApi)
 
         coVerify(exactly = 1) { photoApi.moveToMain(listOf("1")) }
-        assertEquals(listOf("1"), movedToMainCallbackPhotos?.map { it.id })
         val state = viewModel.uiState.value
         assertTrue(state.selectedIds.isEmpty())
         assertFalse(state.isMutating)
         assertNull(state.actionError)
-    }
-
-    @Test
-    fun `moveSelectionToMain works without a moved-to-main callback set (unsynced Space)`() = runTest {
-        val viewModel = PagedPhotoGridViewModel(
-            { _, _ -> listOf(testPhoto("1")) to true },
-            canMoveToMain = true
-        )
-        viewModel.toggleSelection("1")
-        val photoApi = mockk<PhotoApi>()
-        coEvery { photoApi.moveToMain(listOf("1")) } returns Unit
-
-        viewModel.moveSelectionToMain(photoApi)
-
-        coVerify(exactly = 1) { photoApi.moveToMain(listOf("1")) }
-        assertTrue(viewModel.uiState.value.selectedIds.isEmpty())
     }
 
     @Test
@@ -416,7 +330,7 @@ class PagedPhotoGridViewModelTest {
     }
 
     @Test
-    fun `addSelectionToAlbum adds photos without reloading the page`() = runTest {
+    fun `addSelectionToAlbum adds photos without reloading the page and notifies onAlbumsChanged`() = runTest {
         val photos = listOf(testPhoto("1"), testPhoto("2"))
         val viewModel = viewModelWith(photos)
         viewModel.toggleSelection("1")
@@ -424,10 +338,12 @@ class PagedPhotoGridViewModelTest {
         val albumApi = mockk<AlbumApi>()
         coEvery { albumApi.addPhotos("album-1", AlbumPhotoRequest(listOf("1", "2"))) } returns
             AlbumDTO("album-1", "Trip", null, null, 2, "now", "now")
+        var albumsChangedCount = 0
 
-        viewModel.addSelectionToAlbum(albumApi, "album-1")
+        viewModel.addSelectionToAlbum(albumApi, "album-1", onAlbumsChanged = { albumsChangedCount++ })
 
         coVerify(exactly = 1) { albumApi.addPhotos("album-1", AlbumPhotoRequest(listOf("1", "2"))) }
+        assertEquals(1, albumsChangedCount)
         val state = viewModel.uiState.value
         assertTrue(state.selectedIds.isEmpty())
         // Adding to an album is a reference, not a move - the photos stay in this view.
@@ -435,17 +351,19 @@ class PagedPhotoGridViewModelTest {
     }
 
     @Test
-    fun `createAlbumAndAddSelection creates the album then adds the selection to it`() = runTest {
+    fun `createAlbumAndAddSelection creates the album then adds the selection to it and notifies onAlbumsChanged`() = runTest {
         val viewModel = viewModelWith(listOf(testPhoto("1")))
         viewModel.toggleSelection("1")
         val albumApi = mockk<AlbumApi>()
         val created = AlbumDTO("new-album", "Trip", null, null, 0, "now", "now")
         coEvery { albumApi.create(any()) } returns created
         coEvery { albumApi.addPhotos("new-album", AlbumPhotoRequest(listOf("1"))) } returns created
+        var albumsChangedCount = 0
 
-        viewModel.createAlbumAndAddSelection(albumApi, "Trip")
+        viewModel.createAlbumAndAddSelection(albumApi, "Trip", onAlbumsChanged = { albumsChangedCount++ })
 
         coVerify(exactly = 1) { albumApi.addPhotos("new-album", AlbumPhotoRequest(listOf("1"))) }
+        assertEquals(1, albumsChangedCount)
         assertTrue(viewModel.uiState.value.selectedIds.isEmpty())
     }
 
@@ -477,16 +395,18 @@ class PagedPhotoGridViewModelTest {
     }
 
     @Test
-    fun `removeSelectionFromAlbum removes selected photos when inside an album`() = runTest {
+    fun `removeSelectionFromAlbum removes selected photos when inside an album and notifies onAlbumsChanged`() = runTest {
         val viewModel = viewModelWith(listOf(testPhoto("1"), testPhoto("2")), albumId = "album-1")
         viewModel.toggleSelection("1")
         val albumApi = mockk<AlbumApi>()
         coEvery { albumApi.removePhotos("album-1", AlbumPhotoRequest(listOf("1"))) } returns
             AlbumDTO("album-1", "Trip", null, null, 1, "now", "now")
+        var albumsChangedCount = 0
 
-        viewModel.removeSelectionFromAlbum(albumApi)
+        viewModel.removeSelectionFromAlbum(albumApi, onAlbumsChanged = { albumsChangedCount++ })
 
         coVerify(exactly = 1) { albumApi.removePhotos("album-1", AlbumPhotoRequest(listOf("1"))) }
+        assertEquals(1, albumsChangedCount)
         assertTrue(viewModel.uiState.value.selectedIds.isEmpty())
     }
 

@@ -17,5 +17,6 @@ data class LocalAsset(
     val size: Long,
     val lastModified: Long,
     val mimeType: String,
-    val relativeDir: String = ""
+    val relativeDir: String = "",
+    val duration: Long? = null
 )

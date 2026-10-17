@@ -2,7 +2,9 @@ package org.iphoto.mobile.network
 
 import android.util.Log
 import java.util.concurrent.TimeUnit
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.ResponseBody
 import okhttp3.logging.HttpLoggingInterceptor
 import org.iphoto.mobile.BuildConfig
 import org.iphoto.mobile.data.TokenStore
@@ -35,6 +37,25 @@ class ApiClient(private val tokenStore: TokenStore) {
         .readTimeout(10, TimeUnit.SECONDS)
         .writeTimeout(10, TimeUnit.SECONDS)
         .addInterceptor(AuthInterceptor(tokenStore))
+        .addNetworkInterceptor { chain ->
+            val request = chain.request()
+            val response = chain.proceed(request)
+            if (request.url.encodedPath.contains("/thumbnail")) {
+                val imageType = "image/jpeg".toMediaType()
+                val body = response.body
+                val wrappedBody = object : ResponseBody() {
+                    override fun contentType() = imageType
+                    override fun contentLength() = body.contentLength()
+                    override fun source() = body.source()
+                }
+                response.newBuilder()
+                    .header("Content-Type", "image/jpeg")
+                    .body(wrappedBody)
+                    .build()
+            } else {
+                response
+            }
+        }
         .apply {
             if (BuildConfig.DEBUG) {
                 addInterceptor(HttpLoggingInterceptor().apply {
@@ -56,19 +77,18 @@ class ApiClient(private val tokenStore: TokenStore) {
     // how busy sync happens to be right now. Timeouts are relaxed (30s connect, 60s read) so
     // continuous buffering doesn't trip aggressive 10s socket read timeouts.
     val videoHttpClient: OkHttpClient by lazy {
+        val dispatcher = okhttp3.Dispatcher().apply {
+            maxRequests = 32
+            maxRequestsPerHost = 16
+        }
         OkHttpClient.Builder()
+            .dispatcher(dispatcher)
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
-            .connectionPool(okhttp3.ConnectionPool(10, 5, TimeUnit.MINUTES))
+            .connectionPool(okhttp3.ConnectionPool(16, 5, TimeUnit.MINUTES))
             .addInterceptor(AuthInterceptor(tokenStore))
-            .apply {
-                if (BuildConfig.DEBUG) {
-                    addInterceptor(HttpLoggingInterceptor().apply {
-                        level = HttpLoggingInterceptor.Level.HEADERS
-                    })
-                }
-            }
+            .retryOnConnectionFailure(true)
             .build()
     }
 

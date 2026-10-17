@@ -13,11 +13,19 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.iphoto.mobile.LocalAppContainer
 
@@ -26,6 +34,29 @@ fun SpacesScreen(onSpaceClick: (String) -> Unit) {
     val container = LocalAppContainer.current
     val viewModel: SpacesViewModel = viewModel(factory = SpacesViewModelFactory(container.spaceApi))
     val state by viewModel.uiState.collectAsState()
+    val libraryChangeVersion by container.libraryChangeVersion.collectAsState()
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var skippedInitialResume by remember { mutableStateOf(false) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                if (skippedInitialResume) {
+                    viewModel.load()
+                } else {
+                    skippedInitialResume = true
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    LaunchedEffect(libraryChangeVersion) {
+        if (libraryChangeVersion > 0) {
+            viewModel.load()
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         when {

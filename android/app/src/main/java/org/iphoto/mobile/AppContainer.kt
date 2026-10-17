@@ -4,18 +4,17 @@ import android.content.Context
 import androidx.annotation.OptIn
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
-import androidx.media3.datasource.cache.CacheDataSource
-import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
-import androidx.media3.datasource.cache.SimpleCache
-import androidx.media3.datasource.okhttp.OkHttpDataSource
+import org.iphoto.mobile.network.ChunkedVideoDataSource
 import coil3.ImageLoader
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
-import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import org.iphoto.mobile.auth.AuthRepository
 import org.iphoto.mobile.data.SyncPrefs
 import org.iphoto.mobile.data.TokenStore
@@ -58,8 +57,19 @@ class AppContainer(private val context: Context) {
     // Fresh each call, like the *Api properties above - always bound to today's server URL/token.
     fun syncRepository(): SyncRepository = SyncRepository(context, photoApi, taskApi, syncHashCache)
 
+    val uploadManager: org.iphoto.mobile.sync.UploadManager by lazy {
+        org.iphoto.mobile.sync.UploadManager(
+            context = context,
+            syncRepositoryProvider = { syncRepository() },
+            onLibraryChanged = { notifyLibraryChanged() },
+            onFolderChanged = { notifyFolderChanged(it) },
+            scope = applicationScope
+        )
+    }
+
     // shares the auth-carrying OkHttpClient so thumbnail/original image requests authenticate
-    // the same way REST calls do
+    // the same way REST calls do. Kept clean without VideoFrameDecoder so remote video thumbnail
+    // images are always decoded as images without failing on MediaMetadataRetriever.
     val imageLoader: ImageLoader by lazy {
         ImageLoader.Builder(context)
             .components {
@@ -68,16 +78,14 @@ class AppContainer(private val context: Context) {
             .build()
     }
 
-    // 150 MB LRU disk cache for video playback - avoids re-downloading previously streamed chunks,
-    // enables smooth rewinding/looping, and bridges short network stalls.
-    @get:OptIn(UnstableApi::class)
-    private val videoCache: SimpleCache by lazy {
-        val cacheDir = File(context.cacheDir, "video_cache")
-        SimpleCache(
-            cacheDir,
-            LeastRecentlyUsedCacheEvictor(150 * 1024 * 1024L),
-            StandaloneDatabaseProvider(context)
-        )
+    // Used for local device media in the Sync tab - includes VideoFrameDecoder to extract
+    // thumbnails from local video files on device.
+    val localImageLoader: ImageLoader by lazy {
+        ImageLoader.Builder(context)
+            .components {
+                add(coil3.video.VideoFrameDecoder.Factory())
+            }
+            .build()
     }
 
     // Uses apiClient.videoHttpClient - a *separate* authenticated OkHttpClient from the one
@@ -86,14 +94,34 @@ class AppContainer(private val context: Context) {
     // concurrent requests per host shared across everything on one client; video's own range
     // requests were competing with sync's concurrent chunk uploads for that budget, visibly
     // slowing/stalling playback while a sync was active.
-    // Wrapped in CacheDataSource.Factory so streamed video chunks are persisted to disk cache.
+    // Streams directly using HTTP range requests without disk caching to avoid byte-range corruption
+    // on non-faststart MP4s (e.g. smartphone recordings with moov atom at the end of the file).
     @OptIn(UnstableApi::class)
     fun videoDataSourceFactory(): DataSource.Factory {
-        val upstream = OkHttpDataSource.Factory(apiClient.videoHttpClient)
-        return CacheDataSource.Factory()
-            .setCache(videoCache)
-            .setUpstreamDataSourceFactory(upstream)
-            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+        return ChunkedVideoDataSource.Factory(apiClient.videoHttpClient)
+    }
+
+    private val _libraryChangeVersion = MutableStateFlow(0)
+    val libraryChangeVersion: StateFlow<Int> = _libraryChangeVersion.asStateFlow()
+
+    fun notifyLibraryChanged() {
+        _libraryChangeVersion.update { it + 1 }
+    }
+
+    private val _albumsChangeVersion = MutableStateFlow(0)
+    val albumsChangeVersion: StateFlow<Int> = _albumsChangeVersion.asStateFlow()
+
+    fun notifyAlbumsChanged() {
+        _albumsChangeVersion.update { it + 1 }
+    }
+
+    val folderChangeTrigger = kotlinx.coroutines.flow.MutableSharedFlow<android.net.Uri>(
+        extraBufferCapacity = 16,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST
+    )
+
+    fun notifyFolderChanged(folderUri: android.net.Uri) {
+        folderChangeTrigger.tryEmit(folderUri)
     }
 
     fun absoluteUrl(relativeUrlOrPath: String): String {

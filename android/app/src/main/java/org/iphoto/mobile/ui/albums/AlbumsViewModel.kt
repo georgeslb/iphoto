@@ -28,7 +28,8 @@ class AlbumsViewModel(private val albumApi: AlbumApi) : ViewModel() {
         _uiState.value = AlbumsUiState(isLoading = true)
         viewModelScope.launch {
             _uiState.value = try {
-                AlbumsUiState(albums = albumApi.list(), isLoading = false)
+                val sortedAlbums = albumApi.list().sortedByDescending { it.createdAt }
+                AlbumsUiState(albums = sortedAlbums, isLoading = false)
             } catch (e: Exception) {
                 AlbumsUiState(isLoading = false, error = e.message ?: "Failed to load albums")
             }

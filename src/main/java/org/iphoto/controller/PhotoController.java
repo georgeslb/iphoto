@@ -251,7 +251,16 @@ public class PhotoController {
     // global (not per-user) lookup, and why the response only ever echoes back hashes.
     @PostMapping("/check-hashes")
     public CheckHashesResponse checkHashes(@RequestBody CheckHashesRequest request) {
-        return new CheckHashesResponse(photoService.checkExistingHashes(request.hashes()));
+        List<String> requested = request != null && request.hashes() != null ? request.hashes() : List.of();
+        List<String> existing = photoService.checkExistingHashes(requested);
+        Set<String> existingSet = new HashSet<>(existing);
+        java.util.Map<String, Boolean> statuses = new java.util.LinkedHashMap<>();
+        for (String hash : requested) {
+            if (hash != null) {
+                statuses.put(hash, existingSet.contains(hash));
+            }
+        }
+        return new CheckHashesResponse(existing, statuses);
     }
 
     @PostMapping("/garbage")

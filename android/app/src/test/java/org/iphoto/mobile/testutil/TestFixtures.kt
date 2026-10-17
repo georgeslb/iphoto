@@ -30,14 +30,18 @@ fun testPhoto(
     duplicates = null
 )
 
-fun testAlbum(id: String, name: String = "Album $id"): AlbumDTO = AlbumDTO(
+fun testAlbum(
+    id: String,
+    name: String = "Album $id",
+    createdAt: String = "2026-01-01T00:00:00"
+): AlbumDTO = AlbumDTO(
     id = id,
     name = name,
     description = null,
     coverPhoto = null,
     photoCount = 0,
-    createdAt = "2026-01-01T00:00:00",
-    updatedAt = "2026-01-01T00:00:00"
+    createdAt = createdAt,
+    updatedAt = createdAt
 )
 
 fun testSpace(

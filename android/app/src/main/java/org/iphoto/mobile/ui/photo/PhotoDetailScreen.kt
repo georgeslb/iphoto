@@ -1,7 +1,6 @@
 package org.iphoto.mobile.ui.photo
 
 import android.content.res.Configuration
-import android.net.Uri
 import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -28,7 +27,6 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.PhotoAlbum
 import androidx.compose.material.icons.filled.PlaylistRemove
-import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.CircularProgressIndicator
@@ -64,7 +62,6 @@ import org.iphoto.mobile.model.Photo
 import org.iphoto.mobile.ui.common.AlbumPickerDialog
 import org.iphoto.mobile.ui.common.DateTimePickerDialog
 import org.iphoto.mobile.ui.common.PhotoBrowsingContext
-import org.iphoto.mobile.ui.common.rememberDeviceTrashRequester
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
@@ -83,56 +80,16 @@ fun PhotoDetailScreen(
     onNavigateToPhoto: (String) -> Unit = {}
 ) {
     val container = LocalAppContainer.current
-    // Same synced-space check as SpaceDetailScreen's banner - only set when this lightbox is
-    // showing a photo from the Space currently synced to a device folder.
-    val syncPrefs = container.syncPrefs
-    val isSyncedSpace =
-        spaceId != null && syncPrefs.spaceId == spaceId && syncPrefs.folderUri != null
-    val syncedFolderUri = syncPrefs.folderUri
     val canMoveToMain = spaceId != null
-    val deviceTrashRequester = rememberDeviceTrashRequester(container)
-    val onPhotoMovedToGarbage: (suspend (Photo) -> Unit)? =
-        remember(spaceId, isSyncedSpace, syncedFolderUri, deviceTrashRequester) {
-            if (isSyncedSpace && syncedFolderUri != null) {
-                { photo: Photo ->
-                    val hash = photo.fileHash?.takeIf(String::isNotBlank)
-                    if (hash != null) {
-                        deviceTrashRequester.trash(Uri.parse(syncedFolderUri), setOf(hash))
-                    }
-                }
-            } else null
-        }
-    // Mirrors SpaceDetailScreen's onPhotosExcludedFromSync/onPhotosMovedToMain, singular.
-    val onPhotoExcludedFromSync: (suspend (Photo) -> Unit)? = remember(spaceId, isSyncedSpace) {
-        if (isSyncedSpace) {
-            { photo: Photo ->
-                val hash = photo.fileHash
-                if (!hash.isNullOrBlank()) {
-                    syncPrefs.excludeAsset(hash, photo.title, photo.id)
-                }
-            }
-        } else null
-    }
-    val onPhotoMovedToMain: (suspend (Photo) -> Unit)? = remember(spaceId, isSyncedSpace) {
-        if (isSyncedSpace) {
-            { photo: Photo ->
-                val hash = photo.fileHash
-                if (!hash.isNullOrBlank()) {
-                    syncPrefs.markMovedToMain(hash, photo.title, photo.id)
-                }
-            }
-        } else null
-    }
+
     val viewModel: PhotoDetailViewModel = viewModel(
         key = "photo-$photoId",
         factory = PhotoDetailViewModelFactory(
             container.photoApi,
             photoId,
             albumId,
-            onPhotoMovedToGarbage,
             canMoveToMain,
-            onPhotoMovedToMain,
-            onPhotoExcludedFromSync
+            initialPhoto = PhotoBrowsingContext.getPhoto(photoId)
         )
     )
     val state by viewModel.uiState.collectAsState()
@@ -141,7 +98,6 @@ fun PhotoDetailScreen(
     val videoDataSourceFactory = remember { container.videoDataSourceFactory() }
     var showAlbumPicker by remember { mutableStateOf(false) }
     var showDatePicker by remember { mutableStateOf(false) }
-    var showMoveToMainDeviceConfirm by remember { mutableStateOf(false) }
 
     // Landscape drops the fixed top/bottom app bars in favor of a single collapsed bar overlaid on
     // top of a truly full-screen image - matches the fullscreen-with-collapsible-controls pattern
@@ -152,17 +108,8 @@ fun PhotoDetailScreen(
 
     val onEditDateClick: () -> Unit = { showDatePicker = true }
     val onAddToAlbumClick: () -> Unit = { showAlbumPicker = true }
-    val onRemoveFromAlbumClick: () -> Unit = { viewModel.removeFromAlbum(container.albumApi) }
-    val onExcludeFromSyncClick: () -> Unit = { viewModel.excludeFromSync(container.photoApi) }
-    val onMoveToMainClick: () -> Unit = {
-        // Same policy as PhotoGridContent's selection action bar: only ask "also remove from
-        // device?" when this Space is actually the one synced to a device folder.
-        if (viewModel.canExcludeFromSync) {
-            showMoveToMainDeviceConfirm = true
-        } else {
-            viewModel.moveToMain(container.photoApi)
-        }
-    }
+    val onRemoveFromAlbumClick: () -> Unit = { viewModel.removeFromAlbum(container.albumApi, container::notifyAlbumsChanged) }
+    val onMoveToMainClick: () -> Unit = { viewModel.moveToMain(container.photoApi) }
 
     // Computed fresh per photoId against whatever grid last populated PhotoBrowsingContext (see its
     // own kdoc) - not reactive, but the browsed list isn't expected to change while viewing a photo.
@@ -235,12 +182,10 @@ fun PhotoDetailScreen(
                             PhotoActionButtons(
                                 loaded = loaded,
                                 canRemoveFromAlbum = albumId != null,
-                                canExcludeFromSync = viewModel.canExcludeFromSync,
                                 canMoveToMain = viewModel.canMoveToMain,
                                 onEditDate = onEditDateClick,
                                 onAddToAlbum = onAddToAlbumClick,
                                 onRemoveFromAlbum = onRemoveFromAlbumClick,
-                                onExcludeFromSync = onExcludeFromSyncClick,
                                 onMoveToMain = onMoveToMainClick,
                                 onMoveToGarbage = viewModel::moveToGarbage
                             )
@@ -356,12 +301,10 @@ fun PhotoDetailScreen(
                             PhotoActionButtons(
                                 loaded = current,
                                 canRemoveFromAlbum = albumId != null,
-                                canExcludeFromSync = viewModel.canExcludeFromSync,
                                 canMoveToMain = viewModel.canMoveToMain,
                                 onEditDate = onEditDateClick,
                                 onAddToAlbum = onAddToAlbumClick,
                                 onRemoveFromAlbum = onRemoveFromAlbumClick,
-                                onExcludeFromSync = onExcludeFromSyncClick,
                                 onMoveToMain = onMoveToMainClick,
                                 onMoveToGarbage = viewModel::moveToGarbage
                             )
@@ -437,41 +380,16 @@ fun PhotoDetailScreen(
         }
     }
 
-    if (showMoveToMainDeviceConfirm) {
-        AlertDialog(
-            onDismissRequest = { showMoveToMainDeviceConfirm = false },
-            title = { Text("Remove from this phone too?") },
-            text = {
-                Text(
-                    "This Space is synced to a folder on this phone. Moving to Main Space keeps " +
-                            "the photo, but do you also want to remove the matching file on this phone?"
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    viewModel.moveToMain(container.photoApi, alsoRemoveFromDevice = true)
-                    showMoveToMainDeviceConfirm = false
-                }) { Text("Remove from device") }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    viewModel.moveToMain(container.photoApi, alsoRemoveFromDevice = false)
-                    showMoveToMainDeviceConfirm = false
-                }) { Text("Keep on device") }
-            }
-        )
-    }
-
     if (showAlbumPicker) {
         AlbumPickerDialog(
             albumApi = container.albumApi,
             onDismiss = { showAlbumPicker = false },
             onAlbumPicked = { pickedAlbumId ->
-                viewModel.addToAlbum(container.albumApi, pickedAlbumId)
+                viewModel.addToAlbum(container.albumApi, pickedAlbumId, container::notifyAlbumsChanged)
                 showAlbumPicker = false
             },
             onCreateAlbum = { name ->
-                viewModel.createAlbumAndAdd(container.albumApi, name)
+                viewModel.createAlbumAndAdd(container.albumApi, name, container::notifyAlbumsChanged)
                 showAlbumPicker = false
             }
         )
@@ -506,12 +424,10 @@ fun PhotoDetailScreen(
 private fun PhotoActionButtons(
     loaded: PhotoDetailUiState.Loaded,
     canRemoveFromAlbum: Boolean,
-    canExcludeFromSync: Boolean,
     canMoveToMain: Boolean,
     onEditDate: () -> Unit,
     onAddToAlbum: () -> Unit,
     onRemoveFromAlbum: () -> Unit,
-    onExcludeFromSync: () -> Unit,
     onMoveToMain: () -> Unit,
     onMoveToGarbage: () -> Unit
 ) {
@@ -526,15 +442,6 @@ private fun PhotoActionButtons(
             Icon(
                 Icons.Filled.PlaylistRemove,
                 contentDescription = "Remove from album",
-                tint = Color.White
-            )
-        }
-    }
-    if (canExcludeFromSync) {
-        IconButton(onClick = onExcludeFromSync, enabled = !loaded.isMutating) {
-            Icon(
-                Icons.Filled.VisibilityOff,
-                contentDescription = "Exclude from sync",
                 tint = Color.White
             )
         }
