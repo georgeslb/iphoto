@@ -30,8 +30,10 @@ class UploadManager(
     private val queueChannel = Channel<Unit>(Channel.CONFLATED)
 
     init {
-        scope.launch {
-            processQueueLoop()
+        repeat(MAX_CONCURRENT_UPLOADS) {
+            scope.launch {
+                workerLoop()
+            }
         }
     }
 
@@ -44,6 +46,7 @@ class UploadManager(
             status = UploadStatus.QUEUED
         )
         _uploadQueue.update { it + item }
+        UploadForegroundService.start(context)
         queueChannel.trySend(Unit)
     }
 
@@ -58,6 +61,7 @@ class UploadManager(
             )
         }
         _uploadQueue.update { it + newItems }
+        UploadForegroundService.start(context)
         queueChannel.trySend(Unit)
     }
 
@@ -69,6 +73,7 @@ class UploadManager(
                 } else item
             }
         }
+        UploadForegroundService.start(context)
         queueChannel.trySend(Unit)
     }
 
@@ -80,6 +85,9 @@ class UploadManager(
             } else {
                 list + item
             }
+        }
+        if (item.status == UploadStatus.QUEUED || item.status == UploadStatus.UPLOADING) {
+            UploadForegroundService.start(context)
         }
     }
 
@@ -116,16 +124,33 @@ class UploadManager(
         _uploadQueue.update { list -> list.filterNot { it.id == itemId } }
     }
 
-    private suspend fun processQueueLoop() {
+    private suspend fun workerLoop() {
         while (true) {
-            val nextItem = _uploadQueue.value.firstOrNull { it.status == UploadStatus.QUEUED }
-            if (nextItem == null) {
+            var itemToProcess: UploadItem? = null
+            _uploadQueue.update { list ->
+                val candidate = list.firstOrNull { it.status == UploadStatus.QUEUED }
+                if (candidate != null) {
+                    itemToProcess = candidate
+                    list.map { if (it.id == candidate.id) it.copy(status = UploadStatus.UPLOADING) else it }
+                } else {
+                    list
+                }
+            }
+
+            val item = itemToProcess ?: run {
                 queueChannel.receive()
                 continue
             }
 
-            processItem(nextItem)
+            processItem(item)
+            if (_uploadQueue.value.any { it.status == UploadStatus.QUEUED }) {
+                queueChannel.trySend(Unit)
+            }
         }
+    }
+
+    companion object {
+        const val MAX_CONCURRENT_UPLOADS = 3
     }
 
     private suspend fun processItem(item: UploadItem) {
