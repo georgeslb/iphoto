@@ -20,6 +20,7 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Upload
@@ -56,6 +57,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.launch
 import me.saket.telephoto.zoomable.coil3.ZoomableAsyncImage
+import org.iphoto.mobile.data.SyncPrefs
 import org.iphoto.mobile.sync.LocalAsset
 
 private const val TAG = "AssetDetailScreen"
@@ -86,6 +88,20 @@ fun AssetDetailScreen(
 
     val pagerState = rememberPagerState(initialPage = initialIndex) { assetsInFolder.size }
     val currentAsset = assetsInFolder.getOrElse(pagerState.currentPage) { asset }
+    val isCurrentAssetUploaded = remember(folder, currentAsset, state.uploadedAssetKeys) {
+        val folderUri = folder?.uri ?: return@remember false
+        val exactKey = SyncPrefs.encodeUploadedKey(
+            folderUri.toString(),
+            currentAsset.relativeDir,
+            currentAsset.displayName
+        )
+        val decodedKey = SyncPrefs.encodeUploadedKey(
+            Uri.decode(folderUri.toString()),
+            currentAsset.relativeDir,
+            currentAsset.displayName
+        )
+        state.uploadedAssetKeys.contains(exactKey) || state.uploadedAssetKeys.contains(decodedKey)
+    }
 
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showSpacePicker by remember { mutableStateOf<((String) -> Unit)?>(null) }
@@ -119,19 +135,6 @@ fun AssetDetailScreen(
         onBack()
     }
 
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                viewModel.refreshAllFolders()
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
-    }
-
     Scaffold(
         topBar = {
             TopAppBar(
@@ -145,6 +148,15 @@ fun AssetDetailScreen(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    if (isCurrentAssetUploaded) {
+                        Icon(
+                            imageVector = Icons.Filled.CloudDone,
+                            contentDescription = "Uploaded",
+                            modifier = Modifier.padding(end = 16.dp)
+                        )
                     }
                 }
             )

@@ -307,7 +307,9 @@ class SyncViewModel(
     }
 
     private var contentObserver: ContentObserver? = null
+    private val folderScanJobs = mutableMapOf<Uri, Job>()
     private val folderHashJobs = mutableMapOf<Uri, Job>()
+    private val folderHashSignatures = mutableMapOf<Uri, List<String>>()
     private val hashCheckMutex = Mutex()
 
     init {
@@ -377,8 +379,11 @@ class SyncViewModel(
 
     override fun onCleared() {
         super.onCleared()
+        folderScanJobs.values.forEach { it.cancel() }
+        folderScanJobs.clear()
         folderHashJobs.values.forEach { it.cancel() }
         folderHashJobs.clear()
+        folderHashSignatures.clear()
         contentObserver?.let {
             try {
                 appContext.contentResolver.unregisterContentObserver(it)
@@ -421,8 +426,14 @@ class SyncViewModel(
     }
 
     fun refreshFolder(uri: Uri, displayName: String) {
-        viewModelScope.launch {
-            _uiState.update { it.copy(isLoadingFolderContents = it.isLoadingFolderContents + uri) }
+        folderScanJobs.remove(uri)?.cancel()
+        folderScanJobs[uri] = viewModelScope.launch {
+            // Only show a full-screen loading indicator on the initial load when we don't have
+            // cached contents in memory yet, so background refreshes never blank out the grid.
+            _uiState.update {
+                if (it.folderContents.containsKey(uri)) it
+                else it.copy(isLoadingFolderContents = it.isLoadingFolderContents + uri)
+            }
             try {
                 val assets = withContext(ioDispatcher) {
                     val scanned = LocalFolderScanner.scan(appContext, uri)
@@ -452,6 +463,8 @@ class SyncViewModel(
                 }
 
                 verifyFolderHashesInBackground(uri, assets)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _uiState.update { it.copy(error = "Failed to scan folder \"$displayName\"", isLoadingFolderContents = it.isLoadingFolderContents - uri) }
             }
@@ -459,8 +472,18 @@ class SyncViewModel(
     }
 
     private fun verifyFolderHashesInBackground(folderUri: Uri, assets: List<LocalAsset>) {
-        folderHashJobs.remove(folderUri)?.cancel()
-        if (assets.isEmpty()) return
+        val signatures = assets.map { "${it.uri}|${it.size}|${it.lastModified}" }
+        val existingJob = folderHashJobs[folderUri]
+        if (existingJob?.isActive == true && folderHashSignatures[folderUri] == signatures) {
+            return
+        }
+        existingJob?.cancel()
+        folderHashJobs.remove(folderUri)
+        if (assets.isEmpty()) {
+            folderHashSignatures.remove(folderUri)
+            return
+        }
+        folderHashSignatures[folderUri] = signatures
         folderHashJobs[folderUri] = viewModelScope.launch {
             hashCheckMutex.withLock {
                 syncRepository.verifyFolderAssetsHashesInBatches(
@@ -498,7 +521,9 @@ class SyncViewModel(
     }
 
     fun removeFolder(folder: SelectedFolder) {
+        folderScanJobs.remove(folder.uri)?.cancel()
         folderHashJobs.remove(folder.uri)?.cancel()
+        folderHashSignatures.remove(folder.uri)
         val updatedFolders = _uiState.value.selectedFolders - folder
         syncPrefs.saveSelectedFolders(updatedFolders)
         syncPrefs.removeUploadedAssetsForFolder(folder.uri.toString())

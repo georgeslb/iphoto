@@ -160,9 +160,14 @@ fun SyncScreen(
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
+        var isFirstResume = true
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                viewModel.refreshAllFolders()
+                if (isFirstResume) {
+                    isFirstResume = false
+                } else {
+                    viewModel.refreshAllFolders()
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -400,7 +405,7 @@ fun FolderContentGrid(
     onAssetSelectClick: (LocalAsset) -> Unit,
     onDayClick: (List<LocalAsset>) -> Unit
 ) {
-    if (isLoading) {
+    if (isLoading && items.isNullOrEmpty()) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             CircularProgressIndicator()
         }

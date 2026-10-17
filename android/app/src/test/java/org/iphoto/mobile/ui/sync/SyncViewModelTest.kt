@@ -218,4 +218,34 @@ class SyncViewModelTest {
         assertTrue(vm.isAssetUploaded(folderUri, asset1))
         assertFalse(vm.isAssetUploaded(folderUri, asset2))
     }
+
+    @Test
+    fun `refreshFolder does not set isLoadingFolderContents when folder contents are already loaded`() = runTest {
+        val folderUri = Uri.parse("content://folder/camera")
+        val asset1 = fakeAsset("content://folder/camera/1", "photo1.jpg")
+        syncPrefs.saveSelectedFolders(listOf(SelectedFolder(folderUri, "Camera")))
+        every { LocalFolderScanner.scan(context, folderUri) } returns listOf(asset1)
+
+        val vm = SyncViewModel(
+            context,
+            spaceApi,
+            syncRepository,
+            syncPrefs,
+            ioDispatcher = mainDispatcherRule.testDispatcher
+        )
+
+        assertTrue(vm.uiState.value.folderContents.containsKey(folderUri))
+        assertFalse(vm.uiState.value.isLoadingFolderContents.contains(folderUri))
+
+        var wasLoadingDuringScan = false
+        every { LocalFolderScanner.scan(context, folderUri) } answers {
+            wasLoadingDuringScan = vm.uiState.value.isLoadingFolderContents.contains(folderUri)
+            listOf(asset1)
+        }
+
+        vm.refreshFolder(folderUri, "Camera")
+
+        assertFalse(wasLoadingDuringScan)
+        assertTrue(vm.uiState.value.folderContents.containsKey(folderUri))
+    }
 }

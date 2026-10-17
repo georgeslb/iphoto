@@ -163,17 +163,20 @@ NavHost
   - Persists both hashes locally in `HashCache` (`sync_hash_cache.json`, keyed by `(uri, size, lastModified)`) so unchanged files are never re-read from flash storage on subsequent launches (and legacy single-hash cache entries are automatically upgraded).
   - Queries the backend endpoint `POST /api/photos/check-hashes` in batches of **50 assets** (sending both `realMd5` and `redactedMd5` when they differ). The backend returns per-hash existence statuses (`statuses: Map<String, Boolean>`).
   - Marks an asset as uploaded (`true`) if **either** `realMd5` **or** `redactedMd5` exists on the remote server, updating `SyncPrefs` (`applyBatchHashCheckStatuses`) and `SyncUiState.uploadedAssetKeys` after each batch so the cloud indicator badge (`Icons.Filled.CloudDone`) automatically appears.
-- **Folder Tabs:**
+- **Folder Tabs & Fast Local Scanning (`LocalFolderScanner`):**
   - Add folder via SAF tree picker (`OpenDocumentTree`).
   - Close/remove folder tab (automatically cleans up persisted uploaded-asset keys for that folder in `SyncPrefs`).
   - Persisted folder list across launches.
+  - Batch-queries `MediaStore.Video.Media.EXTERNAL_CONTENT_URI` once per scan and caches video durations in memory (`ConcurrentHashMap` keyed by `(uri, size, lastModified)`) instead of opening `MediaMetadataRetriever` sequentially per video.
 - **Grid View:**
   - 4-column thumbnail grid grouped by day headers.
+  - Background refreshes update the grid in place without replacing already-loaded items with a loading spinner; navigating to the Sync tab or returning from the Lightbox displays cached folder contents immediately.
   - Uploaded indicator badge (`Icons.Filled.CloudDone`, top-right) on thumbnails already uploaded to the server; remains visible even when thumbnails are selected or in multi-selection mode.
   - Long press on thumbnail or tap day header to enter multi-selection mode.
 - **Local Lightbox Viewer (`AssetDetailScreen`):**
   - Fullscreen zoomable image viewer or inline video player for local files.
   - Horizontal swipe pager to navigate through folder assets.
+  - Displays the uploaded cloud indicator icon (`Icons.Filled.CloudDone`) in the top app bar whenever the currently viewed asset is already uploaded on the remote server.
 - **Parallel Uploads & Background Persistence:**
   - Concurrent upload engine: up to 3 files uploaded simultaneously in parallel to saturate available bandwidth.
   - Screen-off & Background Reliability: `UploadForegroundService` promotes process to `dataSync` foreground service with persistent notification and partial `WakeLock`. Prevents Android Doze mode from shutting down radio, dropping sockets, or causing DNS "server unreachable" errors when the device screen turns off.
