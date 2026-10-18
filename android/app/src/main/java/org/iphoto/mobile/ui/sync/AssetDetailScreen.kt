@@ -47,8 +47,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import org.iphoto.mobile.R
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.media3.common.MediaItem
@@ -97,6 +99,26 @@ fun AssetDetailScreen(
     }
 
     val pagerState = rememberPagerState(initialPage = initialIndex) { assetsInFolder.size }
+    
+    // Remember the currently focused asset URI so that when assetsInFolder changes
+    // (e.g. an edited photo is added or moved), the pager smoothly scrolls to the right asset
+    // instead of showing the shifted index.
+    var focusedAssetUri by remember { mutableStateOf(asset.uri) }
+
+    LaunchedEffect(pagerState.currentPage, assetsInFolder) {
+        val current = assetsInFolder.getOrNull(pagerState.currentPage)
+        if (current != null) {
+            focusedAssetUri = current.uri
+        }
+    }
+
+    LaunchedEffect(assetsInFolder) {
+        val newIndex = assetsInFolder.indexOfFirst { it.uri == focusedAssetUri }
+        if (newIndex >= 0 && newIndex != pagerState.currentPage) {
+            pagerState.scrollToPage(newIndex)
+        }
+    }
+
     val currentAsset = assetsInFolder.getOrElse(pagerState.currentPage) { asset }
     val isCurrentAssetUploaded = remember(folder, currentAsset, state.uploadedAssetKeys) {
         val folderUri = folder?.uri ?: return@remember false
@@ -154,10 +176,13 @@ fun AssetDetailScreen(
     var editSnapshot by remember { mutableStateOf<EditSnapshot?>(null) }
     var pendingEditOutputs by remember { mutableStateOf<List<EditedOutput>>(emptyList()) }
 
-    fun finishEdit(message: String?) {
+    fun finishEdit(message: String?, targetUri: Uri? = null) {
         // Drop cached bitmaps so an original edited in place is redrawn.
         SingletonImageLoader.get(context).memoryCache?.clear()
         appContainer.localImageLoader.memoryCache?.clear()
+        if (targetUri != null) {
+            focusedAssetUri = targetUri
+        }
         editSnapshot = null
         pendingEditOutputs = emptyList()
         viewModel.refreshAllFolders()
@@ -171,13 +196,15 @@ fun AssetDetailScreen(
             finishEdit(null)
             return
         }
+        val targetOutputUri = outputs.firstOrNull()?.uri
         coroutineScope.launch {
             val fixed = withContext(Dispatchers.IO) {
                 EditedMediaRelocator.applyOriginalProperties(context, snapshot, outputs)
             }
             finishEdit(
-                if (fixed > 0) "Edited photo saved next to the original"
-                else "Could not move the edited photo next to the original"
+                message = if (fixed > 0) "Edited photo saved next to the original"
+                else "Could not move the edited photo next to the original",
+                targetUri = targetOutputUri
             )
         }
     }
@@ -402,7 +429,10 @@ fun AssetDetailScreen(
                             }
                         }
                     ) {
-                        Icon(Icons.Default.DeleteForever, contentDescription = "Upload and Trash")
+                        Icon(
+                            painter = painterResource(R.drawable.ic_upload_and_trash),
+                            contentDescription = "Upload and Trash"
+                        )
                     }
                 }
             }
@@ -415,6 +445,7 @@ fun AssetDetailScreen(
         ) {
             HorizontalPager(
                 state = pagerState,
+                key = { pageIndex -> assetsInFolder.getOrNull(pageIndex)?.uri ?: pageIndex },
                 modifier = Modifier.fillMaxSize()
             ) { pageIndex ->
                 val pageAsset = assetsInFolder[pageIndex]

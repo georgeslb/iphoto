@@ -58,11 +58,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import org.iphoto.mobile.R
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.launch
 import org.iphoto.mobile.data.SyncPrefs
@@ -341,7 +343,10 @@ fun SyncScreen(
                             },
                             enabled = state.selectedAssets.isNotEmpty() && !state.isUploading
                         ) {
-                            Icon(Icons.Default.DeleteForever, contentDescription = "Upload and Trash")
+                            Icon(
+                                painter = painterResource(R.drawable.ic_upload_and_trash),
+                                contentDescription = "Upload and Trash"
+                            )
                         }
                     }
                 }
