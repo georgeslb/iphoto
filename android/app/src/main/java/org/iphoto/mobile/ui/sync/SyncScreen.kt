@@ -65,7 +65,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
@@ -206,26 +206,11 @@ fun SyncScreen(
                 Text("Select folders")
                 Spacer(modifier = Modifier.weight(1f))
 
-                val infiniteTransition = rememberInfiniteTransition(label = "hashCheckSpin")
-                val rotationAngle by infiniteTransition.animateFloat(
-                    initialValue = 0f,
-                    targetValue = 360f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(durationMillis = 1000, easing = LinearEasing)
-                    ),
-                    label = "hashCheckRotation"
+                SpinningSyncButton(
+                    isCheckingHashes = state.isCheckingHashes,
+                    enabled = state.selectedFolders.isNotEmpty() && !state.isCheckingHashes,
+                    onClick = viewModel::forceCheckHashes
                 )
-
-                IconButton(
-                    onClick = viewModel::forceCheckHashes,
-                    enabled = state.selectedFolders.isNotEmpty() && !state.isCheckingHashes
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Sync,
-                        contentDescription = "Check hashes with server",
-                        modifier = if (state.isCheckingHashes) Modifier.rotate(rotationAngle) else Modifier
-                    )
-                }
             }
 
             if (state.selectedFolders.isNotEmpty()) {
@@ -513,3 +498,38 @@ fun FolderContentGrid(
         }
     }
 }
+
+@Composable
+fun SpinningSyncButton(
+    isCheckingHashes: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "hashCheckSpin")
+    val rotationAngle by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1000, easing = LinearEasing)
+        ),
+        label = "hashCheckRotation"
+    )
+
+    IconButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier
+    ) {
+        Icon(
+            imageVector = Icons.Default.Sync,
+            contentDescription = "Check hashes with server",
+            modifier = Modifier.graphicsLayer {
+                if (isCheckingHashes) {
+                    rotationZ = rotationAngle
+                }
+            }
+        )
+    }
+}
+
