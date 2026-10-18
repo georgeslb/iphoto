@@ -248,4 +248,44 @@ class SyncViewModelTest {
         assertFalse(wasLoadingDuringScan)
         assertTrue(vm.uiState.value.folderContents.containsKey(folderUri))
     }
+
+    @Test
+    fun `forceCheckHashes triggers hash verification even when assets have not changed and updates isCheckingHashes`() = runTest {
+        val folderUri = Uri.parse("content://folder/camera")
+        val asset1 = fakeAsset("content://folder/camera/1", "photo1.jpg")
+        syncPrefs.saveSelectedFolders(listOf(SelectedFolder(folderUri, "Camera")))
+        every { LocalFolderScanner.scan(context, folderUri) } returns listOf(asset1)
+
+        var hashCheckInvocations = 0
+        coEvery {
+            syncRepository.verifyFolderAssetsHashesInBatches(
+                assets = any(),
+                batchSize = SyncRepository.HASH_CHECK_BATCH_SIZE,
+                onBatchVerified = any()
+            )
+        } coAnswers {
+            hashCheckInvocations++
+            val callback = thirdArg<suspend (List<Pair<LocalAsset, Boolean>>) -> Unit>()
+            callback(listOf(asset1 to true))
+        }
+
+        val vm = SyncViewModel(
+            context,
+            spaceApi,
+            syncRepository,
+            syncPrefs,
+            ioDispatcher = mainDispatcherRule.testDispatcher
+        )
+
+        assertEquals(1, hashCheckInvocations)
+        assertFalse(vm.uiState.value.isCheckingHashes)
+
+        // Force check hashes
+        vm.forceCheckHashes()
+
+        assertEquals(2, hashCheckInvocations)
+        assertFalse(vm.uiState.value.isCheckingHashes)
+        assertTrue(vm.isAssetUploaded(folderUri, asset1))
+    }
 }
+

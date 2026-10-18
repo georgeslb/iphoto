@@ -103,6 +103,11 @@ Depuis **Android 10 (API 29 / Scoped Storage)**, le `MediaProvider` d'Android (`
    - Côté Android, [`SyncRepository.kt`](file:///C:/Users/georg/StudioProjects/iphoto/android/app/src/main/java/org/iphoto/mobile/sync/SyncRepository.kt) (`verifyFolderAssetsHashesInBatches`) envoie à la fois `realMd5` et `redactedMd5` (lorsqu'ils diffèrent, via `AssetHashes.allDistinct()`) à `POST /api/photos/check-hashes`.
    - Si **l'un ou l'autre** des deux hashes (`statusByHash[realMd5] == true || statusByHash[redactedMd5] == true`) retourne `true`, la photo/vidéo est marquée comme présente sur le serveur dans [`SyncPrefs.kt`](file:///C:/Users/georg/StudioProjects/iphoto/android/app/src/main/java/org/iphoto/mobile/data/SyncPrefs.kt) et affiche l'icône Cloud (`Icons.Filled.CloudDone`).
 
+4. **Bouton de forçage manuel `check_hashes` et indicateur de progression dans l'onglet Sync** :
+   - Dans [`SyncScreen.kt`](file:///C:/Users/georg/StudioProjects/iphoto/android/app/src/main/java/org/iphoto/mobile/ui/sync/SyncScreen.kt), un bouton `Icons.Default.Sync` en haut à droite de la rangée de sélection des dossiers permet de relancer manuellement l'interrogation serveur `POST /api/photos/check-hashes` par paquets de 50 pour tous les dossiers sélectionnés.
+   - Lors de ce forçage ([`SyncViewModel.forceCheckHashes`](file:///C:/Users/georg/StudioProjects/iphoto/android/app/src/main/java/org/iphoto/mobile/ui/sync/SyncViewModel.kt)), les hashes MD5 déjà présents dans [`HashCache.kt`](file:///C:/Users/georg/StudioProjects/iphoto/android/app/src/main/java/org/iphoto/mobile/sync/HashCache.kt) sont réutilisés sans re-scanner inutilement le disque.
+   - Tant que les vérifications serveur sont en cours (`state.isCheckingHashes == true`), l'icône tourne en boucle (`rotate(rotationAngle)`) et le bouton est désactivé pour éviter les déclenchements concurrents. L'exécution s'effectue intégralement en tâche de fond sans figer la grille d'assets.
+
 ---
 
 ## ADR-006 : Optimisation du chargement de l'onglet Sync, retour instantané depuis la Lightbox et icône Cloud dans la Lightbox locale
