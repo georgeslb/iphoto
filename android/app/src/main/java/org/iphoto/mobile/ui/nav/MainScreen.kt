@@ -170,7 +170,7 @@ fun MainScreen(onLogout: () -> Unit) {
                 )
             }
             composable(Destination.Shares.route) {
-                SharesScreen()
+                SharesScreen(onAlbumClick = { albumId -> navController.navigate("albums/$albumId") })
             }
             composable(Destination.Sync.route) {
                 SyncScreen(
