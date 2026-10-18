@@ -61,6 +61,15 @@ class EditedMediaRelocatorTest {
     }
 
     @Test
+    fun `OEM media provider packages like ColorOS or MediaProvider are accepted`() {
+        val snap = snapshot(editorPackage = "com.oplus.gallery")
+        assertTrue(EditedMediaRelocator.isNewEditorOutput(row(owner = "com.oplus.gallery"), snap))
+        assertTrue(EditedMediaRelocator.isNewEditorOutput(row(owner = "com.coloros.gallery3d"), snap))
+        assertTrue(EditedMediaRelocator.isNewEditorOutput(row(owner = "com.android.providers.media"), snap))
+        assertFalse(EditedMediaRelocator.isNewEditorOutput(row(owner = "com.other.unrelated.app"), snap))
+    }
+
+    @Test
     fun `original overwritten in place is detected by size or modification change`() {
         val snap = snapshot()
         assertTrue(EditedMediaRelocator.isOriginalOverwritten(row(id = 42L, size = 9999L), snap))
