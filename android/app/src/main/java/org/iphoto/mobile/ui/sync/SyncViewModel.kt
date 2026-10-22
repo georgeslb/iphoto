@@ -169,6 +169,7 @@ class SyncViewModel(
         refreshAllFolders()
     }
 
+    @Deprecated("Sync tab exclusively uses system trash authorization (MediaStore.createTrashRequest).")
     fun trashAssetsDirectly(assets: List<LocalAsset>) {
         val targets = assets.mapNotNull { findAssetAndFolder(it.uri) }
         onAssetsTrashed(assets)

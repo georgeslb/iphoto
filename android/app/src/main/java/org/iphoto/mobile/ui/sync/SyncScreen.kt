@@ -43,7 +43,6 @@ import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Upload
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -53,7 +52,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -92,7 +90,6 @@ fun SyncScreen(
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
 
-    var showDeleteConfirm by remember { mutableStateOf(false) }
     var showSpacePicker by remember { mutableStateOf<((String) -> Unit)?>(null) }
     var pendingTrashAssets by remember { mutableStateOf<List<LocalAsset>?>(null) }
 
@@ -132,16 +129,15 @@ fun SyncScreen(
         ActivityResultContracts.StartIntentSenderForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
-            val assetsToTrash = pendingTrashAssets ?: state.folderContents.values.flatten()
-                .filterIsInstance<GridItem.Asset>()
-                .map { it.asset }
-                .filter { it.uri in state.selectedAssets }
-            viewModel.onAssetsTrashed(assetsToTrash)
+            val assetsToTrash = pendingTrashAssets ?: emptyList()
+            if (assetsToTrash.isNotEmpty()) {
+                viewModel.onAssetsTrashed(assetsToTrash)
+            }
         }
         pendingTrashAssets = null
     }
 
-    fun handleMoveToTrash(targetAssets: List<LocalAsset>? = null, confirmFallback: Boolean = false) {
+    fun handleMoveToTrash(targetAssets: List<LocalAsset>? = null) {
         val selected = state.selectedAssets
         val assets = targetAssets ?: state.folderContents.values.flatten()
             .filterIsInstance<GridItem.Asset>()
@@ -150,23 +146,38 @@ fun SyncScreen(
 
         if (assets.isEmpty()) return
 
-        pendingTrashAssets = assets
-        val mediaUris = viewModel.getMediaUrisForAssets(assets)
-        if (mediaUris.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            try {
-                val pendingIntent = MediaStore.createTrashRequest(context.contentResolver, mediaUris, true)
-                trashLauncher.launch(IntentSenderRequest.Builder(pendingIntent.intentSender).build())
-                return
-            } catch (e: Exception) {
-                Log.w(TAG, "createTrashRequest failed: ${e.message}")
-            }
-        }
-        if (confirmFallback) {
-            showDeleteConfirm = true
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            Toast.makeText(context, "System trash authorization is only available on Android 11+", Toast.LENGTH_SHORT).show()
             return
         }
-        viewModel.trashAssetsDirectly(assets)
-        pendingTrashAssets = null
+
+        val resolvedPairs = assets.mapNotNull { asset ->
+            viewModel.getMediaStoreUri(asset)?.let { uri -> asset to uri }
+        }
+
+        if (resolvedPairs.isEmpty()) {
+            Toast.makeText(context, "Could not resolve file(s) in system media library", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        if (resolvedPairs.size < assets.size) {
+            Toast.makeText(
+                context,
+                "Found ${resolvedPairs.size} of ${assets.size} file(s) in system media library",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+
+        pendingTrashAssets = resolvedPairs.map { it.first }
+        val mediaUris = resolvedPairs.map { it.second }
+        try {
+            val pendingIntent = MediaStore.createTrashRequest(context.contentResolver, mediaUris, true)
+            trashLauncher.launch(IntentSenderRequest.Builder(pendingIntent.intentSender).build())
+        } catch (e: Exception) {
+            Log.w(TAG, "createTrashRequest failed: ${e.message}", e)
+            Toast.makeText(context, "System trash authorization failed: ${e.message}", Toast.LENGTH_SHORT).show()
+            pendingTrashAssets = null
+        }
     }
 
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -300,7 +311,7 @@ fun SyncScreen(
                     }
                     Row {
                         IconButton(
-                            onClick = { handleMoveToTrash(confirmFallback = true) },
+                            onClick = { handleMoveToTrash() },
                             enabled = state.selectedAssets.isNotEmpty() && !state.isUploading
                         ) {
                             Icon(Icons.Default.Delete, contentDescription = "Move to trash")
@@ -370,33 +381,7 @@ fun SyncScreen(
         }
     }
 
-    if (showDeleteConfirm) {
-        AlertDialog(
-            onDismissRequest = {
-                showDeleteConfirm = false
-                pendingTrashAssets = null
-            },
-            title = { Text("Move to Trash?") },
-            text = { Text("Move ${state.selectedAssets.size} selected file(s) to the local trash?") },
-            confirmButton = {
-                TextButton(onClick = {
-                    showDeleteConfirm = false
-                    val assets = pendingTrashAssets ?: state.folderContents.values.flatten()
-                        .filterIsInstance<GridItem.Asset>()
-                        .map { it.asset }
-                        .filter { it.uri in state.selectedAssets }
-                    pendingTrashAssets = null
-                    viewModel.trashAssetsDirectly(assets)
-                }) { Text("Move to Trash") }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    showDeleteConfirm = false
-                    pendingTrashAssets = null
-                }) { Text("Cancel") }
-            }
-        )
-    }
+
 
     if (showSpacePicker != null) {
         LaunchedEffect(Unit) {

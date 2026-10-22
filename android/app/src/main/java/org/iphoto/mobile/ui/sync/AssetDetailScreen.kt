@@ -24,7 +24,6 @@ import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Upload
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -32,7 +31,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -50,6 +48,9 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.foundation.background
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import org.iphoto.mobile.R
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -86,11 +87,11 @@ fun AssetDetailScreen(
     val coroutineScope = rememberCoroutineScope()
     val state by viewModel.uiState.collectAsState()
 
-    val folder = viewModel.findAssetAndFolder(asset.uri)?.second
+    val folder = remember { viewModel.findAssetAndFolder(asset.uri)?.second }
     val assetsInFolder = remember(folder, state.folderContents) {
         folder?.let { f ->
             state.folderContents[f.uri]?.filterIsInstance<GridItem.Asset>()?.map { it.asset }
-        } ?: listOf(asset)
+        } ?: emptyList()
     }
 
     val initialIndex = remember(asset, assetsInFolder) {
@@ -135,36 +136,41 @@ fun AssetDetailScreen(
         state.uploadedAssetKeys.contains(exactKey) || state.uploadedAssetKeys.contains(decodedKey)
     }
 
-    var showDeleteConfirm by remember { mutableStateOf(false) }
     var showSpacePicker by remember { mutableStateOf<((String) -> Unit)?>(null) }
     var isUploading by remember { mutableStateOf(false) }
+    var isPendingTrash by remember { mutableStateOf(false) }
+    var isTrashed by remember { mutableStateOf(false) }
 
     val trashLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
     ) { result ->
+        isPendingTrash = false
         if (result.resultCode == Activity.RESULT_OK) {
+            isTrashed = true
             viewModel.onAssetsTrashed(listOf(currentAsset))
             onBack()
         }
     }
 
-    fun handleSingleAssetTrash(confirmFallback: Boolean = false) {
-        val mediaUris = viewModel.getMediaUrisForAssets(listOf(currentAsset))
-        if (mediaUris.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            try {
-                val pendingIntent = MediaStore.createTrashRequest(context.contentResolver, mediaUris, true)
-                trashLauncher.launch(IntentSenderRequest.Builder(pendingIntent.intentSender).build())
-                return
-            } catch (e: Exception) {
-                Log.w(TAG, "createTrashRequest failed: ${e.message}")
-            }
-        }
-        if (confirmFallback) {
-            showDeleteConfirm = true
+    fun handleSingleAssetTrash() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            Toast.makeText(context, "System trash authorization is only available on Android 11+", Toast.LENGTH_SHORT).show()
             return
         }
-        viewModel.trashAssetsDirectly(listOf(currentAsset))
-        onBack()
+        val mediaUri = viewModel.getMediaStoreUri(currentAsset)
+        if (mediaUri == null) {
+            Toast.makeText(context, "Could not resolve file in system media library", Toast.LENGTH_SHORT).show()
+            return
+        }
+        try {
+            val pendingIntent = MediaStore.createTrashRequest(context.contentResolver, listOf(mediaUri), true)
+            isPendingTrash = true
+            trashLauncher.launch(IntentSenderRequest.Builder(pendingIntent.intentSender).build())
+        } catch (e: Exception) {
+            isPendingTrash = false
+            Log.w(TAG, "createTrashRequest failed: ${e.message}", e)
+            Toast.makeText(context, "System trash authorization failed: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
     }
 
     // ---- External editor (ACTION_EDIT) -------------------------------------------------------
@@ -364,7 +370,7 @@ fun AssetDetailScreen(
                 ) {
                     IconButton(
                         enabled = !isUploading,
-                        onClick = { handleSingleAssetTrash(confirmFallback = true) }
+                        onClick = { handleSingleAssetTrash() }
                     ) {
                         Icon(Icons.Default.Delete, contentDescription = "Move to Trash")
                     }
@@ -414,7 +420,7 @@ fun AssetDetailScreen(
                                         if (verified.isNotEmpty()) {
                                             Toast.makeText(
                                                 context,
-                                                "${verified.summaryMessage(singleAsset = true)} - moved to trash",
+                                                "${verified.summaryMessage(singleAsset = true)}. Moving to trash.",
                                                 Toast.LENGTH_SHORT
                                             ).show()
                                             handleSingleAssetTrash()
@@ -438,6 +444,16 @@ fun AssetDetailScreen(
             }
         }
     ) { padding ->
+        if (isTrashed || isPendingTrash || assetsInFolder.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .background(MaterialTheme.colorScheme.background)
+            )
+            return@Scaffold
+        }
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -448,8 +464,15 @@ fun AssetDetailScreen(
                 key = { pageIndex -> assetsInFolder.getOrNull(pageIndex)?.uri ?: pageIndex },
                 modifier = Modifier.fillMaxSize()
             ) { pageIndex ->
-                val pageAsset = assetsInFolder[pageIndex]
+                val pageAsset = assetsInFolder.getOrNull(pageIndex) ?: return@HorizontalPager
                 val isVideo = pageAsset.mimeType.startsWith("video/")
+                val canOpen = remember(pageAsset.uri) {
+                    try {
+                        context.contentResolver.openAssetFileDescriptor(pageAsset.uri, "r")?.use { true } ?: false
+                    } catch (_: Throwable) {
+                        false
+                    }
+                }
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
@@ -460,12 +483,14 @@ fun AssetDetailScreen(
                             isCurrentPage = (pageIndex == pagerState.currentPage),
                             modifier = Modifier.fillMaxSize()
                         )
-                    } else {
+                    } else if (canOpen) {
                         ZoomableAsyncImage(
                             model = pageAsset.uri,
                             contentDescription = pageAsset.displayName,
                             modifier = Modifier.fillMaxSize()
                         )
+                    } else {
+                        CircularProgressIndicator()
                     }
                 }
             }
@@ -480,23 +505,7 @@ fun AssetDetailScreen(
         }
     }
 
-    if (showDeleteConfirm) {
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirm = false },
-            title = { Text("Move to Trash?") },
-            text = { Text("Move '${currentAsset.displayName}' to the local trash?") },
-            confirmButton = {
-                TextButton(onClick = {
-                    showDeleteConfirm = false
-                    viewModel.trashAssetsDirectly(listOf(currentAsset))
-                    onBack()
-                }) { Text("Move to Trash") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") }
-            }
-        )
-    }
+
 
     if (showEditorPicker) {
         EditorPickerDialog(
