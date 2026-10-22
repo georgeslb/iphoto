@@ -26,6 +26,8 @@ public interface UserService {
 
     Optional<UserEntity> resetPassword(UUID id, String newPassword);
 
+    Optional<UserEntity> updateDuplicationRegrouping(UUID id, boolean enabled);
+
     // ---------------------------------------------------------------
     // Per-user Immich settings (see specification.md)
     // ---------------------------------------------------------------

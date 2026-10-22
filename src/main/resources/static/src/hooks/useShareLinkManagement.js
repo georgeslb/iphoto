@@ -42,8 +42,12 @@ export function useShareLinkManagement() {
         })
       });
       if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.message || messages["failedToCreateShareLink"](res.status));
+        let errorMsg = messages["failedToCreateShareLink"](res.status);
+        try {
+          const errorData = await res.json();
+          if (errorData?.message) errorMsg = errorData.message;
+        } catch (_) {}
+        throw new Error(errorMsg);
       }
       const data = await res.json();
       const shareUrl = `${window.location.origin}/share/${data.userMd5}/${newShareLinkName}`;
@@ -60,6 +64,10 @@ export function useShareLinkManagement() {
   }, [newShareLinkName, newShareLinkPassword, newShareLinkExpiresInDays, albumIdForShareLink, messages]);
 
   const handleShowCreateShareLinkModal = useCallback((albumId) => {
+    setShareLinkCreationError(null);
+    setNewShareLinkName('');
+    setNewShareLinkPassword('');
+    setNewShareLinkExpiresInDays(7);
     setAlbumIdForShareLink(albumId);
     setShowCreateShareLinkModal(true);
   }, []);

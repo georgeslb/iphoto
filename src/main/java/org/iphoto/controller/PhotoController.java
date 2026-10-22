@@ -101,7 +101,8 @@ public class PhotoController {
     public PageResponse<Photo> getPhotos(@PageableDefault(size = 50, sort = "dateTaken", direction = Sort.Direction.DESC) Pageable pageable) {
         UserEntity currentUser = getCurrentUser();
         SpaceEntity space = spaceService.getDefaultSpaceForUser(currentUser);
-        return PageResponse.from(photoService.getPhotos(space.getId(), pageable));
+        boolean regroup = currentUser.getDuplicationRegrouping() == null || currentUser.getDuplicationRegrouping();
+        return PageResponse.from(photoService.getPhotos(space.getId(), pageable, regroup));
     }
 
     // Day-index browsing (replaces the old timeline/jumpToMonth-cursor machinery): every day
@@ -122,7 +123,8 @@ public class PhotoController {
                                                 @PageableDefault(size = 100, sort = "dateTaken", direction = Sort.Direction.DESC) Pageable pageable) {
         UserEntity currentUser = getCurrentUser();
         SpaceEntity space = spaceService.getDefaultSpaceForUser(currentUser);
-        return photoService.getPhotosForDay(space.getId(), LocalDate.parse(day), pageable, MediaTypeFilter.resolveIsVideo(type));
+        boolean regroup = currentUser.getDuplicationRegrouping() == null || currentUser.getDuplicationRegrouping();
+        return photoService.getPhotosForDay(space.getId(), LocalDate.parse(day), pageable, MediaTypeFilter.resolveIsVideo(type), regroup);
     }
 
     @GetMapping("/space/{spaceId}")
@@ -158,7 +160,8 @@ public class PhotoController {
     public PageResponse<Photo> getRecentPhotos(@RequestParam(defaultValue = "0") int page) {
         UserEntity currentUser = getCurrentUser();
         SpaceEntity space = spaceService.getDefaultSpaceForUser(currentUser);
-        return PageResponse.from(photoService.getPhotos(space.getId(), recentPageable(page)));
+        boolean regroup = currentUser.getDuplicationRegrouping() == null || currentUser.getDuplicationRegrouping();
+        return PageResponse.from(photoService.getPhotos(space.getId(), recentPageable(page), regroup));
     }
 
     @GetMapping("/space/{spaceId}/recent")

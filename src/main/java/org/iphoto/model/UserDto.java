@@ -13,4 +13,9 @@ public class UserDto {
     private UUID id;
     private String username;
     private String role;
+    private Boolean duplicationRegrouping = true;
+
+    public UserDto(UUID id, String username, String role) {
+        this(id, username, role, true);
+    }
 }

@@ -463,10 +463,8 @@ public class TaskWorkerManagerImpl implements TaskWorkerManager {
 
 
     // This method is now ONLY for the delayed permanent deletion
-    private void handlePermanentDelete(TaskEntity task) throws Exception {
-        Map<String, String> payload = objectMapper.readValue(task.getPayload(), new TypeReference<>() {
-        });
-        UUID photoId = UUID.fromString(payload.get("photoId"));
+    private void handlePermanentDelete(TaskEntity task) {
+        UUID photoId = task.getPhotoId();
 
         // Use PhotoService to perform the actual deletion logic
         // This ensures consistency and proper cleanup

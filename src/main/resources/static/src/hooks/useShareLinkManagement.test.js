@@ -129,4 +129,22 @@ describe('useShareLinkManagement', () => {
     expect(result.current.shareLinkCreationError).toBe('That name is already taken');
     expect(result.current.newShareLinkName).toBe('my-vacation-album');
   });
+
+  it('handles empty or non-JSON error response gracefully without crashing', async () => {
+    global.fetch = vi.fn(() =>
+      Promise.resolve({
+        ok: false,
+        status: 409,
+        json: () => Promise.reject(new SyntaxError('Unexpected end of JSON input'))
+      })
+    );
+    const { result } = renderShareLinkManagement();
+    await fillValidForm(result);
+
+    await act(async () => {
+      await result.current.handleCreateShareLink();
+    });
+
+    expect(result.current.shareLinkCreationError).toContain('409');
+  });
 });

@@ -21,6 +21,10 @@ public interface ShareRepository extends JpaRepository<ShareEntity, UUID> {
     List<ShareEntity> findAll();
 
     @MainSpaceLimited
+    @Query("SELECT s FROM ShareEntity s ORDER BY s.createdAt DESC NULLS LAST, s.id DESC")
+    List<ShareEntity> findAllByOrderByCreatedAtDesc();
+
+    @MainSpaceLimited
     @Query("SELECT p FROM ShareEntity p WHERE p.id = :id")
     Optional<ShareEntity> findByIdInMainSpace(UUID id);
 

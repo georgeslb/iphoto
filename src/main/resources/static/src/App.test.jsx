@@ -23,9 +23,13 @@ import { LocaleProvider } from './LocaleContext.jsx';
 // this test and don't need mocking.
 const DAY = '2024-01-01';
 
-function mockFetchRouter(url) {
+function mockFetchRouter(url, options) {
   if (url === '/api/user/me') {
-    return { ok: true, json: async () => ({ role: 'USER' }) };
+    return { ok: true, json: async () => ({ role: 'USER', duplicationRegrouping: true }) };
+  }
+  if (url === '/api/user/me/duplication-regrouping') {
+    const body = options?.body ? JSON.parse(options.body) : {};
+    return { ok: true, json: async () => ({ role: 'USER', duplicationRegrouping: body.duplicationRegrouping }) };
   }
   if (url === '/api/photos/days') {
     return { ok: true, json: async () => ([{ day: DAY, count: 1 }]) };
@@ -66,7 +70,7 @@ describe('App smoke test', () => {
   beforeEach(() => {
     originalIntersectionObserver = global.IntersectionObserver;
     global.IntersectionObserver = CapturingObserver;
-    global.fetch = vi.fn((url) => Promise.resolve(mockFetchRouter(url)));
+    global.fetch = vi.fn((url, options) => Promise.resolve(mockFetchRouter(url, options)));
     // jsdom has no real layout engine - scrollIntoView is unimplemented and throws otherwise
     // (PhotoGrid.jsx's TimelineScrubber/seekToDay paths call it, not exercised here, but Element
     // .prototype needs the stub present regardless since some render path may reference it).
@@ -130,5 +134,28 @@ describe('App smoke test', () => {
     await waitFor(() => {
       expect(screen.queryByText('1 selected')).toBeNull();
     });
+  });
+
+  it('toggles duplication regrouping via single header icon in Library view', async () => {
+    renderApp('/');
+    await loadLibraryDay();
+
+    // Initially grouped: single icon with slash to deactivate grouping
+    const disableBtn = await screen.findByTitle('Disable duplicate regrouping');
+    expect(disableBtn).toBeTruthy();
+    expect(screen.queryByTitle('Enable duplicate regrouping')).toBeNull();
+
+    fireEvent.click(disableBtn);
+
+    await waitFor(() => {
+      // Switched to ungrouped: single icon without slash to activate grouping
+      expect(screen.getByTitle('Enable duplicate regrouping')).toBeTruthy();
+      expect(screen.queryByTitle('Disable duplicate regrouping')).toBeNull();
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith('/api/user/me/duplication-regrouping', expect.objectContaining({
+      method: 'PUT',
+      body: JSON.stringify({ duplicationRegrouping: false }),
+    }));
   });
 });

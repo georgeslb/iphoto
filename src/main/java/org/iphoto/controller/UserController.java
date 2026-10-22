@@ -33,7 +33,11 @@ public class UserController {
 
     @PostMapping
     public UserDto createUser(@RequestBody UserCreateRequest userCreateRequest) {
-        UserEntity newUser = userService.createUser(userCreateRequest.getUsername(), userCreateRequest.getPassword(), userCreateRequest.getRole());
+        UserEntity newUser = userService.createUser(
+                userCreateRequest.getUsername(),
+                userCreateRequest.getPassword(),
+                userCreateRequest.getRole()
+        );
         return userMapper.toDto(newUser);
     }
 
@@ -47,6 +51,19 @@ public class UserController {
     public ResponseEntity<UserDto> resetPassword(@PathVariable UUID id, @RequestBody Map<String, String> payload) {
         String newPassword = payload.get("newPassword");
         return userService.resetPassword(id, newPassword)
+                .map(userMapper::toDto)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    @PutMapping("/{id}/duplication-regrouping")
+    public ResponseEntity<UserDto> updateDuplicationRegrouping(@PathVariable UUID id, @RequestBody Map<String, Boolean> payload) {
+        Boolean rawEnabled = payload.get("duplicationRegrouping");
+        if (rawEnabled == null) {
+            rawEnabled = payload.get("enabled");
+        }
+        boolean enabled = rawEnabled != null ? rawEnabled : true;
+        return userService.updateDuplicationRegrouping(id, enabled)
                 .map(userMapper::toDto)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());

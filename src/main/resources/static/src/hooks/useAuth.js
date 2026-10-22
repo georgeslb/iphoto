@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback } from 'react';
 export function useAuth(navigate, location) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [userRole, setUserRole] = useState(null);
+  const [duplicationRegrouping, setDuplicationRegrouping] = useState(true);
   const [loadingAuth, setLoadingAuth] = useState(true);
 
   const checkAuthStatus = useCallback(async () => {
@@ -12,14 +13,17 @@ export function useAuth(navigate, location) {
         const userData = await response.json();
         setIsAuthenticated(true);
         setUserRole(userData.role);
+        setDuplicationRegrouping(userData.duplicationRegrouping ?? true);
       } else {
         setIsAuthenticated(false);
         setUserRole(null);
+        setDuplicationRegrouping(true);
       }
     } catch (error) {
       console.error('Error checking authentication status:', error);
       setIsAuthenticated(false);
       setUserRole(null);
+      setDuplicationRegrouping(true);
     } finally {
       setLoadingAuth(false);
     }
@@ -43,6 +47,20 @@ export function useAuth(navigate, location) {
     }
   }, [isAuthenticated, loadingAuth, location.pathname, navigate]);
 
+  // Session-expiration listener: when protected API calls receive 401, automatically forward to /login
+  useEffect(() => {
+    const handleSessionExpired = () => {
+      setIsAuthenticated(false);
+      setUserRole(null);
+      if (location.pathname !== '/login' && !location.pathname.startsWith('/share')) {
+        navigate('/login');
+      }
+    };
+
+    window.addEventListener('session-expired', handleSessionExpired);
+    return () => window.removeEventListener('session-expired', handleSessionExpired);
+  }, [location.pathname, navigate]);
+
   const handleLogout = useCallback(async () => {
     try {
       await fetch('/api/logout', { method: 'POST' });
@@ -54,5 +72,5 @@ export function useAuth(navigate, location) {
     }
   }, [navigate]);
 
-  return { isAuthenticated, userRole, loadingAuth, handleLogout, checkAuthStatus };
+  return { isAuthenticated, userRole, duplicationRegrouping, setDuplicationRegrouping, loadingAuth, handleLogout, checkAuthStatus };
 }

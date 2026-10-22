@@ -44,13 +44,17 @@ public class ShareController {
     }
 
     @PostMapping
-    public ResponseEntity<ShareResponse> createShare(@RequestBody ShareRequest request) {
+    public ResponseEntity<?> createShare(@RequestBody ShareRequest request) {
         UserEntity currentUser = getCurrentUser();
         try {
             ShareResponse share = shareService.createShare(currentUser, request);
             return new ResponseEntity<>(share, HttpStatus.CREATED);
         } catch (IllegalArgumentException e) {
-            return new ResponseEntity<>(HttpStatus.CONFLICT); // Album with name already exists for this user
+            String msg = e.getMessage() != null ? e.getMessage() : "Conflict";
+            if (msg.contains("does not exist") || msg.contains("not belong")) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("message", msg));
+            }
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("message", msg));
         }
     }
 
@@ -72,16 +76,32 @@ public class ShareController {
         }
     }
 
-    // Lets the owner remove ("password": null/blank) or replace the password on a share they
-    // created. Ownership is enforced by ShareService/ShareRepository's @MainSpaceLimited lookup.
+    // Lets the owner update share settings (password and/or availableUntil extension).
+    // Ownership is enforced by ShareService/ShareRepository's @MainSpaceLimited lookup.
     @PutMapping("/{id}")
-    public ResponseEntity<ShareResponse> updateShare(@PathVariable UUID id, @RequestBody ShareUpdateRequest request) {
+    public ResponseEntity<?> updateShare(@PathVariable UUID id, @RequestBody ShareUpdateRequest request) {
         UserEntity currentUser = getCurrentUser();
         try {
-            ShareResponse share = shareService.updateSharePassword(currentUser, id, request.password());
+            ShareResponse share = shareService.updateShare(currentUser, id, request);
             return ResponseEntity.ok(share);
         } catch (NoSuchElementException e) {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{id}/extend")
+    public ResponseEntity<?> extendShare(@PathVariable UUID id, @RequestBody Map<String, Integer> payload) {
+        UserEntity currentUser = getCurrentUser();
+        int days = (payload != null && payload.containsKey("days")) ? payload.get("days") : 30;
+        try {
+            ShareResponse share = shareService.extendShare(currentUser, id, days);
+            return ResponseEntity.ok(share);
+        } catch (NoSuchElementException e) {
+            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
     }
 

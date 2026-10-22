@@ -155,7 +155,15 @@ This section describes the application's features. For the corresponding backend
     `getGarbagePhotosForDay`, Person's `getPersonPhotosForDay`, and Album's `getAlbumPhotosForDay`
     do not** — not fixed here since this was frontend-only scope; the frontend degrades gracefully
     (`p.duplicates || []`) wherever it's absent, it just won't show grouping there until the backend
-    adds it.
+    adds it. In the Library page, duplication regrouping can be enabled or disabled per user via the
+    `duplication_regrouping` boolean column in the `users` table (`UserEntity.duplicationRegrouping`,
+    default `true`). When disabled, all photos in the Library page are returned flat without duplicate
+    nesting or deduplication dropping. Users can toggle duplication regrouping directly in the Library
+    header via a single stacked-photo icon button: when grouping is currently active, the icon with a slash
+    (`CopySlash`) is displayed to deactivate grouping; when grouping is deactivated, the icon without a slash
+    (`Copy`) is displayed to activate grouping. The choice is persisted in the database via
+    `PUT /api/user/me/duplication-regrouping` (retained across logins) and immediately refreshes the Library
+    view in-place.
     `components/PhotoGrid.jsx` clusters each photo with its `duplicates` into one display item
     (`consumedIds` prevents a duplicate from also rendering as its own separate top-level card) and
     renders it two ways:
@@ -218,8 +226,13 @@ This section describes the application's features. For the corresponding backend
     displayed just *after* the moved item(s) (the older one) plus 1 second, cascading further
     seconds outward for a multi-item drag (falling back to a millisecond cascade in a tight gap) —
     reuses the existing `PATCH /api/photos/{id}/date` endpoint once per moved photo, no dedicated
-    endpoint. Only primaries participate (a duplicate cluster's non-primary members aren't
-    independently reorderable); desktop-only (no touch polyfill).
+    endpoint. While dragging, the scroll container automatically scrolls up or down when the cursor
+    approaches the top (220px margin, clearing sticky headers) or bottom edge (150px margin) (`hooks/useDragAutoScroll.js`),
+    with non-passive `dragover` handling to prevent the browser's forbidden (🚫) cursor, enabling smooth reordering across
+    day groups that exceed the viewport height. Touch-drag reordering on mobile browsers is supported via dedicated touch events
+    (`onTouchStart`, `onTouchMove`, `onTouchEnd`, `onTouchCancel` with `touch-action: none; -webkit-touch-callout: none;` preventing
+    the browser's long-press context menu). Selection is automatically cleared when reordering completes. Only primaries participate
+    (a duplicate cluster's non-primary members aren't independently reorderable).
 *   **Actions:** Every action below is gated by its own `photoSelection` capability flag from
     `utils/selectionCapabilities.js` (Section 3, Header) and, where noted, is available both as a
     Header bulk-action (multi-select) and from a single photo's own context (Lightbox).
@@ -738,14 +751,22 @@ delete the link or remove its password at any time.
     a share named `vacation-2024`; `userMd5` is what disambiguates them. Opening a specific photo
     is `/share/{userMd5}/{name}/p/{photoId}`.
 *   **Creating a link:** `CreateShareLinkModal.jsx` / `useShareLinkManagement.js`, `POST
-    /api/share` with `{ name, password, daysAvailable, albumId }`. The response (`ShareResponse`)
-    now includes `userMd5`, so the success alert shows the actual shareable URL, not just the
-    link name.
-*   **Managing links:** `/share-links` (`ShareLinksManagement.jsx` + `hooks/useMyShares.js`) lists
-    every share the current user owns (`GET /api/share/my-shares`) with its full URL, whether it's
-    password-protected or expired, a "Remove Password" action (`PUT /api/share/{id}` with `{
-    "password": null }` — clears the password without deleting the link) and a delete action
-    (`DELETE /api/share/{id}`). Both are ownership-checked by `ShareRepository.findById` being
+    /api/share` with `{ name, password, daysAvailable, albumId }`. The modal checks the user's existing
+    shares via `GET /api/share/my-shares` and auto-suffixes colliding slug candidates (`<slug>-1`, `<slug>-2`)
+    so the pre-filled link name does not immediately trigger a 409 collision. `POST /api/share` returns
+    structured JSON error bodies (`{ "message": "..." }`) with `409 CONFLICT` when a share name is already
+    taken by the user and `404 NOT FOUND` if the album does not exist. Frontend parses these errors safely
+    with fallback handling for non-JSON or empty response bodies. The response (`ShareResponse`)
+    includes `userMd5`, so the success alert shows the actual shareable URL, not just the link name.
+*   **Managing links:** `/share-links` (`ShareLinksManagement.jsx` + `hooks/useMyShares.js` +
+    `components/ShareLinksManagement.css`) lists every share the current user owns (`GET /api/share/my-shares`),
+    sorted by `createdAt DESC`. The table layout dynamically scales to the window width (`table-layout: fixed; width: 100%`)
+    with relative column sizes: 20% (Name), 50% (Share Link), 10% (Status), 20% (Actions). Share link URLs are styled
+    with high-contrast amber (`var(--primary-color, #e8a33d)`) and `word-break: break-all` to ensure readability and
+    prevent overflow on dark backgrounds. Includes whether it's password-protected or expired, a "Remove Password"
+    action (`PUT /api/share/{id}` with `{ "password": null }` — clears the password without deleting the link), an "Extend Period"
+    action (`POST /api/share/{id}/extend` with `{ "days": n }` — default 30 days starting today, opens a modal with a single input field to customize the duration)
+    and a delete action (`DELETE /api/share/{id}`). Both are ownership-checked by `ShareRepository.findById` being
     `@MainSpaceLimited` — a user can only manage shares in their own space.
 *   **Guest access flow — deliberately self-contained** (`SharedAlbumView.jsx`): the `/share/**`
     routes never depend on `isAuthenticated`/`useAuth.js` (that hook is for real accounts) and
@@ -813,7 +834,8 @@ delete the link or remove its password at any time.
 This section lists the primary API endpoints the frontend application calls to interact with the backend.
 
 ### 5.1. Authentication
-*   `GET /api/user/me`: Checks if the current user is authenticated and returns their role.
+*   `GET /api/user/me`: Checks if the current user is authenticated and returns their role and user settings (including `duplicationRegrouping`).
+*   `PUT /api/user/me/duplication-regrouping`: Updates the current user's duplication regrouping setting (`{ duplicationRegrouping: boolean }`).
 *   `POST /api/logout`: Ends the current user's session.
 
 ### 5.2. Photo & Asset Management
@@ -889,7 +911,8 @@ Owner-facing (real authenticated user, ownership enforced via `@MainSpaceLimited
 *   `POST /api/share`: Creates a new share link for an album (`{ name, password, daysAvailable, albumId }`); response includes `userMd5` for building the full URL.
 *   `GET /api/share/my-shares`: Lists every share link the current user owns.
 *   `GET /api/share/{id}`: Fetches one owned share by its id.
-*   `PUT /api/share/{id}`: Updates a share's password (`{ "password": null|"..." }` — null/blank removes password protection).
+*   `PUT /api/share/{id}`: Updates a share's password (`{ "password": null|"..." }` — null/blank removes password protection) or period (`{ "daysAvailable": n }`).
+*   `POST /api/share/{id}/extend`: Extends a share link's validity period starting today (`{ "days": n }` — defaults to 30 days if omitted).
 *   `DELETE /api/share/{id}`: Deletes a share link.
 
 Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
@@ -902,6 +925,11 @@ Guest-facing (public, establishes/uses a `ROLE_SHARE` session — see §4.4):
 *   `GET /api/photos/{id}/thumbnail` / `/original` / `/stream`: Same asset endpoints real users use — guests can only reach the photo their `ShareAccessFilter`-checked album contains.
 
 ### 5.7. Admin
+*   `GET /api/users`: Fetches all users (`UserDto[]` with `id`, `username`, `role`, `duplicationRegrouping`).
+*   `POST /api/users`: Creates a new user (`UserCreateRequest`).
+*   `DELETE /api/users/{id}`: Deletes a user.
+*   `POST /api/users/{id}/reset-password`: Resets a user's password.
+*   `PUT /api/users/{id}/duplication-regrouping`: Enables or disables duplication regrouping in Library page for a user (`{ duplicationRegrouping: boolean }`).
 *   `POST /api/admin/storage/migrate-flat-files`: One-time, idempotent backfill moving any
     pre-existing flat-stored photo/thumbnail into the `{year}/{month}` storage layout (see §6).
     Not run automatically — an admin triggers it explicitly.

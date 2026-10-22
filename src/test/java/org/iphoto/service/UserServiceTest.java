@@ -46,12 +46,69 @@ class UserServiceTest extends AbstractIntegrationTest {
                 .andReturn();
         JsonNode created = objectMapper.readTree(createResult.getResponse().getContentAsString());
         assertThat(created.get("username").asText()).isEqualTo(username);
+        assertThat(created.get("duplicationRegrouping").asBoolean()).isTrue();
 
         MvcResult listResult = mockMvc.perform(get("/api/users").session(session))
                 .andExpect(status().isOk())
                 .andReturn();
         JsonNode users = objectMapper.readTree(listResult.getResponse().getContentAsString());
-        assertThat(users).anyMatch(u -> u.get("username").asText().equals(username));
+        assertThat(users).anyMatch(u -> u.get("username").asText().equals(username) && u.get("duplicationRegrouping").asBoolean());
+    }
+
+    @Test
+    void duplicationRegroupingCanBeToggledByAdminAndCurrentUser() throws Exception {
+        MockHttpSession session = loginAsAdmin();
+        String username = "toggle-user-" + UUID.randomUUID();
+
+        // Create user (defaults to duplicationRegrouping = true)
+        MvcResult createResult = mockMvc.perform(post("/api/users")
+                        .session(session)
+                        .contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new UserCreateRequest() {{
+                            setUsername(username);
+                            setPassword("password123");
+                            setRole("USER");
+                        }})))
+                .andExpect(status().isOk())
+                .andReturn();
+        UUID userId = UUID.fromString(objectMapper.readTree(createResult.getResponse().getContentAsString()).get("id").asText());
+        assertThat(objectMapper.readTree(createResult.getResponse().getContentAsString()).get("duplicationRegrouping").asBoolean()).isTrue();
+
+        // Toggle to false via admin endpoint
+        MvcResult updateResult = mockMvc.perform(put("/api/users/{id}/duplication-regrouping", userId)
+                        .session(session)
+                        .contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("duplicationRegrouping", false))))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(objectMapper.readTree(updateResult.getResponse().getContentAsString()).get("duplicationRegrouping").asBoolean()).isFalse();
+
+        // Toggle back to true via admin endpoint
+        MvcResult toggleBackResult = mockMvc.perform(put("/api/users/{id}/duplication-regrouping", userId)
+                        .session(session)
+                        .contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("duplicationRegrouping", true))))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(objectMapper.readTree(toggleBackResult.getResponse().getContentAsString()).get("duplicationRegrouping").asBoolean()).isTrue();
+
+        // Admin can also toggle their own via /api/user/me/duplication-regrouping
+        mockMvc.perform(put("/api/user/me/duplication-regrouping")
+                        .session(session)
+                        .contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("duplicationRegrouping", false))))
+                .andExpect(status().isOk());
+        MvcResult meResult = mockMvc.perform(get("/api/user/me").session(session))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(objectMapper.readTree(meResult.getResponse().getContentAsString()).get("duplicationRegrouping").asBoolean()).isFalse();
+
+        // Restore admin setting to true
+        mockMvc.perform(put("/api/user/me/duplication-regrouping")
+                        .session(session)
+                        .contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("duplicationRegrouping", true))))
+                .andExpect(status().isOk());
     }
 
     @Test

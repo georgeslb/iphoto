@@ -17,10 +17,12 @@ import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.io.ByteArrayInputStream;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -53,6 +55,10 @@ class PhotoServiceTest extends AbstractIntegrationTest {
     private SpaceRepository spaceRepository;
     @Autowired
     private UserRepository userRepository;
+    @Autowired
+    private UserService userService;
+    @Autowired
+    private DuplicationUniquenessService duplicationUniquenessService;
 
     @Test
     void getPhotosGetDaysAndGetPhotosForDayReflectAnUploadedPhoto() throws Exception {
@@ -80,6 +86,55 @@ class PhotoServiceTest extends AbstractIntegrationTest {
         assertThat(dayPhotos.get("content")).anyMatch(p -> p.get("id").asText().equals(photoId.toString()));
 
         mockMvc.perform(get("/api/photos/{id}", photoId).session(session)).andExpect(status().isOk());
+    }
+
+    @Test
+    void libraryDuplicationRegroupingFollowsUserDuplicationRegroupingColumn() throws Exception {
+        MockHttpSession session = loginAsAdmin();
+        UserEntity admin = userRepository.findByUsername("admin").orElseThrow();
+        SpaceEntity mainSpace = spaceRepository.findByTypeEqualsMainAndUser(admin);
+
+        LocalDate testDay = LocalDate.of(2025, 5, 20);
+        LocalDateTime dt = testDay.atTime(10, 0);
+
+        String seed1 = UUID.randomUUID().toString();
+        PhotoEntity photo1 = photoRepository.save(PhotoEntity.builder()
+                .id(UUID.randomUUID()).fileName(seed1 + ".jpg").fileHash(HexFormat.of().formatHex(seed1.getBytes()))
+                .contentType("image/jpeg").user(admin).space(mainSpace).originalPath("/tmp/" + seed1 + ".jpg")
+                .dateTaken(dt).groupedDay(testDay).isFavorite(false).isGarbage(false).build());
+
+        String seed2 = UUID.randomUUID().toString();
+        PhotoEntity photo2 = photoRepository.save(PhotoEntity.builder()
+                .id(UUID.randomUUID()).fileName(seed2 + ".jpg").fileHash(HexFormat.of().formatHex(seed2.getBytes()))
+                .contentType("image/jpeg").user(admin).space(mainSpace).originalPath("/tmp/" + seed2 + ".jpg")
+                .dateTaken(dt).groupedDay(testDay).isFavorite(false).isGarbage(false).build());
+
+        runAsAdmin(() -> duplicationUniquenessService.consolidateDuplicates(photo1, Set.of(photo2)));
+
+        try {
+            // When duplicationRegrouping is true (default)
+            userService.updateDuplicationRegrouping(admin.getId(), true);
+
+            MvcResult resDeduped = mockMvc.perform(get("/api/photos/day/{day}", testDay.toString()).session(session))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            JsonNode dedupedPhotos = objectMapper.readTree(resDeduped.getResponse().getContentAsString());
+            assertThat(dedupedPhotos.get("content")).hasSize(1);
+            assertThat(dedupedPhotos.get("content").get(0).get("duplicates")).hasSize(1);
+
+            // When duplicationRegrouping is false
+            userService.updateDuplicationRegrouping(admin.getId(), false);
+
+            MvcResult resAll = mockMvc.perform(get("/api/photos/day/{day}", testDay.toString()).session(session))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            JsonNode allPhotos = objectMapper.readTree(resAll.getResponse().getContentAsString());
+            assertThat(allPhotos.get("content")).hasSize(2);
+            assertThat(allPhotos.get("content").get(0).get("duplicates").isNull()).isTrue();
+            assertThat(allPhotos.get("content").get(1).get("duplicates").isNull()).isTrue();
+        } finally {
+            userService.updateDuplicationRegrouping(admin.getId(), true);
+        }
     }
 
     @Test

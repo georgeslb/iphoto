@@ -260,6 +260,34 @@ matters again; `specification.md` is the source of truth for current behavior.
 - `CHECK_DUPLICATION` runs on its own 30s poll, split off from `FACE_RECOGNITION`'s 5-minute one
   (see Backend infrastructure below) since duplicate detection is fast and a user is often
   actively waiting on it right after an upload.
+- Added `duplication_regrouping` column to `users` table (`UserEntity.duplicationRegrouping`,
+  Flyway `V10__add_users_duplication_regrouping.sql`, default `true`). User choice is toggled exclusively
+  via a single stacked-photo icon in the Library header (`CopySlash` to deactivate grouping, `Copy` to
+  activate grouping), persisting choice via `PUT /api/user/me/duplication-regrouping` with immediate in-place
+  Library grid refresh and restoring it on next login. Removed duplication regrouping checkboxes from
+  User Management completely.
+  When disabled, Library endpoints (`/api/photos`, `/api/photos/day/{day}`, `/api/photos/recent`)
+  return flat photos with no duplicate grouping or dropped items. Fixed `PhotoServiceImpl#buildDedupedPage`
+  to correctly deduplicate top-level members by ID rather than failed full-record `removeAll`.
+- Updated Share Links management (`ShareLinksManagement.jsx` + `ShareLinksManagement.css`): replaced unreadable
+  blue-on-dark links with high-contrast amber (`var(--primary-color)`), made table width adapt to window width
+  with fixed 20% (Name) / 50% (Link) / 10% (Status) / 20% (Actions) relative sizing and word-wrapping, and sorted
+  shares by `createdAt DESC` on both backend (`ShareRepository.findAllByOrderByCreatedAtDesc`) and frontend.
+- Added drag auto-scrolling (`hooks/useDragAutoScroll.js`) to `PhotoGrid.jsx`: automatically scrolls the container/window
+  up or down smoothly when the user drags an asset near the top or bottom edges during within-day reordering.
+  Configured generous top threshold (220px) to clear sticky headers and bottom threshold (150px), and prevented default on
+  `dragover` with `dropEffect = 'move'` to eliminate the browser's forbidden (🚫) cursor across the window during drag.
+- Removed the Duplicates navigation menu link from `Sidebar.jsx`.
+- Shifted timeline scrubber (`.timeline-scrubber` in `App.css`) 18px leftward (`right: 18px`) away from the right window edge so it is no longer covered or blocked by the browser vertical scrollbar.
+- Added automatic forwarding to `/login` when user session ends:
+  - Spring Security `authenticationEntryPoint` now redirects browser navigation requests to `/login` (302) while returning 401 for `/api/**` calls. Added `/login` and `/error` to `SecurityConfig`'s `permitAll()`.
+  - Added `CustomErrorController` mapping `/error` to forward 401 page requests to `/login`. Added fallback static `error/401.html` with instant meta-refresh/script redirect to `/login`.
+  - Added global fetch auth interceptor (`utils/authInterceptor.js`) + `session-expired` event listener in `useAuth.js` to automatically redirect active React SPA sessions to `/login` upon receiving a 401 on protected API calls.
+- Selection clearing on reorder: cleared `selectedIds` on reorder completion in both `PhotoGrid.jsx` (`handleZoneDrop`) and `usePhotoActions.js` (`handleReorderPhotos`).
+- Mobile touch reordering support:
+  - Mobile browsers do not map touch events to HTML5 drag-and-drop; long-pressing an image or draggable element triggered the mobile OS image/context menu ("Save Image", "Copy", etc.).
+  - Added dedicated touch event handlers (`onTouchStart`, `onTouchMove`, `onTouchEnd`, `onTouchCancel`) and `onContextMenu={(e) => e.preventDefault()}` on `.drag-handle` in `PhotoGrid.jsx`.
+  - Configured `touch-action: none; -webkit-touch-callout: none; user-select: none;` on `.drag-handle`, `.photo-card`, and `img`. Removed mobile `display: none` on `.drag-handle` in `App.css` so handles are visible and operable on touch devices. Added live touch drop target detection (`document.elementFromPoint`) with mobile auto-scrolling.
 
 ### Persons & faces
 - See `specification.md` §4.3 for the current design (model, small-face gating, clustering). Below

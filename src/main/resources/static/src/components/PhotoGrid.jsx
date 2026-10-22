@@ -4,6 +4,7 @@ import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 import DuplicateClusterModal from './DuplicateClusterModal';
 import TimelineScrubber from './TimelineScrubber';
 import { computeReorderDates } from '../utils/photoReorder';
+import { useDragAutoScroll } from '../hooks/useDragAutoScroll';
 
 // Clusters a flat list of photos into {primary, members} display items, same rule everywhere
 // duplicates are populated (Library/Space, day-indexed or not): a photo carries its known
@@ -77,6 +78,9 @@ export default function PhotoGrid({
   // loop below for how these gaps become actual, generously-sized drop targets rather than
   // requiring the user to figure out which half of a specific photo to hover.
   const [dropZoneIndex, setDropZoneIndex] = useState(null);
+
+  // Automatically scroll the container/window when moving assets near top or bottom edges
+  useDragAutoScroll(Boolean(dragState), gridContainerRef);
 
   // "Reading order" flat list used for shift-click range selection and the duplicate-cluster
   // lookup below - every currently-loaded photo across every day section, in server day order.
@@ -226,15 +230,118 @@ export default function PhotoGrid({
 
   const handleZoneDrop = (day, zoneIndex, e) => {
     if (!isValidDropDay(day)) return;
-    e.preventDefault();
+    e?.preventDefault?.();
+    const currentDragState = dragState || touchStateRef.current;
+    if (!currentDragState) return;
     const others = groups[day]
         .map(it => it.primary)
-        .filter(pp => !dragState.movedIds.includes(pp.id));
+        .filter(pp => !currentDragState.movedIds.includes(pp.id));
     const { targetId, position } = zoneToTargetPosition(others, zoneIndex);
-    const updates = targetId ? computeReorderDates(others, dragState.movedIds, targetId, position) : [];
+    const updates = targetId ? computeReorderDates(others, currentDragState.movedIds, targetId, position) : [];
     if (updates.length > 0) {
+      setSelectedIds?.([]);
       handleReorderPhotos?.(updates);
     }
+    touchStateRef.current = null;
+    setDragState(null);
+    setDropZoneIndex(null);
+  };
+
+  // Touch drag support for mobile browsers (touch devices do not fire HTML5 drag/drop events
+  // and instead trigger context menus on long-press)
+  const touchStateRef = useRef(null);
+
+  const handleTouchStart = (p, day, e) => {
+    if (e.cancelable) {
+      e.preventDefault();
+    }
+    const dayPrimaryIds = groups[day].map(it => it.primary.id);
+    const movedIds = (selectedIds.includes(p.id) && selectedIds.length > 1)
+        ? dayPrimaryIds.filter(id => selectedIds.includes(id))
+        : [p.id];
+    touchStateRef.current = {
+      movedIds,
+      day,
+      lastZoneIndex: null,
+    };
+    setDragState({ movedIds, day });
+  };
+
+  const handleTouchMove = (e) => {
+    if (!touchStateRef.current) return;
+    if (e.cancelable) {
+      e.preventDefault();
+    }
+    const touch = e.touches[0];
+
+    // Mobile touch auto-scrolling
+    const container = gridContainerRef.current?.closest('.main-content') || document.querySelector('.main-content');
+    if (container) {
+      const rect = container.getBoundingClientRect ? container.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
+      const top = Math.max(0, rect.top);
+      const bottom = Math.min(window.innerHeight, rect.bottom);
+      const zoneTop = 220;
+      const zoneBottom = 150;
+      if (touch.clientY < top + zoneTop) {
+        const intensity = Math.min(1, Math.max(0, (top + zoneTop - touch.clientY) / zoneTop));
+        const speed = -Math.max(2, Math.round(intensity * 16));
+        if (typeof container.scrollBy === 'function') {
+          container.scrollBy(0, speed);
+        } else {
+          container.scrollTop += speed;
+        }
+      } else if (touch.clientY > bottom - zoneBottom) {
+        const intensity = Math.min(1, Math.max(0, (touch.clientY - (bottom - zoneBottom)) / zoneBottom));
+        const speed = Math.max(2, Math.round(intensity * 16));
+        if (typeof container.scrollBy === 'function') {
+          container.scrollBy(0, speed);
+        } else {
+          container.scrollTop += speed;
+        }
+      }
+    }
+
+    const el = document.elementFromPoint(touch.clientX, touch.clientY);
+    const zoneEl = el?.closest?.('.drop-zone');
+    if (zoneEl) {
+      const zoneDay = zoneEl.getAttribute('data-day');
+      const zIndex = parseInt(zoneEl.getAttribute('data-zone-index'), 10);
+      if (zoneDay === touchStateRef.current.day && !isNaN(zIndex)) {
+        touchStateRef.current.lastZoneIndex = zIndex;
+        if (dropZoneIndex !== zIndex) setDropZoneIndex(zIndex);
+        return;
+      }
+    }
+
+    const cardEl = el?.closest?.('.photo-card');
+    if (cardEl) {
+      const cardDay = cardEl.getAttribute('data-card-day');
+      const cardZone = parseInt(cardEl.getAttribute('data-card-zone'), 10);
+      if (cardDay === touchStateRef.current.day && !isNaN(cardZone)) {
+        const rect = cardEl.getBoundingClientRect();
+        const isRightHalf = touch.clientX > (rect.left + rect.width / 2);
+        const targetZone = isRightHalf ? cardZone + 1 : cardZone;
+        touchStateRef.current.lastZoneIndex = targetZone;
+        if (dropZoneIndex !== targetZone) setDropZoneIndex(targetZone);
+      }
+    }
+  };
+
+  const handleTouchEnd = (e) => {
+    if (!touchStateRef.current) return;
+    const { day, lastZoneIndex } = touchStateRef.current;
+    const targetZone = dropZoneIndex !== null ? dropZoneIndex : lastZoneIndex;
+    if (targetZone !== null) {
+      handleZoneDrop(day, targetZone, e);
+    } else {
+      touchStateRef.current = null;
+      setDragState(null);
+      setDropZoneIndex(null);
+    }
+  };
+
+  const handleTouchCancel = () => {
+    touchStateRef.current = null;
     setDragState(null);
     setDropZoneIndex(null);
   };
@@ -322,6 +429,8 @@ export default function PhotoGrid({
     <div
       key={`zone-${zoneIndex}`}
       className="drop-zone"
+      data-day={day}
+      data-zone-index={zoneIndex}
       style={{ height: `${size}px` }}
       onDragOver={(e) => handleZoneDragOver(day, zoneIndex, e)}
       onDragLeave={() => handleZoneDragLeave(zoneIndex)}
@@ -335,16 +444,19 @@ export default function PhotoGrid({
     </div>
   );
 
-  const renderPhotoCard = (p, day, isDropNeighbor, badge, size = 220) => {
+  const renderPhotoCard = (p, day, isDropNeighbor, badge, size = 220, zoneIndex = 0) => {
     const aspectRatio = (p.width && p.height) ? (p.width / p.height) : 1;
     const isSelected = selectedIds.includes(p.id);
     const isDragging = dragState?.movedIds.includes(p.id);
     return (
       <div
         key={p.id}
+        data-card-day={day}
+        data-card-zone={zoneIndex}
         className={`photo-card ${isSelected ? 'selected' : ''} ${isDragging ? 'dragging' : ''} ${isDropNeighbor ? 'drop-neighbor' : ''}`}
         style={{ flexBasis: `${aspectRatio * size}px`, height: `${size}px` }}
         onClick={(e) => handlePhotoClick(p, e)}
+        onContextMenu={(e) => e.preventDefault()}
         onMouseEnter={() => p.contentType?.startsWith('video') && setHoveredVideoId(p.id)}
         onMouseLeave={() => setHoveredVideoId(null)}
       >
@@ -388,6 +500,11 @@ export default function PhotoGrid({
             draggable
             onDragStart={(e) => handleDragStart(p, day, e)}
             onDragEnd={handleDragEnd}
+            onTouchStart={(e) => handleTouchStart(p, day, e)}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+            onTouchCancel={handleTouchCancel}
+            onContextMenu={(e) => e.preventDefault()}
             onClick={(e) => e.stopPropagation()}
             title={messages["dragToReorder"]}
           >
@@ -399,9 +516,9 @@ export default function PhotoGrid({
     );
   };
 
-  const renderDisplayItem = (item, day, isDropNeighbor, size = 220) => {
+  const renderDisplayItem = (item, day, isDropNeighbor, size = 220, zoneIndex = 0) => {
     if (item.members.length === 1) {
-      return renderPhotoCard(item.primary, day, isDropNeighbor, undefined, size);
+      return renderPhotoCard(item.primary, day, isDropNeighbor, undefined, size, zoneIndex);
     }
 
     const badge = (
@@ -414,7 +531,7 @@ export default function PhotoGrid({
         <Layers size={12} /> {item.members.length}<span className="duplicate-badge-label"> {messages["similarLabel"]}</span>
       </button>
     );
-    return renderPhotoCard(item.primary, day, isDropNeighbor, badge, size);
+    return renderPhotoCard(item.primary, day, isDropNeighbor, badge, size, zoneIndex);
   };
 
   return (
@@ -491,8 +608,9 @@ export default function PhotoGrid({
                   const zone = (others && !isMoved)
                       ? renderDropZone(day, othersIdx, dropZoneIndex === othersIdx, placeholderAspectRatio, dragState.movedIds.length, cardSize)
                       : null;
+                  const currentCardZone = othersIdx;
                   if (others && !isMoved) othersIdx++;
-                  const card = renderDisplayItem(item, day, item.primary.id === neighborBeforeId || item.primary.id === neighborAfterId, cardSize);
+                  const card = renderDisplayItem(item, day, item.primary.id === neighborBeforeId || item.primary.id === neighborAfterId, cardSize, currentCardZone);
                   return (
                     <React.Fragment key={item.primary.id}>
                       {zone}

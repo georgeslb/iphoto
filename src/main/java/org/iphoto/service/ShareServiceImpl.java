@@ -69,7 +69,16 @@ public class ShareServiceImpl implements ShareService {
         // Check for password protection
         boolean isPasswordProtected = StringUtils.hasText(shareEntity.getPaswword());
         boolean isExpired = shareEntity.getAvailableUntil() != null && shareEntity.getAvailableUntil().isBefore(LocalDateTime.now());
-        return new ShareResponse(shareEntity.getId().toString(), shareEntity.getName(), shareEntity.getAlbum().getId(), isPasswordProtected, isExpired, shareEntity.getUserMd5());
+        return new ShareResponse(
+                shareEntity.getId().toString(),
+                shareEntity.getName(),
+                shareEntity.getAlbum().getId(),
+                isPasswordProtected,
+                isExpired,
+                shareEntity.getUserMd5(),
+                shareEntity.getCreatedAt(),
+                shareEntity.getAvailableUntil()
+        );
     }
 
     @Override
@@ -90,7 +99,7 @@ public class ShareServiceImpl implements ShareService {
 
     @Override
     public List<ShareResponse> getAllShares(UserEntity user) {
-        return shareRepository.findAll()
+        return shareRepository.findAllByOrderByCreatedAtDesc()
                 .stream()
                 .map(this::buildShareResponse)
                 .collect(Collectors.toList());
@@ -117,6 +126,35 @@ public class ShareServiceImpl implements ShareService {
         ShareEntity share = shareRepository.findByIdInMainSpace(id)
                 .orElseThrow(() -> new NoSuchElementException("Share link not found or does not belong to the user."));
         share.setPaswword(encryptPassword(newPassword));
+        return buildShareResponse(shareRepository.save(share));
+    }
+
+    @Override
+    @Transactional
+    public ShareResponse extendShare(UserEntity user, UUID id, int days) {
+        if (days <= 0) {
+            throw new IllegalArgumentException("Days to extend must be greater than zero.");
+        }
+        ShareEntity share = shareRepository.findByIdInMainSpace(id)
+                .orElseThrow(() -> new NoSuchElementException("Share link not found or does not belong to the user."));
+        share.setAvailableUntil(LocalDateTime.now().plusDays(days));
+        return buildShareResponse(shareRepository.save(share));
+    }
+
+    @Override
+    @Transactional
+    public ShareResponse updateShare(UserEntity user, UUID id, org.iphoto.model.request.ShareUpdateRequest request) {
+        ShareEntity share = shareRepository.findByIdInMainSpace(id)
+                .orElseThrow(() -> new NoSuchElementException("Share link not found or does not belong to the user."));
+        if (request.password() != null || (request.daysAvailable() == null && request.password() == null)) {
+            share.setPaswword(encryptPassword(request.password()));
+        }
+        if (request.daysAvailable() != null) {
+            if (request.daysAvailable() <= 0) {
+                throw new IllegalArgumentException("Days to extend must be greater than zero.");
+            }
+            share.setAvailableUntil(LocalDateTime.now().plusDays(request.daysAvailable()));
+        }
         return buildShareResponse(shareRepository.save(share));
     }
 }

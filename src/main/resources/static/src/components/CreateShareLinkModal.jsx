@@ -30,11 +30,28 @@ function CreateShareLinkModal({
   const currentAlbum = albums.find(a => a.id === albumIdForShareLink);
 
   // Pre-fill the link name from the album name (slugified) so the user usually doesn't have to
-  // type one at all — only when the field is still empty, so it never overwrites something the
-  // user already typed for this album.
+  // type one at all. We check existing shares via /api/share/my-shares so that if an album
+  // already has a share link with that slug, we automatically append a numeric suffix (-1, -2)
+  // instead of pre-filling a duplicate name that would immediately fail with 409 Conflict.
   useEffect(() => {
     if (show && currentAlbum && !newShareLinkName) {
-      setNewShareLinkName(slugify(currentAlbum.name));
+      const base = slugify(currentAlbum.name);
+      if (!base) return;
+      fetch('/api/share/my-shares')
+        .then(res => (res.ok ? res.json() : []))
+        .then(shares => {
+          const taken = new Set((shares || []).map(s => s.name?.toLowerCase()));
+          let candidate = base;
+          let counter = 1;
+          while (taken.has(candidate.toLowerCase())) {
+            candidate = `${base}-${counter}`;
+            counter++;
+          }
+          setNewShareLinkName(candidate);
+        })
+        .catch(() => {
+          setNewShareLinkName(base);
+        });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [show, albumIdForShareLink]);

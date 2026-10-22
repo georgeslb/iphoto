@@ -28,6 +28,10 @@ public interface PhotoService {
 
     Page<Photo> getPhotos(UUID spaceId, Pageable pageable);
 
+    default Page<Photo> getPhotos(UUID spaceId, Pageable pageable, boolean regroupDuplicates) {
+        return getPhotos(spaceId, pageable);
+    }
+
     // Day-index browsing (replaces the old month-timeline this app used to have): one row per
     // day that has a non-garbage photo in this space, newest first. Cached (see DayIndexCache) -
     // evicted on every mutation that can change a space's day counts/covers (upload, move to/from
@@ -43,6 +47,10 @@ public interface PhotoService {
     // One page of a single day's photos - same dedup treatment as the plain feed (getPhotos).
     // isVideo: see getDailyPhotoCounts above.
     PageResponse<Photo> getPhotosForDay(UUID spaceId, LocalDate day, Pageable pageable, Boolean isVideo);
+
+    default PageResponse<Photo> getPhotosForDay(UUID spaceId, LocalDate day, Pageable pageable, Boolean isVideo, boolean regroupDuplicates) {
+        return getPhotosForDay(spaceId, day, pageable, isVideo);
+    }
 
     // Garbage's day-index equivalent of getDailyPhotoCounts/getPhotosForDay above - cross-space
     // (a user's garbage isn't scoped to one space), no dedup treatment. isVideo: see
