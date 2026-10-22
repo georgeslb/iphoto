@@ -13,7 +13,14 @@ export function useMyShares() {
     try {
       const res = await fetch('/api/share/my-shares');
       if (!res.ok) throw new Error(messages["failedToFetchShares"]);
-      setShares(await res.json());
+      const data = await res.json();
+      const sorted = Array.isArray(data) ? [...data].sort((a, b) => {
+        if (!a.createdAt && !b.createdAt) return 0;
+        if (!a.createdAt) return 1;
+        if (!b.createdAt) return -1;
+        return new Date(b.createdAt) - new Date(a.createdAt);
+      }) : [];
+      setShares(sorted);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -54,5 +61,31 @@ export function useMyShares() {
     }
   }, [messages, fetchShares]);
 
-  return { shares, loading, error, message, handleDeleteShare, handleRemovePassword };
+  const handleExtendShare = useCallback(async (id, days) => {
+    setError(null);
+    setMessage(null);
+    try {
+      const res = await fetch(`/api/share/${id}/extend`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ days: Number(days) }),
+      });
+      if (!res.ok) {
+        let errorMsg = messages["failedToExtendSharePeriod"];
+        try {
+          const errData = await res.json();
+          if (errData?.message) errorMsg = errData.message;
+        } catch (_) {}
+        throw new Error(errorMsg);
+      }
+      setMessage(messages["sharePeriodExtended"]);
+      await fetchShares();
+      return true;
+    } catch (err) {
+      setError(err.message);
+      return false;
+    }
+  }, [messages, fetchShares]);
+
+  return { shares, loading, error, message, handleDeleteShare, handleRemovePassword, handleExtendShare };
 }

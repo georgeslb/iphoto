@@ -39,4 +39,8 @@ public interface ShareService {
     // findById here is @MainSpaceLimited, so this only ever finds/updates a share owned by the
     // current user — the same ownership guarantee deleteShare/getShareById already rely on.
     ShareResponse updateSharePassword(UserEntity user, UUID id, String newPassword);
+
+    ShareResponse extendShare(UserEntity user, UUID id, int days);
+
+    ShareResponse updateShare(UserEntity user, UUID id, org.iphoto.model.request.ShareUpdateRequest request);
 }
