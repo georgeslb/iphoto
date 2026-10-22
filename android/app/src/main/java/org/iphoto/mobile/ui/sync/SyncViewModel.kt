@@ -66,6 +66,7 @@ data class SyncUiState(
     val isSelectionMode: Boolean = false,
     val selectedAssets: Set<Uri> = emptySet(),
     val isUploading: Boolean = false,
+    val isCheckingHashes: Boolean = false,
     val error: String? = null,
     val uploadedAssetKeys: Set<String> = emptySet(),
 )
@@ -168,6 +169,7 @@ class SyncViewModel(
         refreshAllFolders()
     }
 
+    @Deprecated("Sync tab exclusively uses system trash authorization (MediaStore.createTrashRequest).")
     fun trashAssetsDirectly(assets: List<LocalAsset>) {
         val targets = assets.mapNotNull { findAssetAndFolder(it.uri) }
         onAssetsTrashed(assets)
@@ -384,6 +386,7 @@ class SyncViewModel(
         folderHashJobs.values.forEach { it.cancel() }
         folderHashJobs.clear()
         folderHashSignatures.clear()
+        updateCheckingHashesState()
         contentObserver?.let {
             try {
                 appContext.contentResolver.unregisterContentObserver(it)
@@ -471,32 +474,66 @@ class SyncViewModel(
         }
     }
 
-    private fun verifyFolderHashesInBackground(folderUri: Uri, assets: List<LocalAsset>) {
+    private fun updateCheckingHashesState() {
+        folderHashJobs.entries.removeAll { !it.value.isActive }
+        val anyActive = folderHashJobs.values.any { it.isActive }
+        _uiState.update { it.copy(isCheckingHashes = anyActive) }
+    }
+
+    private fun verifyFolderHashesInBackground(folderUri: Uri, assets: List<LocalAsset>, force: Boolean = false) {
         val signatures = assets.map { "${it.uri}|${it.size}|${it.lastModified}" }
         val existingJob = folderHashJobs[folderUri]
-        if (existingJob?.isActive == true && folderHashSignatures[folderUri] == signatures) {
+        if (!force && existingJob?.isActive == true && folderHashSignatures[folderUri] == signatures) {
             return
         }
         existingJob?.cancel()
         folderHashJobs.remove(folderUri)
         if (assets.isEmpty()) {
             folderHashSignatures.remove(folderUri)
+            updateCheckingHashesState()
             return
         }
         folderHashSignatures[folderUri] = signatures
-        folderHashJobs[folderUri] = viewModelScope.launch {
-            hashCheckMutex.withLock {
-                syncRepository.verifyFolderAssetsHashesInBatches(
-                    assets = assets,
-                    batchSize = SyncRepository.HASH_CHECK_BATCH_SIZE
-                ) { batchResults ->
-                    val statuses = batchResults.map { (asset, existsOnServer) ->
-                        (asset.relativeDir to asset.displayName) to existsOnServer
+        val job = viewModelScope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            _uiState.update { it.copy(isCheckingHashes = true) }
+            try {
+                hashCheckMutex.withLock {
+                    syncRepository.verifyFolderAssetsHashesInBatches(
+                        assets = assets,
+                        batchSize = SyncRepository.HASH_CHECK_BATCH_SIZE
+                    ) { batchResults ->
+                        val statuses = batchResults.map { (asset, existsOnServer) ->
+                            (asset.relativeDir to asset.displayName) to existsOnServer
+                        }
+                        syncPrefs.applyBatchHashCheckStatuses(folderUri.toString(), statuses)
+                        val updatedKeys = syncPrefs.getUploadedAssetKeys()
+                        _uiState.update { it.copy(uploadedAssetKeys = updatedKeys) }
                     }
-                    syncPrefs.applyBatchHashCheckStatuses(folderUri.toString(), statuses)
-                    val updatedKeys = syncPrefs.getUploadedAssetKeys()
-                    _uiState.update { it.copy(uploadedAssetKeys = updatedKeys) }
                 }
+            } finally {
+                folderHashJobs.remove(folderUri)
+                updateCheckingHashesState()
+            }
+        }
+        folderHashJobs[folderUri] = job
+        updateCheckingHashesState()
+        job.start()
+    }
+
+    /**
+     * Forces check_hashes remote calls by 50-asset batches across all selected folders,
+     * using the cached MD5 hashes where available.
+     */
+    fun forceCheckHashes() {
+        val currentFolders = _uiState.value.selectedFolders
+        if (currentFolders.isEmpty()) return
+        currentFolders.forEach { folder ->
+            val items = _uiState.value.folderContents[folder.uri]
+            val assets = items?.filterIsInstance<GridItem.Asset>()?.map { it.asset }
+            if (assets != null && assets.isNotEmpty()) {
+                verifyFolderHashesInBackground(folder.uri, assets, force = true)
+            } else {
+                refreshFolder(folder.uri, folder.name)
             }
         }
     }

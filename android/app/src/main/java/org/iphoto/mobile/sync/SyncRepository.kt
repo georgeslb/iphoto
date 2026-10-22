@@ -416,6 +416,10 @@ class SyncRepository(
     // camera-roll locations like DCIM/Camera, which is what this feature is built for. Lets the
     // caller use MediaStore.createTrashRequest or send to external editors (like Google Photos).
     fun toMediaStoreUri(asset: LocalAsset, preferredRelPath: String? = null): Uri? {
+        if (asset.uri.authority == "media") {
+            return asset.uri
+        }
+
         val collection = if (asset.mimeType.startsWith("video/")) {
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI
         } else {
@@ -427,12 +431,18 @@ class SyncRepository(
         try {
             if (DocumentsContract.isDocumentUri(context, asset.uri) || DocumentsContract.isTreeUri(asset.uri)) {
                 val docId = DocumentsContract.getDocumentId(asset.uri)
-                if (docId.startsWith("primary:")) {
+                if (docId.startsWith("image:")) {
+                    val id = docId.substringAfter("image:").toLongOrNull()
+                    if (id != null) return ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+                } else if (docId.startsWith("video:")) {
+                    val id = docId.substringAfter("video:").toLongOrNull()
+                    if (id != null) return ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
+                } else if (docId.startsWith("primary:")) {
                     val rawPath = docId.removePrefix("primary:")
                     val file = java.io.File(android.os.Environment.getExternalStorageDirectory(), rawPath)
-                    if (file.exists()) {
-                        filePath = file.absolutePath
-                    }
+                    filePath = file.absolutePath
+                } else if (docId.startsWith("raw:")) {
+                    filePath = docId.removePrefix("raw:")
                 }
             }
         } catch (e: Exception) {

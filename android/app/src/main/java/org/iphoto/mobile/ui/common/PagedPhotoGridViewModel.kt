@@ -6,6 +6,9 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -232,6 +235,38 @@ class PagedPhotoGridViewModel(
                 _uiState.value = _uiState.value.copy(
                     isMutating = false,
                     actionError = e.message ?: "Failed to update date"
+                )
+            }
+        }
+    }
+
+    // Drag-to-reorder within a day (matching web-ui's usePhotoActions.js#handleReorderPhotos).
+    // Calls PATCH /api/photos/{id}/date for each update with the precomputed timestamp.
+    // Deliberately does NOT clear selectedIds on success - reordering shouldn't drop the user's
+    // active multi-selection.
+    fun reorderPhotos(photoApi: PhotoApi, updates: List<ReorderUpdate>) {
+        if (updates.isEmpty()) return
+        _uiState.value = _uiState.value.copy(isMutating = true, actionError = null)
+        viewModelScope.launch {
+            try {
+                coroutineScope {
+                    updates.map { update ->
+                        async {
+                            photoApi.updateDate(update.photoId, UpdatePhotoDateRequest(update.newDate))
+                        }
+                    }.awaitAll()
+                }
+                val (photos, last) = loadPage(0, PAGE_SIZE)
+                nextPage = 1
+                _uiState.value = _uiState.value.copy(
+                    photos = photos,
+                    endReached = last,
+                    isMutating = false
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isMutating = false,
+                    actionError = e.message ?: "Failed to reorder photos"
                 )
             }
         }

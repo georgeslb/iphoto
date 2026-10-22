@@ -1,5 +1,15 @@
 # Android TODO
 
+## Fixed: Sync tab exclusively uses system "Authorize" trash prompt without moving to .iPhotoTrash — 2026-10-22
+
+The trash button and upload-and-trash actions on the sync tab previously fell back to an in-app "Move to Trash" dialog that moved files into the hidden `.iPhotoTrash` directory when MediaStore resolution failed or wasn't verified.
+
+Resolution:
+- **Exclusively use system trash authorization (`MediaStore.createTrashRequest`)**: On the Sync tab (`SyncScreen.kt`) and sync item detail screen (`AssetDetailScreen.kt`), file deletion/trashing strictly requests system trash authorization. When user confirms via Android's native "Authorize" prompt, MediaStore places the file in the system trash and the app updates sync tracking (`SyncPrefs.removeUploadedAsset`) and refreshes folder state.
+- **Removed `.iPhotoTrash` fallback on sync tab**: Completely removed the in-app `showDeleteConfirm` dialogs ("Move to Trash?") and eliminated calls to `LocalTrash.moveToTrash` / `trashAssetsDirectly` from `SyncScreen.kt` and `AssetDetailScreen.kt`. If a file cannot be resolved or Android version is < 11 (where `createTrashRequest` is not available), the user is notified via Toast rather than silently or accidentally moving items into `.iPhotoTrash`.
+- **Hardened MediaStore URI resolution (`toMediaStoreUri`)**: Improved resolution in `SyncRepository.kt` to accept already-resolved `media` URIs, extract media IDs directly from `image:`/`video:` document IDs, and query `MediaStore.MediaColumns.DATA` by resolved absolute path without failing on scoped-storage path accessibility checks (`file.exists()`).
+
+
 ## Lightbox goes full-screen with a collapsed overlay bar on landscape rotation — 2026-09-14
 
 `PhotoDetailScreen` used to keep the same fixed `TopAppBar` + `BottomAppBar` layout in both

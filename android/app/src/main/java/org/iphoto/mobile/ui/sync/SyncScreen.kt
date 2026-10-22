@@ -19,10 +19,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -30,12 +32,17 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Upload
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -45,7 +52,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -57,12 +63,15 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import org.iphoto.mobile.R
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.launch
 import org.iphoto.mobile.data.SyncPrefs
@@ -81,7 +90,6 @@ fun SyncScreen(
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
 
-    var showDeleteConfirm by remember { mutableStateOf(false) }
     var showSpacePicker by remember { mutableStateOf<((String) -> Unit)?>(null) }
     var pendingTrashAssets by remember { mutableStateOf<List<LocalAsset>?>(null) }
 
@@ -121,16 +129,15 @@ fun SyncScreen(
         ActivityResultContracts.StartIntentSenderForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
-            val assetsToTrash = pendingTrashAssets ?: state.folderContents.values.flatten()
-                .filterIsInstance<GridItem.Asset>()
-                .map { it.asset }
-                .filter { it.uri in state.selectedAssets }
-            viewModel.onAssetsTrashed(assetsToTrash)
+            val assetsToTrash = pendingTrashAssets ?: emptyList()
+            if (assetsToTrash.isNotEmpty()) {
+                viewModel.onAssetsTrashed(assetsToTrash)
+            }
         }
         pendingTrashAssets = null
     }
 
-    fun handleMoveToTrash(targetAssets: List<LocalAsset>? = null, confirmFallback: Boolean = false) {
+    fun handleMoveToTrash(targetAssets: List<LocalAsset>? = null) {
         val selected = state.selectedAssets
         val assets = targetAssets ?: state.folderContents.values.flatten()
             .filterIsInstance<GridItem.Asset>()
@@ -139,23 +146,38 @@ fun SyncScreen(
 
         if (assets.isEmpty()) return
 
-        pendingTrashAssets = assets
-        val mediaUris = viewModel.getMediaUrisForAssets(assets)
-        if (mediaUris.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            try {
-                val pendingIntent = MediaStore.createTrashRequest(context.contentResolver, mediaUris, true)
-                trashLauncher.launch(IntentSenderRequest.Builder(pendingIntent.intentSender).build())
-                return
-            } catch (e: Exception) {
-                Log.w(TAG, "createTrashRequest failed: ${e.message}")
-            }
-        }
-        if (confirmFallback) {
-            showDeleteConfirm = true
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            Toast.makeText(context, "System trash authorization is only available on Android 11+", Toast.LENGTH_SHORT).show()
             return
         }
-        viewModel.trashAssetsDirectly(assets)
-        pendingTrashAssets = null
+
+        val resolvedPairs = assets.mapNotNull { asset ->
+            viewModel.getMediaStoreUri(asset)?.let { uri -> asset to uri }
+        }
+
+        if (resolvedPairs.isEmpty()) {
+            Toast.makeText(context, "Could not resolve file(s) in system media library", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        if (resolvedPairs.size < assets.size) {
+            Toast.makeText(
+                context,
+                "Found ${resolvedPairs.size} of ${assets.size} file(s) in system media library",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+
+        pendingTrashAssets = resolvedPairs.map { it.first }
+        val mediaUris = resolvedPairs.map { it.second }
+        try {
+            val pendingIntent = MediaStore.createTrashRequest(context.contentResolver, mediaUris, true)
+            trashLauncher.launch(IntentSenderRequest.Builder(pendingIntent.intentSender).build())
+        } catch (e: Exception) {
+            Log.w(TAG, "createTrashRequest failed: ${e.message}", e)
+            Toast.makeText(context, "System trash authorization failed: ${e.message}", Toast.LENGTH_SHORT).show()
+            pendingTrashAssets = null
+        }
     }
 
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -193,6 +215,13 @@ fun SyncScreen(
                     Icon(Icons.Default.Folder, contentDescription = "Select Folder")
                 }
                 Text("Select folders")
+                Spacer(modifier = Modifier.weight(1f))
+
+                SpinningSyncButton(
+                    isCheckingHashes = state.isCheckingHashes,
+                    enabled = state.selectedFolders.isNotEmpty() && !state.isCheckingHashes,
+                    onClick = viewModel::forceCheckHashes
+                )
             }
 
             if (state.selectedFolders.isNotEmpty()) {
@@ -282,7 +311,7 @@ fun SyncScreen(
                     }
                     Row {
                         IconButton(
-                            onClick = { handleMoveToTrash(confirmFallback = true) },
+                            onClick = { handleMoveToTrash() },
                             enabled = state.selectedAssets.isNotEmpty() && !state.isUploading
                         ) {
                             Icon(Icons.Default.Delete, contentDescription = "Move to trash")
@@ -341,7 +370,10 @@ fun SyncScreen(
                             },
                             enabled = state.selectedAssets.isNotEmpty() && !state.isUploading
                         ) {
-                            Icon(Icons.Default.DeleteForever, contentDescription = "Upload and Trash")
+                            Icon(
+                                painter = painterResource(R.drawable.ic_upload_and_trash),
+                                contentDescription = "Upload and Trash"
+                            )
                         }
                     }
                 }
@@ -349,33 +381,7 @@ fun SyncScreen(
         }
     }
 
-    if (showDeleteConfirm) {
-        AlertDialog(
-            onDismissRequest = {
-                showDeleteConfirm = false
-                pendingTrashAssets = null
-            },
-            title = { Text("Move to Trash?") },
-            text = { Text("Move ${state.selectedAssets.size} selected file(s) to the local trash?") },
-            confirmButton = {
-                TextButton(onClick = {
-                    showDeleteConfirm = false
-                    val assets = pendingTrashAssets ?: state.folderContents.values.flatten()
-                        .filterIsInstance<GridItem.Asset>()
-                        .map { it.asset }
-                        .filter { it.uri in state.selectedAssets }
-                    pendingTrashAssets = null
-                    viewModel.trashAssetsDirectly(assets)
-                }) { Text("Move to Trash") }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    showDeleteConfirm = false
-                    pendingTrashAssets = null
-                }) { Text("Cancel") }
-            }
-        )
-    }
+
 
     if (showSpacePicker != null) {
         LaunchedEffect(Unit) {
@@ -477,3 +483,38 @@ fun FolderContentGrid(
         }
     }
 }
+
+@Composable
+fun SpinningSyncButton(
+    isCheckingHashes: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "hashCheckSpin")
+    val rotationAngle by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1000, easing = LinearEasing)
+        ),
+        label = "hashCheckRotation"
+    )
+
+    IconButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier
+    ) {
+        Icon(
+            imageVector = Icons.Default.Sync,
+            contentDescription = "Check hashes with server",
+            modifier = Modifier.graphicsLayer {
+                if (isCheckingHashes) {
+                    rotationZ = rotationAngle
+                }
+            }
+        )
+    }
+}
+

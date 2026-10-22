@@ -86,11 +86,24 @@ object EditedMediaRelocator {
         if (row.dateAddedSec < snapshot.launchedAtSec - DATE_ADDED_TOLERANCE_SEC) return false
         val expectedFamily = if (snapshot.isVideo) "video/" else "image/"
         if (row.mimeType != null && !row.mimeType.startsWith(expectedFamily)) return false
-        // OWNER_PACKAGE_NAME (API 29+) lets us ignore unrelated media created meanwhile
-        // (e.g. a screenshot or a camera shot) when we know which editor was launched.
-        if (snapshot.editorPackage != null && row.ownerPackage != null &&
-            row.ownerPackage != snapshot.editorPackage
-        ) return false
+        
+        // Check owner package: if specified, ensure it matches either the launched editor,
+        // or a system / OEM media provider (ColorOS/Oppo com.oplus/com.coloros, Xiaomi, Samsung, MediaProvider)
+        // because OEM photo editors frequently delegate saving to a system daemon or MediaProvider.
+        if (snapshot.editorPackage != null && row.ownerPackage != null) {
+            val owner = row.ownerPackage
+            val launched = snapshot.editorPackage
+            val isDirectMatch = owner == launched
+            val isOemMediaProvider = owner == "com.android.providers.media" ||
+                owner == "com.google.android.providers.media.module" ||
+                owner.startsWith("com.oplus.") ||
+                owner.startsWith("com.coloros.") ||
+                owner.startsWith("com.sec.android.") ||
+                owner.startsWith("com.miui.") ||
+                owner.startsWith("com.xiaomi.") ||
+                owner.startsWith("com.huawei.")
+            if (!isDirectMatch && !isOemMediaProvider) return false
+        }
         return true
     }
 
@@ -174,13 +187,14 @@ object EditedMediaRelocator {
 
     /**
      * Looks up the files written by the editor. Editors usually save before returning, but some
-     * finish writing (IS_PENDING) slightly after - so we retry a few times.
+     * (especially OEM editors like ColorOS/MIUI) finish writing or media indexing slightly asynchronously,
+     * so we poll for up to ~6 seconds.
      */
     suspend fun findEditedOutputs(context: Context, snapshot: EditSnapshot): List<EditedOutput> {
-        repeat(4) { attempt ->
+        repeat(8) { attempt ->
             val found = queryOutputs(context, snapshot)
             if (found.isNotEmpty()) return found
-            if (attempt < 3) delay(750)
+            if (attempt < 7) delay(800)
         }
         return emptyList()
     }
@@ -251,12 +265,15 @@ object EditedMediaRelocator {
                     copyExif(context, output.uri, snapshot.exifAttributes)
                 }
 
-                // 2. Same folder + same "date taken" as the original.
+                // 2. Same folder + same "date taken" and "date modified" as the original.
                 val values = ContentValues()
                 if (fix.needsMove && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     values.put(MediaStore.MediaColumns.RELATIVE_PATH, fix.targetRelativePath)
                 }
                 fix.dateTakenMs?.let { values.put(MediaStore.MediaColumns.DATE_TAKEN, it) }
+                if (snapshot.dateModifiedSec > 0) {
+                    values.put(MediaStore.MediaColumns.DATE_MODIFIED, snapshot.dateModifiedSec)
+                }
                 if (values.size() > 0) {
                     context.contentResolver.update(output.uri, values, null, null)
                 }
