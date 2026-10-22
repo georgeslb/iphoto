@@ -3,12 +3,14 @@ package org.iphoto.controller;
 import org.iphoto.model.UserDto;
 import org.iphoto.mappers.UserMapper;
 import org.iphoto.service.UserService;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Controller;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.ResponseBody;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.Map;
 
 @Controller
 public class RootController {
@@ -32,6 +34,26 @@ public class RootController {
                     .orElse(null); // Or throw an exception if user not found
         }
         return null; // No authenticated user
+    }
+
+    @PutMapping("/api/user/me/duplication-regrouping")
+    @ResponseBody
+    public ResponseEntity<UserDto> updateMyDuplicationRegrouping(@RequestBody Map<String, Boolean> payload) {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication != null && authentication.isAuthenticated() && !"anonymousUser".equals(authentication.getPrincipal())) {
+            String username = authentication.getName();
+            Boolean rawEnabled = payload.get("duplicationRegrouping");
+            if (rawEnabled == null) {
+                rawEnabled = payload.get("enabled");
+            }
+            boolean enabled = rawEnabled != null ? rawEnabled : true;
+            return userService.findByUsername(username)
+                    .flatMap(user -> userService.updateDuplicationRegrouping(user.getId(), enabled))
+                    .map(userMapper::toDto)
+                    .map(ResponseEntity::ok)
+                    .orElse(ResponseEntity.notFound().build());
+        }
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
     }
 
     @RequestMapping(value = {

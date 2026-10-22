@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { renderHook, waitFor, act } from '@testing-library/react';
 import { useAuth } from './useAuth';
 
 function jsonResponse(body, ok = true) {
@@ -84,6 +84,44 @@ describe('useAuth', () => {
 
     expect(global.fetch).toHaveBeenCalledWith('/api/logout', { method: 'POST' });
     await waitFor(() => expect(result.current.isAuthenticated).toBe(false));
+    expect(navigate).toHaveBeenCalledWith('/login');
+  });
+
+  it('loads duplicationRegrouping preference from /api/user/me', async () => {
+    global.fetch = vi.fn(() => jsonResponse({ role: 'USER', duplicationRegrouping: false }));
+    const navigate = vi.fn();
+    const location = { pathname: '/' };
+
+    const { result } = renderHook(() => useAuth(navigate, location));
+    await waitFor(() => expect(result.current.loadingAuth).toBe(false));
+    expect(result.current.isAuthenticated).toBe(true);
+    expect(result.current.duplicationRegrouping).toBe(false);
+  });
+
+  it('defaults duplicationRegrouping to true when not provided or unauthenticated', async () => {
+    global.fetch = vi.fn(() => jsonResponse({ role: 'USER' }));
+    const navigate = vi.fn();
+    const location = { pathname: '/' };
+
+    const { result } = renderHook(() => useAuth(navigate, location));
+    await waitFor(() => expect(result.current.loadingAuth).toBe(false));
+    expect(result.current.duplicationRegrouping).toBe(true);
+  });
+
+  it('handles session-expired event by updating auth state and navigating to /login', async () => {
+    global.fetch = vi.fn(() => jsonResponse({ role: 'USER' }));
+    const navigate = vi.fn();
+    const location = { pathname: '/albums' };
+
+    const { result } = renderHook(() => useAuth(navigate, location));
+    await waitFor(() => expect(result.current.isAuthenticated).toBe(true));
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('session-expired'));
+    });
+
+    await waitFor(() => expect(result.current.isAuthenticated).toBe(false));
+    expect(result.current.userRole).toBeNull();
     expect(navigate).toHaveBeenCalledWith('/login');
   });
 });

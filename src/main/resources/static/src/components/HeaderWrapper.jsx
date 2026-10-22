@@ -38,6 +38,8 @@ function HeaderWrapper({
   handleDownload,
   mediaTypeFilter,
   setMediaTypeFilter,
+  duplicationRegrouping,
+  onToggleDuplicationRegrouping,
 }) {
   const location = useLocation();
   const effectivePath = backgroundLocation?.pathname || location.pathname;
@@ -80,6 +82,8 @@ function HeaderWrapper({
           handleDownload={handleDownload}
           mediaTypeFilter={mediaTypeFilter}
           setMediaTypeFilter={setMediaTypeFilter}
+          duplicationRegrouping={duplicationRegrouping}
+          onToggleDuplicationRegrouping={onToggleDuplicationRegrouping}
       />
   );
 }

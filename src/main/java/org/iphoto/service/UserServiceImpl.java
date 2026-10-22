@@ -40,13 +40,16 @@ public class UserServiceImpl implements UserService {
         return userRepository.findByUsername(username);
     }
 
+
     @Override
     @Transactional
     public UserEntity createUser(String username, String password, String role) {
         UserEntity user = userRepository.save(UserEntity.builder()
                 .username(username)
                 .password(passwordEncoder.encode(password))
-                .role(role).build());
+                .role(role)
+                .duplicationRegrouping(true)
+                .build());
         SpaceEntity defaultSpace = spaceService.createDefaultSpace(user);
         Set<SpaceEntity> spaces = new HashSet<>();
         spaces.add(defaultSpace);
@@ -71,6 +74,15 @@ public class UserServiceImpl implements UserService {
             String newHash = passwordEncoder.encode(newPassword);
             reEncryptImmichApiKey(user, oldHash, newHash);
             user.setPassword(newHash);
+            return userRepository.save(user);
+        });
+    }
+
+    @Override
+    @Transactional
+    public Optional<UserEntity> updateDuplicationRegrouping(UUID id, boolean enabled) {
+        return userRepository.findById(id).map(user -> {
+            user.setDuplicationRegrouping(enabled);
             return userRepository.save(user);
         });
     }

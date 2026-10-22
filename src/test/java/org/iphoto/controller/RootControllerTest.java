@@ -6,6 +6,7 @@ import org.springframework.mock.web.MockHttpSession;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.forwardedUrl;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 // Regression test for a bug where RootController's SPA-fallback forward() got @ResponseBody
@@ -14,10 +15,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 // into a real forward - reproduced live as a blank page (with that literal text) on any refresh
 // of a non-root path. RootController is now split into @Controller (forward() resolves for real)
 // with @ResponseBody only on the one JSON-returning method (getCurrentUser).
-//
-// Both paths used below require an authenticated session (SecurityConfig only permitAlls "/",
-// "/share/**", "/album/**" singular, static assets, and index.html - not the plural app routes
-// like "/albums/**"/"/spaces/**"), so log in first the same way every other MockMvc test here does.
 class RootControllerTest extends AbstractIntegrationTest {
 
     @Test
@@ -34,6 +31,20 @@ class RootControllerTest extends AbstractIntegrationTest {
         MockHttpSession session = loginAsAdmin();
 
         mockMvc.perform(get("/spaces/some-space-id").session(session))
+                .andExpect(status().isOk())
+                .andExpect(forwardedUrl("/index.html"));
+    }
+
+    @Test
+    void unauthenticatedNonApiPathRedirectsToLogin() throws Exception {
+        mockMvc.perform(get("/albums/some-id"))
+                .andExpect(status().is3xxRedirection())
+                .andExpect(redirectedUrl("/login"));
+    }
+
+    @Test
+    void unauthenticatedLoginPathForwardsToIndexHtml() throws Exception {
+        mockMvc.perform(get("/login"))
                 .andExpect(status().isOk())
                 .andExpect(forwardedUrl("/index.html"));
     }

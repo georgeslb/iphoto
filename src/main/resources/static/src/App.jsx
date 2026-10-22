@@ -59,7 +59,7 @@ function App() {
   const mainContentRef = useRef(null);
   const fileInputRef = useRef(null); // Declare fileInputRef here
 
-  const { isAuthenticated, userRole, loadingAuth, handleLogout, checkAuthStatus } = useAuth(navigate, location);
+  const { isAuthenticated, userRole, duplicationRegrouping, setDuplicationRegrouping, loadingAuth, handleLogout, checkAuthStatus } = useAuth(navigate, location);
 
   const {
     backgroundLocation,
@@ -280,6 +280,7 @@ function App() {
     newShareLinkExpiresInDays,
     setNewShareLinkExpiresInDays,
     shareLinkCreationError,
+    setShareLinkCreationError,
     handleCreateShareLink,
     handleShowCreateShareLinkModal,
   } = useShareLinkManagement();
@@ -308,6 +309,26 @@ function App() {
     }
   }, [fetchAlbumsForPhotos, setAlbumsPhotoBelongsTo, setSelectedPhoto, setShowRemoveFromAlbumModal]);
 
+  const handleToggleDuplicationRegrouping = useCallback(async (enabled) => {
+    if (duplicationRegrouping === enabled) return;
+    try {
+      const response = await fetch('/api/user/me/duplication-regrouping', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ duplicationRegrouping: enabled }),
+      });
+      if (response.ok) {
+        const updated = await response.json();
+        setDuplicationRegrouping(updated.duplicationRegrouping);
+        await dayIndexed.refreshLoadedDays();
+      } else {
+        console.error('Failed to update duplication regrouping preference');
+      }
+    } catch (error) {
+      console.error('Error updating duplication regrouping preference:', error);
+    }
+  }, [duplicationRegrouping, setDuplicationRegrouping, dayIndexed.refreshLoadedDays]);
+
   if (loadingAuth) {
     return <div>{messages["loadingAuthentication"]}</div>;
   }
@@ -321,7 +342,7 @@ function App() {
       {selectedMenu === 'library' && <PersonMergeSuggestionBanner />}
       {selectedMenu === 'library' && <MemoriesBar onSeekToDay={seekToMemoryDay} isLightboxOpen={isLightboxOpen} />}
       {selectedMenu === 'library' && (
-        <RecentlyAddedSection baseUrl="/api/photos/recent" onPhotoClick={handlePhotoClick} isLightboxOpen={isLightboxOpen} />
+        <RecentlyAddedSection key={duplicationRegrouping ? 'regroup' : 'plain'} baseUrl="/api/photos/recent" onPhotoClick={handlePhotoClick} isLightboxOpen={isLightboxOpen} />
       )}
       <PhotoGrid
           dayIndex={dayIndexed}
@@ -415,6 +436,8 @@ function App() {
                       handleDownload={handleDownload}
                       mediaTypeFilter={mediaTypeFilter}
                       setMediaTypeFilter={setMediaTypeFilter}
+                      duplicationRegrouping={duplicationRegrouping}
+                      onToggleDuplicationRegrouping={handleToggleDuplicationRegrouping}
                   />
               )}
             </UploadManager>
@@ -583,7 +606,14 @@ function App() {
 
         <CreateShareLinkModal
           show={showCreateShareLinkModal}
-          onClose={() => { setShowCreateShareLinkModal(false); setAlbumIdForShareLink(null); }}
+          onClose={() => {
+            setShowCreateShareLinkModal(false);
+            setAlbumIdForShareLink(null);
+            setShareLinkCreationError(null);
+            setNewShareLinkName('');
+            setNewShareLinkPassword('');
+            setNewShareLinkExpiresInDays(7);
+          }}
           albumIdForShareLink={albumIdForShareLink}
           albums={albums}
           newShareLinkName={newShareLinkName}

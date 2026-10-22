@@ -1,5 +1,5 @@
 import React, { useCallback } from 'react';
-import { X, Upload, Plus, Trash2, RotateCcw, ImageIcon, ArrowLeft, ChevronLeft, ChevronRight, Link, Home, MinusCircle, FolderX,  ArchiveRestore, CalendarClock, Download, Video, LayoutGrid} from 'lucide-react'; // Added Home icon
+import { X, Upload, Plus, Trash2, RotateCcw, ImageIcon, ArrowLeft, ChevronLeft, ChevronRight, Link, Home, MinusCircle, FolderX, ArchiveRestore, CalendarClock, Download, Video, LayoutGrid, Copy, CopySlash } from 'lucide-react';
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
 // Photo/video type filter, shown on the four day-indexed photo grids (Library, Space detail,
@@ -64,6 +64,8 @@ export default function Header({
   handleDownload,
   mediaTypeFilter,
   setMediaTypeFilter,
+  duplicationRegrouping,
+  onToggleDuplicationRegrouping,
 }) {
   const { messages } = useLocale(); // Use the useLocale hook
   const selectionMode = selectedIds.length > 0 || selectedSpaceIds.length > 0 || selectedAlbumIds.length > 0;
@@ -156,6 +158,17 @@ export default function Header({
 
         {showMediaTypeFilter && (
           <MediaTypeFilter mediaTypeFilter={mediaTypeFilter} setMediaTypeFilter={setMediaTypeFilter} messages={messages} />
+        )}
+
+        {!selectionMode && isLibraryPage && (
+          <button
+            className="btn"
+            onClick={() => onToggleDuplicationRegrouping && onToggleDuplicationRegrouping(!duplicationRegrouping)}
+            title={duplicationRegrouping ? messages["disableDuplicationRegrouping"] : messages["enableDuplicationRegrouping"]}
+            aria-label={duplicationRegrouping ? messages["disableDuplicationRegrouping"] : messages["enableDuplicationRegrouping"]}
+          >
+            {duplicationRegrouping ? <CopySlash size={18} /> : <Copy size={18} />}
+          </button>
         )}
 
         {

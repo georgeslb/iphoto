@@ -10,6 +10,7 @@ import org.iphoto.repository.FaceRepository;
 import org.iphoto.repository.PhotoRepository;
 import org.iphoto.repository.SpaceRepository;
 import org.iphoto.repository.UserRepository;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 
@@ -35,6 +36,17 @@ class FaceThumbnailMigrationServiceTest extends AbstractIntegrationTest {
     private SpaceRepository spaceRepository;
     @Autowired
     private UserRepository userRepository;
+
+    @BeforeEach
+    void setUp() {
+        // Clear any leftover legacy blob thumbnails from other tests without violating foreign keys
+        faceRepository.findAll().forEach(f -> {
+            if (f.getFaceThumbnail() != null) {
+                f.setFaceThumbnail(null);
+                faceRepository.save(f);
+            }
+        });
+    }
 
     private PhotoEntity savePhoto(SpaceEntity space, UserEntity user, LocalDateTime dateTaken) {
         String seed = UUID.randomUUID().toString();

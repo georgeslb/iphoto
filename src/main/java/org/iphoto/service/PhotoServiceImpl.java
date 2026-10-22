@@ -54,23 +54,36 @@ public class PhotoServiceImpl implements PhotoService {
 
     @Override
     public Page<Photo> getPhotos(UUID spaceId, Pageable pageable) {
-        return buildDedupedPage(photoRepository.findBySpaceIdAndIsGarbageFalse(spaceId, pageable));
+        return getPhotos(spaceId, pageable, true);
+    }
+
+    @Override
+    public Page<Photo> getPhotos(UUID spaceId, Pageable pageable, boolean regroupDuplicates) {
+        Page<PhotoEntity> rawPage = photoRepository.findBySpaceIdAndIsGarbageFalse(spaceId, pageable);
+        return regroupDuplicates ? buildDedupedPage(rawPage) : rawPage.map(photoMapper::photoEntityToPhoto);
     }
 
     // Shared by getPhotos/getPhotosForDay above: attaches each photo's known duplicates and drops
     // any photo from the top-level page that is itself someone else's duplicate (it's already
     // shown attached to its primary), so the same photo never appears twice in one page.
     private Page<Photo> buildDedupedPage(Page<PhotoEntity> rawPage) {
-        Set<Photo> duplicatedPhotos = new CopyOnWriteArraySet<>();
-        Page<Photo> firstSelection = rawPage.map(entity -> {
+        Set<UUID> droppedDuplicateIds = new HashSet<>();
+        List<Photo> contentPhotos = new ArrayList<>();
+        for (PhotoEntity entity : rawPage.getContent()) {
+            if (droppedDuplicateIds.contains(entity.getId())) {
+                continue;
+            }
             Set<PhotoEntity> duplicatesEntities = duplicationService.getDuplicates(entity);
-            Set<Photo> duplicates = duplicatesEntities != null ? duplicatesEntities.stream().map(photoMapper::photoEntityToPhoto).collect(Collectors.toSet()) : Collections.emptySet();
-            duplicatedPhotos.addAll(duplicates);
-            return photoMapper.photoEntityToPhoto(entity, duplicates);
-        });
-        List<Photo> contentPhotos = new ArrayList<>(firstSelection.getContent());
-        contentPhotos.removeAll(duplicatedPhotos);
-        return new PageImpl<>(contentPhotos, firstSelection.getPageable(), firstSelection.getTotalElements());
+            Set<Photo> duplicates = Collections.emptySet();
+            if (duplicatesEntities != null && !duplicatesEntities.isEmpty()) {
+                duplicates = duplicatesEntities.stream()
+                        .map(photoMapper::photoEntityToPhoto)
+                        .collect(Collectors.toSet());
+                duplicatesEntities.forEach(d -> droppedDuplicateIds.add(d.getId()));
+            }
+            contentPhotos.add(photoMapper.photoEntityToPhoto(entity, duplicates));
+        }
+        return new PageImpl<>(contentPhotos, rawPage.getPageable(), rawPage.getTotalElements());
     }
 
     @Override
@@ -105,7 +118,13 @@ public class PhotoServiceImpl implements PhotoService {
 
     @Override
     public PageResponse<Photo> getPhotosForDay(UUID spaceId, LocalDate day, Pageable pageable, Boolean isVideo) {
-        return PageResponse.from(buildDedupedPage(photoRepository.findBySpaceIdAndIsGarbageFalseAndGroupedDay(spaceId, day, isVideo, pageable)));
+        return getPhotosForDay(spaceId, day, pageable, isVideo, true);
+    }
+
+    @Override
+    public PageResponse<Photo> getPhotosForDay(UUID spaceId, LocalDate day, Pageable pageable, Boolean isVideo, boolean regroupDuplicates) {
+        Page<PhotoEntity> rawPage = photoRepository.findBySpaceIdAndIsGarbageFalseAndGroupedDay(spaceId, day, isVideo, pageable);
+        return PageResponse.from(regroupDuplicates ? buildDedupedPage(rawPage) : rawPage.map(photoMapper::photoEntityToPhoto));
     }
 
     @Override

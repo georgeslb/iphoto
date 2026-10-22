@@ -42,6 +42,10 @@ public class UserEntity implements Persistable<UUID>  {
     private String immichApiKeyEncrypted;
     private String immichApiKeyIv;
 
+    @Builder.Default
+    @Column(name = "duplication_regrouping", nullable = false)
+    private Boolean duplicationRegrouping = true;
+
     @OneToMany(mappedBy = "user", fetch = FetchType.EAGER, cascade = CascadeType.REMOVE)
     Set<SpaceEntity> spaces;
 
