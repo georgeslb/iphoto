@@ -345,9 +345,7 @@ describe('usePhotoActions', () => {
       expect(refreshAndMaintainScroll).toHaveBeenCalled();
     });
 
-    // Regression-shaped: unlike handleBulkUpdateDate, a reorder must NOT clear the user's active
-    // multi-selection on success - they may still be working with it (e.g. dragging again).
-    it('does not clear the selection on success', async () => {
+    it('clears the selection on success', async () => {
       global.fetch = vi.fn(() => jsonResponse({}));
       const { result, setSelectedIds } = renderPhotoActions();
 
@@ -355,7 +353,7 @@ describe('usePhotoActions', () => {
         await result.current.handleReorderPhotos([{ photoId: 'p1', newDate: '2024-01-01T14:00:06.000' }]);
       });
 
-      expect(setSelectedIds).not.toHaveBeenCalled();
+      expect(setSelectedIds).toHaveBeenCalledWith([]);
     });
 
     it('alerts the user on failure instead of failing silently', async () => {

@@ -167,10 +167,9 @@ export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, hand
 
   // Drag-to-reorder within a day (PhotoGrid.jsx's drag handle) - `updates` is
   // [{photoId, newDate}, ...] from utils/photoReorder.js#computeReorderDates, each entry already
-  // carrying its own precomputed timestamp. Same one-PATCH-per-id-via-Promise.all pattern as
-  // handleBulkUpdateDate above, just a per-photo date instead of one shared value. Deliberately
-  // does NOT clear selectedIds on success (unlike handleBulkUpdateDate) - reordering shouldn't drop
-  // the user's active multi-selection.
+  // Carrying its own precomputed timestamp. Same one-PATCH-per-id-via-Promise.all pattern as
+  // handleBulkUpdateDate above, just a per-photo date instead of one shared value. Clears
+  // selectedIds on success when reordering ends.
   const handleReorderPhotos = useCallback(async (updates) => {
     if (!updates || updates.length === 0) return;
 
@@ -185,6 +184,7 @@ export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, hand
     try {
       const responses = await Promise.all(updatePromises);
       if (responses.every(res => res.ok)) {
+        setSelectedIds([]);
         await refreshAndMaintainScroll();
       } else {
         throw new Error(messages["failedToUpdateDate"](responses.find(res => !res.ok).status));
@@ -192,7 +192,7 @@ export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, hand
     } catch (err) {
       alert(messages["errorUpdatingDate"](err.message));
     }
-  }, [refreshAndMaintainScroll, messages]);
+  }, [setSelectedIds, refreshAndMaintainScroll, messages]);
 
   const handleEditPhoto = useCallback(async (photoId, editData) => {
     try {

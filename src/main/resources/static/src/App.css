@@ -122,6 +122,10 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   width: 100%;
   object-fit: cover;
   transition: transform 0.3s ease;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
 .photo-card:hover img, .photo-card:hover .card-video { transform: scale(1.05); }
@@ -143,6 +147,9 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   background: rgba(0,0,0,0.35); color: white;
   display: flex; align-items: center; justify-content: center;
   cursor: grab; opacity: 0; transition: opacity 0.2s ease;
+  touch-action: none;
+  -webkit-touch-callout: none;
+  user-select: none;
 }
 .photo-card:hover .drag-handle { opacity: 1; }
 .photo-card .drag-handle:active { cursor: grabbing; }
@@ -1774,7 +1781,7 @@ button.upload-item-name.upload-item-name-link:hover {
 .timeline-scrubber {
   position: fixed;
   top: 73px;
-  right: 0;
+  right: 18px;
   bottom: 0;
   width: 28px;
   /* Higher than .day-header's 40 - same value, later in the DOM, was painting the day header on
@@ -1870,6 +1877,11 @@ button.upload-item-name.upload-item-name-link:hover {
     padding: 0 16px 24px 16px;
   }
 
+  .timeline-scrubber {
+    top: 57px;
+    right: 4px;
+  }
+
   .album-search-bar {
     padding: 16px 16px 0 16px;
     max-width: none;
@@ -1906,10 +1918,18 @@ button.upload-item-name.upload-item-name-link:hover {
     aspect-ratio: 1 / 1;
     width: 100%;
   }
-  /* Drag-to-reorder is desktop-only (no touch polyfill, see specification.md) - showing a handle
-     that can't actually be dragged on a touch device is just confusing, so hide it here. */
+  /* Drag-to-reorder on touch devices: visible handle with touch-action: none */
   .photo-card .drag-handle {
-    display: none;
+    display: flex;
+    opacity: 0.65;
+    width: 32px;
+    height: 32px;
+    touch-action: none;
+    -webkit-touch-callout: none;
+  }
+  .photo-card.selected .drag-handle {
+    opacity: 1;
+    background: rgba(0, 0, 0, 0.6);
   }
 
   .album-grid {
@@ -2090,3 +2110,12 @@ button.upload-item-name.upload-item-name-link:hover {
 .shared-lightbox-nav:hover { opacity: 1; }
 .shared-lightbox-prev { left: 20px; }
 .shared-lightbox-next { right: 20px; }
+@media (hover: none) {
+  .photo-card .drag-handle {
+    opacity: 0.65;
+  }
+  .photo-card.selected .drag-handle {
+    opacity: 1;
+    background: rgba(0, 0, 0, 0.6);
+  }
+}
