@@ -51,12 +51,14 @@ public class SecurityConfig {
                         // React SPA
                         .requestMatchers(
                                 "/",
+                                "/login",
                                 "/share/**",
                                 "/album/**",
                                 "/assets/**",
                                 "/static/**",
                                 "/index.html",
-                                "/favicon.ico"
+                                "/favicon.ico",
+                                "/error"
                         ).permitAll()
 
                         .anyRequest().authenticated()
@@ -88,9 +90,14 @@ public class SecurityConfig {
                         .logoutSuccessHandler((request, response, authentication) -> response.setStatus(200))
                 )
                 .exceptionHandling(ex -> ex
-                        .authenticationEntryPoint(
-                                (request, response, authException) -> response.sendError(401)
-                        )
+                        .authenticationEntryPoint((request, response, authException) -> {
+                            String uri = request.getRequestURI();
+                            if (uri != null && uri.startsWith("/api/")) {
+                                response.sendError(401);
+                            } else {
+                                response.sendRedirect("/login");
+                            }
+                        })
                 )
                 // deviceTokenAuthenticationFilter establishes authentication from a Bearer token;
                 // shareAccessFilter authorizes an already-established one - registered in that
