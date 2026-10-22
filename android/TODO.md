@@ -1,5 +1,13 @@
 # Android TODO
 
+## TODO: Investigate trash button in sync showing system "Authorize" dialog vs in-app "Move to Trash" — 2026-10-22
+
+Investigate why sometimes the trash button in the sync screen / sync flows shows an "Authorize" system prompt and deleting works, and other times it shows an in-app "Move to Trash" dialog and behavior is wrong:
+- In `SyncScreen.kt` and `AssetDetailScreen.kt`, trashing first attempts to resolve MediaStore Uris and call `MediaStore.createTrashRequest(...)`, launching the system intent sender (which displays Android's system authorization dialog: "Allow iPhoto to move this photo to trash?").
+- If MediaStore URI resolution fails (e.g. files not indexed in MediaStore, SAF uri path mismatch, or exception), it falls back to showing an in-app dialog `"Move to Trash"` and calls `LocalTrash.moveToTrash(...)` into the `.iPhotoTrash` directory.
+- Check why MediaStore URI resolution occasionally fails or drifts, verify permissions / SAF vs MediaStore handling, and ensure consistent behavior across all sync screens without erratic fallback to `.iPhotoTrash`.
+
+
 ## Lightbox goes full-screen with a collapsed overlay bar on landscape rotation — 2026-09-14
 
 `PhotoDetailScreen` used to keep the same fixed `TopAppBar` + `BottomAppBar` layout in both

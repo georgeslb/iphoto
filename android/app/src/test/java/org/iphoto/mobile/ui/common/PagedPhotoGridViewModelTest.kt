@@ -423,4 +423,58 @@ class PagedPhotoGridViewModelTest {
 
         assertNull(viewModel.uiState.value.actionError)
     }
+
+    @Test
+    fun `reorderPhotos calls updateDate for each update, reloads first page, and retains active selection`() = runTest {
+        val initialPhotos = listOf(testPhoto("1"), testPhoto("2"))
+        val reloadedPhotos = listOf(testPhoto("2"), testPhoto("1"))
+        var loadCount = 0
+        val loadPage: suspend (Int, Int) -> Pair<List<Photo>, Boolean> = { _, _ ->
+            loadCount++
+            if (loadCount == 1) initialPhotos to true else reloadedPhotos to true
+        }
+        val viewModel = PagedPhotoGridViewModel(loadPage)
+        viewModel.toggleSelection("1")
+        val photoApi = mockk<PhotoApi>()
+        coEvery { photoApi.updateDate(any(), any()) } returns testPhoto("x")
+
+        val updates = listOf(
+            ReorderUpdate("1", "2024-03-15T14:00:06.000"),
+            ReorderUpdate("2", "2024-03-15T14:00:05.000")
+        )
+        viewModel.reorderPhotos(photoApi, updates)
+
+        coVerify(exactly = 1) { photoApi.updateDate("1", UpdatePhotoDateRequest("2024-03-15T14:00:06.000")) }
+        coVerify(exactly = 1) { photoApi.updateDate("2", UpdatePhotoDateRequest("2024-03-15T14:00:05.000")) }
+        val state = viewModel.uiState.value
+        assertEquals(reloadedPhotos, state.photos)
+        assertEquals(setOf("1"), state.selectedIds)
+        assertFalse(state.isMutating)
+        assertNull(state.actionError)
+    }
+
+    @Test
+    fun `reorderPhotos surfaces action error on failure`() = runTest {
+        val viewModel = viewModelWith(listOf(testPhoto("1")))
+        val photoApi = mockk<PhotoApi>()
+        coEvery { photoApi.updateDate(any(), any()) } throws RuntimeException("update failed")
+
+        val updates = listOf(ReorderUpdate("1", "2024-03-15T14:00:06.000"))
+        viewModel.reorderPhotos(photoApi, updates)
+
+        val state = viewModel.uiState.value
+        assertEquals("update failed", state.actionError)
+        assertFalse(state.isMutating)
+    }
+
+    @Test
+    fun `reorderPhotos is a no-op when updates list is empty`() = runTest {
+        val viewModel = viewModelWith(listOf(testPhoto("1")))
+        val photoApi = mockk<PhotoApi>()
+
+        viewModel.reorderPhotos(photoApi, emptyList())
+
+        coVerify(exactly = 0) { photoApi.updateDate(any(), any()) }
+        assertFalse(viewModel.uiState.value.isMutating)
+    }
 }

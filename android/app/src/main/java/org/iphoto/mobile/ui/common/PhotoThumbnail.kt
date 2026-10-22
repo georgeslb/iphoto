@@ -3,6 +3,7 @@ package org.iphoto.mobile.ui.common
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,11 +18,20 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -54,9 +64,16 @@ fun PhotoThumbnail(
     duration: Long? = null,
     isSelectionMode: Boolean = false,
     isSelected: Boolean = false,
+    isReorderSelected: Boolean = false,
+    showReorderButton: Boolean = true,
     isUploaded: Boolean = false,
     onLongClick: (() -> Unit)? = null,
     onSelectClick: (() -> Unit)? = null,
+    onReorderClick: (() -> Unit)? = null,
+    onHoldToMoveStart: ((Offset) -> Unit)? = null,
+    onHoldToMoveDrag: ((Offset) -> Unit)? = null,
+    onHoldToMoveEnd: (() -> Unit)? = null,
+    onHoldToMoveCancel: (() -> Unit)? = null,
     onClick: () -> Unit
 ) = PhotoThumbnail(
     imageModel = imageUrl as Any,
@@ -65,9 +82,16 @@ fun PhotoThumbnail(
     duration = duration,
     isSelectionMode = isSelectionMode,
     isSelected = isSelected,
+    isReorderSelected = isReorderSelected,
+    showReorderButton = showReorderButton,
     isUploaded = isUploaded,
     onLongClick = onLongClick,
     onSelectClick = onSelectClick,
+    onReorderClick = onReorderClick,
+    onHoldToMoveStart = onHoldToMoveStart,
+    onHoldToMoveDrag = onHoldToMoveDrag,
+    onHoldToMoveEnd = onHoldToMoveEnd,
+    onHoldToMoveCancel = onHoldToMoveCancel,
     onClick = onClick
 )
 
@@ -80,17 +104,57 @@ fun PhotoThumbnail(
     duration: Long? = null,
     isSelectionMode: Boolean = false,
     isSelected: Boolean = false,
+    isReorderSelected: Boolean = false,
+    showReorderButton: Boolean = true,
     isUploaded: Boolean = false,
     onLongClick: (() -> Unit)? = null,
     onSelectClick: (() -> Unit)? = null,
+    onReorderClick: (() -> Unit)? = null,
+    onHoldToMoveStart: ((Offset) -> Unit)? = null,
+    onHoldToMoveDrag: ((Offset) -> Unit)? = null,
+    onHoldToMoveEnd: (() -> Unit)? = null,
+    onHoldToMoveCancel: (() -> Unit)? = null,
     onClick: () -> Unit
 ) {
     val container = LocalAppContainer.current
     val isRemote = imageModel is String && (imageModel.startsWith("http://") || imageModel.startsWith("https://") || imageModel.startsWith("/"))
     val imageLoader = if (isRemote) container.imageLoader else container.localImageLoader
+    var itemCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    val currentOnClick by rememberUpdatedState(onClick)
+    val currentOnLongClick by rememberUpdatedState(onLongClick)
+    val currentOnHoldToMoveStart by rememberUpdatedState(onHoldToMoveStart)
+    val currentOnHoldToMoveDrag by rememberUpdatedState(onHoldToMoveDrag)
+    val currentOnHoldToMoveEnd by rememberUpdatedState(onHoldToMoveEnd)
+    val currentOnHoldToMoveCancel by rememberUpdatedState(onHoldToMoveCancel)
+    val currentIsSelected by rememberUpdatedState(isSelected)
+    val gestureModifier = if (onHoldToMoveStart != null) {
+        Modifier
+            .onGloballyPositioned { itemCoordinates = it }
+            .pointerInput(Unit) {
+                detectHoldToMoveGestures(
+                    holdDurationMs = 2000L,
+                    longPressTimeoutMs = 400L,
+                    isSelected = { currentIsSelected },
+                    onTap = { currentOnClick() },
+                    onLongPress = { currentOnLongClick?.invoke() },
+                    onMoveStart = { localPos ->
+                        val windowPos = itemCoordinates?.takeIf { it.isAttached }?.localToWindow(localPos) ?: localPos
+                        currentOnHoldToMoveStart?.invoke(windowPos)
+                    },
+                    onMoveDrag = { localPos ->
+                        val windowPos = itemCoordinates?.takeIf { it.isAttached }?.localToWindow(localPos) ?: localPos
+                        currentOnHoldToMoveDrag?.invoke(windowPos)
+                    },
+                    onMoveEnd = { currentOnHoldToMoveEnd?.invoke() },
+                    onMoveCancel = { currentOnHoldToMoveCancel?.invoke() }
+                )
+            }
+    } else {
+        Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick)
+    }
 
     Box(
-        modifier = modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick)
+        modifier = modifier.then(gestureModifier)
     ) {
         AsyncImage(
             model = imageModel,
@@ -101,6 +165,13 @@ fun PhotoThumbnail(
         )
         if (isSelected) {
             Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.3f)))
+        }
+        if (isReorderSelected) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .border(3.dp, Color(0xFF4CAF50))
+            )
         }
 
         // Uploaded status cloud icon badge in the top-right corner
@@ -161,46 +232,87 @@ fun PhotoThumbnail(
                 )
             }
         }
-        // Selection button in the top-left corner:
-        // When clicked, toggles selection and enters selection mode.
-        if (onSelectClick != null || isSelectionMode) {
-            val selectAction = onSelectClick ?: onClick
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .size(40.dp)
-                    .combinedClickable(onClick = selectAction, onLongClick = onLongClick)
-                    .padding(6.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                if (isSelectionMode || isSelected) {
+
+        // Top-left controls: Selection button and Reorder button
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            // Selection button: When clicked, toggles selection and enters selection mode.
+            if (onSelectClick != null || isSelectionMode) {
+                val selectAction = onSelectClick ?: onClick
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .combinedClickable(onClick = selectAction, onLongClick = onLongClick)
+                        .padding(4.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (isSelectionMode || isSelected) {
+                        Box(
+                            modifier = Modifier
+                                .size(22.dp)
+                                .background(
+                                    if (isSelected) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.35f),
+                                    CircleShape
+                                )
+                                .border(1.5.dp, Color.White, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (isSelected) {
+                                Icon(
+                                    imageVector = Icons.Filled.CheckCircle,
+                                    contentDescription = "Selected",
+                                    tint = Color.White,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                        }
+                    } else {
+                        // Visible affordance in top-left corner so user can easily tap to select
+                        Box(
+                            modifier = Modifier
+                                .size(22.dp)
+                                .background(Color.Black.copy(alpha = 0.25f), CircleShape)
+                                .border(1.dp, Color.White.copy(alpha = 0.7f), CircleShape)
+                        )
+                    }
+                }
+            }
+
+            // Reorder button: Activates reordering and toggles asset in reorder selection
+            if (showReorderButton && onReorderClick != null) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .combinedClickable(onClick = onReorderClick)
+                        .padding(4.dp),
+                    contentAlignment = Alignment.Center
+                ) {
                     Box(
                         modifier = Modifier
                             .size(22.dp)
                             .background(
-                                if (isSelected) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.35f),
+                                if (isReorderSelected) Color(0xFF4CAF50) else Color.Black.copy(alpha = 0.35f),
                                 CircleShape
                             )
-                            .border(1.5.dp, Color.White, CircleShape),
+                            .border(
+                                1.5.dp,
+                                if (isReorderSelected) Color.White else Color.White.copy(alpha = 0.7f),
+                                CircleShape
+                            ),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (isSelected) {
-                            Icon(
-                                imageVector = Icons.Filled.CheckCircle,
-                                contentDescription = "Selected",
-                                tint = Color.White,
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        }
+                        Icon(
+                            imageVector = Icons.Default.SwapVert,
+                            contentDescription = "Reorder",
+                            tint = Color.White,
+                            modifier = Modifier.size(15.dp)
+                        )
                     }
-                } else {
-                    // Visible affordance in top-left corner so user can easily tap to select
-                    Box(
-                        modifier = Modifier
-                            .size(22.dp)
-                            .background(Color.Black.copy(alpha = 0.25f), CircleShape)
-                            .border(1.dp, Color.White.copy(alpha = 0.7f), CircleShape)
-                    )
                 }
             }
         }
