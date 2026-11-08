@@ -4,11 +4,12 @@
 
 Added an interactive fast-scroll timeline bar across photo grids (remote `PhotoGridContent.kt` covering Library, Albums, and Spaces, and local `SyncScreen.kt` for local folder assets):
 - **Covers Entire Collection History**: Just like the web browser (`TimelineScrubber.jsx`), fetches all day buckets (`/api/photos/days`, `/api/albums/{id}/days`, `/api/photos/space/{id}/days`) up front. The scrollbar spans the entire timeline from the most recent day down to the oldest year in history, rather than only the currently loaded page.
-- **Year Markers**: Visual year milestone labels (e.g. `2026`, `2025`, `2024`, `2020`...) along the track, matching the web app.
-- **Horizontal Compact Date Badge**: The floating pill is unconstrained horizontally and displays purely in single-line horizontal format: calendar icon + compact `dd/MM/yy` (e.g. `30/11/25`).
-- **Scroll on Release ("Au lâche de la main")**: While scrubbing, the grid remains calm and completely stutter-free; seeking and scrolling to the selected day's header happens strictly upon finger release (`onDragEnd`), dynamically loading pages if the targeted day was not yet loaded.
-- **Clearly Visible Track & Thumb**: Continuous vertical track line (`onSurface` 15% opacity) and high-contrast thumb handle (52dp tall, 6dp wide idle / 8dp wide dragging with shadow).
-- **Unit Tested**: Fully tested date parsing (`formatTimelineDate`), year markers extraction, and day header mapping in `TimelineFastScrollbarTest.kt`.
+- **Direct Page Seeking (Zero Sequential Looping)**: When jumping to an older date (e.g. page 624), the app jumps directly to `targetPage` in **a single HTTP request** without loading intermediate pages. Bi-directional scrolling (`loadMore` and `loadPrevious`) allows scrolling up or down seamlessly from the destination date.
+- **Red Temporal Dates**: Floating date badge text, calendar icon, and track year markers are styled in high-visibility bold red (`#E53935`).
+- **Horizontal Compact Date Badge**: The floating pill is unconstrained horizontally and displays strictly in single-line horizontal format: calendar icon + compact `dd/MM/yy` (e.g. `30/11/25`).
+- **Scroll on Release ("Au lâche de la main")**: While scrubbing, the grid remains calm and completely stutter-free; seeking and scrolling to the selected day's header happens strictly upon finger release (`onDragEnd`).
+- **Clearly Visible Track & Thumb**: Continuous vertical track line (`onSurface` 15% opacity) and high-contrast thumb handle (52dp tall, 6dp wide idle / 8dp wide dragging in red with shadow).
+- **Unit Tested**: Fully tested date parsing (`formatTimelineDate`), year markers extraction, and day header mapping in `TimelineFastScrollbarTest.kt` and direct-seek verification in `PagedPhotoGridViewModelTest.kt`.
 
 ## Fixed: Search & filter text box at top of Albums tab — 2026-11-08
 

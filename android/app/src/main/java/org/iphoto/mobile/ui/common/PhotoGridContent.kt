@@ -151,6 +151,12 @@ fun PhotoGridContent(
                     val dayGroups = remember(state.photos) { state.photos.groupBy { it.groupDate } }
                     val movedIds = remember(dragState) { dragState?.movedPhotos?.map { it.id }?.toSet() ?: emptySet() }
 
+                    LaunchedEffect(gridState.firstVisibleItemIndex) {
+                        if (gridState.firstVisibleItemIndex <= 4) {
+                            viewModel.loadPrevious()
+                        }
+                    }
+
                     LazyVerticalGrid(
                         state = gridState,
                         columns = GridCells.Fixed(4),

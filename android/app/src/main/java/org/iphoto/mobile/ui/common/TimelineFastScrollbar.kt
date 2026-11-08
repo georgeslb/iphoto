@@ -39,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
@@ -53,6 +54,7 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
 private val OUTPUT_DATE_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("dd/MM/yy")
+private val TimelineRed: Color = Color(0xFFE53935)
 
 /**
  * Formats a day string for timeline display strictly as compact date "dd/MM/yy" (e.g. "30/11/25").
@@ -237,7 +239,7 @@ fun TimelineFastScrollbar(
                     Icon(
                         imageVector = Icons.Default.CalendarToday,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
+                        tint = TimelineRed,
                         modifier = Modifier.size(14.dp)
                     )
                     Text(
@@ -246,7 +248,7 @@ fun TimelineFastScrollbar(
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         softWrap = false,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = TimelineRed
                     )
                 }
             }
@@ -319,7 +321,7 @@ fun TimelineFastScrollbar(
                         text = year,
                         fontSize = 9.sp,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
+                        color = TimelineRed,
                         maxLines = 1,
                         softWrap = false,
                         modifier = Modifier
@@ -338,7 +340,7 @@ fun TimelineFastScrollbar(
             val thumbWidth = if (isDragging) 8.dp else 6.dp
             val thumbShape = RoundedCornerShape(thumbWidth / 2)
             val thumbColor = if (isDragging) {
-                MaterialTheme.colorScheme.primary
+                TimelineRed
             } else {
                 MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
             }

@@ -55,7 +55,10 @@ class PagedPhotoGridViewModel(
     private val _uiState = MutableStateFlow(PagedPhotosUiState())
     val uiState: StateFlow<PagedPhotosUiState> = _uiState.asStateFlow()
 
+    private var startPage = 0
     private var nextPage = 0
+    private var seekJob: kotlinx.coroutines.Job? = null
+    private var isLoadingPrevious = false
 
     init {
         loadFirstPage()
@@ -75,15 +78,17 @@ class PagedPhotoGridViewModel(
     }
 
     fun loadFirstPage() {
+        startPage = 0
         nextPage = 0
-        _uiState.value = PagedPhotosUiState(isLoading = true)
+        _uiState.value = PagedPhotosUiState(isLoading = true, timelineDays = _uiState.value.timelineDays)
         viewModelScope.launch {
             _uiState.value = try {
                 val (photos, last) = loadPage(0, PAGE_SIZE)
+                startPage = 0
                 nextPage = 1
-                PagedPhotosUiState(photos = photos, isLoading = false, endReached = last)
+                PagedPhotosUiState(photos = photos, isLoading = false, endReached = last, timelineDays = _uiState.value.timelineDays)
             } catch (e: Exception) {
-                PagedPhotosUiState(isLoading = false, error = e.message ?: "Failed to load photos")
+                PagedPhotosUiState(isLoading = false, error = e.message ?: "Failed to load photos", timelineDays = _uiState.value.timelineDays)
             }
         }
     }
@@ -314,6 +319,25 @@ class PagedPhotoGridViewModel(
         _uiState.value = _uiState.value.copy(actionError = null)
     }
 
+    fun loadPrevious() {
+        val current = _uiState.value
+        if (current.isLoading || current.isLoadingMore || isLoadingPrevious || startPage <= 0) return
+        isLoadingPrevious = true
+        viewModelScope.launch {
+            try {
+                val prevPage = startPage - 1
+                val (photos, _) = loadPage(prevPage, PAGE_SIZE)
+                startPage = prevPage
+                _uiState.value = _uiState.value.copy(
+                    photos = photos + _uiState.value.photos
+                )
+            } catch (_: Exception) {
+            } finally {
+                isLoadingPrevious = false
+            }
+        }
+    }
+
     fun seekToDay(targetDay: String, onScrolled: (headerIndex: Int) -> Unit) {
         val currentPhotos = _uiState.value.photos
         val existingIndex = findDayHeaderIndexInGrid(currentPhotos, targetDay)
@@ -329,28 +353,38 @@ class PagedPhotoGridViewModel(
         val photosBefore = allDays.take(dayIdx).sumOf { it.count }
         val targetPage = (photosBefore / PAGE_SIZE).toInt()
 
-        viewModelScope.launch {
+        seekJob?.cancel()
+        seekJob = viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoadingMore = true)
             try {
-                var photos = _uiState.value.photos
-                var last = _uiState.value.endReached
-                while (nextPage <= targetPage + 1 && !last) {
-                    val (newPhotos, isLast) = loadPage(nextPage, PAGE_SIZE)
-                    nextPage += 1
-                    photos = photos + newPhotos
-                    last = isLast
-                    val match = newPhotos.any { it.groupDate == targetDay || it.fullDateTime.startsWith(targetDay) }
-                    if (match) break
+                // Directly fetch targetPage in ONE single request without calling intermediate pages
+                val (pagePhotos, isLast) = loadPage(targetPage, PAGE_SIZE)
+                val hasTarget = pagePhotos.any { it.groupDate == targetDay || it.fullDateTime.startsWith(targetDay) }
+                val (finalPhotos, finalLast, endPage) = if (!hasTarget && !isLast) {
+                    val (nextPhotos, nextLast) = loadPage(targetPage + 1, PAGE_SIZE)
+                    Triple(pagePhotos + nextPhotos, nextLast, targetPage + 2)
+                } else {
+                    Triple(pagePhotos, isLast, targetPage + 1)
                 }
-                _uiState.value = _uiState.value.copy(photos = photos, endReached = last, isLoadingMore = false)
-                val index = findDayHeaderIndexInGrid(photos, targetDay)
+
+                startPage = targetPage
+                nextPage = endPage
+                _uiState.value = _uiState.value.copy(
+                    photos = finalPhotos,
+                    endReached = finalLast,
+                    isLoadingMore = false
+                )
+
+                val index = findDayHeaderIndexInGrid(finalPhotos, targetDay)
                 if (index != -1) {
                     onScrolled(index)
-                } else if (photos.isNotEmpty()) {
-                    onScrolled(photos.size - 1)
+                } else {
+                    onScrolled(0)
                 }
             } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(isLoadingMore = false)
+                if (e !is kotlinx.coroutines.CancellationException) {
+                    _uiState.value = _uiState.value.copy(isLoadingMore = false)
+                }
             }
         }
     }
