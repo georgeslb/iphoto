@@ -1,5 +1,6 @@
 package org.iphoto.mobile.ui.albums
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,8 +13,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Collections
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -34,6 +38,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -49,6 +55,7 @@ fun AlbumsScreen(onAlbumClick: (String) -> Unit) {
     val viewModel: AlbumsViewModel = viewModel(factory = AlbumsViewModelFactory(container.albumApi))
     val state by viewModel.uiState.collectAsState()
     val albumsChangeVersion by container.albumsChangeVersion.collectAsState()
+    val focusManager = LocalFocusManager.current
 
     val lifecycleOwner = LocalLifecycleOwner.current
     var skippedInitialResume by remember { mutableStateOf(false) }
@@ -73,34 +80,38 @@ fun AlbumsScreen(onAlbumClick: (String) -> Unit) {
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        if ((!state.isLoading && state.error == null && state.albums.isNotEmpty()) || state.searchQuery.isNotEmpty()) {
-            OutlinedTextField(
-                value = state.searchQuery,
-                onValueChange = viewModel::onSearchQueryChange,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                placeholder = { Text("Filter albums...") },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Default.Search,
-                        contentDescription = "Search"
-                    )
-                },
-                trailingIcon = {
-                    if (state.searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { viewModel.onSearchQueryChange("") }) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Clear filter"
-                            )
-                        }
+        // Search and filter text box always displayed at the top of the Albums tab
+        OutlinedTextField(
+            value = state.searchQuery,
+            onValueChange = viewModel::onSearchQueryChange,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            placeholder = { Text("Search albums...") },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Default.Search,
+                    contentDescription = "Search"
+                )
+            },
+            trailingIcon = {
+                if (state.searchQuery.isNotEmpty()) {
+                    IconButton(onClick = {
+                        viewModel.onSearchQueryChange("")
+                        focusManager.clearFocus()
+                    }) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Clear search"
+                        )
                     }
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(24.dp)
-            )
-        }
+                }
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(24.dp),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() })
+        )
 
         Box(
             modifier = Modifier
@@ -135,8 +146,11 @@ fun AlbumsScreen(onAlbumClick: (String) -> Unit) {
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        TextButton(onClick = { viewModel.onSearchQueryChange("") }) {
-                            Text("Clear filter")
+                        TextButton(onClick = {
+                            viewModel.onSearchQueryChange("")
+                            focusManager.clearFocus()
+                        }) {
+                            Text("Clear search")
                         }
                     }
                 }
@@ -167,11 +181,26 @@ private fun AlbumRow(album: AlbumDTO, onClick: () -> Unit) {
         if (coverUrl != null) {
             PhotoThumbnail(
                 imageUrl = container.absoluteUrl(coverUrl),
-                modifier = Modifier.size(64.dp).clip(RoundedCornerShape(8.dp)),
+                modifier = Modifier
+                    .size(64.dp)
+                    .clip(RoundedCornerShape(8.dp)),
                 onClick = onClick
             )
         } else {
-            Box(modifier = Modifier.size(64.dp).clip(RoundedCornerShape(8.dp)))
+            Box(
+                modifier = Modifier
+                    .size(64.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Collections,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.size(32.dp)
+                )
+            }
         }
         Column(modifier = Modifier.padding(start = 12.dp)) {
             Text(album.name, style = MaterialTheme.typography.titleMedium)
