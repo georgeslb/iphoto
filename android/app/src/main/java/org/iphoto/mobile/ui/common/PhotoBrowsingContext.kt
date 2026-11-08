@@ -16,6 +16,8 @@ import org.iphoto.mobile.model.Photo
 object PhotoBrowsingContext {
     var photoIds: List<String> = emptyList()
     private var photosById: Map<String, Photo> = emptyMap()
+    var lastViewedPhotoId: String? = null
+    var lastRemovedPhotoId: String? = null
 
     fun updatePhotos(photos: List<Photo>) {
         photoIds = photos.map { it.id }
@@ -32,11 +34,16 @@ object PhotoBrowsingContext {
         }
         photoIds = currentList
         photosById = photosById + (newPhoto.id to newPhoto)
+        lastViewedPhotoId = newPhoto.id
     }
 
     fun removePhoto(id: String) {
         photoIds = photoIds.filter { it != id }
         photosById = photosById - id
+        lastRemovedPhotoId = id
+        if (lastViewedPhotoId == id) {
+            lastViewedPhotoId = null
+        }
     }
 
     fun getPhoto(id: String): Photo? = photosById[id]

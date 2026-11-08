@@ -218,6 +218,7 @@ fun MainScreen(onLogout: () -> Unit) {
                     // rather than pushing a new one each time - Back still goes straight to the
                     // grid no matter how many photos were paged through via the arrows.
                     onNavigateToPhoto = { nextPhotoId ->
+                        org.iphoto.mobile.ui.common.PhotoBrowsingContext.lastViewedPhotoId = nextPhotoId
                         val route = buildString {
                             append("photo/$nextPhotoId")
                             val params = mutableListOf<String>()

@@ -511,7 +511,7 @@ fun FolderContentGrid(
         LazyVerticalGrid(
             state = gridState,
             columns = GridCells.Fixed(4),
-            contentPadding = PaddingValues(2.dp),
+            contentPadding = PaddingValues(start = 2.dp, top = 2.dp, end = 40.dp, bottom = 2.dp),
             horizontalArrangement = Arrangement.spacedBy(2.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp),
             modifier = Modifier.fillMaxSize()

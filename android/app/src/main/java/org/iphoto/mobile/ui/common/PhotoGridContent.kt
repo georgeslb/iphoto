@@ -151,6 +151,31 @@ fun PhotoGridContent(
                     val dayGroups = remember(state.photos) { state.photos.groupBy { it.groupDate } }
                     val movedIds = remember(dragState) { dragState?.movedPhotos?.map { it.id }?.toSet() ?: emptySet() }
 
+                    // Restore scroll focus to the photo being viewed in lightbox
+                    LaunchedEffect(state.photos) {
+                        val targetId = PhotoBrowsingContext.lastViewedPhotoId
+                        if (targetId != null && state.photos.any { it.id == targetId }) {
+                            var curr = 0
+                            var targetIndex = -1
+                            for ((_, dayPhotos) in dayGroups) {
+                                curr++ // header item
+                                val pIdx = dayPhotos.indexOfFirst { it.id == targetId }
+                                if (pIdx != -1) {
+                                    targetIndex = curr + pIdx
+                                    break
+                                }
+                                curr += dayPhotos.size
+                            }
+                            if (targetIndex != -1) {
+                                val visible = gridState.layoutInfo.visibleItemsInfo.map { it.index }
+                                if (targetIndex !in visible) {
+                                    gridState.scrollToItem(targetIndex)
+                                }
+                            }
+                            PhotoBrowsingContext.lastViewedPhotoId = null
+                        }
+                    }
+
                     LaunchedEffect(gridState.firstVisibleItemIndex) {
                         if (gridState.firstVisibleItemIndex <= 4) {
                             viewModel.loadPrevious()
@@ -160,7 +185,7 @@ fun PhotoGridContent(
                     LazyVerticalGrid(
                         state = gridState,
                         columns = GridCells.Fixed(4),
-                        contentPadding = PaddingValues(2.dp),
+                        contentPadding = PaddingValues(start = 2.dp, top = 2.dp, end = 40.dp, bottom = 2.dp),
                         horizontalArrangement = Arrangement.spacedBy(2.dp),
                         verticalArrangement = Arrangement.spacedBy(2.dp),
                         modifier = Modifier.fillMaxSize()
@@ -292,6 +317,7 @@ fun PhotoGridContent(
                                             if (state.isSelectionMode) {
                                                 viewModel.toggleSelection(photo.id)
                                             } else {
+                                                PhotoBrowsingContext.lastViewedPhotoId = photo.id
                                                 onPhotoClick(photo.id)
                                             }
                                         }

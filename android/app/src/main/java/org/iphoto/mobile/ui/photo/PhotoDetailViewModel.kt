@@ -58,6 +58,7 @@ class PhotoDetailViewModel(
     val uiState: StateFlow<PhotoDetailUiState> = _uiState.asStateFlow()
 
     init {
+        org.iphoto.mobile.ui.common.PhotoBrowsingContext.lastViewedPhotoId = currentPhotoId
         viewModelScope.launch {
             try {
                 val fetched = photoApi.get(currentPhotoId)
