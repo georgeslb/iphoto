@@ -8,12 +8,14 @@ Added an interactive fast-scroll timeline bar across photo grids (remote `PhotoG
 - **Edge Clamping & Auto-Hide**: The badge position is clamped within screen bounds so it never clips off-screen, and the scrollbar smoothly fades out after 1.5 seconds of inactivity.
 - **Unit Tested**: Fully tested date formatting and index-to-day mapping in `TimelineFastScrollbarTest.kt`.
 
-## TODO: Search & filter text box at top of Albums tab
+## Fixed: Search & filter text box at top of Albums tab — 2026-11-08
 
-Add a search/filter input at the top of the Albums tab (`AlbumsScreen.kt`):
-- Text box allowing real-time filtering of albums by name as the user types.
-- Clear button to quickly reset the filter.
-- Clean empty state when no albums match the query.
+Added an interactive search & filter input at the top of the Albums tab (`AlbumsScreen.kt`):
+- **Real-Time Filtering**: Live filtering of albums by name as the user types (case-insensitive substring match).
+- **Persistent State**: Filter query is held in `AlbumsViewModel.uiState.searchQuery`, surviving screen rotations and quiet data reloads.
+- **Search UI**: Outlined text field with rounded pill shape (`RoundedCornerShape(24.dp)`), search icon, placeholder, and a clear ("X") button to reset the query instantly.
+- **Empty States**: Distinguishes between when no albums exist at all ("No albums yet") vs when no albums match the current filter query ("No albums matching <query>" with a "Clear filter" button).
+- **Unit Tested**: Fully tested in `AlbumsViewModelTest.kt` (case-insensitivity, whitespace trimming, and query preservation across reloads).
 
 ## Fixed: Restrict check-hashes background execution exclusively to the Sync tab — 2026-11-08
 

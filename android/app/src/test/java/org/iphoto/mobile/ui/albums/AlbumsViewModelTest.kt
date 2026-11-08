@@ -100,4 +100,52 @@ class AlbumsViewModelTest {
             viewModel.uiState.value.albums.map { it.id }
         )
     }
+
+    @Test
+    fun `filters albums by search query case-insensitively`() = runTest {
+        val albumApi = mockk<AlbumApi>()
+        coEvery { albumApi.list() } returns listOf(
+            testAlbum("1", name = "Summer Vacation"),
+            testAlbum("2", name = "Winter Skiing"),
+            testAlbum("3", name = "Summer Camp")
+        )
+
+        val viewModel = AlbumsViewModel(albumApi)
+        viewModel.onSearchQueryChange("summer")
+
+        val state = viewModel.uiState.value
+        assertEquals("summer", state.searchQuery)
+        assertEquals(listOf("1", "3"), state.filteredAlbums.map { it.id })
+    }
+
+    @Test
+    fun `empty or blank search query returns all albums`() = runTest {
+        val albumApi = mockk<AlbumApi>()
+        coEvery { albumApi.list() } returns listOf(
+            testAlbum("1", name = "Summer Vacation"),
+            testAlbum("2", name = "Winter Skiing")
+        )
+
+        val viewModel = AlbumsViewModel(albumApi)
+        viewModel.onSearchQueryChange("   ")
+
+        val state = viewModel.uiState.value
+        assertEquals(listOf("1", "2"), state.filteredAlbums.map { it.id })
+    }
+
+    @Test
+    fun `reloading preserves existing search query`() = runTest {
+        val albumApi = mockk<AlbumApi>()
+        coEvery { albumApi.list() } returns listOf(
+            testAlbum("1", name = "Summer Vacation")
+        )
+
+        val viewModel = AlbumsViewModel(albumApi)
+        viewModel.onSearchQueryChange("summer")
+        viewModel.load()
+
+        val state = viewModel.uiState.value
+        assertEquals("summer", state.searchQuery)
+        assertEquals(listOf("1"), state.filteredAlbums.map { it.id })
+    }
 }
