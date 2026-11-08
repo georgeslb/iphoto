@@ -2,6 +2,7 @@ package org.iphoto.mobile.network
 
 import okhttp3.MultipartBody
 import okhttp3.RequestBody
+import okhttp3.ResponseBody
 import org.iphoto.mobile.model.CheckHashesRequest
 import org.iphoto.mobile.model.CheckHashesResponse
 import org.iphoto.mobile.model.Photo
@@ -17,6 +18,7 @@ import retrofit2.http.POST
 import retrofit2.http.Part
 import retrofit2.http.Path
 import retrofit2.http.Query
+import retrofit2.http.Streaming
 
 interface PhotoApi {
     @GET("api/photos")
@@ -81,4 +83,16 @@ interface PhotoApi {
 
     @PATCH("api/photos/{id}/date")
     suspend fun updateDate(@Path("id") id: String, @Body request: UpdatePhotoDateRequest): Photo
+
+    @Streaming
+    @GET("api/photos/{id}/original")
+    suspend fun downloadOriginal(@Path("id") id: String): ResponseBody
+
+    @Multipart
+    @POST("api/photos/{id}/edit")
+    suspend fun editPhoto(
+        @Path("id") id: String,
+        @Part file: MultipartBody.Part,
+        @Query("saveAsNew") saveAsNew: Boolean
+    ): Photo
 }

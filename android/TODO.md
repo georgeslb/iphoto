@@ -1,5 +1,36 @@
 # Android TODO
 
+## TODO: Timeline fast-scroll bar with floating date indicator
+
+Add a fast-scroll timeline bar to the photo grids (Library, Albums, and Spaces):
+- Vertical scrollbar handle on the right edge of the grid that allows rapid scrubbing across days, months, and years.
+- When dragging the scroll pointer, display a floating pill/badge next to the user's finger showing the day/date corresponding to that position.
+- Enables fluid navigation across large photo libraries with thousands of photos without repetitive swiping.
+
+## TODO: Search & filter text box at top of Albums tab
+
+Add a search/filter input at the top of the Albums tab (`AlbumsScreen.kt`):
+- Text box allowing real-time filtering of albums by name as the user types.
+- Clear button to quickly reset the filter.
+- Clean empty state when no albums match the query.
+
+## TODO: Restrict check-hashes background execution exclusively to the Sync tab
+
+Currently, `check-hashes` verification jobs (comparing local device photo MD5s with the remote server) and MediaStore observers can run even when the user is browsing the remote Library, Albums, Spaces, or viewing a photo in the remote Lightbox.
+
+Objectives:
+- Only trigger and run `check-hashes` while the user is actively viewing the Sync tab (`SyncScreen`).
+- Immediately suspend/cancel active background hash checking jobs when the user navigates away from the Sync tab to another tab (Library, Albums, Spaces) or opens a fullscreen viewer.
+- Prevent background MediaStore changes from triggering heavy remote hash verifications when the user is not on the Sync screen.
+- Dramatically reduce network bandwidth, battery consumption, and background CPU load.
+
+## TODO: Drag-and-drop parity on Web UI (mobile & PC) with mobile app
+
+Align Web frontend drag-and-drop reordering with the Android mobile app:
+- Add a drag/reorder handle icon on the right side of photo thumbnails.
+- Display a vertical green indicator bar (`#4CAF50`) marking the exact drop destination (before or after the hovered item) where the asset will land.
+- Ensure identical UX across both PC mouse drag and mobile touch viewports.
+
 ## Fixed: Sync tab exclusively uses system "Authorize" trash prompt without moving to .iPhotoTrash — 2026-10-22
 
 The trash button and upload-and-trash actions on the sync tab previously fell back to an in-app "Move to Trash" dialog that moved files into the hidden `.iPhotoTrash` directory when MediaStore resolution failed or wasn't verified.

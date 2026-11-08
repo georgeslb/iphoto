@@ -32,6 +32,11 @@ and a compressed record of how we got here, not a second copy of the spec.
   tab/backend logs for the actual request/response on click.
 
 ### Features
+- **Drag-and-drop parity with mobile app on Web UI (mobile & PC views)**:
+  Align drag-and-drop reordering with the Android mobile app experience:
+  - Display a reorder handle icon (`SwapVert` / move icon) on the right side of photo thumbnails.
+  - Show a green insertion bar (`#4CAF50`, 4px wide) indicating the exact drop position (before or after the target asset) where the moved asset will land.
+  - Support multi-asset reordering within a day group matching the mobile app's selection and drop behavior.
 - **Face-position overlay on a person's own photo grid** (`PersonDetail.jsx` → `PhotoGrid`):
   reuse the Lightbox's `.face-box` overlay style, scoped to just the viewed person's face per
   photo. Needs backend support first — neither `Photo` nor `getPersonPhotos` currently carries

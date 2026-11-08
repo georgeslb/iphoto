@@ -22,5 +22,17 @@ object PhotoBrowsingContext {
         photosById = photos.associateBy { it.id }
     }
 
+    fun insertPhotoAfter(currentId: String, newPhoto: Photo) {
+        val currentList = photoIds.toMutableList()
+        val idx = currentList.indexOf(currentId)
+        if (idx != -1) {
+            currentList.add(idx + 1, newPhoto.id)
+        } else {
+            currentList.add(newPhoto.id)
+        }
+        photoIds = currentList
+        photosById = photosById + (newPhoto.id to newPhoto)
+    }
+
     fun getPhoto(id: String): Photo? = photosById[id]
 }
