@@ -1,13 +1,22 @@
 name: Docker image
 
-# Runs the backend test suite on every branch push (feature branches and master alike) - this is
-# what a required status check on the PR's merge button gates on. Building and pushing the Docker
-# image to GitHub Container Registry (ghcr.io) never happens automatically (not even on a push to
-# master) - it only runs from a manual "Run workflow" dispatch, since there's no way to build/push
-# the image outside CI here.
 on:
   push:
+    branches:
+      - master
+      - main
+    tags:
+      - '*'
+  pull_request:
+    branches:
+      - master
+      - main
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Optional custom version tag (e.g. v1.0.1 or 1.0.1)'
+        required: false
+        default: ''
 
 env:
   REGISTRY: ghcr.io
@@ -18,34 +27,18 @@ jobs:
     steps:
       # lfs: true deliberately omitted here - src/main/resources/models/*.onnx are git-lfs
       # tracked (.gitattributes), and without it this checkout gets their ~130-byte pointer files
-      # instead of real ONNX content. That's fine for this job specifically: FaceDetectionConfiguration
-      # (the only thing that loads them) is @Profile("!test") and never created under the "test"
-      # profile AbstractIntegrationTest activates, so the test suite genuinely never touches them
-      # (verified by running it with both files removed entirely - see TODO.md). Skipping the LFS
-      # pull here avoids spending bandwidth against GitHub's small free LFS quota on every push for
-      # files this job doesn't need - build-and-push below is where they actually matter.
+      # instead of real ONNX content. FaceDetectionConfiguration is @Profile("!test") and never
+      # created under the "test" profile, so integration tests never touch them.
       - uses: actions/checkout@v5
 
-      # Matches pom.xml's maven-compiler-plugin release (25) - not the project's
-      # <java.version>21</java.version> property, which is a separate, older setting; see the
-      # Dockerfile's top comment for the same note.
+      # Matches pom.xml's maven-compiler-plugin release (25)
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '25'
           cache: maven
 
-      # javacv's opencv-platform/ffmpeg-platform native .so files dlopen a handful of system
-      # libraries at load time (not just when their functionality is actually used - e.g.
-      # libopencv_highgui links GTK2 even though this app never opens a GUI window). The
-      # Dockerfile's runtime stage already documents the exact list, found by running `ldd`
-      # against every linux-x86_64 .so in these exact opencv/ffmpeg artifact versions - mirror it
-      # here rather than re-deriving it, since this runner and that image are both recent Ubuntu.
-      # Without this, any test that synchronously calls into ORB/highgui-adjacent OpenCV code
-      # fails with "UnsatisfiedLinkError: no jniopencv_highgui in java.library.path" - previously
-      # never caught here because the only code path that touched it (DuplicationServiceImpl,
-      # reached via async background task processing in every other test) silently swallowed the
-      # failure instead of failing a test.
+      # javacv's opencv-platform/ffmpeg-platform native .so files runtime dependencies
       - name: Install OpenCV/FFmpeg native runtime dependencies
         run: |
           sudo apt-get update
@@ -54,30 +47,41 @@ jobs:
             libgtk2.0-0t64 libcairo2 libgdk-pixbuf-2.0-0 libopenblas0 \
             libva2 libva-drm2 libasound2t64 libpulse0
 
-      # The backend's integration tests (src/test/java) spin up a real Postgres via
-      # Testcontainers - this needs Docker, which GitHub-hosted ubuntu-latest runners already
-      # have available out of the box, no extra setup required.
+      # The backend's integration tests (src/test/java) spin up a real Postgres via Testcontainers
       - name: Run backend tests
         run: mvn -B test
 
+      # Node.js 22 LTS (provides util.styleText needed by Vitest / Rolldown)
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run frontend tests
+        working-directory: src/main/resources/static
+        run: |
+          npm ci
+          npm test
+
   build-and-push:
     needs: test
-    # Manual only: a workflow_dispatch run builds and pushes the image (after the test job above
-    # passes); a pull_request event never reaches this job, so PRs only ever run the test gate.
-    if: github.event_name == 'workflow_dispatch'
+    # Run on:
+    # 1) Any tag push (e.g. manually positioned tag on master)
+    # 2) Push / merge into master or main branch
+    # 3) Manual workflow_dispatch
+    if: >
+      startsWith(github.ref, 'refs/tags/') ||
+      (github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')) ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
-      # lfs: true here (unlike the test job above) - the Dockerfile's build stage COPYs this
-      # checkout wholesale and packages whatever's under src/main/resources/models/ straight into
-      # the real, production app image, which DOES need working ONNX models at runtime. Without
-      # this the image would ship with the ~130-byte git-lfs pointer files instead of real models,
-      # and face detection would fail the moment a real request hit it.
       - uses: actions/checkout@v5
         with:
           lfs: true
+          fetch-depth: 0
 
       - uses: docker/setup-buildx-action@v3
 
@@ -87,12 +91,41 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # GHCR requires a lowercase image name; github.repository isn't guaranteed to be (GitHub
-      # usernames/org names can contain uppercase letters), so lowercase it explicitly rather
-      # than assume.
+      # GHCR requires a lowercase image name
       - name: Compute lowercase image name
         id: image
         run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Determine version
+        id: version
+        run: |
+          # 1. If triggered by a tag push (manual tag positioning)
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG_RAW="${GITHUB_REF#refs/tags/}"
+            echo "mode=tag" >> "$GITHUB_OUTPUT"
+            echo "tag=${TAG_RAW}" >> "$GITHUB_OUTPUT"
+            CLEAN_VERSION="${TAG_RAW#v}"
+            echo "version=${CLEAN_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "is_manual_tag=true" >> "$GITHUB_OUTPUT"
+          # 2. If triggered by manual workflow_dispatch with a custom version input
+          elif [ -n "${{ github.event.inputs.version }}" ]; then
+            INPUT_VER="${{ github.event.inputs.version }}"
+            CLEAN_VERSION="${INPUT_VER#v}"
+            echo "mode=input" >> "$GITHUB_OUTPUT"
+            echo "tag=v${CLEAN_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "version=${CLEAN_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "is_manual_tag=false" >> "$GITHUB_OUTPUT"
+          # 3. Otherwise (merge / push to master/main): compute version automatically
+          else
+            BASE_VERSION=$(sed -n 's/.*<version>\(.*\)<\/version>.*/\1/p' pom.xml | head -n 2 | tail -n 1)
+            BASE_VERSION="${BASE_VERSION:-1.0.0}"
+            CLEAN_BASE="${BASE_VERSION%-SNAPSHOT}"
+            VERSION="${CLEAN_BASE}.${{ github.run_number }}"
+            echo "mode=auto" >> "$GITHUB_OUTPUT"
+            echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+            echo "is_manual_tag=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Extract image metadata
         id: meta
@@ -100,7 +133,9 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}
           tags: |
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=${{ steps.version.outputs.tag }}
             type=sha,format=short
 
       - name: Build and push
@@ -113,7 +148,26 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # A brand-new GHCR package isn't reliably private-by-default just because this workflow
-      # uses GITHUB_TOKEN - after the first successful push, check the package's visibility under
-      # https://github.com/users/<you>/packages (or the org equivalent) / "Package settings", and
-      # set it to Private + link it to this repo if it isn't already.
+      # When automatically merged into master/main (not a manual tag push), create the git tag and GitHub Release automatically
+      - name: Create Git tag and GitHub Release
+        if: steps.version.outputs.is_manual_tag == 'false' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${{ steps.version.outputs.tag }}"
+          echo "Creating automated release and tag $TAG_NAME"
+          gh release create "$TAG_NAME" \
+            --title "Release $TAG_NAME" \
+            --generate-notes
+
+      # If manually triggered via a tag push, create or update the GitHub Release for that tag if not already present
+      - name: Publish GitHub Release for manual tag
+        if: steps.version.outputs.is_manual_tag == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${{ steps.version.outputs.tag }}"
+          echo "Publishing release for manual tag $TAG_NAME"
+          gh release create "$TAG_NAME" \
+            --title "Release $TAG_NAME" \
+            --generate-notes || true
