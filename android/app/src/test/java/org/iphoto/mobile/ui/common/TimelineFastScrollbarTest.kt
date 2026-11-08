@@ -1,26 +1,35 @@
 package org.iphoto.mobile.ui.common
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TimelineFastScrollbarTest {
 
     @Test
-    fun `formatTimelineDate formats ISO yyyy-MM-dd date`() {
+    fun `formatTimelineDate formats ISO yyyy-MM-dd date to dd MM yy`() {
         val formatted = formatTimelineDate("2024-03-15")
-        assertTrue(formatted.contains("15"))
-        assertTrue(formatted.contains("2024"))
+        assertEquals("15/03/24", formatted)
     }
 
     @Test
-    fun `formatTimelineDate returns raw string when not ISO date`() {
-        val raw = "Monday, Jan 01, 2026"
-        assertEquals(raw, formatTimelineDate(raw))
+    fun `formatTimelineDate formats ISO datetime to dd MM yy`() {
+        val formatted = formatTimelineDate("2025-11-30T14:35:00")
+        assertEquals("30/11/25", formatted)
     }
 
     @Test
-    fun `day range lookup correctly maps item indices to day strings`() {
+    fun `formatTimelineDate formats English long day date to dd MM yy`() {
+        val formatted = formatTimelineDate("Monday, Jan 01, 2026")
+        assertEquals("01/01/26", formatted)
+    }
+
+    @Test
+    fun `formatTimelineDate preserves already formatted dd MM yy`() {
+        assertEquals("30/11/25", formatTimelineDate("30/11/25"))
+    }
+
+    @Test
+    fun `day range lookup correctly maps item indices to day strings and header indices`() {
         // Given 3 days with 2, 4, and 1 photos respectively
         val dayGroups = listOf(
             "2024-03-15" to 2, // header 0, photos 1..2 (range 0..2)
@@ -28,28 +37,38 @@ class TimelineFastScrollbarTest {
             "2024-03-10" to 1  // header 8, photo 9     (range 8..9)
         )
 
-        val ranges = mutableListOf<Pair<IntRange, String>>()
+        val ranges = mutableListOf<Triple<IntRange, Int, String>>()
         var curr = 0
         dayGroups.forEach { (day, count) ->
-            ranges.add(curr until (curr + 1 + count) to day)
+            val headerIndex = curr
+            ranges.add(Triple(curr until (curr + 1 + count), headerIndex, day))
             curr += 1 + count
         }
 
         fun getDateForIndex(index: Int): String? {
-            return ranges.firstOrNull { index in it.first }?.second ?: ranges.lastOrNull()?.second
+            return ranges.firstOrNull { index in it.first }?.third ?: ranges.lastOrNull()?.third
         }
 
-        // Test index 0 (header of day 1)
+        fun getIndexForScroll(index: Int): Int {
+            return ranges.firstOrNull { index in it.first }?.second ?: index
+        }
+
+        // Test date strings
         assertEquals("2024-03-15", getDateForIndex(0))
-        // Test index 2 (last photo of day 1)
         assertEquals("2024-03-15", getDateForIndex(2))
-        // Test index 3 (header of day 2)
         assertEquals("2024-03-14", getDateForIndex(3))
-        // Test index 6 (photo in day 2)
         assertEquals("2024-03-14", getDateForIndex(6))
-        // Test index 8 (header of day 3)
         assertEquals("2024-03-10", getDateForIndex(8))
-        // Test index 10 (past the end, e.g. load-more) -> falls back to last day
         assertEquals("2024-03-10", getDateForIndex(10))
+
+        // Test day header index mapping (scrolling to start of day on release)
+        assertEquals(0, getIndexForScroll(0))
+        assertEquals(0, getIndexForScroll(1))
+        assertEquals(0, getIndexForScroll(2))
+        assertEquals(3, getIndexForScroll(3))
+        assertEquals(3, getIndexForScroll(5))
+        assertEquals(3, getIndexForScroll(7))
+        assertEquals(8, getIndexForScroll(8))
+        assertEquals(8, getIndexForScroll(9))
     }
 }

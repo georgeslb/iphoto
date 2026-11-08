@@ -315,10 +315,13 @@ fun PhotoGridContent(
                     }
 
                     val dayRanges = remember(dayGroups) {
-                        val ranges = mutableListOf<Pair<IntRange, String>>()
+                        val ranges = mutableListOf<Triple<IntRange, Int, String>>()
                         var curr = 0
                         dayGroups.forEach { (day, photos) ->
-                            ranges.add(curr until (curr + 1 + photos.size) to day)
+                            val range = curr until (curr + 1 + photos.size)
+                            val headerIndex = curr
+                            val dateString = photos.firstOrNull()?.fullDateTime ?: day
+                            ranges.add(Triple(range, headerIndex, dateString))
                             curr += 1 + photos.size
                         }
                         ranges
@@ -331,7 +334,10 @@ fun PhotoGridContent(
                         gridState = gridState,
                         totalItemsCount = totalItemsCount,
                         getDateForIndex = { index ->
-                            dayRanges.firstOrNull { index in it.first }?.second ?: dayRanges.lastOrNull()?.second
+                            dayRanges.firstOrNull { index in it.first }?.third ?: dayRanges.lastOrNull()?.third
+                        },
+                        getIndexForScroll = { index ->
+                            dayRanges.firstOrNull { index in it.first }?.second ?: index
                         },
                         enabled = dragState == null,
                         modifier = Modifier.align(Alignment.CenterEnd)

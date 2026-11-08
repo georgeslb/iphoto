@@ -3,10 +3,11 @@
 ## Fixed: Timeline fast-scroll bar with floating date indicator — 2026-11-08
 
 Added an interactive fast-scroll timeline bar across photo grids (remote `PhotoGridContent.kt` covering Library, Albums, and Spaces, and local `SyncScreen.kt` for local folder assets):
-- **Vertical Scrubbing Handle**: Interactive 44dp touch target on the right edge of the grid with a sleek rounded scroll thumb, allowing instant scrubbing across thousands of photos without repetitive swiping.
-- **Floating Date Badge**: As the user drags the scroll handle, a floating elevation-lifted badge/pill with a calendar icon appears right next to the finger showing the day/date (e.g. `12 oct. 2024`) corresponding to the current scroll position.
-- **Edge Clamping & Auto-Hide**: The badge position is clamped within screen bounds so it never clips off-screen, and the scrollbar smoothly fades out after 1.5 seconds of inactivity.
-- **Unit Tested**: Fully tested date formatting and index-to-day mapping in `TimelineFastScrollbarTest.kt`.
+- **Clearly Visible Track & Thumb**: Continuous vertical track line (`onSurface` 15% opacity) and high-contrast thumb handle (52dp tall, 6dp wide idle / 8dp wide dragging with shadow), always clearly visible on the right edge.
+- **Scroll on Release ("Au lâche de la main")**: While scrubbing, the grid remains calm and completely stutter-free; jumping directly to the selected day's header happens strictly upon finger release (`onDragEnd`).
+- **Compact Date Badge**: Floating pill with calendar icon displaying purely the compact date `dd/MM/yy` (e.g. `30/11/25`) directly next to the user's finger.
+- **Header Index Resolution**: Resolves the exact first item index of the targeted day so release scrolls cleanly to the day header.
+- **Unit Tested**: Fully tested date parsing (`formatTimelineDate`) and day header mapping in `TimelineFastScrollbarTest.kt`.
 
 ## Fixed: Search & filter text box at top of Albums tab — 2026-11-08
 

@@ -567,18 +567,43 @@ fun FolderContentGrid(
             }
         }
 
+        val syncDayRanges = remember(items) {
+            val ranges = mutableListOf<Triple<IntRange, Int, String>>()
+            var currentHeaderIndex = 0
+            var currentHeaderText = ""
+            var startIndex = 0
+            items.forEachIndexed { index, item ->
+                if (item is GridItem.Header) {
+                    if (index > startIndex) {
+                        ranges.add(Triple(startIndex until index, currentHeaderIndex, currentHeaderText))
+                    }
+                    currentHeaderIndex = index
+                    val firstAsset = item.assets.firstOrNull()
+                    currentHeaderText = if (firstAsset != null) {
+                        val date = java.time.Instant.ofEpochMilli(firstAsset.lastModified)
+                            .atZone(java.time.ZoneId.systemDefault())
+                            .toLocalDate()
+                        date.format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yy"))
+                    } else {
+                        item.text
+                    }
+                    startIndex = index
+                }
+            }
+            if (items.isNotEmpty() && startIndex < items.size) {
+                ranges.add(Triple(startIndex until items.size, currentHeaderIndex, currentHeaderText))
+            }
+            ranges
+        }
+
         TimelineFastScrollbar(
             gridState = gridState,
             totalItemsCount = items.size,
             getDateForIndex = { index ->
-                var currentDate: String? = null
-                for (i in 0..index.coerceAtMost(items.size - 1)) {
-                    val item = items[i]
-                    if (item is GridItem.Header) {
-                        currentDate = item.text
-                    }
-                }
-                currentDate
+                syncDayRanges.firstOrNull { index in it.first }?.third ?: syncDayRanges.lastOrNull()?.third
+            },
+            getIndexForScroll = { index ->
+                syncDayRanges.firstOrNull { index in it.first }?.second ?: index
             },
             modifier = Modifier.align(Alignment.CenterEnd)
         )
