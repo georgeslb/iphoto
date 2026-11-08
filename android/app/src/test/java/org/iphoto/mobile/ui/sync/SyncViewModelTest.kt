@@ -188,7 +188,7 @@ class SyncViewModelTest {
     }
 
     @Test
-    fun `startup background MD5 check updates uploadedAssetKeys when server check_hashes returns true`() = runTest {
+    fun `background MD5 check only runs when sync tab is visible and updates uploadedAssetKeys`() = runTest {
         val folderUri = Uri.parse("content://folder/camera")
         val asset1 = fakeAsset("content://folder/camera/1", "web_uploaded.jpg")
         val asset2 = fakeAsset("content://folder/camera/2", "local_only.jpg")
@@ -215,8 +215,62 @@ class SyncViewModelTest {
             ioDispatcher = mainDispatcherRule.testDispatcher
         )
 
+        // At initialization (user on Library tab), sync tab is NOT visible: no hash checking
+        assertFalse(vm.isSyncTabVisible)
+        coVerify(exactly = 0) { syncRepository.verifyFolderAssetsHashesInBatches(any(), any(), any()) }
+
+        // User navigates to Sync tab
+        vm.setSyncTabVisible(true)
+        assertTrue(vm.isSyncTabVisible)
+        coVerify(exactly = 1) { syncRepository.verifyFolderAssetsHashesInBatches(any(), any(), any()) }
+
         assertTrue(vm.isAssetUploaded(folderUri, asset1))
         assertFalse(vm.isAssetUploaded(folderUri, asset2))
+    }
+
+    @Test
+    fun `setSyncTabVisible false cancels active hash checking and re-entering does not recheck unchanged folders`() = runTest {
+        val folderUri = Uri.parse("content://folder/camera")
+        val asset1 = fakeAsset("content://folder/camera/1", "photo1.jpg")
+        syncPrefs.saveSelectedFolders(listOf(SelectedFolder(folderUri, "Camera")))
+        every { LocalFolderScanner.scan(context, folderUri) } returns listOf(asset1)
+
+        var hashCheckCount = 0
+        coEvery {
+            syncRepository.verifyFolderAssetsHashesInBatches(
+                assets = any(),
+                batchSize = SyncRepository.HASH_CHECK_BATCH_SIZE,
+                onBatchVerified = any()
+            )
+        } coAnswers {
+            hashCheckCount++
+            val callback = thirdArg<suspend (List<Pair<LocalAsset, Boolean>>) -> Unit>()
+            callback(listOf(asset1 to true))
+        }
+
+        val vm = SyncViewModel(
+            context,
+            spaceApi,
+            syncRepository,
+            syncPrefs,
+            ioDispatcher = mainDispatcherRule.testDispatcher
+        )
+
+        assertEquals(0, hashCheckCount)
+
+        // Enter sync tab: runs verification
+        vm.setSyncTabVisible(true)
+        assertEquals(1, hashCheckCount)
+        assertFalse(vm.uiState.value.isCheckingHashes)
+
+        // Exit sync tab
+        vm.setSyncTabVisible(false)
+        assertFalse(vm.isSyncTabVisible)
+        assertFalse(vm.uiState.value.isCheckingHashes)
+
+        // Re-enter sync tab: unchanged signatures do NOT trigger redundant network calls
+        vm.setSyncTabVisible(true)
+        assertEquals(1, hashCheckCount)
     }
 
     @Test
@@ -233,6 +287,9 @@ class SyncViewModelTest {
             syncPrefs,
             ioDispatcher = mainDispatcherRule.testDispatcher
         )
+
+        // Initial scan on tab enter
+        vm.setSyncTabVisible(true)
 
         assertTrue(vm.uiState.value.folderContents.containsKey(folderUri))
         assertFalse(vm.uiState.value.isLoadingFolderContents.contains(folderUri))
@@ -277,6 +334,8 @@ class SyncViewModelTest {
             ioDispatcher = mainDispatcherRule.testDispatcher
         )
 
+        // Enter sync tab -> initial check
+        vm.setSyncTabVisible(true)
         assertEquals(1, hashCheckInvocations)
         assertFalse(vm.uiState.value.isCheckingHashes)
 

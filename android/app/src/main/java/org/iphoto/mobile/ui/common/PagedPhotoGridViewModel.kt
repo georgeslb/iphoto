@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import org.iphoto.mobile.model.AlbumCreateRequest
 import org.iphoto.mobile.model.AlbumPhotoRequest
+import org.iphoto.mobile.model.DayBucketDTO
 import org.iphoto.mobile.model.Photo
 import org.iphoto.mobile.model.UpdatePhotoDateRequest
 import org.iphoto.mobile.network.AlbumApi
@@ -24,6 +25,7 @@ private const val TAG = "PagedPhotoGridVM"
 
 data class PagedPhotosUiState(
     val photos: List<Photo> = emptyList(),
+    val timelineDays: List<DayBucketDTO> = emptyList(),
     val isLoading: Boolean = true,
     val isLoadingMore: Boolean = false,
     val error: String? = null,
@@ -46,28 +48,47 @@ data class PagedPhotosUiState(
 class PagedPhotoGridViewModel(
     private val loadPage: suspend (page: Int, size: Int) -> Pair<List<Photo>, Boolean>,
     val albumId: String? = null,
-    val canMoveToMain: Boolean = false
+    val canMoveToMain: Boolean = false,
+    private val loadDays: (suspend () -> List<DayBucketDTO>)? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(PagedPhotosUiState())
     val uiState: StateFlow<PagedPhotosUiState> = _uiState.asStateFlow()
 
+    private var startPage = 0
     private var nextPage = 0
+    private var seekJob: kotlinx.coroutines.Job? = null
+    private var isLoadingPrevious = false
 
     init {
         loadFirstPage()
+        loadTimelineDays()
+    }
+
+    fun loadTimelineDays() {
+        if (loadDays == null) return
+        viewModelScope.launch {
+            try {
+                val days = loadDays.invoke()
+                _uiState.value = _uiState.value.copy(timelineDays = days)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to load timeline days: ${e.message}")
+            }
+        }
     }
 
     fun loadFirstPage() {
+        startPage = 0
         nextPage = 0
-        _uiState.value = PagedPhotosUiState(isLoading = true)
+        _uiState.value = PagedPhotosUiState(isLoading = true, timelineDays = _uiState.value.timelineDays)
         viewModelScope.launch {
             _uiState.value = try {
                 val (photos, last) = loadPage(0, PAGE_SIZE)
+                startPage = 0
                 nextPage = 1
-                PagedPhotosUiState(photos = photos, isLoading = false, endReached = last)
+                PagedPhotosUiState(photos = photos, isLoading = false, endReached = last, timelineDays = _uiState.value.timelineDays)
             } catch (e: Exception) {
-                PagedPhotosUiState(isLoading = false, error = e.message ?: "Failed to load photos")
+                PagedPhotosUiState(isLoading = false, error = e.message ?: "Failed to load photos", timelineDays = _uiState.value.timelineDays)
             }
         }
     }
@@ -298,17 +319,101 @@ class PagedPhotoGridViewModel(
         _uiState.value = _uiState.value.copy(actionError = null)
     }
 
+    fun loadPrevious() {
+        val current = _uiState.value
+        if (current.isLoading || current.isLoadingMore || isLoadingPrevious || startPage <= 0) return
+        isLoadingPrevious = true
+        viewModelScope.launch {
+            try {
+                val prevPage = startPage - 1
+                val (photos, _) = loadPage(prevPage, PAGE_SIZE)
+                startPage = prevPage
+                _uiState.value = _uiState.value.copy(
+                    photos = photos + _uiState.value.photos
+                )
+            } catch (_: Exception) {
+            } finally {
+                isLoadingPrevious = false
+            }
+        }
+    }
+
+    fun seekToDay(targetDay: String, onScrolled: (headerIndex: Int) -> Unit) {
+        val currentPhotos = _uiState.value.photos
+        val existingIndex = findDayHeaderIndexInGrid(currentPhotos, targetDay)
+        if (existingIndex != -1) {
+            onScrolled(existingIndex)
+            return
+        }
+
+        val allDays = _uiState.value.timelineDays
+        val dayIdx = allDays.indexOfFirst { it.day == targetDay }
+        if (dayIdx == -1) return
+
+        val photosBefore = allDays.take(dayIdx).sumOf { it.count }
+        val targetPage = (photosBefore / PAGE_SIZE).toInt()
+
+        seekJob?.cancel()
+        seekJob = viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoadingMore = true)
+            try {
+                // Directly fetch targetPage in ONE single request without calling intermediate pages
+                val (pagePhotos, isLast) = loadPage(targetPage, PAGE_SIZE)
+                val hasTarget = pagePhotos.any { it.groupDate == targetDay || it.fullDateTime.startsWith(targetDay) }
+                val (finalPhotos, finalLast, endPage) = if (!hasTarget && !isLast) {
+                    val (nextPhotos, nextLast) = loadPage(targetPage + 1, PAGE_SIZE)
+                    Triple(pagePhotos + nextPhotos, nextLast, targetPage + 2)
+                } else {
+                    Triple(pagePhotos, isLast, targetPage + 1)
+                }
+
+                startPage = targetPage
+                nextPage = endPage
+                _uiState.value = _uiState.value.copy(
+                    photos = finalPhotos,
+                    endReached = finalLast,
+                    isLoadingMore = false
+                )
+
+                val index = findDayHeaderIndexInGrid(finalPhotos, targetDay)
+                if (index != -1) {
+                    onScrolled(index)
+                } else {
+                    onScrolled(0)
+                }
+            } catch (e: Exception) {
+                if (e !is kotlinx.coroutines.CancellationException) {
+                    _uiState.value = _uiState.value.copy(isLoadingMore = false)
+                }
+            }
+        }
+    }
+
     companion object {
         private const val PAGE_SIZE = 60
+
+        fun findDayHeaderIndexInGrid(photos: List<Photo>, targetDay: String): Int {
+            val dayGroups = photos.groupBy { it.groupDate }
+            var curr = 0
+            dayGroups.forEach { (groupDate, groupPhotos) ->
+                val rep = groupPhotos.firstOrNull()
+                val isMatch = groupDate == targetDay ||
+                    (rep != null && rep.fullDateTime.startsWith(targetDay))
+                if (isMatch) return curr
+                curr += 1 + groupPhotos.size
+            }
+            return -1
+        }
     }
 }
 
 class PagedPhotoGridViewModelFactory(
     private val loadPage: suspend (page: Int, size: Int) -> Pair<List<Photo>, Boolean>,
     private val albumId: String? = null,
-    private val canMoveToMain: Boolean = false
+    private val canMoveToMain: Boolean = false,
+    private val loadDays: (suspend () -> List<DayBucketDTO>)? = null
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T =
-        PagedPhotoGridViewModel(loadPage, albumId, canMoveToMain) as T
+        PagedPhotoGridViewModel(loadPage, albumId, canMoveToMain, loadDays) as T
 }

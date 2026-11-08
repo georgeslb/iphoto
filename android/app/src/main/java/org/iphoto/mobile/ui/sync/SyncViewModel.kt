@@ -312,7 +312,12 @@ class SyncViewModel(
     private val folderScanJobs = mutableMapOf<Uri, Job>()
     private val folderHashJobs = mutableMapOf<Uri, Job>()
     private val folderHashSignatures = mutableMapOf<Uri, List<String>>()
+    private val verifiedFolderSignatures = mutableMapOf<Uri, List<String>>()
     private val hashCheckMutex = Mutex()
+
+    var isSyncTabVisible: Boolean = false
+        private set
+    private var needsSyncRefresh: Boolean = false
 
     init {
         loadSpaces()
@@ -320,7 +325,6 @@ class SyncViewModel(
         loadUploadedAssets()
         setupMediaStoreObserver()
         setupFolderChangeObserver()
-        refreshAllFolders()
     }
 
     private fun loadUploadedAssets() {
@@ -339,6 +343,10 @@ class SyncViewModel(
         if (container != null) {
             viewModelScope.launch {
                 container.folderChangeTrigger.collect { folderUri ->
+                    if (!isSyncTabVisible) {
+                        needsSyncRefresh = true
+                        return@collect
+                    }
                     _uiState.value.selectedFolders.find { it.uri == folderUri }?.let { folder ->
                         refreshFolder(folder.uri, folder.name)
                     }
@@ -355,6 +363,10 @@ class SyncViewModel(
                 private var refreshJob: kotlinx.coroutines.Job? = null
                 override fun onChange(selfChange: Boolean, uri: Uri?) {
                     super.onChange(selfChange, uri)
+                    if (!isSyncTabVisible) {
+                        needsSyncRefresh = true
+                        return
+                    }
                     // Debounce rapid changes (e.g. saving file + generating thumbnail in MediaStore)
                     refreshJob?.cancel()
                     refreshJob = viewModelScope.launch {
@@ -386,6 +398,7 @@ class SyncViewModel(
         folderHashJobs.values.forEach { it.cancel() }
         folderHashJobs.clear()
         folderHashSignatures.clear()
+        verifiedFolderSignatures.clear()
         updateCheckingHashesState()
         contentObserver?.let {
             try {
@@ -438,7 +451,7 @@ class SyncViewModel(
                 else it.copy(isLoadingFolderContents = it.isLoadingFolderContents + uri)
             }
             try {
-                val assets = withContext(ioDispatcher) {
+                val (assets, groupedAndFlattened) = withContext(ioDispatcher) {
                     val scanned = LocalFolderScanner.scan(appContext, uri)
                         .sortedByDescending { asset -> asset.lastModified }
                     syncPrefs.retainUploadedAssetsForFolder(
@@ -446,14 +459,20 @@ class SyncViewModel(
                         scanned.map { it.relativeDir to it.displayName }.toSet()
                     )
                     syncRepository.retainCachedHashesForFolder(uri, scanned)
-                    scanned
-                }
 
-                val groupedAndFlattened = assets.groupBy {
-                    val date = java.time.Instant.ofEpochMilli(it.lastModified).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
-                    date.format(DateTimeFormatter.ofLocalizedDate(FormatStyle.LONG))
-                }.flatMap { (header, dayAssets) ->
-                    listOf(GridItem.Header(header, dayAssets)) + dayAssets.map { GridItem.Asset(it) }
+                    val zoneId = java.time.ZoneId.systemDefault()
+                    val formatter = DateTimeFormatter.ofLocalizedDate(FormatStyle.LONG)
+                    val dayHeaderCache = mutableMapOf<Long, String>()
+                    val items = scanned.groupBy { asset ->
+                        val epochDay = java.time.Instant.ofEpochMilli(asset.lastModified).atZone(zoneId).toLocalDate().toEpochDay()
+                        dayHeaderCache.getOrPut(epochDay) {
+                            java.time.LocalDate.ofEpochDay(epochDay).format(formatter)
+                        }
+                    }.flatMap { (header, dayAssets) ->
+                        listOf(GridItem.Header(header, dayAssets)) + dayAssets.map { GridItem.Asset(it) }
+                    }
+
+                    scanned to items
                 }
 
                 val currentUploadedKeys = syncPrefs.getUploadedAssetKeys()
@@ -480,16 +499,50 @@ class SyncViewModel(
         _uiState.update { it.copy(isCheckingHashes = anyActive) }
     }
 
+    /**
+     * Controls whether the Sync tab is actively visible on screen.
+     * Background MD5 computation and remote `check-hashes` requests strictly only execute
+     * when the Sync tab is visible, eliminating background CPU and network consumption while
+     * the user browses the Library, Albums, Spaces, Shares, or views a photo in the Lightbox.
+     */
+    fun setSyncTabVisible(visible: Boolean) {
+        if (isSyncTabVisible == visible) return
+        isSyncTabVisible = visible
+        if (visible) {
+            if (needsSyncRefresh || _uiState.value.folderContents.isEmpty()) {
+                needsSyncRefresh = false
+                refreshAllFolders()
+            } else {
+                _uiState.value.selectedFolders.forEach { folder ->
+                    val items = _uiState.value.folderContents[folder.uri]
+                    val assets = items?.filterIsInstance<GridItem.Asset>()?.map { it.asset }
+                    if (!assets.isNullOrEmpty()) {
+                        verifyFolderHashesInBackground(folder.uri, assets)
+                    }
+                }
+            }
+        } else {
+            // Immediately cancel active background hash checking jobs when leaving the Sync tab
+            folderHashJobs.values.forEach { it.cancel() }
+            folderHashJobs.clear()
+            updateCheckingHashesState()
+        }
+    }
+
     private fun verifyFolderHashesInBackground(folderUri: Uri, assets: List<LocalAsset>, force: Boolean = false) {
+        if (!isSyncTabVisible) {
+            return
+        }
         val signatures = assets.map { "${it.uri}|${it.size}|${it.lastModified}" }
         val existingJob = folderHashJobs[folderUri]
-        if (!force && existingJob?.isActive == true && folderHashSignatures[folderUri] == signatures) {
+        if (!force && (existingJob?.isActive == true || verifiedFolderSignatures[folderUri] == signatures)) {
             return
         }
         existingJob?.cancel()
         folderHashJobs.remove(folderUri)
         if (assets.isEmpty()) {
             folderHashSignatures.remove(folderUri)
+            verifiedFolderSignatures.remove(folderUri)
             updateCheckingHashesState()
             return
         }
@@ -498,6 +551,7 @@ class SyncViewModel(
             _uiState.update { it.copy(isCheckingHashes = true) }
             try {
                 hashCheckMutex.withLock {
+                    var lastUiUpdateMs = 0L
                     syncRepository.verifyFolderAssetsHashesInBatches(
                         assets = assets,
                         batchSize = SyncRepository.HASH_CHECK_BATCH_SIZE
@@ -506,9 +560,17 @@ class SyncViewModel(
                             (asset.relativeDir to asset.displayName) to existsOnServer
                         }
                         syncPrefs.applyBatchHashCheckStatuses(folderUri.toString(), statuses)
-                        val updatedKeys = syncPrefs.getUploadedAssetKeys()
-                        _uiState.update { it.copy(uploadedAssetKeys = updatedKeys) }
+                        val now = System.currentTimeMillis()
+                        // Throttle UI recompositions to at most once per second while processing large batch runs
+                        if (now - lastUiUpdateMs >= 1000L) {
+                            lastUiUpdateMs = now
+                            val updatedKeys = syncPrefs.getUploadedAssetKeys()
+                            _uiState.update { it.copy(uploadedAssetKeys = updatedKeys) }
+                        }
                     }
+                    val finalKeys = syncPrefs.getUploadedAssetKeys()
+                    _uiState.update { it.copy(uploadedAssetKeys = finalKeys) }
+                    verifiedFolderSignatures[folderUri] = signatures
                 }
             } finally {
                 folderHashJobs.remove(folderUri)
@@ -527,6 +589,7 @@ class SyncViewModel(
     fun forceCheckHashes() {
         val currentFolders = _uiState.value.selectedFolders
         if (currentFolders.isEmpty()) return
+        verifiedFolderSignatures.clear()
         currentFolders.forEach { folder ->
             val items = _uiState.value.folderContents[folder.uri]
             val assets = items?.filterIsInstance<GridItem.Asset>()?.map { it.asset }
@@ -536,6 +599,24 @@ class SyncViewModel(
                 refreshFolder(folder.uri, folder.name)
             }
         }
+    }
+
+    /**
+     * Suspends/cancels any ongoing background hash verification job for the given folder.
+     */
+    fun suspendHashChecks(folderUri: Uri) {
+        folderHashJobs.remove(folderUri)?.cancel()
+        updateCheckingHashesState()
+    }
+
+    /**
+     * Returns all local assets in the specified folder that have been verified as uploaded.
+     */
+    fun getUploadedAssets(folderUri: Uri): List<LocalAsset> {
+        val items = _uiState.value.folderContents[folderUri] ?: return emptyList()
+        return items.filterIsInstance<GridItem.Asset>()
+            .map { it.asset }
+            .filter { isAssetUploaded(folderUri, it) }
     }
 
     fun addFolder(uri: Uri, displayName: String) {
@@ -561,6 +642,7 @@ class SyncViewModel(
         folderScanJobs.remove(folder.uri)?.cancel()
         folderHashJobs.remove(folder.uri)?.cancel()
         folderHashSignatures.remove(folder.uri)
+        verifiedFolderSignatures.remove(folder.uri)
         val updatedFolders = _uiState.value.selectedFolders - folder
         syncPrefs.saveSelectedFolders(updatedFolders)
         syncPrefs.removeUploadedAssetsForFolder(folder.uri.toString())

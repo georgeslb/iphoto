@@ -477,4 +477,59 @@ class PagedPhotoGridViewModelTest {
         coVerify(exactly = 0) { photoApi.updateDate(any(), any()) }
         assertFalse(viewModel.uiState.value.isMutating)
     }
+
+    @Test
+    fun `seekToDay jumps directly to targetPage without fetching intermediate pages`() = runTest {
+        val requestedPages = mutableListOf<Int>()
+        val loadPage: suspend (Int, Int) -> Pair<List<Photo>, Boolean> = { page, _ ->
+            requestedPages.add(page)
+            if (page == 10) {
+                listOf(testPhoto("photo-day-10", groupDate = "2020-01-01", fullDateTime = "2020-01-01T12:00:00")) to true
+            } else {
+                listOf(testPhoto("photo-$page", groupDate = "2026-03-01", fullDateTime = "2026-03-01T12:00:00")) to false
+            }
+        }
+
+        // 10 days of 60 photos each = 600 photos total. Day "2020-01-01" is at index 10 (offset 600, page 10)
+        val timelineDays = (0 until 10).map { org.iphoto.mobile.model.DayBucketDTO("2026-03-$it", 60L) } +
+            listOf(org.iphoto.mobile.model.DayBucketDTO("2020-01-01", 10L))
+
+        val viewModel = PagedPhotoGridViewModel(
+            loadPage = loadPage,
+            loadDays = { timelineDays }
+        )
+        // Initial load requested page 0
+        assertEquals(listOf(0), requestedPages)
+
+        var scrolledIndex: Int? = null
+        viewModel.seekToDay("2020-01-01") { scrolledIndex = it }
+
+        // Must jump DIRECTLY to page 10: intermediate pages 1, 2, 3... 9 must NEVER be requested!
+        assertEquals(listOf(0, 10), requestedPages)
+        assertEquals(0, scrolledIndex)
+    }
+
+    @Test
+    fun `seekToDay scrolls immediately without network call if targetDay is already loaded`() = runTest {
+        val requestedPages = mutableListOf<Int>()
+        val photos = listOf(
+            testPhoto("p1", groupDate = "2026-03-15", fullDateTime = "2026-03-15T10:00:00"),
+            testPhoto("p2", groupDate = "2026-03-14", fullDateTime = "2026-03-14T10:00:00")
+        )
+        val loadPage: suspend (Int, Int) -> Pair<List<Photo>, Boolean> = { page, _ ->
+            requestedPages.add(page)
+            photos to true
+        }
+
+        val viewModel = PagedPhotoGridViewModel(loadPage)
+        assertEquals(listOf(0), requestedPages)
+
+        var scrolledIndex: Int? = null
+        viewModel.seekToDay("2026-03-14") { scrolledIndex = it }
+
+        // No new page request needed!
+        assertEquals(listOf(0), requestedPages)
+        // Day 2026-03-14 starts at index 2 (header-2026-03-15 at 0, p1 at 1, header-2026-03-14 at 2)
+        assertEquals(2, scrolledIndex)
+    }
 }

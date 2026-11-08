@@ -44,21 +44,21 @@ object LocalFolderScanner {
     ) {
         if (depth > MAX_DEPTH) return
         for (child in SafDir.listChildren(context, dirUri)) {
+            val childName = child.name ?: child.uri.lastPathSegment.orEmpty()
+            // Skip hidden directories/files, system-trashed files (.trashed-*), pending files (.pending-*),
+            // and app trash folder (.iPhotoTrash) so trashed files are never scanned back in.
+            if (childName.startsWith(".") || childName.contains(".trashed-") || childName.contains(".pending-")) {
+                continue
+            }
             when {
-                // The local-trash subfolder (see LocalTrash) holds files the sync feature has
-                // already moved out of the active folder - it must never be scanned back in as if
-                // it were still-present content, or a garbaged photo's file would look "still
-                // there" and computeDiff would never flag the Space photo for removal.
-                child.isDirectory && child.name == LocalTrash.TRASH_DIR_NAME -> Unit
                 child.isDirectory -> {
-                    val childName = child.name ?: continue
                     val childRelativeDir = if (relativeDir.isEmpty()) childName else "$relativeDir/$childName"
                     walk(context, child.uri, depth + 1, childRelativeDir, mediaStoreDurations, out)
                 }
                 else -> {
                     val mimeType = child.mimeType.orEmpty()
                     if (mimeType.startsWith("image/") || mimeType.startsWith("video/")) {
-                        val displayName = child.name ?: child.uri.lastPathSegment.orEmpty()
+                        val displayName = childName
                         val duration = if (mimeType.startsWith("video/")) {
                             resolveVideoDuration(
                                 context = context,

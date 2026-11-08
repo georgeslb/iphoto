@@ -68,6 +68,8 @@ class SyncPrefs internal constructor(private val prefs: SharedPreferences) {
     }
 
     fun retainUploadedAssetsForFolder(folderUri: String, existingRelativeAndName: Set<Pair<String, String>>) {
+        val current = getUploadedAssetKeys().toMutableSet()
+        if (current.isEmpty()) return
         val decodedFolder = try {
             Uri.decode(folderUri) ?: folderUri
         } catch (_: Throwable) {
@@ -75,18 +77,24 @@ class SyncPrefs internal constructor(private val prefs: SharedPreferences) {
         }
         val exactPrefix = "$folderUri$FIELD_SEPARATOR"
         val decodedPrefix = "$decodedFolder$FIELD_SEPARATOR"
-        val allowedKeys = existingRelativeAndName.flatMap { (rel, name) ->
-            listOf(
-                encodeUploadedKey(folderUri, rel, name),
-                encodeUploadedKey(decodedFolder, rel, name)
-            )
-        }.toSet()
-        val current = getUploadedAssetKeys().toMutableSet()
         val changed = current.removeAll { key ->
-            (key.startsWith(exactPrefix) || key.startsWith(decodedPrefix)) && key !in allowedKeys
+            val matchingPrefix = when {
+                key.startsWith(exactPrefix) -> exactPrefix
+                key.startsWith(decodedPrefix) -> decodedPrefix
+                else -> null
+            }
+            if (matchingPrefix != null) {
+                val remainder = key.removePrefix(matchingPrefix)
+                val sepIdx = remainder.indexOf(FIELD_SEPARATOR)
+                if (sepIdx >= 0) {
+                    val rel = remainder.substring(0, sepIdx)
+                    val name = remainder.substring(sepIdx + 1)
+                    (rel to name) !in existingRelativeAndName
+                } else false
+            } else false
         }
         if (changed) {
-            prefs.edit().putStringSet(KEY_UPLOADED_ASSETS, current).commit()
+            prefs.edit().putStringSet(KEY_UPLOADED_ASSETS, current).apply()
         }
     }
 

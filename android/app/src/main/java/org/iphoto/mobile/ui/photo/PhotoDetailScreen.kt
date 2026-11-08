@@ -1,14 +1,23 @@
 package org.iphoto.mobile.ui.photo
 
+import android.content.ContentValues
 import android.content.res.Configuration
+import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
 import android.util.Log
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,6 +26,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -24,6 +34,7 @@ import androidx.compose.material.icons.automirrored.filled.DriveFileMove
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.PhotoAlbum
 import androidx.compose.material.icons.filled.PlaylistRemove
@@ -34,6 +45,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.material3.Text
@@ -44,8 +56,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,15 +67,27 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil3.compose.AsyncImage
 import coil3.compose.AsyncImagePainter
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.iphoto.mobile.LocalAppContainer
 import org.iphoto.mobile.model.Photo
+import org.iphoto.mobile.sync.EditSnapshot
+import org.iphoto.mobile.sync.EditedMediaRelocator
 import org.iphoto.mobile.ui.common.AlbumPickerDialog
 import org.iphoto.mobile.ui.common.DateTimePickerDialog
 import org.iphoto.mobile.ui.common.PhotoBrowsingContext
+import org.iphoto.mobile.ui.sync.EditorPickerDialog
+import org.iphoto.mobile.ui.sync.ExternalEditorApp
+import org.iphoto.mobile.ui.sync.SystemEditorHelper
+import java.io.File
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
@@ -93,11 +119,172 @@ fun PhotoDetailScreen(
         )
     )
     val state by viewModel.uiState.collectAsState()
-    // Built once per screen instance (not per photo) - cheap to share across whatever VideoPlayer
-    // instances this screen creates, same as container.imageLoader being shared across AsyncImage.
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val videoDataSourceFactory = remember { container.videoDataSourceFactory() }
     var showAlbumPicker by remember { mutableStateOf(false) }
     var showDatePicker by remember { mutableStateOf(false) }
+    var showEditorPicker by remember { mutableStateOf(false) }
+    var availableEditors by remember { mutableStateOf<List<ExternalEditorApp>>(emptyList()) }
+    var pendingEditUri by remember { mutableStateOf<Uri?>(null) }
+    var confirmedEditedUri by remember { mutableStateOf<Uri?>(null) }
+    var editSnapshot by remember { mutableStateOf<EditSnapshot?>(null) }
+    var showSaveChoiceDialog by remember { mutableStateOf(false) }
+    var isPreparingEdit by remember { mutableStateOf(false) }
+    var imageRevision by remember(photoId) { mutableLongStateOf(System.currentTimeMillis()) }
+
+    fun cleanupPendingEdit() {
+        val uri = pendingEditUri
+        if (uri != null && uri.authority == "media") {
+            try {
+                context.contentResolver.delete(uri, null, null)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to delete staged MediaStore uri: ${e.message}")
+            }
+        }
+        val editsDir = File(context.cacheDir, "edits")
+        if (editsDir.exists()) {
+            editsDir.deleteRecursively()
+        }
+        pendingEditUri = null
+        confirmedEditedUri = null
+        editSnapshot = null
+    }
+
+    val editLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val uri = pendingEditUri
+        if (uri == null) return@rememberLauncherForActivityResult
+
+        coroutineScope.launch {
+            var finalEditedUri: Uri? = null
+
+            // 1. Did the external editor return a result URI?
+            val returnedUri = result.data?.data
+            if (returnedUri != null) {
+                finalEditedUri = returnedUri
+            } else {
+                // 2. Check if EditedMediaRelocator found new output in MediaStore
+                val snapshot = editSnapshot
+                if (snapshot != null) {
+                    val outputs = withContext(Dispatchers.IO) {
+                        EditedMediaRelocator.findEditedOutputs(context, snapshot)
+                    }
+                    if (outputs.isNotEmpty()) {
+                        finalEditedUri = outputs.first().uri
+                    }
+                }
+            }
+
+            // 3. Fallback: check private cache file if using FileProvider
+            if (finalEditedUri == null && uri.authority != "media") {
+                val file = File(context.cacheDir, "edits/" + (uri.lastPathSegment ?: ""))
+                if (file.exists() && file.length() > 0L) {
+                    finalEditedUri = uri
+                }
+            }
+
+            if (finalEditedUri != null) {
+                confirmedEditedUri = finalEditedUri
+                showSaveChoiceDialog = true
+            } else {
+                cleanupPendingEdit()
+            }
+        }
+    }
+
+    fun launchEditorWithApp(app: ExternalEditorApp) {
+        val loaded = state as? PhotoDetailUiState.Loaded ?: return
+        val photo = loaded.photo
+        coroutineScope.launch {
+            isPreparingEdit = true
+            try {
+                val ext = photo.title.substringAfterLast('.', "")
+                    .ifBlank { if (photo.contentType?.contains("png") == true) "png" else "jpg" }
+                val mimeType = photo.contentType?.ifBlank { "image/jpeg" } ?: "image/jpeg"
+
+                var targetUri: Uri? = null
+                var editSnapshotObj: EditSnapshot? = null
+
+                // Staging in MediaStore allows Google Photos and OEM editors to edit without "cannot edit image" error
+                try {
+                    val values = ContentValues().apply {
+                        put(MediaStore.Images.Media.DISPLAY_NAME, "iPhoto_edit_${photo.id}.$ext")
+                        put(MediaStore.Images.Media.MIME_TYPE, mimeType)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/iPhoto_edits")
+                            put(MediaStore.Images.Media.IS_PENDING, 1)
+                        }
+                    }
+                    targetUri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                    if (targetUri != null) {
+                        viewModel.downloadOriginalToUri(context.contentResolver, targetUri)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            val updateValues = ContentValues().apply {
+                                put(MediaStore.Images.Media.IS_PENDING, 0)
+                            }
+                            context.contentResolver.update(targetUri, updateValues, null, null)
+                        }
+                        editSnapshotObj = EditedMediaRelocator.snapshot(
+                            context = context,
+                            mediaUri = targetUri,
+                            isVideo = false,
+                            fileLastModifiedMs = System.currentTimeMillis(),
+                            editorPackage = app.packageName
+                        )
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to stage edit in MediaStore, falling back to FileProvider: ${e.message}")
+                    targetUri = null
+                }
+
+                if (targetUri == null) {
+                    val editsDir = File(context.cacheDir, "edits").apply { mkdirs() }
+                    val tempFile = File(editsDir, "edit_${photo.id}.$ext")
+                    viewModel.downloadOriginalToCache(tempFile)
+                    targetUri = FileProvider.getUriForFile(
+                        context,
+                        "${context.packageName}.fileprovider",
+                        tempFile
+                    )
+                }
+
+                pendingEditUri = targetUri
+                editSnapshot = editSnapshotObj
+                val intent = SystemEditorHelper.buildTargetIntent(app, targetUri, mimeType)
+                editLauncher.launch(intent)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to prepare photo for editing", e)
+                Toast.makeText(context, "Failed to prepare photo for edit: ${e.message}", Toast.LENGTH_SHORT).show()
+                cleanupPendingEdit()
+            } finally {
+                isPreparingEdit = false
+            }
+        }
+    }
+
+    val onEditPhotoClick: () -> Unit = {
+        val loaded = state as? PhotoDetailUiState.Loaded
+        if (loaded != null) {
+            val photo = loaded.photo
+            val mimeType = photo.contentType?.ifBlank { "image/*" } ?: "image/*"
+            val dummyUri = Uri.parse("content://${context.packageName}.fileprovider/cache/edits/preview.jpg")
+            val editors = SystemEditorHelper.queryAvailableEditors(context, dummyUri, mimeType)
+            availableEditors = editors
+            if (editors.isEmpty()) {
+                Toast.makeText(context, "No gallery or editor app found on device", Toast.LENGTH_SHORT).show()
+            } else {
+                val savedPkg = container.syncPrefs.defaultEditorPackage
+                val savedApp = savedPkg?.let { pkg -> editors.find { it.packageName == pkg } }
+                if (savedApp != null) {
+                    launchEditorWithApp(savedApp)
+                } else {
+                    showEditorPicker = true
+                }
+            }
+        }
+    }
 
     // Landscape drops the fixed top/bottom app bars in favor of a single collapsed bar overlaid on
     // top of a truly full-screen image - matches the fullscreen-with-collapsible-controls pattern
@@ -113,8 +300,9 @@ fun PhotoDetailScreen(
 
     // Computed fresh per photoId against whatever grid last populated PhotoBrowsingContext (see its
     // own kdoc) - not reactive, but the browsed list isn't expected to change while viewing a photo.
-    val browsingIds = remember(photoId) { PhotoBrowsingContext.photoIds }
-    val currentIndex = remember(photoId, browsingIds) { browsingIds.indexOf(photoId) }
+    val activePhotoId = (state as? PhotoDetailUiState.Loaded)?.photo?.id ?: photoId
+    val browsingIds = remember(activePhotoId) { PhotoBrowsingContext.photoIds }
+    val currentIndex = remember(activePhotoId, browsingIds) { browsingIds.indexOf(activePhotoId) }
     val previousPhotoId = currentIndex.takeIf { it > 0 }?.let { browsingIds[it - 1] }
     val nextPhotoId = currentIndex.takeIf { it in browsingIds.indices && it < browsingIds.size - 1 }
         ?.let { browsingIds[it + 1] }
@@ -183,6 +371,7 @@ fun PhotoDetailScreen(
                                 loaded = loaded,
                                 canRemoveFromAlbum = albumId != null,
                                 canMoveToMain = viewModel.canMoveToMain,
+                                onEditPhoto = onEditPhotoClick,
                                 onEditDate = onEditDateClick,
                                 onAddToAlbum = onAddToAlbumClick,
                                 onRemoveFromAlbum = onRemoveFromAlbumClick,
@@ -237,7 +426,7 @@ fun PhotoDetailScreen(
                         // app's own <video> element, both against the same /stream endpoint rather
                         // than /original (see VideoPlayer's kdoc).
                         val streamUrl =
-                            container.absoluteUrl("/api/photos/${current.photo.id}/stream")
+                            container.absoluteUrl("/api/photos/${current.photo.id}/stream?t=$imageRevision")
                         VideoPlayer(
                             streamUrl = streamUrl,
                             dataSourceFactory = videoDataSourceFactory,
@@ -246,7 +435,7 @@ fun PhotoDetailScreen(
                         )
                     } else {
                         val imageUrl =
-                            container.absoluteUrl("/api/photos/${current.photo.id}/original")
+                            container.absoluteUrl("/api/photos/${current.photo.id}/original?t=$imageRevision")
                         AsyncImage(
                             model = imageUrl,
                             imageLoader = container.imageLoader,
@@ -302,6 +491,7 @@ fun PhotoDetailScreen(
                                 loaded = current,
                                 canRemoveFromAlbum = albumId != null,
                                 canMoveToMain = viewModel.canMoveToMain,
+                                onEditPhoto = onEditPhotoClick,
                                 onEditDate = onEditDateClick,
                                 onAddToAlbum = onAddToAlbumClick,
                                 onRemoveFromAlbum = onRemoveFromAlbumClick,
@@ -416,6 +606,150 @@ fun PhotoDetailScreen(
             )
         }
     }
+
+    if (showEditorPicker) {
+        EditorPickerDialog(
+            apps = availableEditors,
+            hasSavedDefault = container.syncPrefs.defaultEditorPackage != null,
+            onDismiss = { showEditorPicker = false },
+            onResetDefault = {
+                container.syncPrefs.defaultEditorPackage = null
+                showEditorPicker = false
+                Toast.makeText(context, "Default editor reset", Toast.LENGTH_SHORT).show()
+            },
+            onSelectApp = { app, rememberChoice ->
+                if (rememberChoice) container.syncPrefs.defaultEditorPackage = app.packageName
+                showEditorPicker = false
+                launchEditorWithApp(app)
+            }
+        )
+    }
+
+    if (isPreparingEdit) {
+        AlertDialog(
+            onDismissRequest = {},
+            confirmButton = {},
+            title = { Text("Preparing Photo") },
+            text = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(32.dp))
+                    Text("Downloading photo for editing...")
+                }
+            }
+        )
+    }
+
+    if (showSaveChoiceDialog) {
+        val targetUri = confirmedEditedUri ?: pendingEditUri
+        var selectedChoice by remember { mutableStateOf(false) } // false = replace, true = save as new
+        AlertDialog(
+            onDismissRequest = {
+                showSaveChoiceDialog = false
+                cleanupPendingEdit()
+            },
+            icon = {
+                Icon(Icons.Filled.Edit, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            },
+            title = {
+                Text("Save Edited Photo", style = MaterialTheme.typography.titleLarge)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("How would you like to save your changes?")
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selectedChoice = false }
+                            .padding(vertical = 4.dp)
+                    ) {
+                        RadioButton(
+                            selected = !selectedChoice,
+                            onClick = { selectedChoice = false }
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text("Replace original", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                            Text("Overwrites this photo on the server", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selectedChoice = true }
+                            .padding(vertical = 4.dp)
+                    ) {
+                        RadioButton(
+                            selected = selectedChoice,
+                            onClick = { selectedChoice = true }
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text("Save as new", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                            Text("Keeps the original and adds a new photo", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showSaveChoiceDialog = false
+                        val saveAsNew = selectedChoice
+                        if (targetUri != null) {
+                            val activeId = (state as? PhotoDetailUiState.Loaded)?.photo?.id ?: photoId
+                            val originalUrl = container.absoluteUrl("/api/photos/$activeId/original")
+                            val thumbUrl = container.absoluteUrl("/api/photos/$activeId/thumbnail")
+                            viewModel.saveEditedPhoto(context.contentResolver, targetUri, saveAsNew) { updatedPhoto ->
+                                try {
+                                    container.imageLoader.diskCache?.clear()
+                                } catch (_: Exception) {
+                                    container.imageLoader.diskCache?.remove(originalUrl)
+                                    container.imageLoader.diskCache?.remove(thumbUrl)
+                                }
+                                container.imageLoader.memoryCache?.clear()
+                                imageRevision = System.currentTimeMillis()
+
+                                container.notifyLibraryChanged()
+                                if (albumId != null) {
+                                    container.notifyAlbumsChanged()
+                                }
+
+                                if (saveAsNew) {
+                                    PhotoBrowsingContext.insertPhotoAfter(activeId, updatedPhoto)
+                                    onNavigateToPhoto(updatedPhoto.id)
+                                    Toast.makeText(context, "Saved as new photo", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(context, "Photo updated successfully", Toast.LENGTH_SHORT).show()
+                                }
+                                cleanupPendingEdit()
+                            }
+                        } else {
+                            cleanupPendingEdit()
+                        }
+                    }
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showSaveChoiceDialog = false
+                        cleanupPendingEdit()
+                    }
+                ) {
+                    Text("Discard")
+                }
+            }
+        )
+    }
 }
 
 // Shared between the portrait BottomAppBar and the landscape collapsed overlay bar so both stay
@@ -425,12 +759,19 @@ private fun PhotoActionButtons(
     loaded: PhotoDetailUiState.Loaded,
     canRemoveFromAlbum: Boolean,
     canMoveToMain: Boolean,
+    onEditPhoto: () -> Unit,
     onEditDate: () -> Unit,
     onAddToAlbum: () -> Unit,
     onRemoveFromAlbum: () -> Unit,
     onMoveToMain: () -> Unit,
     onMoveToGarbage: () -> Unit
 ) {
+    val isImage = loaded.photo.contentType?.startsWith("video") != true
+    if (isImage) {
+        IconButton(onClick = onEditPhoto, enabled = !loaded.isMutating) {
+            Icon(Icons.Filled.Edit, contentDescription = "Edit photo", tint = Color.White)
+        }
+    }
     IconButton(onClick = onEditDate, enabled = !loaded.isMutating) {
         Icon(Icons.Filled.Event, contentDescription = "Edit date", tint = Color.White)
     }

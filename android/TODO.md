@@ -1,5 +1,44 @@
 # Android TODO
 
+## Fixed: Timeline fast-scroll bar with floating date indicator — 2026-11-08
+
+Added an interactive fast-scroll timeline bar across photo grids (remote `PhotoGridContent.kt` covering Library, Albums, and Spaces, and local `SyncScreen.kt` for local folder assets):
+- **Covers Entire Collection History**: Just like the web browser (`TimelineScrubber.jsx`), fetches all day buckets (`/api/photos/days`, `/api/albums/{id}/days`, `/api/photos/space/{id}/days`) up front. The scrollbar spans the entire timeline from the most recent day down to the oldest year in history, rather than only the currently loaded page.
+- **Direct Page Seeking (Zero Sequential Looping)**: When jumping to an older date (e.g. page 624), the app jumps directly to `targetPage` in **a single HTTP request** without loading intermediate pages. Bi-directional scrolling (`loadMore` and `loadPrevious`) allows scrolling up or down seamlessly from the destination date.
+- **Red Temporal Dates**: Floating date badge text, calendar icon, and track year markers are styled in high-visibility bold red (`#E53935`).
+- **Horizontal Compact Date Badge**: The floating pill is unconstrained horizontally and displays strictly in single-line horizontal format: calendar icon + compact `dd/MM/yy` (e.g. `30/11/25`).
+- **Scroll on Release ("Au lâche de la main")**: While scrubbing, the grid remains calm and completely stutter-free; seeking and scrolling to the selected day's header happens strictly upon finger release (`onDragEnd`).
+- **Clearly Visible Track & Thumb**: Continuous vertical track line (`onSurface` 15% opacity) and high-contrast thumb handle (52dp tall, 6dp wide idle / 8dp wide dragging in red with shadow).
+- **Unit Tested**: Fully tested date parsing (`formatTimelineDate`), year markers extraction, and day header mapping in `TimelineFastScrollbarTest.kt` and direct-seek verification in `PagedPhotoGridViewModelTest.kt`.
+
+## Fixed: Search & filter text box at top of Albums tab — 2026-11-08
+
+Added an interactive search & filter input at the top of the Albums tab (`AlbumsScreen.kt`):
+- **Real-Time Filtering**: Live filtering of albums by name as the user types (case-insensitive substring match).
+- **Persistent State**: Filter query is held in `AlbumsViewModel.uiState.searchQuery`, surviving screen rotations and quiet data reloads.
+- **Search UI**: Outlined text field with rounded pill shape (`RoundedCornerShape(24.dp)`), search icon, placeholder, and a clear ("X") button to reset the query instantly.
+- **Empty States**: Distinguishes between when no albums exist at all ("No albums yet") vs when no albums match the current filter query ("No albums matching <query>" with a "Clear filter" button).
+- **Unit Tested**: Fully tested in `AlbumsViewModelTest.kt` (case-insensitivity, whitespace trimming, and query preservation across reloads).
+
+## Fixed: Restrict check-hashes background execution exclusively to the Sync tab — 2026-11-08
+
+Previously, `check-hashes` verification jobs (comparing local device photo MD5s with the remote server) and MediaStore observers ran even when the user was browsing the remote Library, Albums, Spaces, or viewing a photo in the Lightbox.
+
+Resolution:
+- **Strictly run `check-hashes` on active Sync tab**: `SyncViewModel` tracks `isSyncTabVisible: Boolean` (controlled via `LifecycleEventObserver` in `SyncScreen.kt` and `AssetDetailScreen.kt`).
+- **Deferred startup scanning**: Folder scanning and hash verification are no longer triggered in `SyncViewModel.init` while the user lands on `LibraryScreen`.
+- **Immediate suspension on tab switch / backgrounding**: When the user switches to Library, Albums, Spaces, or puts the app into the background, all active `folderHashJobs` are immediately cancelled and `isCheckingHashes` is set to `false`.
+- **Deferred MediaStore & folder events**: File events observed while away from the Sync tab mark a dirty flag (`needsSyncRefresh = true`) without triggering background scans until the user returns to the Sync tab.
+- **Cache verified signatures**: Completed folder verification signatures are retained so returning to the Sync tab does not re-issue redundant network requests for unchanged folders.
+- **Dramatically reduced load**: Completely eliminates CPU spikes, battery drain, and redundant `check-hashes` network traffic when browsing remote photos.
+
+## TODO: Drag-and-drop parity on Web UI (mobile & PC) with mobile app
+
+Align Web frontend drag-and-drop reordering with the Android mobile app:
+- Add a drag/reorder handle icon on the right side of photo thumbnails.
+- Display a vertical green indicator bar (`#4CAF50`) marking the exact drop destination (before or after the hovered item) where the asset will land.
+- Ensure identical UX across both PC mouse drag and mobile touch viewports.
+
 ## Fixed: Sync tab exclusively uses system "Authorize" trash prompt without moving to .iPhotoTrash — 2026-10-22
 
 The trash button and upload-and-trash actions on the sync tab previously fell back to an in-app "Move to Trash" dialog that moved files into the hidden `.iPhotoTrash` directory when MediaStore resolution failed or wasn't verified.

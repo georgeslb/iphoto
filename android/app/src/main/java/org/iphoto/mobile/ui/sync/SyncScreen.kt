@@ -13,6 +13,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,10 +26,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import org.iphoto.mobile.ui.common.TimelineFastScrollbar
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
@@ -63,9 +68,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.documentfile.provider.DocumentFile
@@ -74,6 +81,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import org.iphoto.mobile.R
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import org.iphoto.mobile.data.SyncPrefs
 import org.iphoto.mobile.sync.LocalAsset
 import org.iphoto.mobile.ui.common.PhotoThumbnail
@@ -151,50 +160,77 @@ fun SyncScreen(
             return
         }
 
-        val resolvedPairs = assets.mapNotNull { asset ->
-            viewModel.getMediaStoreUri(asset)?.let { uri -> asset to uri }
-        }
+        coroutineScope.launch {
+            val resolvedPairs = withContext(Dispatchers.IO) {
+                assets.mapNotNull { asset ->
+                    viewModel.getMediaStoreUri(asset)?.let { uri -> asset to uri }
+                }
+            }
 
-        if (resolvedPairs.isEmpty()) {
-            Toast.makeText(context, "Could not resolve file(s) in system media library", Toast.LENGTH_SHORT).show()
+            if (resolvedPairs.isEmpty()) {
+                Toast.makeText(context, "Could not resolve file(s) in system media library", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+
+            if (resolvedPairs.size < assets.size) {
+                Toast.makeText(
+                    context,
+                    "Found ${resolvedPairs.size} of ${assets.size} file(s) in system media library",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+
+            pendingTrashAssets = resolvedPairs.map { it.first }
+            val mediaUris = resolvedPairs.map { it.second }
+            try {
+                val pendingIntent = MediaStore.createTrashRequest(context.contentResolver, mediaUris, true)
+                trashLauncher.launch(IntentSenderRequest.Builder(pendingIntent.intentSender).build())
+            } catch (e: Exception) {
+                Log.w(TAG, "createTrashRequest failed: ${e.message}", e)
+                Toast.makeText(context, "System trash authorization failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                pendingTrashAssets = null
+            }
+        }
+    }
+
+    fun handleCloudTrash(folderUri: Uri) {
+        viewModel.suspendHashChecks(folderUri)
+        val allUploaded = viewModel.getUploadedAssets(folderUri)
+        if (allUploaded.isEmpty()) {
+            Toast.makeText(context, "No uploaded photos found to trash", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val batch = allUploaded
+            .sortedBy { it.lastModified }
+            .take(200)
+            .filter { viewModel.isAssetUploaded(folderUri, it) }
+
+        if (batch.isEmpty()) {
+            Toast.makeText(context, "No verified uploaded photos to trash", Toast.LENGTH_SHORT).show()
             return
         }
 
-        if (resolvedPairs.size < assets.size) {
-            Toast.makeText(
-                context,
-                "Found ${resolvedPairs.size} of ${assets.size} file(s) in system media library",
-                Toast.LENGTH_SHORT
-            ).show()
-        }
-
-        pendingTrashAssets = resolvedPairs.map { it.first }
-        val mediaUris = resolvedPairs.map { it.second }
-        try {
-            val pendingIntent = MediaStore.createTrashRequest(context.contentResolver, mediaUris, true)
-            trashLauncher.launch(IntentSenderRequest.Builder(pendingIntent.intentSender).build())
-        } catch (e: Exception) {
-            Log.w(TAG, "createTrashRequest failed: ${e.message}", e)
-            Toast.makeText(context, "System trash authorization failed: ${e.message}", Toast.LENGTH_SHORT).show()
-            pendingTrashAssets = null
-        }
+        Toast.makeText(
+            context,
+            "Preparing to trash ${batch.size} of ${allUploaded.size} uploaded photos...",
+            Toast.LENGTH_SHORT
+        ).show()
+        handleMoveToTrash(batch)
     }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
-        var isFirstResume = true
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                if (isFirstResume) {
-                    isFirstResume = false
-                } else {
-                    viewModel.refreshAllFolders()
-                }
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> viewModel.setSyncTabVisible(true)
+                Lifecycle.Event.ON_PAUSE -> viewModel.setSyncTabVisible(false)
+                else -> {}
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.setSyncTabVisible(false)
         }
     }
 
@@ -236,14 +272,56 @@ fun SyncScreen(
 
                 TabRow(selectedTabIndex = pagerState.currentPage) {
                     state.selectedFolders.forEachIndexed { index, folder ->
+                        val uploadedAssets = remember(folder.uri, state.folderContents[folder.uri], state.uploadedAssetKeys) {
+                            viewModel.getUploadedAssets(folder.uri)
+                        }
+                        val uploadedCount = uploadedAssets.size
+
                         Tab(
                             selected = pagerState.currentPage == index,
                             onClick = { coroutineScope.launch { pagerState.animateScrollToPage(index) } },
                             text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(folder.name)
-                                    IconButton(onClick = { viewModel.removeFolder(folder) }) {
-                                        Icon(Icons.Default.Close, "Close Tab")
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(
+                                        text = folder.name,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    if (uploadedCount > 0) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f))
+                                                .clickable { handleCloudTrash(folder.uri) }
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        ) {
+                                            Icon(
+                                                painter = painterResource(id = R.drawable.ic_cloud_trash),
+                                                contentDescription = "Trash uploaded assets",
+                                                modifier = Modifier.size(16.dp),
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                            Spacer(modifier = Modifier.width(3.dp))
+                                            Text(
+                                                text = "$uploadedCount",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
+                                    IconButton(
+                                        onClick = { viewModel.removeFolder(folder) },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Close,
+                                            contentDescription = "Close Tab",
+                                            modifier = Modifier.size(16.dp)
+                                        )
                                     }
                                 }
                             }
@@ -425,62 +503,110 @@ fun FolderContentGrid(
         return
     }
 
-    LazyVerticalGrid(
-        columns = GridCells.Fixed(4),
-        contentPadding = PaddingValues(2.dp),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-        modifier = Modifier.fillMaxSize()
-    ) {
-        items(
-            items = items,
-            key = { item ->
+    val folderUriString = remember(folderUri) { folderUri.toString() }
+    val decodedFolderUriString = remember(folderUri) { Uri.decode(folderUriString) ?: folderUriString }
+    val gridState = rememberLazyGridState()
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyVerticalGrid(
+            state = gridState,
+            columns = GridCells.Fixed(4),
+            contentPadding = PaddingValues(2.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            items(
+                items = items,
+                key = { item ->
+                    when (item) {
+                        is GridItem.Header -> item.text
+                        is GridItem.Asset -> item.asset.uri
+                    }
+                },
+                contentType = { item ->
+                    when (item) {
+                        is GridItem.Header -> "header"
+                        is GridItem.Asset -> "asset"
+                    }
+                },
+                span = { item ->
+                    when (item) {
+                        is GridItem.Header -> GridItemSpan(maxLineSpan)
+                        is GridItem.Asset -> GridItemSpan(1)
+                    }
+                }
+            ) { item ->
                 when (item) {
-                    is GridItem.Header -> item.text
-                    is GridItem.Asset -> item.asset.uri
-                }
-            },
-            contentType = { item ->
-                when (item) {
-                    is GridItem.Header -> "header"
-                    is GridItem.Asset -> "asset"
-                }
-            },
-            span = { item ->
-                when (item) {
-                    is GridItem.Header -> GridItemSpan(maxLineSpan)
-                    is GridItem.Asset -> GridItemSpan(1)
-                }
-            }
-        ) { item ->
-            when (item) {
-                is GridItem.Header -> {
-                    Text(
-                        text = item.text,
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.fillMaxWidth().clickable { onDayClick(item.assets) }.padding(horizontal = 6.dp, vertical = 10.dp)
-                    )
-                }
-                is GridItem.Asset -> {
-                    val asset = item.asset
-                    val exactKey = SyncPrefs.encodeUploadedKey(folderUri.toString(), asset.relativeDir, asset.displayName)
-                    val decodedKey = SyncPrefs.encodeUploadedKey(Uri.decode(folderUri.toString()), asset.relativeDir, asset.displayName)
-                    val isUploaded = uploadedAssetKeys.contains(exactKey) || uploadedAssetKeys.contains(decodedKey)
-                    PhotoThumbnail(
-                        imageUrl = asset.uri.toString(),
-                        isVideo = asset.mimeType.startsWith("video/"),
-                        duration = asset.duration,
-                        isSelectionMode = isSelectionMode,
-                        isSelected = selectedAssetUris.contains(asset.uri),
-                        isUploaded = isUploaded,
-                        onLongClick = { onAssetLongClick(asset) },
-                        onSelectClick = { onAssetSelectClick(asset) },
-                        modifier = Modifier.aspectRatio(1f),
-                        onClick = { onAssetClick(asset) }
-                    )
+                    is GridItem.Header -> {
+                        Text(
+                            text = item.text,
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.fillMaxWidth().clickable { onDayClick(item.assets) }.padding(horizontal = 6.dp, vertical = 10.dp)
+                        )
+                    }
+                    is GridItem.Asset -> {
+                        val asset = item.asset
+                        val exactKey = SyncPrefs.encodeUploadedKey(folderUriString, asset.relativeDir, asset.displayName)
+                        val decodedKey = SyncPrefs.encodeUploadedKey(decodedFolderUriString, asset.relativeDir, asset.displayName)
+                        val isUploaded = uploadedAssetKeys.contains(exactKey) || uploadedAssetKeys.contains(decodedKey)
+                        PhotoThumbnail(
+                            imageUrl = asset.uri.toString(),
+                            isVideo = asset.mimeType.startsWith("video/"),
+                            duration = asset.duration,
+                            isSelectionMode = isSelectionMode,
+                            isSelected = selectedAssetUris.contains(asset.uri),
+                            isUploaded = isUploaded,
+                            onLongClick = { onAssetLongClick(asset) },
+                            onSelectClick = { onAssetSelectClick(asset) },
+                            modifier = Modifier.aspectRatio(1f),
+                            onClick = { onAssetClick(asset) }
+                        )
+                    }
                 }
             }
         }
+
+        val syncDayRanges = remember(items) {
+            val ranges = mutableListOf<Triple<IntRange, Int, String>>()
+            var currentHeaderIndex = 0
+            var currentHeaderText = ""
+            var startIndex = 0
+            items.forEachIndexed { index, item ->
+                if (item is GridItem.Header) {
+                    if (index > startIndex) {
+                        ranges.add(Triple(startIndex until index, currentHeaderIndex, currentHeaderText))
+                    }
+                    currentHeaderIndex = index
+                    val firstAsset = item.assets.firstOrNull()
+                    currentHeaderText = if (firstAsset != null) {
+                        val date = java.time.Instant.ofEpochMilli(firstAsset.lastModified)
+                            .atZone(java.time.ZoneId.systemDefault())
+                            .toLocalDate()
+                        date.format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yy"))
+                    } else {
+                        item.text
+                    }
+                    startIndex = index
+                }
+            }
+            if (items.isNotEmpty() && startIndex < items.size) {
+                ranges.add(Triple(startIndex until items.size, currentHeaderIndex, currentHeaderText))
+            }
+            ranges
+        }
+
+        TimelineFastScrollbar(
+            gridState = gridState,
+            totalItemsCount = items.size,
+            getDateForIndex = { index ->
+                syncDayRanges.firstOrNull { index in it.first }?.third ?: syncDayRanges.lastOrNull()?.third
+            },
+            getIndexForScroll = { index ->
+                syncDayRanges.firstOrNull { index in it.first }?.second ?: index
+            },
+            modifier = Modifier.fillMaxSize()
+        )
     }
 }
 

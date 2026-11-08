@@ -28,7 +28,7 @@ class PhotoDetailViewModelTest {
         val photoApi = mockk<PhotoApi>()
         coEvery { photoApi.get("1") } returns testPhoto("1")
 
-        val viewModel = PhotoDetailViewModel(photoApi, "1")
+        val viewModel = PhotoDetailViewModel(photoApi, "1", ioDispatcher = mainDispatcherRule.testDispatcher)
 
         val state = viewModel.uiState.value as PhotoDetailUiState.Loaded
         assertEquals("1", state.photo.id)
@@ -40,7 +40,7 @@ class PhotoDetailViewModelTest {
         val photoApi = mockk<PhotoApi>()
         coEvery { photoApi.get("1") } throws RuntimeException("not found")
 
-        val viewModel = PhotoDetailViewModel(photoApi, "1")
+        val viewModel = PhotoDetailViewModel(photoApi, "1", ioDispatcher = mainDispatcherRule.testDispatcher)
 
         val state = viewModel.uiState.value
         assertTrue(state is PhotoDetailUiState.Failed)
@@ -52,7 +52,7 @@ class PhotoDetailViewModelTest {
         val photoApi = mockk<PhotoApi>()
         coEvery { photoApi.get("1") } returns testPhoto("1")
         coEvery { photoApi.moveToGarbage(listOf("1")) } returns Unit
-        val viewModel = PhotoDetailViewModel(photoApi, "1")
+        val viewModel = PhotoDetailViewModel(photoApi, "1", ioDispatcher = mainDispatcherRule.testDispatcher)
 
         viewModel.moveToGarbage()
 
@@ -64,7 +64,7 @@ class PhotoDetailViewModelTest {
         val photoApi = mockk<PhotoApi>()
         coEvery { photoApi.get("1") } returns testPhoto("1")
         coEvery { photoApi.moveToGarbage(any()) } throws RuntimeException("boom")
-        val viewModel = PhotoDetailViewModel(photoApi, "1")
+        val viewModel = PhotoDetailViewModel(photoApi, "1", ioDispatcher = mainDispatcherRule.testDispatcher)
 
         viewModel.moveToGarbage()
 
@@ -136,7 +136,7 @@ class PhotoDetailViewModelTest {
         val photoApi = mockk<PhotoApi>()
         coEvery { photoApi.get("1") } returns testPhoto("1")
         val albumApi = mockk<AlbumApi>()
-        val viewModel = PhotoDetailViewModel(photoApi, "1")
+        val viewModel = PhotoDetailViewModel(photoApi, "1", ioDispatcher = mainDispatcherRule.testDispatcher)
 
         viewModel.removeFromAlbum(albumApi)
 
@@ -151,7 +151,7 @@ class PhotoDetailViewModelTest {
         val albumApi = mockk<AlbumApi>()
         coEvery { albumApi.addPhotos("album-1", AlbumPhotoRequest(listOf("1"))) } returns
             AlbumDTO("album-1", "Trip", null, null, 1, "now", "now")
-        val viewModel = PhotoDetailViewModel(photoApi, "1")
+        val viewModel = PhotoDetailViewModel(photoApi, "1", ioDispatcher = mainDispatcherRule.testDispatcher)
         var albumsChangedCount = 0
 
         viewModel.addToAlbum(albumApi, "album-1", onAlbumsChanged = { albumsChangedCount++ })
@@ -171,7 +171,7 @@ class PhotoDetailViewModelTest {
         val created = AlbumDTO("new-album", "Trip", null, null, 0, "now", "now")
         coEvery { albumApi.create(any()) } returns created
         coEvery { albumApi.addPhotos("new-album", AlbumPhotoRequest(listOf("1"))) } returns created
-        val viewModel = PhotoDetailViewModel(photoApi, "1")
+        val viewModel = PhotoDetailViewModel(photoApi, "1", ioDispatcher = mainDispatcherRule.testDispatcher)
         var albumsChangedCount = 0
 
         viewModel.createAlbumAndAdd(albumApi, "Trip", onAlbumsChanged = { albumsChangedCount++ })
@@ -186,7 +186,7 @@ class PhotoDetailViewModelTest {
         coEvery { photoApi.get("1") } returns testPhoto("1", fullDateTime = "2026-01-01T12:00:00")
         val updated = testPhoto("1", fullDateTime = "2026-06-01T10:30:00")
         coEvery { photoApi.updateDate("1", any()) } returns updated
-        val viewModel = PhotoDetailViewModel(photoApi, "1")
+        val viewModel = PhotoDetailViewModel(photoApi, "1", ioDispatcher = mainDispatcherRule.testDispatcher)
 
         viewModel.updateDate(java.time.LocalDateTime.of(2026, 6, 1, 10, 30))
 
@@ -199,12 +199,101 @@ class PhotoDetailViewModelTest {
         val photoApi = mockk<PhotoApi>()
         coEvery { photoApi.get("1") } returns testPhoto("1")
         coEvery { photoApi.moveToGarbage(any()) } throws RuntimeException("boom")
-        val viewModel = PhotoDetailViewModel(photoApi, "1")
+        val viewModel = PhotoDetailViewModel(photoApi, "1", ioDispatcher = mainDispatcherRule.testDispatcher)
         viewModel.moveToGarbage()
 
         viewModel.dismissActionError()
 
         val state = viewModel.uiState.value as PhotoDetailUiState.Loaded
         assertNull(state.actionError)
+    }
+
+    @Test
+    fun `saveEditedPhoto with replace updates loaded state and deletes temp file`() = runTest {
+        val photoApi = mockk<PhotoApi>()
+        coEvery { photoApi.get("1") } returns testPhoto("1")
+        val updated = testPhoto("1").copy(title = "edited.jpg")
+        coEvery { photoApi.editPhoto("1", any(), false) } returns updated
+
+        val viewModel = PhotoDetailViewModel(photoApi, "1", ioDispatcher = mainDispatcherRule.testDispatcher)
+        val tempFile = java.io.File.createTempFile("test_edit", ".jpg").apply { writeText("dummy content") }
+        assertTrue(tempFile.exists())
+
+        var callbackCalled = false
+        viewModel.saveEditedPhoto(tempFile, saveAsNew = false) { result ->
+            callbackCalled = true
+            assertEquals("edited.jpg", result.title)
+        }
+
+        assertTrue(callbackCalled)
+        val state = viewModel.uiState.value as PhotoDetailUiState.Loaded
+        assertEquals("edited.jpg", state.photo.title)
+        assertFalse(state.isMutating)
+        assertFalse(tempFile.exists())
+    }
+
+    @Test
+    fun `saveEditedPhoto with saveAsNew updates loaded state to new photo and deletes temp file`() = runTest {
+        val photoApi = mockk<PhotoApi>()
+        coEvery { photoApi.get("1") } returns testPhoto("1")
+        val newPhoto = testPhoto("new-2").copy(title = "new.jpg")
+        coEvery { photoApi.editPhoto("1", any(), true) } returns newPhoto
+
+        val viewModel = PhotoDetailViewModel(photoApi, "1", ioDispatcher = mainDispatcherRule.testDispatcher)
+        val tempFile = java.io.File.createTempFile("test_edit", ".jpg").apply { writeText("dummy content") }
+        assertTrue(tempFile.exists())
+
+        var callbackPhoto: Photo? = null
+        viewModel.saveEditedPhoto(tempFile, saveAsNew = true) { result ->
+            callbackPhoto = result
+        }
+
+        assertEquals("new-2", callbackPhoto?.id)
+        val state = viewModel.uiState.value as PhotoDetailUiState.Loaded
+        assertEquals("new-2", state.photo.id)
+        assertFalse(state.isMutating)
+        assertFalse(tempFile.exists())
+    }
+
+    @Test
+    fun `saveEditedPhoto failure sets actionError and deletes temp file`() = runTest {
+        val photoApi = mockk<PhotoApi>()
+        coEvery { photoApi.get("1") } returns testPhoto("1")
+        coEvery { photoApi.editPhoto("1", any(), any()) } throws RuntimeException("upload failed")
+
+        val viewModel = PhotoDetailViewModel(photoApi, "1", ioDispatcher = mainDispatcherRule.testDispatcher)
+        val tempFile = java.io.File.createTempFile("test_edit", ".jpg").apply { writeText("dummy content") }
+
+        viewModel.saveEditedPhoto(tempFile, saveAsNew = false) { }
+
+        val state = viewModel.uiState.value as PhotoDetailUiState.Loaded
+        assertEquals("upload failed", state.actionError)
+        assertFalse(state.isMutating)
+        assertFalse(tempFile.exists())
+    }
+
+    @Test
+    fun `saveEditedPhoto with contentResolver streams bytes and uploads`() = runTest {
+        val photoApi = mockk<PhotoApi>()
+        coEvery { photoApi.get("1") } returns testPhoto("1")
+        val updated = testPhoto("1").copy(title = "edited_resolver.jpg")
+        coEvery { photoApi.editPhoto("1", any(), false) } returns updated
+
+        val viewModel = PhotoDetailViewModel(photoApi, "1", ioDispatcher = mainDispatcherRule.testDispatcher)
+        val contentResolver = mockk<android.content.ContentResolver>()
+        val uri = mockk<android.net.Uri>()
+        val stream = java.io.ByteArrayInputStream("image bytes".toByteArray())
+        io.mockk.every { contentResolver.openInputStream(uri) } returns stream
+
+        var callbackCalled = false
+        viewModel.saveEditedPhoto(contentResolver, uri, saveAsNew = false) { result ->
+            callbackCalled = true
+            assertEquals("edited_resolver.jpg", result.title)
+        }
+
+        assertTrue(callbackCalled)
+        val state = viewModel.uiState.value as PhotoDetailUiState.Loaded
+        assertEquals("edited_resolver.jpg", state.photo.title)
+        assertFalse(state.isMutating)
     }
 }

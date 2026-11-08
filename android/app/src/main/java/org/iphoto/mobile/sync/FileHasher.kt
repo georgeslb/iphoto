@@ -1,11 +1,15 @@
 package org.iphoto.mobile.sync
 
+import android.Manifest
+import android.content.ContentUris
 import android.content.Context
+import android.content.pm.PackageManager
 import android.media.ExifInterface
 import android.net.Uri
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
+import androidx.core.content.ContextCompat
 import java.io.FileInputStream
 import java.io.InputStream
 import java.nio.ByteBuffer
@@ -109,13 +113,49 @@ object FileHasher {
     // TIFF data format component sizes (formats 1..12)
     private val TIFF_FORMAT_BYTES = intArrayOf(0, 1, 1, 2, 4, 8, 1, 1, 2, 4, 8, 4, 8)
 
+    fun hasAccessMediaLocationPermission(context: Context): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_MEDIA_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+    }
+
     fun resolveUnredactedUri(context: Context, uri: Uri, mediaStoreUri: Uri? = null): Uri {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // If ACCESS_MEDIA_LOCATION is not granted, MediaStore.setRequireOriginal will throw SecurityException
+            if (!hasAccessMediaLocationPermission(context)) {
+                return uri
+            }
             try {
-                val targetMediaUri = mediaStoreUri ?: try {
+                val generic = mediaStoreUri ?: try {
                     MediaStore.getMediaUri(context, uri)
                 } catch (_: Throwable) {
                     null
+                }
+                val targetMediaUri = if (generic != null && generic.authority == "media") {
+                    val path = generic.path.orEmpty()
+                    if (path.contains("/file/")) {
+                        try {
+                            val id = ContentUris.parseId(generic)
+                            val mimeType = context.contentResolver.getType(uri) ?: context.contentResolver.getType(generic)
+                            val collection = if (mimeType?.startsWith("video") == true) {
+                                MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                            } else {
+                                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                            }
+                            ContentUris.withAppendedId(collection, id)
+                        } catch (_: Throwable) {
+                            generic
+                        }
+                    } else {
+                        generic
+                    }
+                } else {
+                    generic
                 }
                 if (targetMediaUri != null) {
                     return MediaStore.setRequireOriginal(targetMediaUri)
@@ -128,14 +168,14 @@ object FileHasher {
     }
 
     fun openUnredactedInputStream(context: Context, uri: Uri, mediaStoreUri: Uri? = null): InputStream? {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && hasAccessMediaLocationPermission(context)) {
             try {
                 val targetUri = resolveUnredactedUri(context, uri, mediaStoreUri)
                 if (targetUri != uri) {
                     context.contentResolver.openInputStream(targetUri)?.let { return it }
                 }
             } catch (_: Throwable) {
-                // Fall back to opening the document URI directly if ACCESS_MEDIA_LOCATION is not granted
+                // Fall back to opening the document URI directly if ACCESS_MEDIA_LOCATION is not granted or fails
             }
         }
         return context.contentResolver.openInputStream(uri)
@@ -146,7 +186,7 @@ object FileHasher {
         uri: Uri,
         mediaStoreUri: Uri? = null
     ): ParcelFileDescriptor? {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && hasAccessMediaLocationPermission(context)) {
             try {
                 val targetUri = resolveUnredactedUri(context, uri, mediaStoreUri)
                 if (targetUri != uri) {
