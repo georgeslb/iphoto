@@ -1,11 +1,12 @@
 # Android TODO
 
-## TODO: Timeline fast-scroll bar with floating date indicator
+## Fixed: Timeline fast-scroll bar with floating date indicator — 2026-11-08
 
-Add a fast-scroll timeline bar to the photo grids (Library, Albums, and Spaces):
-- Vertical scrollbar handle on the right edge of the grid that allows rapid scrubbing across days, months, and years.
-- When dragging the scroll pointer, display a floating pill/badge next to the user's finger showing the day/date corresponding to that position.
-- Enables fluid navigation across large photo libraries with thousands of photos without repetitive swiping.
+Added an interactive fast-scroll timeline bar across photo grids (remote `PhotoGridContent.kt` covering Library, Albums, and Spaces, and local `SyncScreen.kt` for local folder assets):
+- **Vertical Scrubbing Handle**: Interactive 44dp touch target on the right edge of the grid with a sleek rounded scroll thumb, allowing instant scrubbing across thousands of photos without repetitive swiping.
+- **Floating Date Badge**: As the user drags the scroll handle, a floating elevation-lifted badge/pill with a calendar icon appears right next to the finger showing the day/date (e.g. `12 oct. 2024`) corresponding to the current scroll position.
+- **Edge Clamping & Auto-Hide**: The badge position is clamped within screen bounds so it never clips off-screen, and the scrollbar smoothly fades out after 1.5 seconds of inactivity.
+- **Unit Tested**: Fully tested date formatting and index-to-day mapping in `TimelineFastScrollbarTest.kt`.
 
 ## TODO: Search & filter text box at top of Albums tab
 

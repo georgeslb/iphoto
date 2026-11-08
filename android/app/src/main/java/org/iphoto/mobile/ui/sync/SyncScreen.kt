@@ -32,6 +32,8 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import org.iphoto.mobile.ui.common.TimelineFastScrollbar
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
@@ -503,63 +505,83 @@ fun FolderContentGrid(
 
     val folderUriString = remember(folderUri) { folderUri.toString() }
     val decodedFolderUriString = remember(folderUri) { Uri.decode(folderUriString) ?: folderUriString }
+    val gridState = rememberLazyGridState()
 
-    LazyVerticalGrid(
-        columns = GridCells.Fixed(4),
-        contentPadding = PaddingValues(2.dp),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-        modifier = Modifier.fillMaxSize()
-    ) {
-        items(
-            items = items,
-            key = { item ->
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyVerticalGrid(
+            state = gridState,
+            columns = GridCells.Fixed(4),
+            contentPadding = PaddingValues(2.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            items(
+                items = items,
+                key = { item ->
+                    when (item) {
+                        is GridItem.Header -> item.text
+                        is GridItem.Asset -> item.asset.uri
+                    }
+                },
+                contentType = { item ->
+                    when (item) {
+                        is GridItem.Header -> "header"
+                        is GridItem.Asset -> "asset"
+                    }
+                },
+                span = { item ->
+                    when (item) {
+                        is GridItem.Header -> GridItemSpan(maxLineSpan)
+                        is GridItem.Asset -> GridItemSpan(1)
+                    }
+                }
+            ) { item ->
                 when (item) {
-                    is GridItem.Header -> item.text
-                    is GridItem.Asset -> item.asset.uri
-                }
-            },
-            contentType = { item ->
-                when (item) {
-                    is GridItem.Header -> "header"
-                    is GridItem.Asset -> "asset"
-                }
-            },
-            span = { item ->
-                when (item) {
-                    is GridItem.Header -> GridItemSpan(maxLineSpan)
-                    is GridItem.Asset -> GridItemSpan(1)
-                }
-            }
-        ) { item ->
-            when (item) {
-                is GridItem.Header -> {
-                    Text(
-                        text = item.text,
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.fillMaxWidth().clickable { onDayClick(item.assets) }.padding(horizontal = 6.dp, vertical = 10.dp)
-                    )
-                }
-                is GridItem.Asset -> {
-                    val asset = item.asset
-                    val exactKey = SyncPrefs.encodeUploadedKey(folderUriString, asset.relativeDir, asset.displayName)
-                    val decodedKey = SyncPrefs.encodeUploadedKey(decodedFolderUriString, asset.relativeDir, asset.displayName)
-                    val isUploaded = uploadedAssetKeys.contains(exactKey) || uploadedAssetKeys.contains(decodedKey)
-                    PhotoThumbnail(
-                        imageUrl = asset.uri.toString(),
-                        isVideo = asset.mimeType.startsWith("video/"),
-                        duration = asset.duration,
-                        isSelectionMode = isSelectionMode,
-                        isSelected = selectedAssetUris.contains(asset.uri),
-                        isUploaded = isUploaded,
-                        onLongClick = { onAssetLongClick(asset) },
-                        onSelectClick = { onAssetSelectClick(asset) },
-                        modifier = Modifier.aspectRatio(1f),
-                        onClick = { onAssetClick(asset) }
-                    )
+                    is GridItem.Header -> {
+                        Text(
+                            text = item.text,
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.fillMaxWidth().clickable { onDayClick(item.assets) }.padding(horizontal = 6.dp, vertical = 10.dp)
+                        )
+                    }
+                    is GridItem.Asset -> {
+                        val asset = item.asset
+                        val exactKey = SyncPrefs.encodeUploadedKey(folderUriString, asset.relativeDir, asset.displayName)
+                        val decodedKey = SyncPrefs.encodeUploadedKey(decodedFolderUriString, asset.relativeDir, asset.displayName)
+                        val isUploaded = uploadedAssetKeys.contains(exactKey) || uploadedAssetKeys.contains(decodedKey)
+                        PhotoThumbnail(
+                            imageUrl = asset.uri.toString(),
+                            isVideo = asset.mimeType.startsWith("video/"),
+                            duration = asset.duration,
+                            isSelectionMode = isSelectionMode,
+                            isSelected = selectedAssetUris.contains(asset.uri),
+                            isUploaded = isUploaded,
+                            onLongClick = { onAssetLongClick(asset) },
+                            onSelectClick = { onAssetSelectClick(asset) },
+                            modifier = Modifier.aspectRatio(1f),
+                            onClick = { onAssetClick(asset) }
+                        )
+                    }
                 }
             }
         }
+
+        TimelineFastScrollbar(
+            gridState = gridState,
+            totalItemsCount = items.size,
+            getDateForIndex = { index ->
+                var currentDate: String? = null
+                for (i in 0..index.coerceAtMost(items.size - 1)) {
+                    val item = items[i]
+                    if (item is GridItem.Header) {
+                        currentDate = item.text
+                    }
+                }
+                currentDate
+            },
+            modifier = Modifier.align(Alignment.CenterEnd)
+        )
     }
 }
 

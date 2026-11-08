@@ -313,6 +313,29 @@ fun PhotoGridContent(
                             }
                         }
                     }
+
+                    val dayRanges = remember(dayGroups) {
+                        val ranges = mutableListOf<Pair<IntRange, String>>()
+                        var curr = 0
+                        dayGroups.forEach { (day, photos) ->
+                            ranges.add(curr until (curr + 1 + photos.size) to day)
+                            curr += 1 + photos.size
+                        }
+                        ranges
+                    }
+                    val totalItemsCount = remember(dayGroups, state.endReached) {
+                        dayGroups.values.sumOf { 1 + it.size } + (if (!state.endReached) 1 else 0)
+                    }
+
+                    TimelineFastScrollbar(
+                        gridState = gridState,
+                        totalItemsCount = totalItemsCount,
+                        getDateForIndex = { index ->
+                            dayRanges.firstOrNull { index in it.first }?.second ?: dayRanges.lastOrNull()?.second
+                        },
+                        enabled = dragState == null,
+                        modifier = Modifier.align(Alignment.CenterEnd)
+                    )
                 }
             }
 
