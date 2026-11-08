@@ -5,12 +5,28 @@ on:
     branches:
       - master
       - main
+    paths-ignore:
+      - 'README.md'
+      - '**.md'
+      - 'android/**'
+      - 'nas-backup/**'
+      - '.gitignore'
+      - '.gitattributes'
+      - '.env.example'
     tags:
       - '*'
   pull_request:
     branches:
       - master
       - main
+    paths-ignore:
+      - 'README.md'
+      - '**.md'
+      - 'android/**'
+      - 'nas-backup/**'
+      - '.gitignore'
+      - '.gitattributes'
+      - '.env.example'
   workflow_dispatch:
     inputs:
       version:
