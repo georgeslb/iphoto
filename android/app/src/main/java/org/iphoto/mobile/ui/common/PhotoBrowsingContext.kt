@@ -34,5 +34,10 @@ object PhotoBrowsingContext {
         photosById = photosById + (newPhoto.id to newPhoto)
     }
 
+    fun removePhoto(id: String) {
+        photoIds = photoIds.filter { it != id }
+        photosById = photosById - id
+    }
+
     fun getPhoto(id: String): Photo? = photosById[id]
 }

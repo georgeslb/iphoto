@@ -228,5 +228,5 @@ export function useDayIndexedPhotos(effectivePath, explicitTarget = null, enable
     }));
   }, [refreshDays]);
 
-  return { days, loadingDays, photosByDay, setPhotosByDay, dayPageState, loadDayPage, refreshDays, refreshLoadedDays };
+  return { days, setDays, loadingDays, photosByDay, setPhotosByDay, dayPageState, loadDayPage, refreshDays, refreshLoadedDays };
 }
