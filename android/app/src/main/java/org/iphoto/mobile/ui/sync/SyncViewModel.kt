@@ -438,7 +438,7 @@ class SyncViewModel(
                 else it.copy(isLoadingFolderContents = it.isLoadingFolderContents + uri)
             }
             try {
-                val assets = withContext(ioDispatcher) {
+                val (assets, groupedAndFlattened) = withContext(ioDispatcher) {
                     val scanned = LocalFolderScanner.scan(appContext, uri)
                         .sortedByDescending { asset -> asset.lastModified }
                     syncPrefs.retainUploadedAssetsForFolder(
@@ -446,14 +446,20 @@ class SyncViewModel(
                         scanned.map { it.relativeDir to it.displayName }.toSet()
                     )
                     syncRepository.retainCachedHashesForFolder(uri, scanned)
-                    scanned
-                }
 
-                val groupedAndFlattened = assets.groupBy {
-                    val date = java.time.Instant.ofEpochMilli(it.lastModified).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
-                    date.format(DateTimeFormatter.ofLocalizedDate(FormatStyle.LONG))
-                }.flatMap { (header, dayAssets) ->
-                    listOf(GridItem.Header(header, dayAssets)) + dayAssets.map { GridItem.Asset(it) }
+                    val zoneId = java.time.ZoneId.systemDefault()
+                    val formatter = DateTimeFormatter.ofLocalizedDate(FormatStyle.LONG)
+                    val dayHeaderCache = mutableMapOf<Long, String>()
+                    val items = scanned.groupBy { asset ->
+                        val epochDay = java.time.Instant.ofEpochMilli(asset.lastModified).atZone(zoneId).toLocalDate().toEpochDay()
+                        dayHeaderCache.getOrPut(epochDay) {
+                            java.time.LocalDate.ofEpochDay(epochDay).format(formatter)
+                        }
+                    }.flatMap { (header, dayAssets) ->
+                        listOf(GridItem.Header(header, dayAssets)) + dayAssets.map { GridItem.Asset(it) }
+                    }
+
+                    scanned to items
                 }
 
                 val currentUploadedKeys = syncPrefs.getUploadedAssetKeys()
@@ -498,6 +504,7 @@ class SyncViewModel(
             _uiState.update { it.copy(isCheckingHashes = true) }
             try {
                 hashCheckMutex.withLock {
+                    var lastUiUpdateMs = 0L
                     syncRepository.verifyFolderAssetsHashesInBatches(
                         assets = assets,
                         batchSize = SyncRepository.HASH_CHECK_BATCH_SIZE
@@ -506,9 +513,16 @@ class SyncViewModel(
                             (asset.relativeDir to asset.displayName) to existsOnServer
                         }
                         syncPrefs.applyBatchHashCheckStatuses(folderUri.toString(), statuses)
-                        val updatedKeys = syncPrefs.getUploadedAssetKeys()
-                        _uiState.update { it.copy(uploadedAssetKeys = updatedKeys) }
+                        val now = System.currentTimeMillis()
+                        // Throttle UI recompositions to at most once per second while processing large batch runs
+                        if (now - lastUiUpdateMs >= 1000L) {
+                            lastUiUpdateMs = now
+                            val updatedKeys = syncPrefs.getUploadedAssetKeys()
+                            _uiState.update { it.copy(uploadedAssetKeys = updatedKeys) }
+                        }
                     }
+                    val finalKeys = syncPrefs.getUploadedAssetKeys()
+                    _uiState.update { it.copy(uploadedAssetKeys = finalKeys) }
                 }
             } finally {
                 folderHashJobs.remove(folderUri)
@@ -536,6 +550,24 @@ class SyncViewModel(
                 refreshFolder(folder.uri, folder.name)
             }
         }
+    }
+
+    /**
+     * Suspends/cancels any ongoing background hash verification job for the given folder.
+     */
+    fun suspendHashChecks(folderUri: Uri) {
+        folderHashJobs.remove(folderUri)?.cancel()
+        updateCheckingHashesState()
+    }
+
+    /**
+     * Returns all local assets in the specified folder that have been verified as uploaded.
+     */
+    fun getUploadedAssets(folderUri: Uri): List<LocalAsset> {
+        val items = _uiState.value.folderContents[folderUri] ?: return emptyList()
+        return items.filterIsInstance<GridItem.Asset>()
+            .map { it.asset }
+            .filter { isAssetUploaded(folderUri, it) }
     }
 
     fun addFolder(uri: Uri, displayName: String) {

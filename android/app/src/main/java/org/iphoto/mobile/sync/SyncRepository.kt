@@ -419,6 +419,9 @@ class SyncRepository(
         if (asset.uri.authority == "media") {
             return asset.uri
         }
+        if (asset.displayName.startsWith(".") || asset.displayName.contains(".trashed-") || asset.displayName.contains(".pending-")) {
+            return null
+        }
 
         val collection = if (asset.mimeType.startsWith("video/")) {
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI
