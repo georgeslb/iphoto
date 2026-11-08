@@ -72,12 +72,8 @@ export default function PhotoGrid({
   // being dragged over.
   // dragState: { movedIds, day } while a drag is in progress, else null.
   const [dragState, setDragState] = useState(null);
-  // Which "gap" between two photos (or before the first/after the last) is currently under the
-  // cursor - an index into that day's non-moved primaries, in display order (0 = before the very
-  // first one, others.length = after the very last one). See renderDropZone/the per-day render
-  // loop below for how these gaps become actual, generously-sized drop targets rather than
-  // requiring the user to figure out which half of a specific photo to hover.
-  const [dropZoneIndex, setDropZoneIndex] = useState(null);
+  // dropTarget: { targetId, position: 'before' | 'after', day } while dragging over a target photo
+  const [dropTarget, setDropTarget] = useState(null);
 
   // Automatically scroll the container/window when moving assets near top or bottom edges
   useDragAutoScroll(Boolean(dragState), gridContainerRef);
@@ -197,54 +193,83 @@ export default function PhotoGrid({
   };
 
   const handleDragEnd = () => {
-    // Safety net for a cancelled/off-target drop (e.g. Escape, or dropped outside any zone) -
-    // handleZoneDrop already clears both below on a successful drop, this just guarantees it
-    // either way.
     setDragState(null);
-    setDropZoneIndex(null);
+    setDropTarget(null);
   };
 
-  // computeReorderDates (utils/photoReorder.js) takes a targetId + before/after position rather
-  // than a plain insertion index - translates a zone index back into that shape without having to
-  // touch that already-tested utility's signature. index === others.length means "insert after
-  // everything" (the day's oldest/last position, no "after" neighbor to anchor a targetId on).
-  const zoneToTargetPosition = (others, index) =>
-      index < others.length
-          ? { targetId: others[index].id, position: 'before' }
-          : { targetId: others[others.length - 1]?.id, position: 'after' };
-
-  // Shared guard for onDragOver/onDrop below: rejects (no visual indicator, no-op drop) a zone in
-  // a day other than the one being dragged (the "limited to the same day" constraint) or no drag
-  // in progress at all.
   const isValidDropDay = (day) => dragState && dragState.day === day;
 
-  const handleZoneDragOver = (day, zoneIndex, e) => {
+  const handleCardDragOver = (p, day, e) => {
     if (!isValidDropDay(day)) return;
-    e.preventDefault(); // required to allow a drop at all
-    if (dropZoneIndex !== zoneIndex) setDropZoneIndex(zoneIndex);
+    if (dragState.movedIds.includes(p.id)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const rect = e.currentTarget.getBoundingClientRect();
+    const isLeftHalf = (e.clientX - rect.left) < (rect.width / 2);
+    const position = isLeftHalf ? 'before' : 'after';
+    if (dropTarget?.targetId !== p.id || dropTarget?.position !== position) {
+      setDropTarget({ targetId: p.id, position, day });
+    }
   };
 
-  const handleZoneDragLeave = (zoneIndex) => {
-    setDropZoneIndex(prev => (prev === zoneIndex ? null : prev));
-  };
-
-  const handleZoneDrop = (day, zoneIndex, e) => {
+  const handleCardDrop = (p, day, e) => {
     if (!isValidDropDay(day)) return;
-    e?.preventDefault?.();
+    if (dragState.movedIds.includes(p.id)) return;
+    e.preventDefault();
     const currentDragState = dragState || touchStateRef.current;
     if (!currentDragState) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const isLeftHalf = (e.clientX - rect.left) < (rect.width / 2);
+    const position = isLeftHalf ? 'before' : 'after';
+
     const others = groups[day]
         .map(it => it.primary)
         .filter(pp => !currentDragState.movedIds.includes(pp.id));
-    const { targetId, position } = zoneToTargetPosition(others, zoneIndex);
-    const updates = targetId ? computeReorderDates(others, currentDragState.movedIds, targetId, position) : [];
+    const updates = computeReorderDates(others, currentDragState.movedIds, p.id, position);
     if (updates.length > 0) {
       setSelectedIds?.([]);
       handleReorderPhotos?.(updates);
     }
     touchStateRef.current = null;
     setDragState(null);
-    setDropZoneIndex(null);
+    setDropTarget(null);
+  };
+
+  const handleGridDragOver = (day, e) => {
+    if (!isValidDropDay(day)) return;
+    if (e.target === e.currentTarget) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const dayOthers = groups[day]
+          .map(it => it.primary)
+          .filter(pp => !dragState.movedIds.includes(pp.id));
+      if (dayOthers.length > 0) {
+        const lastPhoto = dayOthers[dayOthers.length - 1];
+        if (dropTarget?.targetId !== lastPhoto.id || dropTarget?.position !== 'after') {
+          setDropTarget({ targetId: lastPhoto.id, position: 'after', day });
+        }
+      }
+    }
+  };
+
+  const handleGridDrop = (day, e) => {
+    if (!isValidDropDay(day)) return;
+    if (e.target === e.currentTarget && dropTarget) {
+      e.preventDefault();
+      const currentDragState = dragState || touchStateRef.current;
+      if (!currentDragState) return;
+      const dayOthers = groups[day]
+          .map(it => it.primary)
+          .filter(pp => !currentDragState.movedIds.includes(pp.id));
+      const updates = computeReorderDates(dayOthers, currentDragState.movedIds, dropTarget.targetId, dropTarget.position);
+      if (updates.length > 0) {
+        setSelectedIds?.([]);
+        handleReorderPhotos?.(updates);
+      }
+      touchStateRef.current = null;
+      setDragState(null);
+      setDropTarget(null);
+    }
   };
 
   // Touch drag support for mobile browsers (touch devices do not fire HTML5 drag/drop events
@@ -262,7 +287,7 @@ export default function PhotoGrid({
     touchStateRef.current = {
       movedIds,
       day,
-      lastZoneIndex: null,
+      lastTarget: null,
     };
     setDragState({ movedIds, day });
   };
@@ -302,48 +327,46 @@ export default function PhotoGrid({
     }
 
     const el = document.elementFromPoint(touch.clientX, touch.clientY);
-    const zoneEl = el?.closest?.('.drop-zone');
-    if (zoneEl) {
-      const zoneDay = zoneEl.getAttribute('data-day');
-      const zIndex = parseInt(zoneEl.getAttribute('data-zone-index'), 10);
-      if (zoneDay === touchStateRef.current.day && !isNaN(zIndex)) {
-        touchStateRef.current.lastZoneIndex = zIndex;
-        if (dropZoneIndex !== zIndex) setDropZoneIndex(zIndex);
-        return;
-      }
-    }
-
     const cardEl = el?.closest?.('.photo-card');
     if (cardEl) {
       const cardDay = cardEl.getAttribute('data-card-day');
-      const cardZone = parseInt(cardEl.getAttribute('data-card-zone'), 10);
-      if (cardDay === touchStateRef.current.day && !isNaN(cardZone)) {
+      const cardPhotoId = cardEl.getAttribute('data-photo-id');
+      if (cardDay === touchStateRef.current.day && cardPhotoId && !touchStateRef.current.movedIds.includes(cardPhotoId)) {
         const rect = cardEl.getBoundingClientRect();
-        const isRightHalf = touch.clientX > (rect.left + rect.width / 2);
-        const targetZone = isRightHalf ? cardZone + 1 : cardZone;
-        touchStateRef.current.lastZoneIndex = targetZone;
-        if (dropZoneIndex !== targetZone) setDropZoneIndex(targetZone);
+        const isLeftHalf = touch.clientX < (rect.left + rect.width / 2);
+        const position = isLeftHalf ? 'before' : 'after';
+        touchStateRef.current.lastTarget = { targetId: cardPhotoId, position, day: cardDay };
+        if (dropTarget?.targetId !== cardPhotoId || dropTarget?.position !== position) {
+          setDropTarget({ targetId: cardPhotoId, position, day: cardDay });
+        }
       }
     }
   };
 
   const handleTouchEnd = (e) => {
     if (!touchStateRef.current) return;
-    const { day, lastZoneIndex } = touchStateRef.current;
-    const targetZone = dropZoneIndex !== null ? dropZoneIndex : lastZoneIndex;
-    if (targetZone !== null) {
-      handleZoneDrop(day, targetZone, e);
-    } else {
-      touchStateRef.current = null;
-      setDragState(null);
-      setDropZoneIndex(null);
+    const { day, lastTarget } = touchStateRef.current;
+    const activeTarget = dropTarget || lastTarget;
+    if (activeTarget && activeTarget.targetId) {
+      const currentDragState = touchStateRef.current;
+      const others = groups[day]
+          .map(it => it.primary)
+          .filter(pp => !currentDragState.movedIds.includes(pp.id));
+      const updates = computeReorderDates(others, currentDragState.movedIds, activeTarget.targetId, activeTarget.position);
+      if (updates.length > 0) {
+        setSelectedIds?.([]);
+        handleReorderPhotos?.(updates);
+      }
     }
+    touchStateRef.current = null;
+    setDragState(null);
+    setDropTarget(null);
   };
 
   const handleTouchCancel = () => {
     touchStateRef.current = null;
     setDragState(null);
-    setDropZoneIndex(null);
+    setDropTarget(null);
   };
 
   // Day-indexed pagination: ONE shared IntersectionObserver for every day section's sentinel
@@ -422,29 +445,7 @@ export default function PhotoGrid({
   // the full preview rectangle (sized off the first moved photo's own aspect ratio - a multi-item
   // drag can mix aspect ratios, this is a preview, not a pixel-exact one - with a count badge when
   // more than one photo is moving) is a purely visual absolutely-positioned overlay on top of it.
-  // `size` matches whatever every card in this day is currently rendered at (see the per-day render
-  // loop's `cardSize` - shrunk while dragging, see its own comment) so the zone/preview's own height
-  // lines up with its flanking cards rather than a hardcoded value going stale the moment cards shrink.
-  const renderDropZone = (day, zoneIndex, isActive, aspectRatio, count, size) => (
-    <div
-      key={`zone-${zoneIndex}`}
-      className="drop-zone"
-      data-day={day}
-      data-zone-index={zoneIndex}
-      style={{ height: `${size}px` }}
-      onDragOver={(e) => handleZoneDragOver(day, zoneIndex, e)}
-      onDragLeave={() => handleZoneDragLeave(zoneIndex)}
-      onDrop={(e) => handleZoneDrop(day, zoneIndex, e)}
-    >
-      {isActive && (
-        <div className="drop-zone-preview" style={{ width: `${aspectRatio * size}px`, height: `${size}px` }}>
-          {count > 1 && <span className="drop-placeholder-count">{count}</span>}
-        </div>
-      )}
-    </div>
-  );
-
-  const renderPhotoCard = (p, day, isDropNeighbor, badge, size = 220, zoneIndex = 0) => {
+  const renderPhotoCard = (p, day, badge, size = 220) => {
     const aspectRatio = (p.width && p.height) ? (p.width / p.height) : 1;
     const isSelected = selectedIds.includes(p.id);
     const isDragging = dragState?.movedIds.includes(p.id);
@@ -452,14 +453,19 @@ export default function PhotoGrid({
       <div
         key={p.id}
         data-card-day={day}
-        data-card-zone={zoneIndex}
-        className={`photo-card ${isSelected ? 'selected' : ''} ${isDragging ? 'dragging' : ''} ${isDropNeighbor ? 'drop-neighbor' : ''}`}
+        data-photo-id={p.id}
+        className={`photo-card ${isSelected ? 'selected' : ''} ${isDragging ? 'dragging' : ''}`}
         style={{ flexBasis: `${aspectRatio * size}px`, height: `${size}px` }}
         onClick={(e) => handlePhotoClick(p, e)}
         onContextMenu={(e) => e.preventDefault()}
         onMouseEnter={() => p.contentType?.startsWith('video') && setHoveredVideoId(p.id)}
         onMouseLeave={() => setHoveredVideoId(null)}
+        onDragOver={(e) => handleCardDragOver(p, day, e)}
+        onDrop={(e) => handleCardDrop(p, day, e)}
       >
+        {dropTarget?.targetId === p.id && (
+          <div className={`drop-indicator-bar drop-indicator-${dropTarget.position}`} />
+        )}
         <div
           className="select-overlay"
           onClick={(e) => handleOverlayClick(p, e)}
@@ -483,6 +489,7 @@ export default function PhotoGrid({
           <button
             type="button"
             className="unlink-person-btn"
+            style={handleReorderPhotos ? { right: '42px' } : undefined}
             title={messages["unlinkPersonFromPhoto"]}
             onClick={(e) => { e.stopPropagation(); handleUnlinkPerson(p.id); }}
           >
@@ -516,9 +523,9 @@ export default function PhotoGrid({
     );
   };
 
-  const renderDisplayItem = (item, day, isDropNeighbor, size = 220, zoneIndex = 0) => {
+  const renderDisplayItem = (item, day, size = 220) => {
     if (item.members.length === 1) {
-      return renderPhotoCard(item.primary, day, isDropNeighbor, undefined, size, zoneIndex);
+      return renderPhotoCard(item.primary, day, undefined, size);
     }
 
     const badge = (
@@ -531,7 +538,7 @@ export default function PhotoGrid({
         <Layers size={12} /> {item.members.length}<span className="duplicate-badge-label"> {messages["similarLabel"]}</span>
       </button>
     );
-    return renderPhotoCard(item.primary, day, isDropNeighbor, badge, size, zoneIndex);
+    return renderPhotoCard(item.primary, day, badge, size);
   };
 
   return (
@@ -550,38 +557,6 @@ export default function PhotoGrid({
         const pageState = dayIndex.dayPageState[day];
         const showDaySentinel = !pageState?.isLast;
 
-        // Drag-to-reorder: while dragging within THIS day, `others` is every non-moved primary in
-        // display order - one drop zone (see renderDropZone) is rendered before each of them, plus
-        // one trailing zone after the last, so every possible insertion point is an explicit,
-        // always-present, generously-sized target the user can see and hover directly, rather than
-        // having to find the right half of a specific photo. null (not dragging this day) means no
-        // zones render at all and the row looks exactly like it does outside a drag.
-        const others = (dragState?.day === day)
-            ? dayItems.map(it => it.primary).filter(p => !dragState.movedIds.includes(p.id))
-            : null;
-        // Whichever zone is currently hovered determines the "make room" preview: its two flanking
-        // photos (the ones that would end up immediately before/after the moved item(s) once
-        // dropped) shrink slightly, and that zone itself expands into a full preview rectangle
-        // (see renderDropZone) instead of its idle slim strip.
-        const neighborBeforeId = (others && dropZoneIndex != null) ? (others[dropZoneIndex - 1]?.id ?? null) : null;
-        const neighborAfterId = (others && dropZoneIndex != null) ? (others[dropZoneIndex]?.id ?? null) : null;
-        // Shrinking every card in this day (not just the two immediate neighbors above, which only
-        // get a cosmetic transform - see .drop-neighbor) by a real, layout-affecting amount while a
-        // drag is active here is what actually keeps everything else from reflowing to a different
-        // row/position: the drop zones inserted below take up real flex-basis width of their own
-        // (see .drop-zone), and on a fairly full row that extra width alone can push flex-wrap to
-        // wrap differently than before the drag started. Shrinking every card back down reclaims
-        // roughly that much width across the row, so wrap points stay close to where they already
-        // were rather than the whole day visibly reshuffling the moment a drag begins.
-        const cardSize = (others) ? 200 : 220;
-        let placeholderAspectRatio = 1;
-        if (others && dropZoneIndex != null) {
-          const draggedPrimary = dayItems.find(it => dragState.movedIds.includes(it.primary.id))?.primary;
-          if (draggedPrimary?.width && draggedPrimary?.height) {
-            placeholderAspectRatio = draggedPrimary.width / draggedPrimary.height;
-          }
-        }
-
         return (
           <div key={day} className="day-group" data-day-group={day}>
             <div className="day-header" style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -596,35 +571,17 @@ export default function PhotoGrid({
                 </div>
               )}
             </div>
-            <div className="photo-grid">
-              {(() => {
-                // Interleave: a zone before every non-moved item (tracked via othersIdx, which
-                // only advances past items actually present in `others`) plus one trailing zone
-                // after the last - see the `others`/zone comment above for why this is null (no
-                // zones at all) outside a drag on this day.
-                let othersIdx = 0;
-                const children = dayItems.map(item => {
-                  const isMoved = others ? !others.some(o => o.id === item.primary.id) : true;
-                  const zone = (others && !isMoved)
-                      ? renderDropZone(day, othersIdx, dropZoneIndex === othersIdx, placeholderAspectRatio, dragState.movedIds.length, cardSize)
-                      : null;
-                  const currentCardZone = othersIdx;
-                  if (others && !isMoved) othersIdx++;
-                  const card = renderDisplayItem(item, day, item.primary.id === neighborBeforeId || item.primary.id === neighborAfterId, cardSize, currentCardZone);
-                  return (
-                    <React.Fragment key={item.primary.id}>
-                      {zone}
-                      {card}
-                    </React.Fragment>
-                  );
-                });
-                return (
-                  <>
-                    {children}
-                    {others && renderDropZone(day, othersIdx, dropZoneIndex === othersIdx, placeholderAspectRatio, dragState.movedIds.length, cardSize)}
-                  </>
-                );
-              })()}
+            <div
+              className="photo-grid"
+              onDragOver={(e) => handleGridDragOver(day, e)}
+              onDrop={(e) => handleGridDrop(day, e)}
+              onDragLeave={(e) => {
+                if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget)) {
+                  if (dropTarget?.day === day) setDropTarget(null);
+                }
+              }}
+            >
+              {dayItems.map(item => renderDisplayItem(item, day))}
             </div>
             {showDaySentinel && (
               <div

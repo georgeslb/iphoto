@@ -84,14 +84,10 @@ and a compressed record of how we got here, not a second copy of the spec.
   editing (crop/rotate/zoom via `react-cropper`), face rename/merge, or the wheel-zoom math itself
   beyond one step are covered — worth another pass if the refactor ends up touching those. Ready
   for the actual duplication review across all three files now.
-- **No CI workflow runs `npm test`/`npm run lint` automatically** — the frontend suite is still
-  local-only. (`mvn test` now runs on every PR into master via
-  `.github/workflows/docker-image.yml`'s `test` job, and is required to pass before the Docker
-  image job — which itself is now `workflow_dispatch`-only, not automatic on push to master.) Worth
-  wiring up the frontend suite too if regressions matter enough to gate merges on it as well.
-  Reminder: once this workflow exists on master, its `test` job still needs to be added as a
-  required status check under Settings > Branches for master (branch protection isn't something a
-  workflow file alone can set) for PRs to actually be blocked on failure.
+- **CI workflow runs backend and frontend test suites + versions on merge** (updated 2026-11-08):
+  `.github/workflows/docker-image.yml` now runs both `mvn -B test` and frontend `npm test` on every push/PR,
+  and automatically builds/publishes Docker images with version tags (`1.0.<run_number>`, `v1.0.<run_number>`, `latest`)
+  and creates a GitHub Release upon every merge to `master`.
 - **Regression tests worth adding, not yet written**: `UploadManager.jsx`'s "PENDING keeps
   polling" fix (needs fake timers + mocking the chunk-upload flow). (The root `App.jsx` smoke test
   that used to be listed here is now step 1 of the `App.jsx` selection-state item above, since
