@@ -218,19 +218,17 @@ fun SyncScreen(
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
-        var isFirstResume = true
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                if (isFirstResume) {
-                    isFirstResume = false
-                } else {
-                    viewModel.refreshAllFolders()
-                }
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> viewModel.setSyncTabVisible(true)
+                Lifecycle.Event.ON_PAUSE -> viewModel.setSyncTabVisible(false)
+                else -> {}
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.setSyncTabVisible(false)
         }
     }
 

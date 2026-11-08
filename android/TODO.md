@@ -14,15 +14,17 @@ Add a search/filter input at the top of the Albums tab (`AlbumsScreen.kt`):
 - Clear button to quickly reset the filter.
 - Clean empty state when no albums match the query.
 
-## TODO: Restrict check-hashes background execution exclusively to the Sync tab
+## Fixed: Restrict check-hashes background execution exclusively to the Sync tab — 2026-11-08
 
-Currently, `check-hashes` verification jobs (comparing local device photo MD5s with the remote server) and MediaStore observers can run even when the user is browsing the remote Library, Albums, Spaces, or viewing a photo in the remote Lightbox.
+Previously, `check-hashes` verification jobs (comparing local device photo MD5s with the remote server) and MediaStore observers ran even when the user was browsing the remote Library, Albums, Spaces, or viewing a photo in the Lightbox.
 
-Objectives:
-- Only trigger and run `check-hashes` while the user is actively viewing the Sync tab (`SyncScreen`).
-- Immediately suspend/cancel active background hash checking jobs when the user navigates away from the Sync tab to another tab (Library, Albums, Spaces) or opens a fullscreen viewer.
-- Prevent background MediaStore changes from triggering heavy remote hash verifications when the user is not on the Sync screen.
-- Dramatically reduce network bandwidth, battery consumption, and background CPU load.
+Resolution:
+- **Strictly run `check-hashes` on active Sync tab**: `SyncViewModel` tracks `isSyncTabVisible: Boolean` (controlled via `LifecycleEventObserver` in `SyncScreen.kt` and `AssetDetailScreen.kt`).
+- **Deferred startup scanning**: Folder scanning and hash verification are no longer triggered in `SyncViewModel.init` while the user lands on `LibraryScreen`.
+- **Immediate suspension on tab switch / backgrounding**: When the user switches to Library, Albums, Spaces, or puts the app into the background, all active `folderHashJobs` are immediately cancelled and `isCheckingHashes` is set to `false`.
+- **Deferred MediaStore & folder events**: File events observed while away from the Sync tab mark a dirty flag (`needsSyncRefresh = true`) without triggering background scans until the user returns to the Sync tab.
+- **Cache verified signatures**: Completed folder verification signatures are retained so returning to the Sync tab does not re-issue redundant network requests for unchanged folders.
+- **Dramatically reduced load**: Completely eliminates CPU spikes, battery drain, and redundant `check-hashes` network traffic when browsing remote photos.
 
 ## TODO: Drag-and-drop parity on Web UI (mobile & PC) with mobile app
 

@@ -87,6 +87,22 @@ fun AssetDetailScreen(
     val coroutineScope = rememberCoroutineScope()
     val state by viewModel.uiState.collectAsState()
 
+    val screenLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(screenLifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> viewModel.setSyncTabVisible(true)
+                Lifecycle.Event.ON_PAUSE -> viewModel.setSyncTabVisible(false)
+                else -> {}
+            }
+        }
+        screenLifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            screenLifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.setSyncTabVisible(false)
+        }
+    }
+
     val folder = remember { viewModel.findAssetAndFolder(asset.uri)?.second }
     val assetsInFolder = remember(folder, state.folderContents) {
         folder?.let { f ->
