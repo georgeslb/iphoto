@@ -42,7 +42,8 @@ fun SpaceDetailScreen(spaceId: String, onPhotoClick: (String) -> Unit, onBack: (
         key = "space-$spaceId",
         factory = PagedPhotoGridViewModelFactory(
             loadPage = loadPage,
-            canMoveToMain = true
+            canMoveToMain = true,
+            loadDays = { container.photoApi.getSpaceDays(spaceId) }
         )
     )
     val state by viewModel.uiState.collectAsState()

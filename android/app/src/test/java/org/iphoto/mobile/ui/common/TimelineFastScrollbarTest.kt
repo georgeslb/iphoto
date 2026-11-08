@@ -71,4 +71,53 @@ class TimelineFastScrollbarTest {
         assertEquals(8, getIndexForScroll(8))
         assertEquals(8, getIndexForScroll(9))
     }
+
+    @Test
+    fun `timelineDays fraction mapping covers entire history from newest to oldest`() {
+        val allDays = listOf(
+            "2026-03-15",
+            "2025-11-20",
+            "2024-06-10",
+            "2023-01-05",
+            "2018-08-14"
+        )
+
+        fun getDayForFraction(fraction: Float): String {
+            val idx = (fraction * (allDays.size - 1)).toInt().coerceIn(0, allDays.size - 1)
+            return allDays[idx]
+        }
+
+        assertEquals("2026-03-15", getDayForFraction(0.0f))
+        assertEquals("2024-06-10", getDayForFraction(0.5f))
+        assertEquals("2018-08-14", getDayForFraction(1.0f))
+    }
+
+    @Test
+    fun `year markers extraction finds first appearance of each year in newest-first history`() {
+        val allDays = listOf(
+            "2026-03-15",
+            "2026-01-10",
+            "2025-11-20",
+            "2025-04-05",
+            "2024-06-10"
+        )
+
+        val markers = mutableListOf<Pair<String, Float>>()
+        var lastYear: String? = null
+        allDays.forEachIndexed { i, dayStr ->
+            val year = dayStr.substring(0, 4)
+            if (year != lastYear) {
+                markers.add(year to (i.toFloat() / (allDays.size - 1)))
+                lastYear = year
+            }
+        }
+
+        assertEquals(3, markers.size)
+        assertEquals("2026", markers[0].first)
+        assertEquals(0.0f, markers[0].second, 0.001f)
+        assertEquals("2025", markers[1].first)
+        assertEquals(0.5f, markers[1].second, 0.001f)
+        assertEquals("2024", markers[2].first)
+        assertEquals(1.0f, markers[2].second, 0.001f)
+    }
 }

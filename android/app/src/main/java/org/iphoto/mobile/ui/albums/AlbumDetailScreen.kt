@@ -41,7 +41,11 @@ fun AlbumDetailScreen(albumId: String, onPhotoClick: (String) -> Unit, onBack: (
     }
     val viewModel: PagedPhotoGridViewModel = viewModel(
         key = "album-$albumId",
-        factory = PagedPhotoGridViewModelFactory(loadPage, albumId = albumId)
+        factory = PagedPhotoGridViewModelFactory(
+            loadPage = loadPage,
+            albumId = albumId,
+            loadDays = { container.photoApi.getAlbumDays(albumId) }
+        )
     )
     val state by viewModel.uiState.collectAsState()
 

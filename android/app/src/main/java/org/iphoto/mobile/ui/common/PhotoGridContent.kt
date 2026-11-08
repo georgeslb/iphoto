@@ -32,6 +32,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,6 +52,7 @@ import coil3.compose.AsyncImage
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.iphoto.mobile.LocalAppContainer
 
 /**
@@ -82,6 +84,7 @@ fun PhotoGridContent(
 ) {
     val container = LocalAppContainer.current
     val hapticFeedback = LocalHapticFeedback.current
+    val coroutineScope = rememberCoroutineScope()
     var showAlbumPicker by remember { mutableStateOf(false) }
     var showDatePicker by remember { mutableStateOf(false) }
 
@@ -329,6 +332,9 @@ fun PhotoGridContent(
                     val totalItemsCount = remember(dayGroups, state.endReached) {
                         dayGroups.values.sumOf { 1 + it.size } + (if (!state.endReached) 1 else 0)
                     }
+                    val timelineDays = remember(state.timelineDays) {
+                        state.timelineDays.map { it.day }
+                    }
 
                     TimelineFastScrollbar(
                         gridState = gridState,
@@ -339,8 +345,16 @@ fun PhotoGridContent(
                         getIndexForScroll = { index ->
                             dayRanges.firstOrNull { index in it.first }?.second ?: index
                         },
+                        timelineDays = timelineDays,
+                        onSeekToDay = { targetDay ->
+                            viewModel.seekToDay(targetDay) { headerIndex ->
+                                coroutineScope.launch {
+                                    gridState.scrollToItem(headerIndex)
+                                }
+                            }
+                        },
                         enabled = dragState == null,
-                        modifier = Modifier.align(Alignment.CenterEnd)
+                        modifier = Modifier.fillMaxSize()
                     )
                 }
             }

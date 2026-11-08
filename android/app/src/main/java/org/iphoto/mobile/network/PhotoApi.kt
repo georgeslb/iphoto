@@ -5,6 +5,7 @@ import okhttp3.RequestBody
 import okhttp3.ResponseBody
 import org.iphoto.mobile.model.CheckHashesRequest
 import org.iphoto.mobile.model.CheckHashesResponse
+import org.iphoto.mobile.model.DayBucketDTO
 import org.iphoto.mobile.model.Photo
 import org.iphoto.mobile.model.PhotoPageResponse
 import org.iphoto.mobile.model.SpringPage
@@ -27,6 +28,9 @@ interface PhotoApi {
         @Query("size") size: Int
     ): PhotoPageResponse
 
+    @GET("api/photos/days")
+    suspend fun getDays(): List<DayBucketDTO>
+
     @GET("api/photos/{id}")
     suspend fun get(@Path("id") id: String): Photo
 
@@ -37,12 +41,18 @@ interface PhotoApi {
         @Query("size") size: Int
     ): SpringPage<Photo>
 
+    @GET("api/albums/{id}/days")
+    suspend fun getAlbumDays(@Path("id") albumId: String): List<DayBucketDTO>
+
     @GET("api/spaces/{spaceId}/photos")
     suspend fun listForSpace(
         @Path("spaceId") spaceId: String,
         @Query("page") page: Int,
         @Query("size") size: Int
     ): SpringPage<Photo>
+
+    @GET("api/photos/space/{spaceId}/days")
+    suspend fun getSpaceDays(@Path("spaceId") spaceId: String): List<DayBucketDTO>
 
     // Backs the device-folder sync feature's garbage/restore reconciliation (see
     // org.iphoto.mobile.sync.SyncRepository) - the web frontend has no equivalent call, it only

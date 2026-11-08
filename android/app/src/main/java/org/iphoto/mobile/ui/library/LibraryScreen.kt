@@ -26,7 +26,10 @@ fun LibraryScreen(onPhotoClick: (String) -> Unit) {
     }
     val viewModel: PagedPhotoGridViewModel = viewModel(
         key = "library",
-        factory = PagedPhotoGridViewModelFactory(loadPage)
+        factory = PagedPhotoGridViewModelFactory(
+            loadPage = loadPage,
+            loadDays = { container.photoApi.getDays() }
+        )
     )
     val state by viewModel.uiState.collectAsState()
 

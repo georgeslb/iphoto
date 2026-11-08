@@ -605,7 +605,7 @@ fun FolderContentGrid(
             getIndexForScroll = { index ->
                 syncDayRanges.firstOrNull { index in it.first }?.second ?: index
             },
-            modifier = Modifier.align(Alignment.CenterEnd)
+            modifier = Modifier.fillMaxSize()
         )
     }
 }
