@@ -243,9 +243,18 @@ function App() {
   // logic.
   const removePhotosLocally = useCallback((ids) => {
     dayIndexed.setPhotosByDay(prev => removeFromPhotosByDay(prev, ids));
+    if (dayIndexed.setDays) {
+      dayIndexed.setDays(prevDays => prevDays.map(d => {
+        const photosInDay = dayIndexed.photosByDay[d.day] || [];
+        const removedInThisDay = photosInDay.filter(p => ids.includes(p.id)).length;
+        if (removedInThisDay === 0) return d;
+        return { ...d, count: Math.max(0, d.count - removedInThisDay) };
+      }).filter(d => d.count > 0));
+    }
+    window.dispatchEvent(new CustomEvent('photos-removed', { detail: { ids } }));
     // dayIndexed itself deliberately excluded - see seekToMemoryDay's own comment above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dayIndexed.setPhotosByDay]);
+  }, [dayIndexed.setPhotosByDay, dayIndexed.setDays, dayIndexed.photosByDay]);
 
   const {
     handleMoveToGarbage,

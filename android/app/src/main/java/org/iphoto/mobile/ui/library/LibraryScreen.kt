@@ -38,7 +38,13 @@ fun LibraryScreen(onPhotoClick: (String) -> Unit) {
     LaunchedEffect(currentVersion) {
         if (currentVersion > lastLoadedVersion) {
             lastLoadedVersion = currentVersion
-            viewModel.loadFirstPage()
+            val removedId = org.iphoto.mobile.ui.common.PhotoBrowsingContext.lastRemovedPhotoId
+            if (removedId != null && state.photos.any { it.id == removedId }) {
+                viewModel.removePhotoLocally(removedId)
+                org.iphoto.mobile.ui.common.PhotoBrowsingContext.lastRemovedPhotoId = null
+            } else {
+                viewModel.loadFirstPage()
+            }
         }
     }
 

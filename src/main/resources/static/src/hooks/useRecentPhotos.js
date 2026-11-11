@@ -32,6 +32,17 @@ export function useRecentPhotos(baseUrl) {
     nextPageRef.current = 0;
   }, [baseUrl]);
 
+  useEffect(() => {
+    const handlePhotosRemoved = (e) => {
+      const removedIds = e.detail?.ids || [];
+      if (removedIds.length > 0) {
+        setPhotos(prev => prev.filter(p => !removedIds.includes(p.id)));
+      }
+    };
+    window.addEventListener('photos-removed', handlePhotosRemoved);
+    return () => window.removeEventListener('photos-removed', handlePhotosRemoved);
+  }, []);
+
   const loadMore = useCallback(async () => {
     if (loadingRef.current || isLastRef.current) return;
     loadingRef.current = true;

@@ -58,6 +58,7 @@ class PhotoDetailViewModel(
     val uiState: StateFlow<PhotoDetailUiState> = _uiState.asStateFlow()
 
     init {
+        org.iphoto.mobile.ui.common.PhotoBrowsingContext.lastViewedPhotoId = currentPhotoId
         viewModelScope.launch {
             try {
                 val fetched = photoApi.get(currentPhotoId)
@@ -79,11 +80,13 @@ class PhotoDetailViewModel(
         (_uiState.value as? PhotoDetailUiState.Loaded)?.let(block)
     }
 
-    fun moveToGarbage() = withLoaded { loaded ->
+    fun moveToGarbage(onLibraryChanged: () -> Unit = {}) = withLoaded { loaded ->
         _uiState.value = loaded.copy(isMutating = true, actionError = null)
         viewModelScope.launch {
             try {
                 photoApi.moveToGarbage(listOf(currentPhotoId))
+                org.iphoto.mobile.ui.common.PhotoBrowsingContext.removePhoto(currentPhotoId)
+                onLibraryChanged()
                 _uiState.value = PhotoDetailUiState.Removed
             } catch (e: Exception) {
                 _uiState.value = loaded.copy(isMutating = false, actionError = e.message ?: "Failed to move to garbage")

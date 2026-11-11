@@ -7,7 +7,7 @@ export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, hand
   const [showEditDateModal, setShowEditDateModal] = useState(false);
 
   const handleMoveToGarbage = useCallback(async (ids) => {
-    if (!window.confirm(messages["trashConfirmation"](ids.length))) return;
+    if (!window.confirm(messages["trashConfirmation"](ids.length))) return false;
 
     const res = await fetch('/api/photos/garbage', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ids) });
     if (res.ok) {
@@ -27,8 +27,10 @@ export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, hand
       removePhotosLocally(ids);
       await fetchAlbums();
       await fetchSpaces();
+      return true;
     } else {
       alert(messages["failedToMoveToGarbage"](res.status));
+      return false;
     }
   }, [removePhotosLocally, fetchAlbums, fetchSpaces, setSelectedIds, messages]);
 
@@ -45,8 +47,10 @@ export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, hand
     });
     if (res.ok) {
       await refreshAndMaintainScroll();
+      return true;
     } else {
       alert(messages["failedToUnlinkDuplicate"](res.status));
+      return false;
     }
   }, [refreshAndMaintainScroll, messages]);
 
@@ -55,8 +59,10 @@ export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, hand
     if (res.ok) {
       setSelectedIds([]);
       await refreshAndMaintainScroll();
+      return true;
     } else {
       alert(messages["failedToRestore"](res.status));
+      return false;
     }
   }, [refreshAndMaintainScroll, setSelectedIds, messages]);
 
@@ -65,19 +71,23 @@ export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, hand
     if (res.ok) {
       setSelectedIds([]);
       await refreshAndMaintainScroll();
+      return true;
     } else {
       alert(messages["failedToMoveToMain"](res.status));
+      return false;
     }
   }, [refreshAndMaintainScroll, setSelectedIds, messages]);
 
   const handlePermanentDelete = useCallback(async (ids) => {
-    if (!window.confirm(messages["permanentDeleteConfirmation"](ids.length))) return;
+    if (!window.confirm(messages["permanentDeleteConfirmation"](ids.length))) return false;
     const res = await fetch('/api/photos/garbage/permanent', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ids) });
     if (res.ok) {
       setSelectedIds([]);
       await refreshAndMaintainScroll();
+      return true;
     } else {
       alert(messages["failedToPermanentlyDelete"](res.status));
+      return false;
     }
   }, [refreshAndMaintainScroll, setSelectedIds, messages]);
 

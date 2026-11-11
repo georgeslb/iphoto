@@ -331,7 +331,10 @@ fun PhotoDetailScreen(
     }
 
     LaunchedEffect(state) {
-        if (state is PhotoDetailUiState.Removed) onBack()
+        if (state is PhotoDetailUiState.Removed) {
+            container.notifyLibraryChanged()
+            onBack()
+        }
     }
 
     Scaffold(
@@ -376,7 +379,7 @@ fun PhotoDetailScreen(
                                 onAddToAlbum = onAddToAlbumClick,
                                 onRemoveFromAlbum = onRemoveFromAlbumClick,
                                 onMoveToMain = onMoveToMainClick,
-                                onMoveToGarbage = viewModel::moveToGarbage
+                                onMoveToGarbage = { viewModel.moveToGarbage(onLibraryChanged = { container.notifyLibraryChanged() }) }
                             )
                         }
                     }
@@ -496,7 +499,7 @@ fun PhotoDetailScreen(
                                 onAddToAlbum = onAddToAlbumClick,
                                 onRemoveFromAlbum = onRemoveFromAlbumClick,
                                 onMoveToMain = onMoveToMainClick,
-                                onMoveToGarbage = viewModel::moveToGarbage
+                                onMoveToGarbage = { viewModel.moveToGarbage(onLibraryChanged = { container.notifyLibraryChanged() }) }
                             )
                         }
                     }

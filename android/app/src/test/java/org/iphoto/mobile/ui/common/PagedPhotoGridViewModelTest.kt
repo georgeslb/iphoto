@@ -230,6 +230,14 @@ class PagedPhotoGridViewModelTest {
     }
 
     @Test
+    fun `removePhotoLocally removes the photo without touching other photos`() {
+        val viewModel = viewModelWith(listOf(testPhoto("1"), testPhoto("2")))
+        viewModel.removePhotoLocally("1")
+
+        assertEquals(listOf(testPhoto("2")), viewModel.uiState.value.photos)
+    }
+
+    @Test
     fun `moveSelectionToGarbage calls the api with selected ids then reloads and clears selection`() = runTest {
         val viewModel = viewModelWith(listOf(testPhoto("1"), testPhoto("2")))
         viewModel.toggleSelection("1")

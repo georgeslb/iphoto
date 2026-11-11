@@ -48,15 +48,17 @@ class PhotoDetailViewModelTest {
     }
 
     @Test
-    fun `moveToGarbage transitions to Removed on success`() = runTest {
+    fun `moveToGarbage transitions to Removed and calls onLibraryChanged on success`() = runTest {
         val photoApi = mockk<PhotoApi>()
         coEvery { photoApi.get("1") } returns testPhoto("1")
         coEvery { photoApi.moveToGarbage(listOf("1")) } returns Unit
         val viewModel = PhotoDetailViewModel(photoApi, "1", ioDispatcher = mainDispatcherRule.testDispatcher)
+        var libraryChangedCalled = false
 
-        viewModel.moveToGarbage()
+        viewModel.moveToGarbage(onLibraryChanged = { libraryChangedCalled = true })
 
         assertTrue(viewModel.uiState.value is PhotoDetailUiState.Removed)
+        assertTrue(libraryChangedCalled)
     }
 
     @Test

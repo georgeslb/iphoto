@@ -161,6 +161,15 @@ class PagedPhotoGridViewModel(
         _uiState.value = _uiState.value.copy(selectedIds = emptySet())
     }
 
+    fun removePhotoLocally(photoId: String) {
+        val current = _uiState.value.photos
+        if (current.any { it.id == photoId }) {
+            _uiState.value = _uiState.value.copy(
+                photos = current.filter { it.id != photoId }
+            )
+        }
+    }
+
     // Garbage-d photos disappear from every Main/Space view, so a full reload (rather than an
     // optimistic local removal) is the simplest way to keep pagination/day-grouping consistent.
     fun moveSelectionToGarbage(photoApi: PhotoApi) {
