@@ -43,3 +43,35 @@ export function removeFromPhotosByDay(photosByDay, ids) {
   }
   return next;
 }
+
+// Reorders photos within a flat array in-place by updating dateTaken/fullDateTime and sorting
+// descending. Used to avoid a full page-0 reset on drag-to-reorder, preserving scroll position.
+export function reorderInFlatPhotos(photos, updates) {
+  if (!updates || updates.length === 0 || !photos) return photos;
+  const updateMap = new Map(updates.map(u => [u.photoId, u.newDate]));
+  const updated = photos.map(p => {
+    const newDate = updateMap.get(p.id);
+    return newDate ? { ...p, fullDateTime: newDate } : p;
+  });
+  return [...updated].sort((a, b) => new Date(b.fullDateTime).getTime() - new Date(a.fullDateTime).getTime());
+}
+
+// Same reorder, applied within whichever day bucket contains the updated photos.
+// Preserves all other days and loaded pages without resetting or jumping scroll position.
+export function reorderInPhotosByDay(photosByDay, updates) {
+  if (!updates || updates.length === 0 || !photosByDay) return photosByDay;
+  const updateMap = new Map(updates.map(u => [u.photoId, u.newDate]));
+  const next = {};
+  for (const [day, dayPhotos] of Object.entries(photosByDay)) {
+    if (!dayPhotos || !dayPhotos.some(p => updateMap.has(p.id))) {
+      next[day] = dayPhotos;
+      continue;
+    }
+    const updated = dayPhotos.map(p => {
+      const newDate = updateMap.get(p.id);
+      return newDate ? { ...p, fullDateTime: newDate } : p;
+    });
+    next[day] = [...updated].sort((a, b) => new Date(b.fullDateTime).getTime() - new Date(a.fullDateTime).getTime());
+  }
+  return next;
+}

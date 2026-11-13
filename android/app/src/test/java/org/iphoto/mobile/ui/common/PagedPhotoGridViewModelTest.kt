@@ -433,32 +433,54 @@ class PagedPhotoGridViewModelTest {
     }
 
     @Test
-    fun `reorderPhotos calls updateDate for each update, reloads first page, and retains active selection`() = runTest {
-        val initialPhotos = listOf(testPhoto("1"), testPhoto("2"))
-        val reloadedPhotos = listOf(testPhoto("2"), testPhoto("1"))
+    fun `reorderPhotos calls updateDate for each update, reorders in-place without reloading, and retains active selection`() = runTest {
+        val p1 = testPhoto("1", fullDateTime = "2026-01-01T10:00:00")
+        val p2 = testPhoto("2", fullDateTime = "2026-01-01T09:00:00")
+        val initialPhotos = listOf(p1, p2)
         var loadCount = 0
         val loadPage: suspend (Int, Int) -> Pair<List<Photo>, Boolean> = { _, _ ->
             loadCount++
-            if (loadCount == 1) initialPhotos to true else reloadedPhotos to true
+            initialPhotos to true
         }
         val viewModel = PagedPhotoGridViewModel(loadPage)
         viewModel.toggleSelection("1")
         val photoApi = mockk<PhotoApi>()
         coEvery { photoApi.updateDate(any(), any()) } returns testPhoto("x")
 
+        // Reorder p2 to be newer than p1
         val updates = listOf(
-            ReorderUpdate("1", "2024-03-15T14:00:06.000"),
-            ReorderUpdate("2", "2024-03-15T14:00:05.000")
+            ReorderUpdate("2", "2026-01-01T14:00:06.000"),
+            ReorderUpdate("1", "2026-01-01T14:00:05.000")
         )
         viewModel.reorderPhotos(photoApi, updates)
 
-        coVerify(exactly = 1) { photoApi.updateDate("1", UpdatePhotoDateRequest("2024-03-15T14:00:06.000")) }
-        coVerify(exactly = 1) { photoApi.updateDate("2", UpdatePhotoDateRequest("2024-03-15T14:00:05.000")) }
+        coVerify(exactly = 1) { photoApi.updateDate("1", UpdatePhotoDateRequest("2026-01-01T14:00:05.000")) }
+        coVerify(exactly = 1) { photoApi.updateDate("2", UpdatePhotoDateRequest("2026-01-01T14:00:06.000")) }
+        assertEquals(1, loadCount) // Never reloads from network, preserving loaded pages and scroll position
         val state = viewModel.uiState.value
-        assertEquals(reloadedPhotos, state.photos)
+        assertEquals(listOf("2", "1"), state.photos.map { it.id })
+        assertEquals("2026-01-01T14:00:06.000", state.photos[0].fullDateTime)
+        assertEquals("2026-01-01T14:00:05.000", state.photos[1].fullDateTime)
         assertEquals(setOf("1"), state.selectedIds)
         assertFalse(state.isMutating)
         assertNull(state.actionError)
+    }
+
+    @Test
+    fun `applyReorder reorders affected day while preserving other days intact`() {
+        val day1P1 = testPhoto("d1-1", groupDate = "2026-01-02", fullDateTime = "2026-01-02T10:00:00")
+        val day2P1 = testPhoto("d2-1", groupDate = "2026-01-01", fullDateTime = "2026-01-01T12:00:00")
+        val day2P2 = testPhoto("d2-2", groupDate = "2026-01-01", fullDateTime = "2026-01-01T11:00:00")
+        val photos = listOf(day1P1, day2P1, day2P2)
+
+        val updates = listOf(
+            ReorderUpdate("d2-2", "2026-01-01T13:00:00.000")
+        )
+
+        val reordered = PagedPhotoGridViewModel.applyReorder(photos, updates)
+
+        assertEquals(listOf("d1-1", "d2-2", "d2-1"), reordered.map { it.id })
+        assertEquals("2026-01-01T13:00:00.000", reordered.find { it.id == "d2-2" }?.fullDateTime)
     }
 
     @Test

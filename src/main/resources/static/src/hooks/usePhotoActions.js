@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react';
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
-export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, selectedIds, setSelectedIds, removePhotosLocally, fetchAlbums, fetchSpaces) { // Added selectedIds, setSelectedIds as props
+export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, selectedIds, setSelectedIds, removePhotosLocally, fetchAlbums, fetchSpaces, reorderPhotosLocally) { // Added selectedIds, setSelectedIds as props
   const { messages } = useLocale(); // Use the useLocale hook
   // const [selectedIds, setSelectedIds] = useState([]); // Removed internal state
   const [showEditDateModal, setShowEditDateModal] = useState(false);
@@ -177,9 +177,10 @@ export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, hand
 
   // Drag-to-reorder within a day (PhotoGrid.jsx's drag handle) - `updates` is
   // [{photoId, newDate}, ...] from utils/photoReorder.js#computeReorderDates, each entry already
-  // Carrying its own precomputed timestamp. Same one-PATCH-per-id-via-Promise.all pattern as
-  // handleBulkUpdateDate above, just a per-photo date instead of one shared value. Clears
-  // selectedIds on success when reordering ends.
+  // carrying its own precomputed timestamp. Same one-PATCH-per-id-via-Promise.all pattern as
+  // handleBulkUpdateDate above, just a per-photo date instead of one shared value.
+  // Updates local photo order in place (via reorderPhotosLocally) to prevent resetting loaded
+  // pages or jumping the user's scroll position, and clears selectedIds on success.
   const handleReorderPhotos = useCallback(async (updates) => {
     if (!updates || updates.length === 0) return;
 
@@ -195,14 +196,18 @@ export function usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, hand
       const responses = await Promise.all(updatePromises);
       if (responses.every(res => res.ok)) {
         setSelectedIds([]);
-        await refreshAndMaintainScroll();
+        if (reorderPhotosLocally) {
+          reorderPhotosLocally(updates);
+        } else {
+          await refreshAndMaintainScroll();
+        }
       } else {
         throw new Error(messages["failedToUpdateDate"](responses.find(res => !res.ok).status));
       }
     } catch (err) {
       alert(messages["errorUpdatingDate"](err.message));
     }
-  }, [setSelectedIds, refreshAndMaintainScroll, messages]);
+  }, [setSelectedIds, reorderPhotosLocally, refreshAndMaintainScroll, messages]);
 
   const handleEditPhoto = useCallback(async (photoId, editData) => {
     try {

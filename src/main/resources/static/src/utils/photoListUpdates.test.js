@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { removeFromFlatPhotos, removeFromPhotosByDay } from './photoListUpdates';
+import { removeFromFlatPhotos, removeFromPhotosByDay, reorderInFlatPhotos, reorderInPhotosByDay } from './photoListUpdates';
 
 // Real backend shape (see PhotoService.buildDedupedPage/PhotoMapper): only a cluster's PRIMARY
 // ever appears as its own top-level entry - the other members exist ONLY nested inside the
@@ -93,5 +93,52 @@ describe('removeFromPhotosByDay', () => {
 
   it('returns an empty object for an empty input', () => {
     expect(removeFromPhotosByDay({}, ['x'])).toEqual({});
+  });
+});
+
+describe('reorderInFlatPhotos', () => {
+  it('updates dates and re-sorts descending by fullDateTime', () => {
+    const prev = [
+      { id: 'p1', fullDateTime: '2024-03-15T14:00:10.000' },
+      { id: 'p2', fullDateTime: '2024-03-15T14:00:05.000' },
+    ];
+    // Move p2 before p1 by giving it a newer date
+    const updates = [{ photoId: 'p2', newDate: '2024-03-15T14:00:11.000' }];
+    const next = reorderInFlatPhotos(prev, updates);
+
+    expect(next.map(p => p.id)).toEqual(['p2', 'p1']);
+    expect(next[0].fullDateTime).toBe('2024-03-15T14:00:11.000');
+  });
+
+  it('returns original array when updates are empty', () => {
+    const prev = [{ id: 'p1', fullDateTime: '2024-03-15T14:00:10.000' }];
+    expect(reorderInFlatPhotos(prev, [])).toBe(prev);
+  });
+});
+
+describe('reorderInPhotosByDay', () => {
+  it('reorders only within the day that has updates, preserving other days untouched', () => {
+    const photosByDay = {
+      '2024-03-15': [
+        { id: 'p1', fullDateTime: '2024-03-15T14:00:10.000' },
+        { id: 'p2', fullDateTime: '2024-03-15T14:00:05.000' },
+      ],
+      '2024-03-14': [
+        { id: 'p3', fullDateTime: '2024-03-14T10:00:00.000' },
+      ],
+    };
+
+    const updates = [{ photoId: 'p2', newDate: '2024-03-15T14:00:12.000' }];
+    const next = reorderInPhotosByDay(photosByDay, updates);
+
+    expect(next['2024-03-15'].map(p => p.id)).toEqual(['p2', 'p1']);
+    expect(next['2024-03-15'][0].fullDateTime).toBe('2024-03-15T14:00:12.000');
+    expect(next['2024-03-14']).toBe(photosByDay['2024-03-14']);
+  });
+
+  it('returns original object when updates are empty or null', () => {
+    const photosByDay = { '2024-03-15': [] };
+    expect(reorderInPhotosByDay(photosByDay, [])).toBe(photosByDay);
+    expect(reorderInPhotosByDay(photosByDay, null)).toBe(photosByDay);
   });
 });

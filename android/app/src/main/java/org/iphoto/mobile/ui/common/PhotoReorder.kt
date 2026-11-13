@@ -162,15 +162,9 @@ object PhotoReorder {
         val visibleDayItems = visibleItems.filter { it.key in dayIds }
         if (visibleDayItems.isEmpty()) return null
 
-        val dayTop = visibleDayItems.minOf { it.offset.y } - 50
-        val dayBottom = visibleDayItems.maxOf { it.offset.y + it.size.height } + 50
-        if (gridPos.y < dayTop || gridPos.y > dayBottom) {
-            return null
-        }
-
         val visibleOthers = visibleItems.filter { it.key in otherIds }
         if (visibleOthers.isEmpty()) {
-            val isNearTop = gridPos.y <= dayTop + 80
+            val isNearTop = gridPos.y <= visibleDayItems.minOf { it.offset.y } + 80
             val target = if (isNearTop) others.first().id else others.last().id
             val pos = if (isNearTop) DropPosition.BEFORE else DropPosition.AFTER
             return target to pos
@@ -178,10 +172,26 @@ object PhotoReorder {
 
         val firstOther = visibleOthers.first()
         val lastOther = visibleOthers.last()
-        if (gridPos.y < firstOther.offset.y && others.first().id == firstOther.key) {
+
+        val isDayStartVisible = others.first().id == firstOther.key
+        val isDayEndVisible = others.last().id == lastOther.key
+
+        val dayTop = visibleDayItems.minOf { it.offset.y } - 50
+        val dayBottom = visibleDayItems.maxOf { it.offset.y + it.size.height } + 50
+
+        // If the start of the day is visible on screen, reject drags above it (into another day)
+        if (isDayStartVisible && gridPos.y < dayTop) {
+            return null
+        }
+        // If the end of the day is visible on screen, reject drags below it (into another day)
+        if (isDayEndVisible && gridPos.y > dayBottom) {
+            return null
+        }
+
+        if (gridPos.y < firstOther.offset.y) {
             return (firstOther.key as String) to DropPosition.BEFORE
         }
-        if (gridPos.y > lastOther.offset.y + lastOther.size.height && others.last().id == lastOther.key) {
+        if (gridPos.y > lastOther.offset.y + lastOther.size.height) {
             return (lastOther.key as String) to DropPosition.AFTER
         }
 
@@ -215,9 +225,9 @@ suspend fun PointerInputScope.detectHoldToMoveGestures(
     onTap: () -> Unit,
     onLongPress: (() -> Unit)? = null,
     onMoveStart: (Offset) -> Unit,
-    onMoveDrag: (Offset) -> Unit,
-    onMoveEnd: () -> Unit,
-    onMoveCancel: () -> Unit
+    onMoveDrag: ((Offset) -> Unit)? = null,
+    onMoveEnd: (() -> Unit)? = null,
+    onMoveCancel: (() -> Unit)? = null
 ) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Main)
@@ -284,6 +294,11 @@ suspend fun PointerInputScope.detectHoldToMoveGestures(
         isMoveActive = true
         onMoveStart(downPos)
 
+        if (onMoveDrag == null) {
+            isMoveActive = false
+            return@awaitEachGesture
+        }
+
         // Phase 3: Track drag movements
         try {
             while (isMoveActive) {
@@ -291,14 +306,14 @@ suspend fun PointerInputScope.detectHoldToMoveGestures(
                 val change = event.changes.firstOrNull { it.id == pointerId }
                 if (change == null) {
                     isMoveActive = false
-                    onMoveCancel()
+                    onMoveCancel?.invoke()
                     break
                 }
                 val isUp = !change.pressed || change.changedToUp()
                 change.consume()
                 if (isUp) {
                     isMoveActive = false
-                    onMoveEnd()
+                    onMoveEnd?.invoke()
                     break
                 } else {
                     onMoveDrag(change.position)
@@ -307,13 +322,13 @@ suspend fun PointerInputScope.detectHoldToMoveGestures(
         } catch (e: CancellationException) {
             if (isMoveActive) {
                 isMoveActive = false
-                onMoveCancel()
+                onMoveCancel?.invoke()
             }
             throw e
         } finally {
             if (isMoveActive) {
                 isMoveActive = false
-                onMoveCancel()
+                onMoveCancel?.invoke()
             }
         }
     }
