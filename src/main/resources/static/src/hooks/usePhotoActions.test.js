@@ -19,11 +19,12 @@ function renderPhotoActions(overrides = {}) {
   const removePhotosLocally = overrides.removePhotosLocally || vi.fn();
   const fetchAlbums = overrides.fetchAlbums || vi.fn();
   const fetchSpaces = overrides.fetchSpaces || vi.fn();
+  const reorderPhotosLocally = overrides.reorderPhotosLocally !== undefined ? overrides.reorderPhotosLocally : vi.fn();
   const { result } = renderHook(
-    () => usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, [], setSelectedIds, removePhotosLocally, fetchAlbums, fetchSpaces),
+    () => usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, [], setSelectedIds, removePhotosLocally, fetchAlbums, fetchSpaces, reorderPhotosLocally),
     { wrapper: localeWrapper }
   );
-  return { result, refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, setSelectedIds, removePhotosLocally, fetchAlbums, fetchSpaces };
+  return { result, refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, setSelectedIds, removePhotosLocally, fetchAlbums, fetchSpaces, reorderPhotosLocally };
 }
 
 describe('usePhotoActions', () => {
@@ -322,15 +323,16 @@ describe('usePhotoActions', () => {
       expect(global.fetch).not.toHaveBeenCalled();
     });
 
-    it('fires one PATCH per update with its own precomputed date, then refreshes on success', async () => {
+    it('fires one PATCH per update with its own precomputed date, then updates in place without refreshing scroll', async () => {
       global.fetch = vi.fn(() => jsonResponse({}));
-      const { result, refreshAndMaintainScroll } = renderPhotoActions();
+      const { result, reorderPhotosLocally, refreshAndMaintainScroll } = renderPhotoActions();
 
+      const updates = [
+        { photoId: 'p1', newDate: '2024-01-01T14:00:06.000' },
+        { photoId: 'p2', newDate: '2024-01-01T14:00:07.000' },
+      ];
       await act(async () => {
-        await result.current.handleReorderPhotos([
-          { photoId: 'p1', newDate: '2024-01-01T14:00:06.000' },
-          { photoId: 'p2', newDate: '2024-01-01T14:00:07.000' },
-        ]);
+        await result.current.handleReorderPhotos(updates);
       });
 
       expect(global.fetch).toHaveBeenCalledTimes(2);
@@ -342,6 +344,18 @@ describe('usePhotoActions', () => {
         method: 'PATCH',
         body: JSON.stringify({ newDate: '2024-01-01T14:00:07.000' }),
       }));
+      expect(reorderPhotosLocally).toHaveBeenCalledWith(updates);
+      expect(refreshAndMaintainScroll).not.toHaveBeenCalled();
+    });
+
+    it('falls back to refreshAndMaintainScroll if reorderPhotosLocally is not provided', async () => {
+      global.fetch = vi.fn(() => jsonResponse({}));
+      const { result, refreshAndMaintainScroll } = renderPhotoActions({ reorderPhotosLocally: null });
+
+      await act(async () => {
+        await result.current.handleReorderPhotos([{ photoId: 'p1', newDate: '2024-01-01T14:00:06.000' }]);
+      });
+
       expect(refreshAndMaintainScroll).toHaveBeenCalled();
     });
 

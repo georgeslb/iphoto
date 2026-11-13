@@ -272,6 +272,7 @@ class PagedPhotoGridViewModel(
 
     // Drag-to-reorder within a day (matching web-ui's usePhotoActions.js#handleReorderPhotos).
     // Calls PATCH /api/photos/{id}/date for each update with the precomputed timestamp.
+    // Updates local photo list in place to preserve loaded pages and current scroll position.
     // Deliberately does NOT clear selectedIds on success - reordering shouldn't drop the user's
     // active multi-selection.
     fun reorderPhotos(photoApi: PhotoApi, updates: List<ReorderUpdate>) {
@@ -286,11 +287,9 @@ class PagedPhotoGridViewModel(
                         }
                     }.awaitAll()
                 }
-                val (photos, last) = loadPage(0, PAGE_SIZE)
-                nextPage = 1
+                val reorderedPhotos = applyReorder(_uiState.value.photos, updates)
                 _uiState.value = _uiState.value.copy(
-                    photos = photos,
-                    endReached = last,
+                    photos = reorderedPhotos,
                     isMutating = false
                 )
             } catch (e: Exception) {
@@ -412,6 +411,36 @@ class PagedPhotoGridViewModel(
                 curr += 1 + groupPhotos.size
             }
             return -1
+        }
+
+        // Reorders photos in-place by updating fullDateTime and sorting descending within the affected day.
+        // Preserves all loaded pages without reloading page 0 or losing grid scroll position.
+        fun applyReorder(photos: List<Photo>, updates: List<ReorderUpdate>): List<Photo> {
+            if (updates.isEmpty() || photos.isEmpty()) return photos
+            val updateMap = updates.associateBy { it.photoId }
+            val updated = photos.map { photo ->
+                val update = updateMap[photo.id]
+                if (update != null) photo.copy(fullDateTime = update.newDate) else photo
+            }
+            val affectedDays = updated.filter { it.id in updateMap }.map { it.groupDate }.toSet()
+            if (affectedDays.isEmpty()) return updated
+
+            val dayGroups = updated.groupBy { it.groupDate }
+            return dayGroups.flatMap { (day, dayPhotos) ->
+                if (day in affectedDays) {
+                    dayPhotos.sortedWith(
+                        compareByDescending<Photo> { photo ->
+                            try {
+                                PhotoReorder.parseTime(photo.fullDateTime)
+                            } catch (_: Exception) {
+                                0L
+                            }
+                        }.thenByDescending { it.fullDateTime }
+                    )
+                } else {
+                    dayPhotos
+                }
+            }
         }
     }
 }

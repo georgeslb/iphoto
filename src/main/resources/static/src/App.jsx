@@ -34,7 +34,7 @@ import MemoriesBar from './components/MemoriesBar';
 import RecentlyAddedSection from './components/RecentlyAddedSection';
 import PersonMergeSuggestionBanner from './components/PersonMergeSuggestionBanner';
 import { useDayIndexedPhotos } from './hooks/useDayIndexedPhotos';
-import { removeFromPhotosByDay } from './utils/photoListUpdates';
+import { removeFromPhotosByDay, reorderInPhotosByDay } from './utils/photoListUpdates';
 import { useAlbumManagement } from './hooks/useAlbumManagement';
 import { useShareLinkManagement } from './hooks/useShareLinkManagement';
 import { useDuplicateManagement } from './hooks/useDuplicateManagement';
@@ -256,6 +256,13 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dayIndexed.setPhotosByDay, dayIndexed.setDays, dayIndexed.photosByDay]);
 
+  // handleReorderPhotos updates whatever's already loaded in place instead of a full refetch (see
+  // usePhotoActions.js). See utils/photoListUpdates.js for the actual in-day reordering logic.
+  const reorderPhotosLocally = useCallback((updates) => {
+    dayIndexed.setPhotosByDay(prev => reorderInPhotosByDay(prev, updates));
+    window.dispatchEvent(new CustomEvent('photos-reordered', { detail: { updates } }));
+  }, [dayIndexed.setPhotosByDay]);
+
   const {
     handleMoveToGarbage,
     handleUnlinkDuplicate,
@@ -269,7 +276,7 @@ function App() {
     handleBulkUpdateDate,
     handleDownload,
     handleReorderPhotos,
-  } = usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, selectedIds, setSelectedIds, removePhotosLocally, fetchAlbums, fetchSpaces);
+  } = usePhotoActions(refreshAndMaintainScroll, setSelectedPhoto, handlePhotoClick, selectedIds, setSelectedIds, removePhotosLocally, fetchAlbums, fetchSpaces, reorderPhotosLocally);
 
   const {
     handleRestoreSpaces,
