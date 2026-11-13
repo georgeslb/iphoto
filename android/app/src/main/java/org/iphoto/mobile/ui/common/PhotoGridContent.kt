@@ -33,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,6 +42,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToUp
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -54,6 +58,7 @@ import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.iphoto.mobile.LocalAppContainer
+import org.iphoto.mobile.model.Photo
 
 /**
  * Google/Android Photos-style day header: a full-width label above that day's row(s) of square
@@ -93,6 +98,9 @@ fun PhotoGridContent(
     var dragState by remember { mutableStateOf<ReorderDragState?>(null) }
     var reorderSelectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var reorderDay by remember { mutableStateOf<String?>(null) }
+    val dayGroups: Map<String, List<Photo>> = remember(state.photos) { state.photos.groupBy { it.groupDate } }
+    val currentDayGroups: Map<String, List<Photo>> by rememberUpdatedState<Map<String, List<Photo>>>(dayGroups)
+    val currentDragState: ReorderDragState? by rememberUpdatedState<ReorderDragState?>(dragState)
 
     // Auto-scroll when dragging near viewport edges
     LaunchedEffect(dragState != null) {
@@ -104,12 +112,33 @@ fun PhotoGridContent(
                 val height = coords.size.height.toFloat()
                 if (height > 0) {
                     val edge = 150f
+                    var didScroll = false
                     if (pos.y < edge) {
                         val factor = ((edge - pos.y) / edge).coerceIn(0f, 1f)
                         gridState.scrollBy(-25f * factor)
+                        didScroll = true
                     } else if (pos.y > height - edge) {
                         val factor = ((pos.y - (height - edge)) / edge).coerceIn(0f, 1f)
                         gridState.scrollBy(25f * factor)
+                        didScroll = true
+                    }
+                    if (didScroll) {
+                        val current = dragState
+                        if (current != null) {
+                            val dayList = currentDayGroups[current.dragDay] ?: emptyList()
+                            val target = PhotoReorder.findDropTarget(
+                                gridPos = pos,
+                                dayPhotos = dayList,
+                                movedIds = current.movedPhotos.map { it.id }.toSet(),
+                                visibleItems = gridState.layoutInfo.visibleItemsInfo
+                            )
+                            if (target?.first != current.targetId || target?.second != current.dropPosition) {
+                                dragState = current.copy(
+                                    targetId = target?.first,
+                                    dropPosition = target?.second ?: current.dropPosition
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -136,6 +165,56 @@ fun PhotoGridContent(
                 .weight(1f)
                 .fillMaxSize()
                 .onGloballyPositioned { gridCoordinates = it }
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val current = currentDragState
+                            if (current != null) {
+                                val change = event.changes.firstOrNull()
+                                if (change == null) {
+                                    dragState = null
+                                    continue
+                                }
+                                change.consume()
+                                val gridPos = change.position
+                                val dayList = currentDayGroups[current.dragDay] ?: emptyList()
+                                val target = PhotoReorder.findDropTarget(
+                                    gridPos = gridPos,
+                                    dayPhotos = dayList,
+                                    movedIds = current.movedPhotos.map { it.id }.toSet(),
+                                    visibleItems = gridState.layoutInfo.visibleItemsInfo
+                                )
+                                val isUp = !change.pressed || change.changedToUp()
+                                if (isUp) {
+                                    val dropTarget = target ?: (if (current.targetId != null) current.targetId to current.dropPosition else null)
+                                    dragState = null
+                                    if (dropTarget != null && dropTarget.first !in current.movedPhotos.map { it.id }) {
+                                        val moving = current.movedPhotos.map { it.id }
+                                        val others = dayList.filter { it.id !in moving.toSet() }
+                                        val updates = PhotoReorder.computeReorderDates(
+                                            dayPhotosDesc = others,
+                                            movedIds = moving,
+                                            targetId = dropTarget.first,
+                                            position = dropTarget.second
+                                        )
+                                        if (updates.isNotEmpty()) {
+                                            reorderSelectedIds = emptySet()
+                                            reorderDay = null
+                                            viewModel.reorderPhotos(container.photoApi, updates)
+                                        }
+                                    }
+                                } else {
+                                    dragState = current.copy(
+                                        dragPosition = gridPos,
+                                        targetId = target?.first,
+                                        dropPosition = target?.second ?: current.dropPosition
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
         ) {
             when {
                 state.isLoading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
@@ -145,10 +224,6 @@ fun PhotoGridContent(
                 )
                 state.photos.isEmpty() -> Text("No photos", modifier = Modifier.align(Alignment.Center))
                 else -> {
-                    // Photos already arrive newest-first from the backend, and Kotlin's groupBy keeps
-                    // both key-encounter order and each group's original element order - so this stays
-                    // newest-first-by-day without needing to re-sort anything.
-                    val dayGroups = remember(state.photos) { state.photos.groupBy { it.groupDate } }
                     val movedIds = remember(dragState) { dragState?.movedPhotos?.map { it.id }?.toSet() ?: emptySet() }
 
                     // Restore scroll focus to the photo being viewed in lightbox
@@ -263,49 +338,6 @@ fun PhotoGridContent(
                                                 )
                                             }
                                         } else null,
-                                        onHoldToMoveDrag = if (!state.isMutating) {
-                                            { windowPos ->
-                                                val current = dragState
-                                                if (current != null) {
-                                                    val gridPos = gridCoordinates?.takeIf { it.isAttached }?.windowToLocal(windowPos) ?: windowPos
-                                                    val dayList = dayGroups[current.dragDay] ?: emptyList()
-                                                    val target = PhotoReorder.findDropTarget(
-                                                        gridPos = gridPos,
-                                                        dayPhotos = dayList,
-                                                        movedIds = current.movedPhotos.map { it.id }.toSet(),
-                                                        visibleItems = gridState.layoutInfo.visibleItemsInfo
-                                                    )
-                                                    dragState = current.copy(
-                                                        dragPosition = gridPos,
-                                                        targetId = target?.first,
-                                                        dropPosition = target?.second ?: current.dropPosition
-                                                    )
-                                                }
-                                            }
-                                        } else null,
-                                        onHoldToMoveEnd = {
-                                            val current = dragState
-                                            dragState = null
-                                            if (current != null && current.targetId != null && current.targetId !in current.movedPhotos.map { it.id }) {
-                                                val dayList = dayGroups[current.dragDay] ?: emptyList()
-                                                val moving = current.movedPhotos.map { it.id }
-                                                val others = dayList.filter { it.id !in moving.toSet() }
-                                                val updates = PhotoReorder.computeReorderDates(
-                                                    dayPhotosDesc = others,
-                                                    movedIds = moving,
-                                                    targetId = current.targetId,
-                                                    position = current.dropPosition
-                                                )
-                                                if (updates.isNotEmpty()) {
-                                                    reorderSelectedIds = emptySet()
-                                                    reorderDay = null
-                                                    viewModel.reorderPhotos(container.photoApi, updates)
-                                                }
-                                            }
-                                        },
-                                        onHoldToMoveCancel = {
-                                            dragState = null
-                                        },
                                         modifier = Modifier
                                             .fillMaxSize()
                                             .alpha(if (isMoved) 0.35f else 1f),
