@@ -128,4 +128,40 @@ describe('useDragAutoScroll', () => {
 
     unmount();
   });
+
+  it('scrolls up on mousemove near the top edge while isDragging is true', () => {
+    const { unmount } = renderHook(() => useDragAutoScroll(true, containerRef));
+
+    window.dispatchEvent(new MouseEvent('mousemove', { clientY: 50 }));
+    flushRaf();
+
+    expect(mockScrollContainer.scrollBy).toHaveBeenCalled();
+    expect(mockScrollContainer.scrollBy.mock.calls[0][1]).toBeLessThan(0);
+
+    window.dispatchEvent(new MouseEvent('mouseup'));
+    mockScrollContainer.scrollBy.mockClear();
+    flushRaf();
+    expect(mockScrollContainer.scrollBy).not.toHaveBeenCalled();
+
+    unmount();
+  });
+
+  it('scrolls down on touchmove near the bottom edge while isDragging is true', () => {
+    const { unmount } = renderHook(() => useDragAutoScroll(true, containerRef));
+
+    const touchMoveEvent = new Event('touchmove');
+    touchMoveEvent.touches = [{ clientX: 100, clientY: 750 }];
+    window.dispatchEvent(touchMoveEvent);
+    flushRaf();
+
+    expect(mockScrollContainer.scrollBy).toHaveBeenCalled();
+    expect(mockScrollContainer.scrollBy.mock.calls[0][1]).toBeGreaterThan(0);
+
+    window.dispatchEvent(new Event('touchend'));
+    mockScrollContainer.scrollBy.mockClear();
+    flushRaf();
+    expect(mockScrollContainer.scrollBy).not.toHaveBeenCalled();
+
+    unmount();
+  });
 });

@@ -6,6 +6,10 @@ import TimelineScrubber from './TimelineScrubber';
 import { computeReorderDates } from '../utils/photoReorder';
 import { useDragAutoScroll } from '../hooks/useDragAutoScroll';
 
+// How long the user must hold mouse/touch on an asset before drag-to-reorder activates.
+const REORDER_HOLD_MS = 2000;
+const REORDER_MOVE_SLOP_PX = 10;
+
 // Clusters a flat list of photos into {primary, members} display items, same rule everywhere
 // duplicates are populated (Library/Space, day-indexed or not): a photo carries its known
 // duplicates via `p.duplicates`; `consumedIds` (shared across every call for one render, so a
@@ -66,14 +70,35 @@ export default function PhotoGrid({
   const gridContainerRef = useRef(null);
   const lastClickedIndexRef = useRef(null);
 
-  // Drag-to-reorder within a day (see utils/photoReorder.js for the actual date-math, and the
-  // handle's own JSX below for the draggable element). Plain useState (not a ref) since both drive
-  // visible re-renders - dimming every moved card, and highlighting whichever card is currently
-  // being dragged over.
-  // dragState: { movedIds, day } while a drag is in progress, else null.
+  // Reorder selection (checked via the move button, scoped to a single day just like Android).
+  const [reorderSelectedIds, setReorderSelectedIds] = useState([]);
+  const [reorderDay, setReorderDay] = useState(null);
+
+  // Drag-to-reorder within a day (see utils/photoReorder.js for the actual date-math).
+  // dragState: { movedIds, day, clientX, clientY, leadPhoto } while a drag is in progress, else null.
   const [dragState, setDragState] = useState(null);
   // dropTarget: { targetId, position: 'before' | 'after', day } while dragging over a target photo
   const [dropTarget, setDropTarget] = useState(null);
+
+  const holdTimerRef = useRef(null);
+  const holdStartRef = useRef(null);
+  const pendingHoldCleanupRef = useRef(null);
+  const suppressClickUntilRef = useRef(0);
+  const dragPositionRef = useRef({ clientX: 0, clientY: 0 });
+  const dragStateRef = useRef(null);
+  const dropTargetRef = useRef(null);
+  const groupsRef = useRef({});
+  const reorderStateRef = useRef({ ids: [], day: null });
+  const selectedIdsRef = useRef(selectedIds);
+  const handleReorderPhotosRef = useRef(handleReorderPhotos);
+  const setSelectedIdsRef = useRef(setSelectedIds);
+
+  dragStateRef.current = dragState;
+  dropTargetRef.current = dropTarget;
+  reorderStateRef.current = { ids: reorderSelectedIds, day: reorderDay };
+  selectedIdsRef.current = selectedIds;
+  handleReorderPhotosRef.current = handleReorderPhotos;
+  setSelectedIdsRef.current = setSelectedIds;
 
   // Automatically scroll the container/window when moving assets near top or bottom edges
   useDragAutoScroll(Boolean(dragState), gridContainerRef);
@@ -102,6 +127,15 @@ export default function PhotoGrid({
   };
 
   const handlePhotoClick = (p, e) => {
+    if (Date.now() < suppressClickUntilRef.current) {
+      suppressClickUntilRef.current = 0;
+      e.stopPropagation();
+      return;
+    }
+    if (reorderSelectedIds.length > 0) {
+      setReorderSelectedIds([]);
+      setReorderDay(null);
+    }
     const index = photoIndexById.get(p.id);
     if (e.shiftKey && lastClickedIndexRef.current !== null) {
       selectRange(index);
@@ -119,6 +153,10 @@ export default function PhotoGrid({
 
   const handleOverlayClick = (p, e) => {
     e.stopPropagation(); // Don't trigger the card's onClick
+    if (reorderSelectedIds.length > 0) {
+      setReorderSelectedIds([]);
+      setReorderDay(null);
+    }
     const index = photoIndexById.get(p.id);
     if (e.shiftKey && lastClickedIndexRef.current !== null) {
       selectRange(index);
@@ -139,6 +177,7 @@ export default function PhotoGrid({
     groupOrder.push(day);
     groups[day] = clusterIntoItems(dayIndex.photosByDay[day] || [], consumedIds);
   });
+  groupsRef.current = groups;
 
   // Re-derived every render from the live `groups` above (see openDuplicateMemberIds' own comment
   // for why this matches on ANY member id, not just the primary's) — null once none of the
@@ -150,6 +189,10 @@ export default function PhotoGrid({
 
   const handleSelectGroup = (dayItems, e) => {
     e.stopPropagation();
+    if (reorderSelectedIds.length > 0) {
+      setReorderSelectedIds([]);
+      setReorderDay(null);
+    }
     const groupIds = dayItems.flatMap(item => item.members.map(m => m.id));
     const allSelected = groupIds.length > 0 && groupIds.every(id => selectedIds.includes(id));
 
@@ -165,209 +208,311 @@ export default function PhotoGrid({
     }
   };
 
-  // Drag-to-reorder within a day. Only PRIMARIES participate - both as draggable handles and as
-  // drop targets - a duplicate cluster's non-primary members only ever exist nested inside the
-  // primary's own `duplicates` array (see clusterIntoItems above) and aren't independently
-  // reorderable.
-  const handleDragStart = (p, day, e) => {
-    const dayPrimaryIds = groups[day].map(it => it.primary.id);
-    // Dragging one of several currently-selected photos moves the WHOLE selection together (per
-    // spec), but "limited to the same day" for multi-select means any selected id belonging to a
-    // DIFFERENT day is silently excluded here - filtering dayPrimaryIds down to selectedIds both
-    // enforces that and preserves this day's own current display order (X1..XN, nearest-P-first)
-    // that utils/photoReorder.js's cascade needs.
-    const movedIds = (selectedIds.includes(p.id) && selectedIds.length > 1)
-        ? dayPrimaryIds.filter(id => selectedIds.includes(id))
-        : [p.id];
-    // dataTransfer setup MUST happen before anything that could trigger a React re-render - the
-    // browser is still finalizing this drag session synchronously while this handler runs, and a
-    // re-render that touches the dragged element (even just adding a CSS class) can make the
-    // browser think its drag source changed/vanished, silently cancelling the whole session
-    // (dragend fires immediately, with zero dragover events ever reaching anything - exactly what
-    // was reported here). effectAllowed/setData first, then defer the actual state update itself
-    // to the next tick (setTimeout 0) so this handler returns cleanly to the browser before React
-    // processes it - the standard workaround for HTML5 drag-and-drop plus a React re-render.
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', p.id); // Firefox requires data to be set for drag to start
-    setTimeout(() => setDragState({ movedIds, day }), 0);
-  };
-
-  const handleDragEnd = () => {
-    setDragState(null);
-    setDropTarget(null);
-  };
-
-  const isValidDropDay = (day) => dragState && dragState.day === day;
-
-  const handleCardDragOver = (p, day, e) => {
-    if (!isValidDropDay(day)) return;
-    if (dragState.movedIds.includes(p.id)) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    const rect = e.currentTarget.getBoundingClientRect();
-    const isLeftHalf = (e.clientX - rect.left) < (rect.width / 2);
-    const position = isLeftHalf ? 'before' : 'after';
-    if (dropTarget?.targetId !== p.id || dropTarget?.position !== position) {
-      setDropTarget({ targetId: p.id, position, day });
+  // Toggle an asset in reorder selection (scoped to a single day). Only PRIMARIES participate -
+  // duplicate cluster non-primary members only exist inside the primary's `duplicates` array.
+  const handleReorderButtonClick = (p, day, e) => {
+    e.stopPropagation();
+    if (Date.now() < suppressClickUntilRef.current) {
+      suppressClickUntilRef.current = 0;
+      return;
     }
-  };
-
-  const handleCardDrop = (p, day, e) => {
-    if (!isValidDropDay(day)) return;
-    if (dragState.movedIds.includes(p.id)) return;
-    e.preventDefault();
-    const currentDragState = dragState || touchStateRef.current;
-    if (!currentDragState) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const isLeftHalf = (e.clientX - rect.left) < (rect.width / 2);
-    const position = isLeftHalf ? 'before' : 'after';
-
-    const others = groups[day]
-        .map(it => it.primary)
-        .filter(pp => !currentDragState.movedIds.includes(pp.id));
-    const updates = computeReorderDates(others, currentDragState.movedIds, p.id, position);
-    if (updates.length > 0) {
+    if (selectedIds.length > 0) {
       setSelectedIds?.([]);
-      handleReorderPhotos?.(updates);
     }
-    touchStateRef.current = null;
-    setDragState(null);
-    setDropTarget(null);
+    if (reorderDay && reorderDay !== day) {
+      setReorderDay(day);
+      setReorderSelectedIds([p.id]);
+      return;
+    }
+    if (reorderSelectedIds.includes(p.id)) {
+      const next = reorderSelectedIds.filter(id => id !== p.id);
+      setReorderSelectedIds(next);
+      if (next.length === 0) {
+        setReorderDay(null);
+      }
+    } else {
+      setReorderDay(day);
+      setReorderSelectedIds(prev => (reorderDay === day ? [...prev, p.id] : [p.id]));
+    }
   };
 
-  const handleGridDragOver = (day, e) => {
-    if (!isValidDropDay(day)) return;
-    if (e.target === e.currentTarget) {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-      const dayOthers = groups[day]
-          .map(it => it.primary)
-          .filter(pp => !dragState.movedIds.includes(pp.id));
-      if (dayOthers.length > 0) {
-        const lastPhoto = dayOthers[dayOthers.length - 1];
-        if (dropTarget?.targetId !== lastPhoto.id || dropTarget?.position !== 'after') {
-          setDropTarget({ targetId: lastPhoto.id, position: 'after', day });
+  const clearHoldTimer = useCallback(() => {
+    if (holdTimerRef.current) {
+      clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = null;
+    }
+    holdStartRef.current = null;
+    if (pendingHoldCleanupRef.current) {
+      pendingHoldCleanupRef.current();
+      pendingHoldCleanupRef.current = null;
+    }
+  }, []);
+
+  const resolveDropTarget = useCallback((day, movedIds, clientX, clientY) => {
+    const container = gridContainerRef.current;
+    if (!container) return null;
+
+    if (typeof document.elementFromPoint === 'function') {
+      const hitEl = document.elementFromPoint(clientX, clientY);
+      const hitCard = hitEl?.closest?.('.photo-card');
+      if (hitCard) {
+        const cardDay = hitCard.getAttribute('data-card-day');
+        const cardId = hitCard.getAttribute('data-photo-id');
+        if (cardDay === day && cardId && !movedIds.includes(cardId)) {
+          const rect = hitCard.getBoundingClientRect();
+          const position = clientX < (rect.left + rect.width / 2) ? 'before' : 'after';
+          return { targetId: cardId, position, day };
         }
       }
     }
-  };
 
-  const handleGridDrop = (day, e) => {
-    if (!isValidDropDay(day)) return;
-    if (e.target === e.currentTarget && dropTarget) {
-      e.preventDefault();
-      const currentDragState = dragState || touchStateRef.current;
-      if (!currentDragState) return;
-      const dayOthers = groups[day]
-          .map(it => it.primary)
-          .filter(pp => !currentDragState.movedIds.includes(pp.id));
-      const updates = computeReorderDates(dayOthers, currentDragState.movedIds, dropTarget.targetId, dropTarget.position);
-      if (updates.length > 0) {
-        setSelectedIds?.([]);
-        handleReorderPhotos?.(updates);
+    const cards = Array.from(container.querySelectorAll(`.photo-card[data-card-day="${day}"]`));
+    let best = null;
+    let bestScore = null;
+
+    for (const card of cards) {
+      const cardId = card.getAttribute('data-photo-id');
+      if (!cardId || movedIds.includes(cardId)) continue;
+      const rect = card.getBoundingClientRect();
+      const dx = clientX < rect.left ? rect.left - clientX : clientX > rect.right ? clientX - rect.right : 0;
+      const dy = clientY < rect.top ? rect.top - clientY : clientY > rect.bottom ? clientY - rect.bottom : 0;
+      const centerDistSq = Math.pow(clientX - (rect.left + rect.width / 2), 2)
+        + Math.pow(clientY - (rect.top + rect.height / 2), 2);
+      if (
+        !bestScore ||
+        dy < bestScore.dy ||
+        (dy === bestScore.dy && dx < bestScore.dx) ||
+        (dy === bestScore.dy && dx === bestScore.dx && centerDistSq < bestScore.centerDistSq)
+      ) {
+        bestScore = { dy, dx, centerDistSq };
+        const position = clientX < (rect.left + rect.width / 2) ? 'before' : 'after';
+        best = { targetId: cardId, position, day };
       }
-      touchStateRef.current = null;
-      setDragState(null);
-      setDropTarget(null);
     }
-  };
 
-  // Touch drag support for mobile browsers (touch devices do not fire HTML5 drag/drop events
-  // and instead trigger context menus on long-press)
-  const touchStateRef = useRef(null);
+    return best;
+  }, []);
 
-  const handleTouchStart = (p, day, e) => {
-    if (e.cancelable) {
-      e.preventDefault();
-    }
-    const dayPrimaryIds = groups[day].map(it => it.primary.id);
-    const movedIds = (selectedIds.includes(p.id) && selectedIds.length > 1)
-        ? dayPrimaryIds.filter(id => selectedIds.includes(id))
-        : [p.id];
-    touchStateRef.current = {
-      movedIds,
+  const startHold = useCallback((p, day, clientX, clientY, target) => {
+    if (!handleReorderPhotosRef.current || dragStateRef.current) return;
+    if (target?.closest?.('.select-overlay, .duplicate-badge, .unlink-person-btn, .drag-handle')) return;
+
+    clearHoldTimer();
+    holdStartRef.current = {
+      photo: p,
       day,
-      lastTarget: null,
+      startX: clientX,
+      startY: clientY,
+      clientX,
+      clientY,
     };
-    setDragState({ movedIds, day });
+
+    const handlePendingMove = (ev) => {
+      if (!holdStartRef.current) return;
+      const pt = ev.touches?.[0] || ev;
+      holdStartRef.current.clientX = pt.clientX;
+      holdStartRef.current.clientY = pt.clientY;
+      const dist = Math.hypot(
+        pt.clientX - holdStartRef.current.startX,
+        pt.clientY - holdStartRef.current.startY
+      );
+      if (dist > REORDER_MOVE_SLOP_PX) {
+        clearHoldTimer();
+      }
+    };
+
+    const handlePendingEnd = () => {
+      clearHoldTimer();
+    };
+
+    window.addEventListener('mousemove', handlePendingMove);
+    window.addEventListener('mouseup', handlePendingEnd);
+    window.addEventListener('touchmove', handlePendingMove, { passive: true });
+    window.addEventListener('touchend', handlePendingEnd);
+    window.addEventListener('touchcancel', handlePendingEnd);
+
+    pendingHoldCleanupRef.current = () => {
+      window.removeEventListener('mousemove', handlePendingMove);
+      window.removeEventListener('mouseup', handlePendingEnd);
+      window.removeEventListener('touchmove', handlePendingMove);
+      window.removeEventListener('touchend', handlePendingEnd);
+      window.removeEventListener('touchcancel', handlePendingEnd);
+    };
+
+    holdTimerRef.current = setTimeout(() => {
+      const holdInfo = holdStartRef.current;
+      clearHoldTimer();
+      if (!holdInfo) return;
+
+      // Prevent the subsequent click/mouseup from opening the lightbox
+      suppressClickUntilRef.current = Date.now() + 400;
+
+      const dayPrimaryIds = (groupsRef.current[holdInfo.day] || []).map(it => it.primary.id);
+      const { ids: activeReorderIds, day: activeReorderDay } = reorderStateRef.current;
+      const baseSet = activeReorderDay === holdInfo.day ? new Set(activeReorderIds) : new Set();
+      baseSet.add(holdInfo.photo.id);
+
+      const movedIds = dayPrimaryIds.filter(id => baseSet.has(id));
+      const finalMovedIds = movedIds.length > 0 ? movedIds : [holdInfo.photo.id];
+
+      if (selectedIdsRef.current.length > 0) {
+        setSelectedIdsRef.current?.([]);
+      }
+      setReorderDay(holdInfo.day);
+      setReorderSelectedIds(finalMovedIds);
+
+      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+        try {
+          navigator.vibrate(40);
+        } catch (_) {
+          // Ignore environments disallowing vibration without user gesture
+        }
+      }
+
+      dragPositionRef.current = { clientX: holdInfo.clientX, clientY: holdInfo.clientY };
+      const initialTarget = resolveDropTarget(holdInfo.day, finalMovedIds, holdInfo.clientX, holdInfo.clientY);
+      dropTargetRef.current = initialTarget;
+      setDropTarget(initialTarget);
+      setDragState({
+        movedIds: finalMovedIds,
+        day: holdInfo.day,
+        clientX: holdInfo.clientX,
+        clientY: holdInfo.clientY,
+        leadPhoto: holdInfo.photo,
+      });
+    }, REORDER_HOLD_MS);
+  }, [clearHoldTimer, resolveDropTarget]);
+
+  const handleCardMouseDown = (p, day, e) => {
+    if (e.button !== 0) return;
+    startHold(p, day, e.clientX, e.clientY, e.target);
   };
 
-  const handleTouchMove = (e) => {
-    if (!touchStateRef.current) return;
-    if (e.cancelable) {
-      e.preventDefault();
+  const handleCardTouchStart = (p, day, e) => {
+    if (e.touches.length !== 1) {
+      clearHoldTimer();
+      return;
     }
     const touch = e.touches[0];
-
-    // Mobile touch auto-scrolling
-    const container = gridContainerRef.current?.closest('.main-content') || document.querySelector('.main-content');
-    if (container) {
-      const rect = container.getBoundingClientRect ? container.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
-      const top = Math.max(0, rect.top);
-      const bottom = Math.min(window.innerHeight, rect.bottom);
-      const zoneTop = 220;
-      const zoneBottom = 150;
-      if (touch.clientY < top + zoneTop) {
-        const intensity = Math.min(1, Math.max(0, (top + zoneTop - touch.clientY) / zoneTop));
-        const speed = -Math.max(2, Math.round(intensity * 16));
-        if (typeof container.scrollBy === 'function') {
-          container.scrollBy(0, speed);
-        } else {
-          container.scrollTop += speed;
-        }
-      } else if (touch.clientY > bottom - zoneBottom) {
-        const intensity = Math.min(1, Math.max(0, (touch.clientY - (bottom - zoneBottom)) / zoneBottom));
-        const speed = Math.max(2, Math.round(intensity * 16));
-        if (typeof container.scrollBy === 'function') {
-          container.scrollBy(0, speed);
-        } else {
-          container.scrollTop += speed;
-        }
-      }
-    }
-
-    const el = document.elementFromPoint(touch.clientX, touch.clientY);
-    const cardEl = el?.closest?.('.photo-card');
-    if (cardEl) {
-      const cardDay = cardEl.getAttribute('data-card-day');
-      const cardPhotoId = cardEl.getAttribute('data-photo-id');
-      if (cardDay === touchStateRef.current.day && cardPhotoId && !touchStateRef.current.movedIds.includes(cardPhotoId)) {
-        const rect = cardEl.getBoundingClientRect();
-        const isLeftHalf = touch.clientX < (rect.left + rect.width / 2);
-        const position = isLeftHalf ? 'before' : 'after';
-        touchStateRef.current.lastTarget = { targetId: cardPhotoId, position, day: cardDay };
-        if (dropTarget?.targetId !== cardPhotoId || dropTarget?.position !== position) {
-          setDropTarget({ targetId: cardPhotoId, position, day: cardDay });
-        }
-      }
-    }
+    startHold(p, day, touch.clientX, touch.clientY, e.target);
   };
 
-  const handleTouchEnd = (e) => {
-    if (!touchStateRef.current) return;
-    const { day, lastTarget } = touchStateRef.current;
-    const activeTarget = dropTarget || lastTarget;
-    if (activeTarget && activeTarget.targetId) {
-      const currentDragState = touchStateRef.current;
-      const others = groups[day]
+  // Clean up any pending hold timer on unmount
+  useEffect(() => clearHoldTimer, [clearHoldTimer]);
+
+  // Active drag tracking (pointer coordinates, drop target resolution, edge scroll re-hit-testing, drop/cancel)
+  const isDragActive = Boolean(dragState);
+  useEffect(() => {
+    if (!isDragActive) return undefined;
+
+    const updateAtPosition = (clientX, clientY) => {
+      const currentDrag = dragStateRef.current;
+      if (!currentDrag) return;
+      dragPositionRef.current = { clientX, clientY };
+      setDragState(prev => (prev ? { ...prev, clientX, clientY } : null));
+      const nextTarget = resolveDropTarget(currentDrag.day, currentDrag.movedIds, clientX, clientY);
+      const prevTarget = dropTargetRef.current;
+      if (
+        nextTarget?.targetId !== prevTarget?.targetId ||
+        nextTarget?.position !== prevTarget?.position ||
+        nextTarget?.day !== prevTarget?.day
+      ) {
+        dropTargetRef.current = nextTarget;
+        setDropTarget(nextTarget);
+      }
+    };
+
+    const handleMouseMove = (e) => {
+      updateAtPosition(e.clientX, e.clientY);
+    };
+
+    const handleTouchMove = (e) => {
+      if (e.cancelable) {
+        e.preventDefault();
+      }
+      const touch = e.touches?.[0];
+      if (touch) {
+        updateAtPosition(touch.clientX, touch.clientY);
+      }
+    };
+
+    const finishDrag = (commit) => {
+      suppressClickUntilRef.current = Date.now() + 400;
+      const currentDrag = dragStateRef.current;
+      const activeTarget = dropTargetRef.current;
+      if (commit && currentDrag && activeTarget?.targetId) {
+        const others = (groupsRef.current[currentDrag.day] || [])
           .map(it => it.primary)
-          .filter(pp => !currentDragState.movedIds.includes(pp.id));
-      const updates = computeReorderDates(others, currentDragState.movedIds, activeTarget.targetId, activeTarget.position);
-      if (updates.length > 0) {
-        setSelectedIds?.([]);
-        handleReorderPhotos?.(updates);
+          .filter(pp => !currentDrag.movedIds.includes(pp.id));
+        const updates = computeReorderDates(others, currentDrag.movedIds, activeTarget.targetId, activeTarget.position);
+        if (updates.length > 0) {
+          setSelectedIdsRef.current?.([]);
+          handleReorderPhotosRef.current?.(updates);
+        }
       }
-    }
-    touchStateRef.current = null;
-    setDragState(null);
-    setDropTarget(null);
-  };
+      dropTargetRef.current = null;
+      setDragState(null);
+      setDropTarget(null);
+      setReorderSelectedIds([]);
+      setReorderDay(null);
+    };
 
-  const handleTouchCancel = () => {
-    touchStateRef.current = null;
-    setDragState(null);
-    setDropTarget(null);
-  };
+    const handleMouseUp = () => finishDrag(true);
+    const handleTouchEnd = () => finishDrag(true);
+    const handleTouchCancel = () => finishDrag(false);
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        finishDrag(false);
+      }
+    };
+    const handleContainerScroll = () => {
+      const { clientX, clientY } = dragPositionRef.current;
+      const currentDrag = dragStateRef.current;
+      if (!currentDrag) return;
+      const nextTarget = resolveDropTarget(currentDrag.day, currentDrag.movedIds, clientX, clientY);
+      const prevTarget = dropTargetRef.current;
+      if (
+        nextTarget?.targetId !== prevTarget?.targetId ||
+        nextTarget?.position !== prevTarget?.position ||
+        nextTarget?.day !== prevTarget?.day
+      ) {
+        dropTargetRef.current = nextTarget;
+        setDropTarget(nextTarget);
+      }
+    };
+
+    const scrollContainer = gridContainerRef.current?.closest?.('.main-content') || window;
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    window.addEventListener('touchmove', handleTouchMove, { passive: false });
+    window.addEventListener('touchend', handleTouchEnd);
+    window.addEventListener('touchcancel', handleTouchCancel);
+    window.addEventListener('keydown', handleKeyDown);
+    scrollContainer.addEventListener('scroll', handleContainerScroll, { passive: true });
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('touchmove', handleTouchMove);
+      window.removeEventListener('touchend', handleTouchEnd);
+      window.removeEventListener('touchcancel', handleTouchCancel);
+      window.removeEventListener('keydown', handleKeyDown);
+      scrollContainer.removeEventListener('scroll', handleContainerScroll);
+    };
+  }, [isDragActive, resolveDropTarget]);
+
+  // Allow clearing reorder selection via Escape even before starting a drag
+  useEffect(() => {
+    if (reorderSelectedIds.length === 0 || isDragActive) return undefined;
+    const handleEscape = (e) => {
+      if (e.key === 'Escape') {
+        setReorderSelectedIds([]);
+        setReorderDay(null);
+      }
+    };
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [reorderSelectedIds.length, isDragActive]);
 
   // Day-indexed pagination: ONE shared IntersectionObserver for every day section's sentinel
   // (a library can easily have hundreds of populated days - a naive per-section observer/effect
@@ -448,20 +593,24 @@ export default function PhotoGrid({
   const renderPhotoCard = (p, day, badge, size = 220) => {
     const aspectRatio = (p.width && p.height) ? (p.width / p.height) : 1;
     const isSelected = selectedIds.includes(p.id);
+    const isReorderSelected = reorderSelectedIds.includes(p.id);
     const isDragging = dragState?.movedIds.includes(p.id);
+    const showReorderBtn = Boolean(handleReorderPhotos && (!reorderDay || reorderDay === day));
+    const isReorderDayActive = Boolean(reorderDay && reorderDay === day);
     return (
       <div
         key={p.id}
         data-card-day={day}
         data-photo-id={p.id}
-        className={`photo-card ${isSelected ? 'selected' : ''} ${isDragging ? 'dragging' : ''}`}
+        draggable={false}
+        className={`photo-card ${isSelected ? 'selected' : ''} ${isReorderSelected ? 'reorder-selected' : ''} ${isReorderDayActive ? 'reorder-day-active' : ''} ${isDragging ? 'dragging' : ''}`}
         style={{ flexBasis: `${aspectRatio * size}px`, height: `${size}px` }}
         onClick={(e) => handlePhotoClick(p, e)}
+        onMouseDown={(e) => handleCardMouseDown(p, day, e)}
+        onTouchStart={(e) => handleCardTouchStart(p, day, e)}
         onContextMenu={(e) => e.preventDefault()}
         onMouseEnter={() => p.contentType?.startsWith('video') && setHoveredVideoId(p.id)}
         onMouseLeave={() => setHoveredVideoId(null)}
-        onDragOver={(e) => handleCardDragOver(p, day, e)}
-        onDrop={(e) => handleCardDrop(p, day, e)}
       >
         {dropTarget?.targetId === p.id && (
           <div className={`drop-indicator-bar drop-indicator-${dropTarget.position}`} />
@@ -482,7 +631,7 @@ export default function PhotoGrid({
         ) : (
           hoveredVideoId === p.id ?
             <video src={`/api/photos/${p.id}/stream#t=0.5`} autoPlay muted loop playsInline className="card-video" /> :
-            <img src={p.url} loading="lazy" />
+            <img src={p.url} loading="lazy" draggable={false} />
         )}
         {!isLightboxOpen && p.contentType?.startsWith('video') && hoveredVideoId !== p.id && <div className="video-badge">▶</div>}
         {handleUnlinkPerson && (
@@ -496,26 +645,26 @@ export default function PhotoGrid({
             <Unlink2 size={14}/>
           </button>
         )}
-        {/* Drag-to-reorder handle - only the handle itself is draggable (not the whole card), so
-            the card's existing click-to-select/open-lightbox behavior above is undisturbed. Only
-            rendered when a reorder handler is actually supplied (see this component's own prop
-            comment - omitted entirely for SharedAlbumView.jsx's public grid). */}
-        {handleReorderPhotos && (
+        {/* Reorder selection button: click to check/uncheck assets to move together within this day;
+            hold mouse or touch for 2s on an asset card to start dragging. Only rendered when a
+            reorder handler is supplied and (once a day has checked assets) scoped to that day. */}
+        {showReorderBtn && (
           <button
             type="button"
-            className="drag-handle"
-            draggable
-            onDragStart={(e) => handleDragStart(p, day, e)}
-            onDragEnd={handleDragEnd}
-            onTouchStart={(e) => handleTouchStart(p, day, e)}
-            onTouchMove={handleTouchMove}
-            onTouchEnd={handleTouchEnd}
-            onTouchCancel={handleTouchCancel}
+            className={`drag-handle ${isReorderSelected ? 'reorder-selected' : ''}`}
+            aria-pressed={isReorderSelected}
+            onMouseDown={(e) => e.stopPropagation()}
+            onTouchStart={(e) => e.stopPropagation()}
             onContextMenu={(e) => e.preventDefault()}
-            onClick={(e) => e.stopPropagation()}
+            onClick={(e) => handleReorderButtonClick(p, day, e)}
             title={messages["dragToReorder"]}
           >
             <Move size={14} />
+            {isReorderSelected && (
+              <span className="drag-handle-check">
+                <Check size={9} strokeWidth={3} />
+              </span>
+            )}
           </button>
         )}
         {badge}
@@ -541,8 +690,13 @@ export default function PhotoGrid({
     return renderPhotoCard(item.primary, day, badge, size);
   };
 
+  const showTimelineScrubber = Boolean(dayIndex.days && dayIndex.days.length >= 2);
+
   return (
-    <div className="content-body" ref={gridContainerRef}>
+    <div
+      className={`content-body ${showTimelineScrubber ? 'has-timeline-scrubber' : ''} ${dragState ? 'reorder-dragging-active' : ''}`}
+      ref={gridContainerRef}
+    >
       <TimelineScrubber days={dayIndex.days} onSeek={seekToDay} />
       {dayIndex.loadingDays && (
         <div style={{ padding: '40px', textAlign: 'center', color: '#888' }}>{messages["loadingMorePhotos"]}</div>
@@ -571,16 +725,7 @@ export default function PhotoGrid({
                 </div>
               )}
             </div>
-            <div
-              className="photo-grid"
-              onDragOver={(e) => handleGridDragOver(day, e)}
-              onDrop={(e) => handleGridDrop(day, e)}
-              onDragLeave={(e) => {
-                if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget)) {
-                  if (dropTarget?.day === day) setDropTarget(null);
-                }
-              }}
-            >
+            <div className="photo-grid">
               {dayItems.map(item => renderDisplayItem(item, day))}
             </div>
             {showDaySentinel && (
@@ -594,6 +739,26 @@ export default function PhotoGrid({
           </div>
         )
       })}
+
+      {dragState && (
+        <div
+          className="reorder-drag-preview"
+          data-testid="reorder-drag-preview"
+          style={{ left: `${dragState.clientX}px`, top: `${dragState.clientY}px` }}
+        >
+          {dragState.leadPhoto?.url && (
+            <img src={dragState.leadPhoto.url} alt="" draggable={false} />
+          )}
+          <div className="reorder-drag-ready-badge">
+            <Move size={12} />
+          </div>
+          {dragState.movedIds.length > 1 && (
+            <div className="reorder-drag-count-badge">
+              {dragState.movedIds.length}
+            </div>
+          )}
+        </div>
+      )}
 
       <DuplicateClusterModal
         item={openDuplicateItem}

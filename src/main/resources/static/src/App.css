@@ -66,6 +66,9 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 .main-content { flex: 1; overflow-y: auto; background: var(--bg-color); }
 .header { position: sticky; top: 0; background: rgba(19, 19, 22, 0.8); backdrop-filter: blur(20px); padding: 16px 40px; display: flex; justify-content: space-between; align-items: center; z-index: 50; border-bottom: 1px solid var(--border-color); }
 .content-body { padding: 0 40px 40px 40px; }
+.content-body.has-timeline-scrubber { padding-right: 84px; }
+.content-body.reorder-dragging-active { cursor: grabbing; user-select: none; -webkit-user-select: none; }
+.content-body.reorder-dragging-active .photo-card { cursor: grabbing; }
 
 /* Top-of-Albums-page search bar (AlbumGridDisplay.jsx) — rendered as a sibling directly ahead of
    EntityGridDisplay's own .content-body (not nested inside one), so it carries the matching side
@@ -110,6 +113,9 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   background: var(--surface-color);
   cursor: pointer;
   overflow: hidden;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
   /* flex-basis/height animate too, not just transform - PhotoGrid.jsx sets both inline, shrunk a
      little for every card in a day while a drag is active there (see its own cardSize comment), so
      this transitions smoothly instead of every card snapping to its new size the instant a drag
@@ -132,6 +138,8 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 
 /* Selection Styles */
 .photo-card.selected { outline: 4px solid var(--primary-color); outline-offset: -4px; }
+/* Reorder selection highlight (distinct green outline matching mobile) */
+.photo-card.reorder-selected { outline: 3px solid #4CAF50; outline-offset: -3px; }
 /* Original .select-overlay for photo-card */
 .photo-card .select-overlay { position: absolute; top: 8px; left: 8px; z-index: 5; opacity: 0; transition: opacity 0.2s ease; }
 .photo-card:hover .select-overlay, .photo-card.selected .select-overlay { opacity: 1; }
@@ -139,7 +147,7 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
 .check-circle { width: 22px; height: 22px; border-radius: 50%; border: 2px solid white; background: rgba(0,0,0,0.2); display: flex; align-items: center; justify-content: center; color: white; }
 .check-circle.checked { background: var(--primary-color); border-color: var(--primary-color); }
 
-/* Drag-to-reorder handle (PhotoGrid.jsx) - positioned at top-right of the photo card */
+/* Reorder selection button (PhotoGrid.jsx) - positioned at top-right of the photo card */
 .photo-card .drag-handle {
   position: absolute;
   top: 8px;
@@ -154,18 +162,117 @@ body { margin: 0; background: var(--bg-color); color: var(--text-main); font-fam
   display: flex;
   align-items: center;
   justify-content: center;
-  cursor: grab;
+  cursor: pointer;
   opacity: 0;
-  transition: opacity 0.2s ease, background 0.2s ease;
-  touch-action: none;
+  transition: opacity 0.2s ease, background 0.2s ease, transform 0.15s ease;
+  touch-action: manipulation;
   -webkit-touch-callout: none;
   user-select: none;
 }
-.photo-card:hover .drag-handle { opacity: 1; }
-.photo-card .drag-handle:hover { background: rgba(0, 0, 0, 0.7); }
-.photo-card .drag-handle:active { cursor: grabbing; }
+.photo-card:hover .drag-handle,
+.photo-card.reorder-day-active .drag-handle { opacity: 0.85; }
+.photo-card:hover .drag-handle:hover,
+.photo-card .drag-handle:hover { opacity: 1; background: rgba(0, 0, 0, 0.7); }
+.photo-card .drag-handle.reorder-selected,
+.photo-card:hover .drag-handle.reorder-selected,
+.photo-card.reorder-day-active .drag-handle.reorder-selected {
+  opacity: 1;
+  background: #4CAF50;
+  border-color: #ffffff;
+  color: #ffffff;
+  box-shadow: 0 2px 6px rgba(76, 175, 80, 0.45);
+}
+.photo-card .drag-handle.reorder-selected:hover {
+  background: #43a047;
+}
+.photo-card .drag-handle .drag-handle-check {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #ffffff;
+  color: #2e7d32;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
 /* Every card currently part of a multi-item drag (not just the one actually grabbed). */
-.photo-card.dragging { opacity: 0.4; }
+.photo-card.dragging { opacity: 0.35; }
+
+/* Floating preview card shown after the 2s hold activates drag-to-reorder */
+@keyframes reorderPreviewPop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.75);
+  }
+  70% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.08);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+.reorder-drag-preview {
+  position: fixed;
+  width: 88px;
+  height: 88px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 2000;
+  border-radius: 10px;
+  border: 3px solid #4CAF50;
+  background: var(--surface-color);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  overflow: visible;
+  animation: reorderPreviewPop 0.2s ease-out;
+}
+.reorder-drag-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 7px;
+  display: block;
+}
+.reorder-drag-ready-badge {
+  position: absolute;
+  bottom: -8px;
+  left: -8px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #4CAF50;
+  color: #ffffff;
+  border: 2px solid #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+}
+.reorder-drag-count-badge {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 11px;
+  background: #4CAF50;
+  color: #ffffff;
+  border: 2px solid #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+}
 
 /* Green insertion bar indicating the exact drop position */
 .drop-indicator-bar {
@@ -1844,6 +1951,10 @@ button.upload-item-name.upload-item-name-link:hover {
     padding: 0 16px 24px 16px;
   }
 
+  .content-body.has-timeline-scrubber {
+    padding-right: 52px;
+  }
+
   .timeline-scrubber {
     top: 57px;
     right: 4px;
@@ -1885,7 +1996,7 @@ button.upload-item-name.upload-item-name-link:hover {
     aspect-ratio: 1 / 1;
     width: 100%;
   }
-  /* Drag-to-reorder on touch devices: visible handle at top-right */
+  /* Reorder selection button on touch devices: visible handle at top-right */
   .photo-card .drag-handle {
     display: flex;
     opacity: 0.75;
@@ -1893,12 +2004,17 @@ button.upload-item-name.upload-item-name-link:hover {
     height: 28px;
     top: 6px;
     right: 6px;
-    touch-action: none;
+    touch-action: manipulation;
     -webkit-touch-callout: none;
   }
   .photo-card.selected .drag-handle {
     opacity: 1;
     background: rgba(0, 0, 0, 0.6);
+  }
+  .photo-card .drag-handle.reorder-selected {
+    opacity: 1;
+    background: #4CAF50;
+    border-color: #ffffff;
   }
 
   .album-grid {
@@ -2086,5 +2202,10 @@ button.upload-item-name.upload-item-name-link:hover {
   .photo-card.selected .drag-handle {
     opacity: 1;
     background: rgba(0, 0, 0, 0.6);
+  }
+  .photo-card .drag-handle.reorder-selected {
+    opacity: 1;
+    background: #4CAF50;
+    border-color: #ffffff;
   }
 }
