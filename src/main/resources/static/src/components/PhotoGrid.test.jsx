@@ -1,11 +1,15 @@
 import React, { useState } from 'react';
-import { describe, it, expect, vi } from 'vitest';
-import { render, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { render, fireEvent, act } from '@testing-library/react';
 import PhotoGrid from './PhotoGrid';
 import { localeWrapper } from '../test/testUtils.jsx';
 
 function makePhotos(n) {
-  return Array.from({ length: n }, (_, i) => ({ id: `p${i}`, url: `/photo${i}.jpg` }));
+  return Array.from({ length: n }, (_, i) => ({
+    id: `p${i}`,
+    url: `/photo${i}.jpg`,
+    fullDateTime: `2024-03-15T14:00:${String(50 - i * 5).padStart(2, '0')}`,
+  }));
 }
 
 // Every photo-listing view is day-indexed now - wrap the fixture photos into a single day bucket,
@@ -23,24 +27,39 @@ function makeDayIndex(photos) {
 
 // Thin harness holding real React state so PhotoGrid's controlled selectedIds prop
 // behaves exactly as it does under App.jsx, instead of hand-rolling rerenders.
-function Harness({ photos, handleMoveToGarbage, handleUnlinkDuplicate }) {
+function Harness({
+  photos,
+  dayIndex,
+  handleMoveToGarbage,
+  handleUnlinkDuplicate,
+  handleReorderPhotos,
+  setSelectedPhoto = () => {},
+}) {
   const [selectedIds, setSelectedIds] = useState([]);
   return (
     <PhotoGrid
-      dayIndex={makeDayIndex(photos)}
+      dayIndex={dayIndex || makeDayIndex(photos)}
       selectedIds={selectedIds}
       setSelectedIds={setSelectedIds}
-      setSelectedPhoto={() => {}}
+      setSelectedPhoto={setSelectedPhoto}
       isLightboxOpen={false}
       handleMoveToGarbage={handleMoveToGarbage}
       handleUnlinkDuplicate={handleUnlinkDuplicate}
+      handleReorderPhotos={handleReorderPhotos}
     />
   );
 }
 
-function renderHarness(photos, handleMoveToGarbage, handleUnlinkDuplicate) {
+function renderHarness(photos, handleMoveToGarbage, handleUnlinkDuplicate, options = {}) {
   const utils = render(
-    <Harness photos={photos} handleMoveToGarbage={handleMoveToGarbage} handleUnlinkDuplicate={handleUnlinkDuplicate} />,
+    <Harness
+      photos={photos}
+      dayIndex={options.dayIndex}
+      handleMoveToGarbage={handleMoveToGarbage}
+      handleUnlinkDuplicate={handleUnlinkDuplicate}
+      handleReorderPhotos={options.handleReorderPhotos}
+      setSelectedPhoto={options.setSelectedPhoto}
+    />,
     { wrapper: localeWrapper }
   );
   const cards = () => utils.container.querySelectorAll('.photo-card');
@@ -355,5 +374,185 @@ describe('PhotoGrid day-index prefetch look-ahead', () => {
     } finally {
       global.IntersectionObserver = OriginalIntersectionObserver;
     }
+  });
+});
+
+describe('PhotoGrid reorder selection, 2s hold drag, and timeline margin', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('adds has-timeline-scrubber class on .content-body when 2+ days are present', () => {
+    const { container } = renderHarness(makePhotos(2), undefined, undefined, {
+      dayIndex: {
+        days: [{ day: '2024-03-15', count: 1 }, { day: '2024-03-14', count: 1 }],
+        loadingDays: false,
+        photosByDay: {
+          '2024-03-15': [{ id: 'p0', url: '/photo0.jpg', fullDateTime: '2024-03-15T14:00:50' }],
+          '2024-03-14': [{ id: 'p1', url: '/photo1.jpg', fullDateTime: '2024-03-14T14:00:45' }],
+        },
+        dayPageState: { '2024-03-15': { isLast: true }, '2024-03-14': { isLast: true } },
+        loadDayPage: () => {},
+      },
+    });
+    expect(container.querySelector('.content-body')).toHaveClass('has-timeline-scrubber');
+
+    const single = renderHarness(makePhotos(2));
+    expect(single.container.querySelector('.content-body')).not.toHaveClass('has-timeline-scrubber');
+  });
+
+  it('clicking the move button toggles reorder selection for multiple assets within one day', () => {
+    const handleReorderPhotos = vi.fn();
+    const { cards, container } = renderHarness(null, undefined, undefined, {
+      handleReorderPhotos,
+      dayIndex: {
+        days: [{ day: 'd1', count: 3 }, { day: 'd2', count: 1 }],
+        loadingDays: false,
+        photosByDay: {
+          d1: makePhotos(3),
+          d2: [{ id: 'other', url: '/other.jpg', fullDateTime: '2024-03-14T10:00:00' }],
+        },
+        dayPageState: { d1: { isLast: true }, d2: { isLast: true } },
+        loadDayPage: () => {},
+      },
+    });
+
+    // Click move button on first and third assets in d1
+    const firstBtn = cards()[0].querySelector('.drag-handle');
+    const secondBtn = cards()[1].querySelector('.drag-handle');
+    const thirdBtn = cards()[2].querySelector('.drag-handle');
+
+    fireEvent.click(firstBtn);
+    expect(cards()[0]).toHaveClass('reorder-selected');
+    expect(firstBtn).toHaveClass('reorder-selected');
+    expect(firstBtn).toHaveAttribute('aria-pressed', 'true');
+    expect(firstBtn.querySelector('.drag-handle-check')).toBeTruthy();
+
+    fireEvent.click(thirdBtn);
+    expect(cards()[0]).toHaveClass('reorder-selected');
+    expect(cards()[1]).not.toHaveClass('reorder-selected');
+    expect(cards()[2]).toHaveClass('reorder-selected');
+    expect(secondBtn).not.toHaveClass('reorder-selected');
+
+    // Other day's move buttons are hidden while d1 has active reorder selection
+    expect(cards()[3].querySelector('.drag-handle')).toBeNull();
+
+    // Unchecking both resets reorderDay and reveals d2's move button again
+    fireEvent.click(firstBtn);
+    fireEvent.click(thirdBtn);
+    expect(cards()[0]).not.toHaveClass('reorder-selected');
+    expect(cards()[2]).not.toHaveClass('reorder-selected');
+    expect(container.querySelectorAll('.photo-card .drag-handle').length).toBe(4);
+  });
+
+  it('starts dragging only after holding mouse for 2000ms and moves all checked assets together', () => {
+    vi.useFakeTimers();
+    const handleReorderPhotos = vi.fn();
+    const setSelectedPhoto = vi.fn();
+    const { cards, container } = renderHarness(makePhotos(3), undefined, undefined, {
+      handleReorderPhotos,
+      setSelectedPhoto,
+    });
+
+    // Mock bounding rects cleanly for horizontal row: p0 (0..100), p1 (100..200), p2 (200..300)
+    cards().forEach((card, idx) => {
+      card.getBoundingClientRect = () => ({
+        left: idx * 100,
+        right: (idx + 1) * 100,
+        top: 0,
+        bottom: 100,
+        width: 100,
+        height: 100,
+      });
+    });
+
+    // Pre-select p0 and p1 via their move buttons
+    fireEvent.click(cards()[0].querySelector('.drag-handle'));
+    fireEvent.click(cards()[1].querySelector('.drag-handle'));
+
+    // Hold on p0 for 1999ms -> should NOT start drag yet
+    fireEvent.mouseDown(cards()[0], { button: 0, clientX: 50, clientY: 50 });
+    act(() => {
+      vi.advanceTimersByTime(1999);
+    });
+    expect(container.querySelector('[data-testid="reorder-drag-preview"]')).toBeNull();
+
+    // Reach 2000ms -> drag becomes active and visual preview badge appears with count 2
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    const preview = container.querySelector('[data-testid="reorder-drag-preview"]');
+    expect(preview).toBeTruthy();
+    expect(preview.querySelector('.reorder-drag-count-badge')?.textContent).toBe('2');
+    expect(cards()[0]).toHaveClass('dragging');
+    expect(cards()[1]).toHaveClass('dragging');
+
+    // Drag over right half of p2 (clientX = 275 -> 'after' p2) and release
+    fireEvent.mouseMove(window, { clientX: 275, clientY: 50 });
+    expect(cards()[2].querySelector('.drop-indicator-after')).toBeTruthy();
+
+    fireEvent.mouseUp(window, { clientX: 275, clientY: 50 });
+
+    // Releasing must commit both p0 and p1 after p2 (14:00:40), without opening Lightbox
+    expect(handleReorderPhotos).toHaveBeenCalledTimes(1);
+    expect(handleReorderPhotos).toHaveBeenCalledWith([
+      { photoId: 'p0', newDate: '2024-03-15T14:00:39.000' },
+      { photoId: 'p1', newDate: '2024-03-15T14:00:38.000' },
+    ]);
+
+    // A follow-up click synthesized after mouseup must not open the lightbox
+    fireEvent.click(cards()[0]);
+    expect(setSelectedPhoto).not.toHaveBeenCalled();
+
+    // Preview and reorder selection clear after drop
+    expect(container.querySelector('[data-testid="reorder-drag-preview"]')).toBeNull();
+    expect(cards()[0]).not.toHaveClass('reorder-selected');
+    expect(cards()[1]).not.toHaveClass('reorder-selected');
+  });
+
+  it('starts dragging on 2000ms touch hold and cancels hold if touch moves > 10px before 2s', () => {
+    vi.useFakeTimers();
+    const handleReorderPhotos = vi.fn();
+    const { cards, container } = renderHarness(makePhotos(2), undefined, undefined, {
+      handleReorderPhotos,
+    });
+
+    cards().forEach((card, idx) => {
+      card.getBoundingClientRect = () => ({
+        left: idx * 100,
+        right: (idx + 1) * 100,
+        top: 0,
+        bottom: 100,
+        width: 100,
+        height: 100,
+      });
+    });
+
+    // Moving > 10px before 2s cancels hold timer (so scrolling stays smooth)
+    fireEvent.touchStart(cards()[0], { touches: [{ clientX: 40, clientY: 40 }] });
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    fireEvent.touchMove(window, { touches: [{ clientX: 40, clientY: 60 }] });
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    expect(container.querySelector('[data-testid="reorder-drag-preview"]')).toBeNull();
+    fireEvent.touchEnd(window);
+
+    // Holding still for 2000ms via touch starts drag and commits drop
+    fireEvent.touchStart(cards()[0], { touches: [{ clientX: 50, clientY: 50 }] });
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(container.querySelector('[data-testid="reorder-drag-preview"]')).toBeTruthy();
+
+    fireEvent.touchMove(window, { touches: [{ clientX: 180, clientY: 50 }] });
+    fireEvent.touchEnd(window);
+
+    expect(handleReorderPhotos).toHaveBeenCalledWith([
+      { photoId: 'p0', newDate: '2024-03-15T14:00:44.000' },
+    ]);
   });
 });

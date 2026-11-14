@@ -50,13 +50,29 @@ export function useDragAutoScroll(isDragging, containerRef) {
       cursorYRef.current = e.clientY;
     };
 
+    const handleMouseMove = (e) => {
+      cursorYRef.current = e.clientY;
+    };
+
+    const handleTouchMove = (e) => {
+      const touch = e.touches?.[0];
+      if (touch) {
+        cursorYRef.current = touch.clientY;
+      }
+    };
+
     const handleDragEnd = () => {
       cursorYRef.current = null;
     };
 
-    // Non-passive listener so e.preventDefault() succeeds
+    // Non-passive listener so e.preventDefault() succeeds on dragover
     window.addEventListener('dragover', handleDragOver);
     window.addEventListener('dragend', handleDragEnd);
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('touchmove', handleTouchMove, { passive: true });
+    window.addEventListener('mouseup', handleDragEnd);
+    window.addEventListener('touchend', handleDragEnd);
+    window.addEventListener('touchcancel', handleDragEnd);
 
     const step = () => {
       const cursorY = cursorYRef.current;
@@ -102,6 +118,11 @@ export function useDragAutoScroll(isDragging, containerRef) {
     return () => {
       window.removeEventListener('dragover', handleDragOver);
       window.removeEventListener('dragend', handleDragEnd);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('touchmove', handleTouchMove);
+      window.removeEventListener('mouseup', handleDragEnd);
+      window.removeEventListener('touchend', handleDragEnd);
+      window.removeEventListener('touchcancel', handleDragEnd);
       if (animFrameRef.current) {
         cancelAnimationFrame(animFrameRef.current);
         animFrameRef.current = null;
