@@ -48,7 +48,28 @@ class SyncPrefs internal constructor(private val prefs: SharedPreferences) {
         val decodedKey = encodeUploadedKey(decodedFolder, relativeDir, displayName)
         val current = getUploadedAssetKeys().toMutableSet()
         if (current.remove(exactKey) or current.remove(decodedKey)) {
-            prefs.edit().putStringSet(KEY_UPLOADED_ASSETS, current).commit()
+            prefs.edit().putStringSet(KEY_UPLOADED_ASSETS, current).apply()
+        }
+    }
+
+    fun removeUploadedAssets(entries: Collection<Triple<String, String, String>>) {
+        if (entries.isEmpty()) return
+        val current = getUploadedAssetKeys().toMutableSet()
+        var changed = false
+        for ((folderUri, relativeDir, displayName) in entries) {
+            val exactKey = encodeUploadedKey(folderUri, relativeDir, displayName)
+            val decodedFolder = try {
+                Uri.decode(folderUri) ?: folderUri
+            } catch (_: Throwable) {
+                folderUri
+            }
+            val decodedKey = encodeUploadedKey(decodedFolder, relativeDir, displayName)
+            if (current.remove(exactKey) or current.remove(decodedKey)) {
+                changed = true
+            }
+        }
+        if (changed) {
+            prefs.edit().putStringSet(KEY_UPLOADED_ASSETS, current).apply()
         }
     }
 

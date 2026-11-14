@@ -58,8 +58,8 @@ class DeviceTrashRequester internal constructor(
                 if (!approved) {
                     Log.w(TAG, "trash: user declined the system trash confirmation for ${uris.size} file(s) - left on device")
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "trash: MediaStore.createTrashRequest failed for ${uris.size} file(s), falling back to the app folder", e)
+            } catch (t: Throwable) {
+                Log.w(TAG, "trash: MediaStore.createTrashRequest failed for ${uris.size} file(s), falling back to the app folder", t)
                 repo.trashLocalFilesInAppFolder(folderUri, mediaStoreResolved.map { it.asset })
             }
         } else if (mediaStoreResolved.isNotEmpty()) {

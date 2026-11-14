@@ -448,8 +448,8 @@ class SyncRepository(
                     filePath = docId.removePrefix("raw:")
                 }
             }
-        } catch (e: Exception) {
-            Log.d(TAG, "toMediaStoreUri: could not parse filePath from docId: ${e.message}")
+        } catch (t: Throwable) {
+            Log.d(TAG, "toMediaStoreUri: could not parse filePath from docId: ${t.message}")
         }
 
         // 1. Query MediaStore by DATA (file path) if known
@@ -464,8 +464,8 @@ class SyncRepository(
                         return ContentUris.withAppendedId(collection, id)
                     }
                 }
-            } catch (e: Exception) {
-                Log.d(TAG, "toMediaStoreUri: DATA query failed: ${e.message}")
+            } catch (t: Throwable) {
+                Log.d(TAG, "toMediaStoreUri: DATA query failed: ${t.message}")
             }
         }
 
@@ -481,8 +481,8 @@ class SyncRepository(
                         return ContentUris.withAppendedId(collection, id)
                     }
                 }
-            } catch (e: Exception) {
-                Log.d(TAG, "toMediaStoreUri: DISPLAY_NAME + RELATIVE_PATH query failed: ${e.message}")
+            } catch (t: Throwable) {
+                Log.d(TAG, "toMediaStoreUri: DISPLAY_NAME + RELATIVE_PATH query failed: ${t.message}")
             }
         }
 
@@ -497,8 +497,8 @@ class SyncRepository(
                     return ContentUris.withAppendedId(collection, id)
                 }
             }
-        } catch (e: Exception) {
-            Log.d(TAG, "toMediaStoreUri: DISPLAY_NAME query failed: ${e.message}")
+        } catch (t: Throwable) {
+            Log.d(TAG, "toMediaStoreUri: DISPLAY_NAME query failed: ${t.message}")
         }
 
         // 4. Try MediaStore.getMediaUri on Android Q+
@@ -516,8 +516,8 @@ class SyncRepository(
                     val id = ContentUris.parseId(genericUri)
                     return ContentUris.withAppendedId(collection, id)
                 }
-            } catch (e: Exception) {
-                Log.d(TAG, "toMediaStoreUri: getMediaUri failed for ${asset.uri}: ${e.message}")
+            } catch (t: Throwable) {
+                Log.d(TAG, "toMediaStoreUri: getMediaUri failed for ${asset.uri}: ${t.message}")
             }
         }
 
