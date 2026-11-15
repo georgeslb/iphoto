@@ -555,4 +555,48 @@ describe('PhotoGrid reorder selection, 2s hold drag, and timeline margin', () =>
       { photoId: 'p0', newDate: '2024-03-15T14:00:44.000' },
     ]);
   });
+
+  it('updates drag preview coordinates directly via DOM style without triggering full grid re-renders while moving over the same target', () => {
+    vi.useFakeTimers();
+    const handleReorderPhotos = vi.fn();
+    const { cards, container } = renderHarness(makePhotos(3), undefined, undefined, {
+      handleReorderPhotos,
+    });
+
+    cards().forEach((card, idx) => {
+      card.getBoundingClientRect = () => ({
+        left: idx * 100,
+        right: (idx + 1) * 100,
+        top: 0,
+        bottom: 100,
+        width: 100,
+        height: 100,
+      });
+    });
+
+    // Start drag on p0
+    fireEvent.mouseDown(cards()[0], { button: 0, clientX: 50, clientY: 50 });
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+
+    const preview = container.querySelector('[data-testid="reorder-drag-preview"]');
+    expect(preview).toBeTruthy();
+    expect(preview.style.left).toBe('50px');
+    expect(preview.style.top).toBe('50px');
+
+    // Move pointer slightly within p0's zone (50 -> 60)
+    fireEvent.mouseMove(window, { clientX: 60, clientY: 55 });
+    expect(preview.style.left).toBe('60px');
+    expect(preview.style.top).toBe('55px');
+
+    // Move pointer to p2 (275)
+    fireEvent.mouseMove(window, { clientX: 275, clientY: 50 });
+    expect(preview.style.left).toBe('275px');
+    expect(preview.style.top).toBe('50px');
+    expect(cards()[2].querySelector('.drop-indicator-after')).toBeTruthy();
+
+    fireEvent.mouseUp(window, { clientX: 275, clientY: 50 });
+    expect(handleReorderPhotos).toHaveBeenCalledTimes(1);
+  });
 });
