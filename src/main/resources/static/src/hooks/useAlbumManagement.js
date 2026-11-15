@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useLocale } from '../LocaleContext.jsx'; // Import useLocale
 
-export function useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, setSelectedIds, refreshAndMaintainScroll) {
+export function useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, setSelectedIds, refreshAndMaintainScroll, removePhotosLocally) {
   const { messages } = useLocale(); // Use the useLocale hook
   const [albums, setAlbums] = useState([]);
   const [showAddToAlbumModal, setShowAddToAlbumModal] = useState(false);
@@ -135,16 +135,17 @@ export function useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, s
         if (photoIdsToRemove === selectedIds) {
           setSelectedIds([]);
         }
-        if (refreshAndMaintainScroll) {
+        if (removePhotosLocally) {
+          removePhotosLocally(photoIdsToRemove);
+        } else if (refreshAndMaintainScroll) {
           await refreshAndMaintainScroll();
-        } else {
-          await fetchAlbums();
         }
+        await fetchAlbums();
       } else throw new Error(messages["failedToRemovePhotos"](res.status));
     } catch (err) {
       console.error(messages["errorRemovingPhotos"](err.message));
     }
-  }, [selectedIds, setSelectedIds, refreshAndMaintainScroll, fetchAlbums, messages]);
+  }, [selectedIds, setSelectedIds, removePhotosLocally, refreshAndMaintainScroll, fetchAlbums, messages]);
 
   const handleDeleteAlbums = useCallback(async (ids) => {
     if (!ids || ids.length === 0) return;

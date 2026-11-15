@@ -21,18 +21,23 @@ export function useScrollRestoration(mainContentRef, isLightboxOpen, photos) {
       return;
     }
 
+    let attempts = 0;
     const restoreScroll = () => {
       const container = mainContentRef.current;
 
       if (!container) return;
 
-      // Wait until layout is tall enough
-      if (container.scrollHeight <= scrollPositionRef.current) {
+      const maxScroll = Math.max(0, container.scrollHeight - container.clientHeight);
+      const targetScroll = Math.min(scrollPositionRef.current, maxScroll);
+
+      // Wait until layout is tall enough or we've retried enough frames
+      if (container.scrollHeight <= scrollPositionRef.current && attempts < 15) {
+        attempts++;
         requestAnimationFrame(restoreScroll);
         return;
       }
 
-      container.scrollTop = scrollPositionRef.current;
+      container.scrollTop = targetScroll;
       hasRestoredScrollRef.current = true;
     };
 

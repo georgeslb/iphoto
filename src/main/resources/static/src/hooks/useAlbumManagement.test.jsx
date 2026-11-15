@@ -16,8 +16,9 @@ function renderAlbumManagement(overrides = {}) {
   const isLightboxOpen = overrides.isLightboxOpen ?? false;
   const selectedIds = overrides.selectedIds ?? ['photo-1'];
   const refreshAndMaintainScroll = overrides.refreshAndMaintainScroll;
+  const removePhotosLocally = overrides.removePhotosLocally;
   const { result } = renderHook(
-    () => useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, setSelectedIds, refreshAndMaintainScroll),
+    () => useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, setSelectedIds, refreshAndMaintainScroll, removePhotosLocally),
     { wrapper: localeWrapper }
   );
   return { result, setSelectedIds };
@@ -145,5 +146,23 @@ describe('useAlbumManagement', () => {
     const deleteCall = global.fetch.mock.calls.find(([, o]) => o?.method === 'DELETE');
     expect(JSON.parse(deleteCall[1].body).photoIds).toEqual(['photo-1', 'photo-2']);
     expect(setSelectedIds).toHaveBeenCalledWith([]);
+  });
+
+  it('calls removePhotosLocally instead of refreshAndMaintainScroll when removing photos from album', async () => {
+    global.fetch = vi.fn(() => jsonResponse({}));
+    const removePhotosLocally = vi.fn();
+    const refreshAndMaintainScroll = vi.fn();
+    const { result } = renderAlbumManagement({
+      selectedIds: ['p1', 'p2'],
+      removePhotosLocally,
+      refreshAndMaintainScroll,
+    });
+
+    await act(async () => {
+      await result.current.handleRemovePhotosFromAlbum('album-1', ['p1']);
+    });
+
+    expect(removePhotosLocally).toHaveBeenCalledWith(['p1']);
+    expect(refreshAndMaintainScroll).not.toHaveBeenCalled();
   });
 });
