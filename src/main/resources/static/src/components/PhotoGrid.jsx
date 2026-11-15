@@ -22,13 +22,120 @@ function clusterIntoItems(photosArray, consumedIds) {
     consumedIds.add(p.id);
     const duplicateMembers = (p.duplicates || []).filter(d => !consumedIds.has(d.id));
     duplicateMembers.forEach(d => consumedIds.add(d.id));
+    const members = duplicateMembers.length > 0 ? [p, ...duplicateMembers] : [p];
     items.push({
       primary: p,
-      members: duplicateMembers.length > 0 ? [p, ...duplicateMembers] : [p],
+      members,
+      memberIds: members.map(m => m.id),
     });
   });
   return items;
 }
+
+const PhotoCard = React.memo(function PhotoCard({
+  photo,
+  day,
+  memberIds,
+  size = 220,
+  isSelected,
+  isReorderSelected,
+  isReorderDayActive,
+  isDragging,
+  showReorderBtn,
+  hasReorderSupport,
+  dropPosition,
+  isLightboxOpen,
+  isHoveredVideo,
+  handlePhotoClick,
+  handleCardMouseDown,
+  handleCardTouchStart,
+  handleOverlayClick,
+  handleReorderButtonClick,
+  handleUnlinkPerson,
+  handleExpandDuplicates,
+  setHoveredVideoId,
+  messages,
+}) {
+  const aspectRatio = (photo.width && photo.height) ? (photo.width / photo.height) : 1;
+  const isDuplicateCluster = memberIds && memberIds.length > 1;
+
+  return (
+    <div
+      data-card-day={day}
+      data-photo-id={photo.id}
+      draggable={false}
+      className={`photo-card ${isSelected ? 'selected' : ''} ${isReorderSelected ? 'reorder-selected' : ''} ${isReorderDayActive ? 'reorder-day-active' : ''} ${isDragging ? 'dragging' : ''}`}
+      style={{ flexBasis: `${aspectRatio * size}px`, height: `${size}px` }}
+      onClick={(e) => handlePhotoClick(photo, e)}
+      onMouseDown={(e) => handleCardMouseDown(photo, day, e)}
+      onTouchStart={(e) => handleCardTouchStart(photo, day, e)}
+      onContextMenu={(e) => e.preventDefault()}
+      onMouseEnter={() => photo.contentType?.startsWith('video') && setHoveredVideoId(photo.id)}
+      onMouseLeave={() => setHoveredVideoId(null)}
+    >
+      {dropPosition && (
+        <div className={`drop-indicator-bar drop-indicator-${dropPosition}`} />
+      )}
+      <div
+        className="select-overlay"
+        onClick={(e) => handleOverlayClick(photo, e)}
+      >
+        <div className={`check-circle ${isSelected ? 'checked' : ''}`}>
+          {isSelected && <Check size={14} />}
+        </div>
+      </div>
+
+      {isLightboxOpen ? (
+        <div style={{ width: '100%', height: '100%', background: '#e0e0e5' }} />
+      ) : (
+        isHoveredVideo ?
+          <video src={`/api/photos/${photo.id}/stream#t=0.5`} autoPlay muted loop playsInline className="card-video" /> :
+          <img src={photo.url} loading="lazy" draggable={false} />
+      )}
+      {!isLightboxOpen && photo.contentType?.startsWith('video') && !isHoveredVideo && <div className="video-badge">▶</div>}
+      {handleUnlinkPerson && (
+        <button
+          type="button"
+          className="unlink-person-btn"
+          style={hasReorderSupport ? { right: '42px' } : undefined}
+          title={messages["unlinkPersonFromPhoto"]}
+          onClick={(e) => { e.stopPropagation(); handleUnlinkPerson(photo.id); }}
+        >
+          <Unlink2 size={14}/>
+        </button>
+      )}
+      {showReorderBtn && (
+        <button
+          type="button"
+          className={`drag-handle ${isReorderSelected ? 'reorder-selected' : ''}`}
+          aria-pressed={isReorderSelected}
+          onMouseDown={(e) => e.stopPropagation()}
+          onTouchStart={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.preventDefault()}
+          onClick={(e) => handleReorderButtonClick(photo, day, e)}
+          title={messages["dragToReorder"]}
+        >
+          <Move size={14} />
+          {isReorderSelected && (
+            <span className="drag-handle-check">
+              <Check size={9} strokeWidth={3} />
+            </span>
+          )}
+        </button>
+      )}
+      {isDuplicateCluster && (
+        <button
+          type="button"
+          className="duplicate-badge"
+          title={messages["expandDuplicateGroup"]}
+          onClick={(e) => { e.stopPropagation(); handleExpandDuplicates(memberIds); }}
+        >
+          <Layers size={12} /> {memberIds.length}<span className="duplicate-badge-label"> {messages["similarLabel"]}</span>
+        </button>
+      )}
+    </div>
+  );
+});
 
 export default function PhotoGrid({
   type,
@@ -75,7 +182,9 @@ export default function PhotoGrid({
   const [reorderDay, setReorderDay] = useState(null);
 
   // Drag-to-reorder within a day (see utils/photoReorder.js for the actual date-math).
-  // dragState: { movedIds, day, clientX, clientY, leadPhoto } while a drag is in progress, else null.
+  // dragState: { movedIds, day, leadPhoto } while a drag is in progress, else null.
+  // clientX/clientY are deliberately kept in dragPositionRef / dragPreviewRef directly
+  // to avoid re-rendering the entire photo grid at 60Hz on every mousemove.
   const [dragState, setDragState] = useState(null);
   // dropTarget: { targetId, position: 'before' | 'after', day } while dragging over a target photo
   const [dropTarget, setDropTarget] = useState(null);
@@ -85,6 +194,7 @@ export default function PhotoGrid({
   const pendingHoldCleanupRef = useRef(null);
   const suppressClickUntilRef = useRef(0);
   const dragPositionRef = useRef({ clientX: 0, clientY: 0 });
+  const dragPreviewRef = useRef(null);
   const dragStateRef = useRef(null);
   const dropTargetRef = useRef(null);
   const groupsRef = useRef({});
@@ -92,6 +202,7 @@ export default function PhotoGrid({
   const selectedIdsRef = useRef(selectedIds);
   const handleReorderPhotosRef = useRef(handleReorderPhotos);
   const setSelectedIdsRef = useRef(setSelectedIds);
+  const setSelectedPhotoRef = useRef(setSelectedPhoto);
 
   dragStateRef.current = dragState;
   dropTargetRef.current = dropTarget;
@@ -99,6 +210,7 @@ export default function PhotoGrid({
   selectedIdsRef.current = selectedIds;
   handleReorderPhotosRef.current = handleReorderPhotos;
   setSelectedIdsRef.current = setSelectedIds;
+  setSelectedPhotoRef.current = setSelectedPhoto;
 
   // Automatically scroll the container/window when moving assets near top or bottom edges
   useDragAutoScroll(Boolean(dragState), gridContainerRef);
@@ -111,130 +223,137 @@ export default function PhotoGrid({
     () => dayIndex.days.flatMap(d => dayIndex.photosByDay[d.day] || []),
     [dayIndex.days, dayIndex.photosByDay]
   );
+  const flatSelectionPhotosRef = useRef(flatSelectionPhotos);
+  flatSelectionPhotosRef.current = flatSelectionPhotos;
 
   const photoIndexById = useMemo(() => {
     const map = new Map();
     flatSelectionPhotos.forEach((p, i) => map.set(p.id, i));
     return map;
   }, [flatSelectionPhotos]);
+  const photoIndexByIdRef = useRef(photoIndexById);
+  photoIndexByIdRef.current = photoIndexById;
 
-  const selectRange = (toIndex) => {
+  const selectRange = useCallback((toIndex) => {
     const fromIndex = lastClickedIndexRef.current;
+    if (fromIndex === null || fromIndex === undefined) return;
     const start = Math.min(fromIndex, toIndex);
     const end = Math.max(fromIndex, toIndex);
-    const rangeIds = flatSelectionPhotos.slice(start, end + 1).map(p => p.id);
-    setSelectedIds(v => Array.from(new Set([...v, ...rangeIds])));
-  };
+    const rangeIds = flatSelectionPhotosRef.current.slice(start, end + 1).map(p => p.id);
+    setSelectedIdsRef.current?.(v => Array.from(new Set([...v, ...rangeIds])));
+  }, []);
 
-  const handlePhotoClick = (p, e) => {
+  const handlePhotoClick = useCallback((p, e) => {
     if (Date.now() < suppressClickUntilRef.current) {
       suppressClickUntilRef.current = 0;
       e.stopPropagation();
       return;
     }
-    if (reorderSelectedIds.length > 0) {
+    if (reorderStateRef.current.ids.length > 0) {
       setReorderSelectedIds([]);
       setReorderDay(null);
     }
-    const index = photoIndexById.get(p.id);
+    const index = photoIndexByIdRef.current.get(p.id);
     if (e.shiftKey && lastClickedIndexRef.current !== null) {
       selectRange(index);
       return;
     }
     lastClickedIndexRef.current = index;
-    if (selectedIds.length > 0) {
+    if (selectedIdsRef.current.length > 0) {
       // If we are already selecting items, a click on the card should toggle selection
-      setSelectedIds(v => v.includes(p.id) ? v.filter(i => i !== p.id) : [...v, p.id]);
+      setSelectedIdsRef.current(v => v.includes(p.id) ? v.filter(i => i !== p.id) : [...v, p.id]);
     } else {
       // Otherwise open lightbox
-      setSelectedPhoto(p);
+      setSelectedPhotoRef.current(p);
     }
-  };
+  }, [selectRange]);
 
-  const handleOverlayClick = (p, e) => {
+  const handleOverlayClick = useCallback((p, e) => {
     e.stopPropagation(); // Don't trigger the card's onClick
-    if (reorderSelectedIds.length > 0) {
+    if (reorderStateRef.current.ids.length > 0) {
       setReorderSelectedIds([]);
       setReorderDay(null);
     }
-    const index = photoIndexById.get(p.id);
+    const index = photoIndexByIdRef.current.get(p.id);
     if (e.shiftKey && lastClickedIndexRef.current !== null) {
       selectRange(index);
       return;
     }
     lastClickedIndexRef.current = index;
-    setSelectedIds(v => v.includes(p.id) ? v.filter(i => i !== p.id) : [...v, p.id]);
-  };
+    setSelectedIdsRef.current(v => v.includes(p.id) ? v.filter(i => i !== p.id) : [...v, p.id]);
+  }, [selectRange]);
 
   // One entry per day from the index (already sorted newest-first by the server), even for a day
   // with nothing loaded yet - that's what lets its section render as a placeholder/sentinel
-  // immediately instead of only appearing once scrolled to. Buckets are known upfront here (from
-  // the day index), so clusterIntoItems can run once per bucket.
-  const groups = {};
-  const groupOrder = [];
-  const consumedIds = new Set();
-  dayIndex.days.forEach(({ day }) => {
-    groupOrder.push(day);
-    groups[day] = clusterIntoItems(dayIndex.photosByDay[day] || [], consumedIds);
-  });
+  // immediately instead of only appearing once scrolled to. Memoized so clusterIntoItems runs
+  // only when the underlying data changes, not on every mousemove or selection toggle.
+  const { groups, groupOrder } = useMemo(() => {
+    const nextGroups = {};
+    const nextGroupOrder = [];
+    const consumedIds = new Set();
+    dayIndex.days.forEach(({ day }) => {
+      nextGroupOrder.push(day);
+      nextGroups[day] = clusterIntoItems(dayIndex.photosByDay[day] || [], consumedIds);
+    });
+    return { groups: nextGroups, groupOrder: nextGroupOrder };
+  }, [dayIndex.days, dayIndex.photosByDay]);
   groupsRef.current = groups;
 
-  // Re-derived every render from the live `groups` above (see openDuplicateMemberIds' own comment
-  // for why this matches on ANY member id, not just the primary's) — null once none of the
-  // tracked ids match anything anymore, which also naturally closes the modal if its entire
-  // cluster is ever fully cleared out from under it.
-  const openDuplicateItem = openDuplicateMemberIds
-    ? Object.values(groups).flat().find(it => it.members.some(m => openDuplicateMemberIds.includes(m.id))) || null
-    : null;
+  // Re-derived only when groups or openDuplicateMemberIds changes.
+  const openDuplicateItem = useMemo(() => {
+    if (!openDuplicateMemberIds) return null;
+    return Object.values(groups).flat().find(it => it.members.some(m => openDuplicateMemberIds.includes(m.id))) || null;
+  }, [groups, openDuplicateMemberIds]);
 
-  const handleSelectGroup = (dayItems, e) => {
+  const handleSelectGroup = useCallback((dayItems, e) => {
     e.stopPropagation();
-    if (reorderSelectedIds.length > 0) {
+    if (reorderStateRef.current.ids.length > 0) {
       setReorderSelectedIds([]);
       setReorderDay(null);
     }
     const groupIds = dayItems.flatMap(item => item.members.map(m => m.id));
-    const allSelected = groupIds.length > 0 && groupIds.every(id => selectedIds.includes(id));
+    const allSelected = groupIds.length > 0 && groupIds.every(id => selectedIdsRef.current.includes(id));
 
     if (allSelected) {
       // Deselect all in group
-      setSelectedIds(prev => prev.filter(id => !groupIds.includes(id)));
+      setSelectedIdsRef.current(prev => prev.filter(id => !groupIds.includes(id)));
     } else {
       // Select all in group
-      setSelectedIds(prev => {
+      setSelectedIdsRef.current(prev => {
         const newIds = new Set([...prev, ...groupIds]);
         return Array.from(newIds);
       });
     }
-  };
+  }, []);
 
   // Toggle an asset in reorder selection (scoped to a single day). Only PRIMARIES participate -
   // duplicate cluster non-primary members only exist inside the primary's `duplicates` array.
-  const handleReorderButtonClick = (p, day, e) => {
+  const handleReorderButtonClick = useCallback((p, day, e) => {
     e.stopPropagation();
     if (Date.now() < suppressClickUntilRef.current) {
       suppressClickUntilRef.current = 0;
       return;
     }
-    if (selectedIds.length > 0) {
-      setSelectedIds?.([]);
+    if (selectedIdsRef.current.length > 0) {
+      setSelectedIdsRef.current([]);
     }
-    if (reorderDay && reorderDay !== day) {
+    const currentReorder = reorderStateRef.current;
+    if (currentReorder.day && currentReorder.day !== day) {
       setReorderDay(day);
       setReorderSelectedIds([p.id]);
       return;
     }
-    if (reorderSelectedIds.includes(p.id)) {
-      const next = reorderSelectedIds.filter(id => id !== p.id);
+    if (currentReorder.ids.includes(p.id)) {
+      const next = currentReorder.ids.filter(id => id !== p.id);
       setReorderSelectedIds(next);
       if (next.length === 0) {
         setReorderDay(null);
       }
     } else {
       setReorderDay(day);
-      setReorderSelectedIds(prev => (reorderDay === day ? [...prev, p.id] : [p.id]));
+      setReorderSelectedIds(prev => (currentReorder.day === day ? [...prev, p.id] : [p.id]));
     }
-  };
+  }, []);
 
   const clearHoldTimer = useCallback(() => {
     if (holdTimerRef.current) {
@@ -376,26 +495,24 @@ export default function PhotoGrid({
       setDragState({
         movedIds: finalMovedIds,
         day: holdInfo.day,
-        clientX: holdInfo.clientX,
-        clientY: holdInfo.clientY,
         leadPhoto: holdInfo.photo,
       });
     }, REORDER_HOLD_MS);
   }, [clearHoldTimer, resolveDropTarget]);
 
-  const handleCardMouseDown = (p, day, e) => {
+  const handleCardMouseDown = useCallback((p, day, e) => {
     if (e.button !== 0) return;
     startHold(p, day, e.clientX, e.clientY, e.target);
-  };
+  }, [startHold]);
 
-  const handleCardTouchStart = (p, day, e) => {
+  const handleCardTouchStart = useCallback((p, day, e) => {
     if (e.touches.length !== 1) {
       clearHoldTimer();
       return;
     }
     const touch = e.touches[0];
     startHold(p, day, touch.clientX, touch.clientY, e.target);
-  };
+  }, [clearHoldTimer, startHold]);
 
   // Clean up any pending hold timer on unmount
   useEffect(() => clearHoldTimer, [clearHoldTimer]);
@@ -409,7 +526,10 @@ export default function PhotoGrid({
       const currentDrag = dragStateRef.current;
       if (!currentDrag) return;
       dragPositionRef.current = { clientX, clientY };
-      setDragState(prev => (prev ? { ...prev, clientX, clientY } : null));
+      if (dragPreviewRef.current) {
+        dragPreviewRef.current.style.left = `${clientX}px`;
+        dragPreviewRef.current.style.top = `${clientY}px`;
+      }
       const nextTarget = resolveDropTarget(currentDrag.day, currentDrag.movedIds, clientX, clientY);
       const prevTarget = dropTargetRef.current;
       if (
@@ -580,114 +700,51 @@ export default function PhotoGrid({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dayIndex.loadDayPage]);
 
-  // A drop target sits in the "blank space" BETWEEN two photos (or before the first/after the
-  // last) rather than requiring the user to figure out which half of a specific photo card to
-  // hover - see the per-day render loop below for how these get interleaved with the actual cards,
-  // one per possible insertion point. Idle (not currently hovered), it's a slim but generously
-  // hit-testable strip with a subtle dashed hint so it reads as an interactive gap even before
-  // hovering it. The zone div ITSELF never changes size when hovered (see App.css's .drop-zone
-  // comment for why - resizing it used to break drops on anything but the first zone in a row);
-  // the full preview rectangle (sized off the first moved photo's own aspect ratio - a multi-item
-  // drag can mix aspect ratios, this is a preview, not a pixel-exact one - with a count badge when
-  // more than one photo is moving) is a purely visual absolutely-positioned overlay on top of it.
-  const renderPhotoCard = (p, day, badge, size = 220) => {
-    const aspectRatio = (p.width && p.height) ? (p.width / p.height) : 1;
-    const isSelected = selectedIds.includes(p.id);
-    const isReorderSelected = reorderSelectedIds.includes(p.id);
-    const isDragging = dragState?.movedIds.includes(p.id);
-    const showReorderBtn = Boolean(handleReorderPhotos && (!reorderDay || reorderDay === day));
-    const isReorderDayActive = Boolean(reorderDay && reorderDay === day);
-    return (
-      <div
-        key={p.id}
-        data-card-day={day}
-        data-photo-id={p.id}
-        draggable={false}
-        className={`photo-card ${isSelected ? 'selected' : ''} ${isReorderSelected ? 'reorder-selected' : ''} ${isReorderDayActive ? 'reorder-day-active' : ''} ${isDragging ? 'dragging' : ''}`}
-        style={{ flexBasis: `${aspectRatio * size}px`, height: `${size}px` }}
-        onClick={(e) => handlePhotoClick(p, e)}
-        onMouseDown={(e) => handleCardMouseDown(p, day, e)}
-        onTouchStart={(e) => handleCardTouchStart(p, day, e)}
-        onContextMenu={(e) => e.preventDefault()}
-        onMouseEnter={() => p.contentType?.startsWith('video') && setHoveredVideoId(p.id)}
-        onMouseLeave={() => setHoveredVideoId(null)}
-      >
-        {dropTarget?.targetId === p.id && (
-          <div className={`drop-indicator-bar drop-indicator-${dropTarget.position}`} />
-        )}
-        <div
-          className="select-overlay"
-          onClick={(e) => handleOverlayClick(p, e)}
-        >
-          <div className={`check-circle ${isSelected ? 'checked' : ''}`}>
-            {isSelected && <Check size={14} />}
-          </div>
-        </div>
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const reorderSelectedSet = useMemo(() => new Set(reorderSelectedIds), [reorderSelectedIds]);
+  const movedIdsSet = useMemo(() => new Set(dragState?.movedIds || []), [dragState?.movedIds]);
 
-        {/* Conditionally render video or image based on isLightboxOpen */}
-        {isLightboxOpen ? (
-          // Render a placeholder or nothing if lightbox is open to prevent thumbnail loading
-          <div style={{ width: '100%', height: '100%', background: '#e0e0e5' }} />
-        ) : (
-          hoveredVideoId === p.id ?
-            <video src={`/api/photos/${p.id}/stream#t=0.5`} autoPlay muted loop playsInline className="card-video" /> :
-            <img src={p.url} loading="lazy" draggable={false} />
-        )}
-        {!isLightboxOpen && p.contentType?.startsWith('video') && hoveredVideoId !== p.id && <div className="video-badge">▶</div>}
-        {handleUnlinkPerson && (
-          <button
-            type="button"
-            className="unlink-person-btn"
-            style={handleReorderPhotos ? { right: '42px' } : undefined}
-            title={messages["unlinkPersonFromPhoto"]}
-            onClick={(e) => { e.stopPropagation(); handleUnlinkPerson(p.id); }}
-          >
-            <Unlink2 size={14}/>
-          </button>
-        )}
-        {/* Reorder selection button: click to check/uncheck assets to move together within this day;
-            hold mouse or touch for 2s on an asset card to start dragging. Only rendered when a
-            reorder handler is supplied and (once a day has checked assets) scoped to that day. */}
-        {showReorderBtn && (
-          <button
-            type="button"
-            className={`drag-handle ${isReorderSelected ? 'reorder-selected' : ''}`}
-            aria-pressed={isReorderSelected}
-            onMouseDown={(e) => e.stopPropagation()}
-            onTouchStart={(e) => e.stopPropagation()}
-            onContextMenu={(e) => e.preventDefault()}
-            onClick={(e) => handleReorderButtonClick(p, day, e)}
-            title={messages["dragToReorder"]}
-          >
-            <Move size={14} />
-            {isReorderSelected && (
-              <span className="drag-handle-check">
-                <Check size={9} strokeWidth={3} />
-              </span>
-            )}
-          </button>
-        )}
-        {badge}
-      </div>
-    );
-  };
+  const handleExpandDuplicates = useCallback((memberIds) => {
+    setOpenDuplicateMemberIds(memberIds);
+  }, []);
 
   const renderDisplayItem = (item, day, size = 220) => {
-    if (item.members.length === 1) {
-      return renderPhotoCard(item.primary, day, undefined, size);
-    }
+    const p = item.primary;
+    const isSelected = selectedSet.has(p.id);
+    const isReorderSelected = reorderSelectedSet.has(p.id);
+    const isDragging = movedIdsSet.has(p.id);
+    const showReorderBtn = Boolean(handleReorderPhotos && (!reorderDay || reorderDay === day));
+    const isReorderDayActive = Boolean(reorderDay && reorderDay === day);
+    const dropPosition = dropTarget?.targetId === p.id ? dropTarget.position : null;
+    const isHoveredVideo = hoveredVideoId === p.id;
 
-    const badge = (
-      <button
-        type="button"
-        className="duplicate-badge"
-        title={messages["expandDuplicateGroup"]}
-        onClick={(e) => { e.stopPropagation(); setOpenDuplicateMemberIds(item.members.map(m => m.id)); }}
-      >
-        <Layers size={12} /> {item.members.length}<span className="duplicate-badge-label"> {messages["similarLabel"]}</span>
-      </button>
+    return (
+      <PhotoCard
+        key={p.id}
+        photo={p}
+        day={day}
+        memberIds={item.memberIds}
+        size={size}
+        isSelected={isSelected}
+        isReorderSelected={isReorderSelected}
+        isReorderDayActive={isReorderDayActive}
+        isDragging={isDragging}
+        showReorderBtn={showReorderBtn}
+        hasReorderSupport={Boolean(handleReorderPhotos)}
+        dropPosition={dropPosition}
+        isLightboxOpen={isLightboxOpen}
+        isHoveredVideo={isHoveredVideo}
+        handlePhotoClick={handlePhotoClick}
+        handleCardMouseDown={handleCardMouseDown}
+        handleCardTouchStart={handleCardTouchStart}
+        handleOverlayClick={handleOverlayClick}
+        handleReorderButtonClick={handleReorderButtonClick}
+        handleUnlinkPerson={handleUnlinkPerson}
+        handleExpandDuplicates={handleExpandDuplicates}
+        setHoveredVideoId={setHoveredVideoId}
+        messages={messages}
+      />
     );
-    return renderPhotoCard(item.primary, day, badge, size);
   };
 
   const showTimelineScrubber = Boolean(dayIndex.days && dayIndex.days.length >= 2);
@@ -742,9 +799,10 @@ export default function PhotoGrid({
 
       {dragState && (
         <div
+          ref={dragPreviewRef}
           className="reorder-drag-preview"
           data-testid="reorder-drag-preview"
-          style={{ left: `${dragState.clientX}px`, top: `${dragState.clientY}px` }}
+          style={{ left: `${dragPositionRef.current.clientX}px`, top: `${dragPositionRef.current.clientY}px` }}
         >
           {dragState.leadPhoto?.url && (
             <img src={dragState.leadPhoto.url} alt="" draggable={false} />

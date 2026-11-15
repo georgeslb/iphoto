@@ -1,5 +1,16 @@
 # Android TODO
 
+## Performance & Optimization Backlog (Audit 2026-11-15)
+
+- **Coil 3 Disk Cache & HTTP Cache-Control**:
+  `ImageLoader` is missing `diskCache` configuration in `AppContainer.kt` (currently `null`). Thumbnails drop from memory cache and re-download over network. Pair with backend `Cache-Control: public, max-age=31536000, immutable` in `PhotoController.java#serveFile`.
+- **TimelineFastScrollbar performance**:
+  Replace dynamic regex/formatter allocation in `formatTimelineDate` with pre-compiled / static formatters and wrap scroll progress in `derivedStateOf`.
+- **LazyVerticalGrid contentType & HorizontalPager**:
+  Add `contentType` to `PhotoGridContent.kt` items to enable Compose node recycling. Modernize `PhotoDetailScreen.kt` with `HorizontalPager` for smooth 60fps photo swiping and adjacent image prefetching.
+- **Enable R8 Minification**:
+  Turn on `isMinifyEnabled = true` for release builds in `build.gradle.kts`.
+
 ## Fixed: Timeline fast-scroll bar with floating date indicator — 2026-11-08
 
 Added an interactive fast-scroll timeline bar across photo grids (remote `PhotoGridContent.kt` covering Library, Albums, and Spaces, and local `SyncScreen.kt` for local folder assets):

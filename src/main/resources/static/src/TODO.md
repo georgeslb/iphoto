@@ -9,6 +9,39 @@ and a compressed record of how we got here, not a second copy of the spec.
 
 ## 1. Open / Not Yet Done
 
+### Performance & Optimization Backlog (Audit 2026-11-15)
+
+#### Priority 1: Critical bottlenecks & UI freezes
+- **[IN PROGRESS] Frontend Web: Re-render à 60 fps de toute la grille pendant le drag & drop** (`PhotoGrid.jsx`):
+  `setDragState` met à jour `clientX`/`clientY` dans le state React à chaque événement `mousemove`, provoquant le re-render complet de tous les jours et de chaque carte photo de la grille à chaque frame d'animation (60 à 120Hz).
+  *Resolution target*: Isoler la prévisualisation visuelle de déplacement (`reorder-drag-preview`) via ref/DOM transform sans setState global, et ne re-rendre `PhotoGrid` que lorsque `dropTarget` change réellement.
+- **Backend & Clients: Absence de cache disque HTTP sur les miniatures** (`PhotoController.java`, `AppContainer.kt`):
+  `/api/photos/{id}/thumbnail?v={hash}` est servi sans en-tête `Cache-Control`, empêchant la mise en cache par les navigateurs et l'app Android. Sur Android, l'ImageLoader Coil n'a aucun `diskCache` configuré (`null`), forçant le re-téléchargement réseau de chaque miniature dès qu'elle sort de la mémoire vive.
+  *Resolution target*: Ajouter `Cache-Control: public, max-age=31536000, immutable` côté serveur, et configurer `diskCache` sur Coil 3.
+- **Android: Lenteurs et recompositions de la Timeline** (`TimelineFastScrollbar.kt`):
+  `formatTimelineDate` alloue et compile dynamiquement jusqu'à 21 `DateTimeFormatter` et lève jusqu'à 20 exceptions à chaque frame de drag, et `timelineDays.indexOfFirst` fait une recherche linéaire complète sur chaque pixel défilé.
+  *Resolution target*: Constantes de formatage statiques ou extraction par sous-chaîne, et mémorisation via `derivedStateOf`.
+
+#### Priority 2: Architecture & Memory optimizations
+- **Frontend Web: Absence de virtualisation du feed et calculs non mémoïsés** (`PhotoGrid.jsx`):
+  `clusterIntoItems` est recalculé de zéro sans `useMemo` à chaque render pour tous les jours chargés. Toutes les photos chargées restent indéfiniment montées dans le DOM, alourdissant le navigateur après de longs défilements.
+- **Frontend Web: Rafales de requêtes parallèles non limitées sur `refreshLoadedDays`** (`useDayIndexedPhotos.js`):
+  `Promise.all` déclenche simultanément les requêtes pour tous les jours déjà ouverts en mémoire (ex: 30-50 requêtes GET en parallèle), saturant le pool de 6 connexions par hôte du navigateur.
+- **Frontend Web: Absence de code splitting / Lazy loading** (`App.jsx`, `vite.config.js`):
+  Importations synchrones de composants lourds (`MapView`/Leaflet, `Lightbox`/Cropper, `UserManagement`, etc.), créant un bundle initial de >600 Ko.
+- **Android: Recyclage Compose et transition d'image** (`PhotoGridContent.kt`, `PhotoDetailScreen.kt`):
+  `LazyVerticalGrid` ne spécifie pas `contentType` pour différencier `DayHeader` et `PhotoThumbnail`. `PhotoDetailScreen` utilise une détection de geste manuelle avec navigation abrupte au lieu d'un `HorizontalPager` avec préchargement.
+
+#### Priority 3: Dead code & dependency cleanup
+- **Frontend Web: Dépendances mortes dans `package.json`**:
+  `"fabric": "^7.4.0"` (~300 Ko, inutilisé) et `"react-infinite-scroll-component": "^7.2.1"` (remplacé par IntersectionObserver).
+- **Frontend Web: Duplication de calculs `flatMap`**:
+  `effectivePhotos` dans `App.jsx` et `flatSelectionPhotos` dans `PhotoGrid.jsx` calculent exactement la même liste aplatie.
+- **Android: Minification R8 désactivée en release** (`build.gradle.kts`):
+  `isMinifyEnabled = false`. Le code mort et les icônes de `material-icons-extended` ne sont pas élagués en version finale.
+- **Backend: Requête N+1 sur `/api/photos/locations`** (`PhotoController.java`):
+  `metadataRepository.findAll().stream()` charge toute la table en mémoire au lieu d'une requête JPQL ciblée.
+
 ### Bugs
 - **Bulk face deletion (`FaceRepository.deleteByPhoto`, `PersonRepository`'s "detach all from
   persons" admin action) doesn't clean up on-disk thumbnail files** — only the single-face paths
