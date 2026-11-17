@@ -379,7 +379,7 @@ fun PhotoDetailScreen(
                                 onAddToAlbum = onAddToAlbumClick,
                                 onRemoveFromAlbum = onRemoveFromAlbumClick,
                                 onMoveToMain = onMoveToMainClick,
-                                onMoveToGarbage = { viewModel.moveToGarbage(onLibraryChanged = { container.notifyLibraryChanged() }) }
+                                onMoveToGarbage = { viewModel.moveToGarbage() }
                             )
                         }
                     }
@@ -499,7 +499,7 @@ fun PhotoDetailScreen(
                                 onAddToAlbum = onAddToAlbumClick,
                                 onRemoveFromAlbum = onRemoveFromAlbumClick,
                                 onMoveToMain = onMoveToMainClick,
-                                onMoveToGarbage = { viewModel.moveToGarbage(onLibraryChanged = { container.notifyLibraryChanged() }) }
+                                onMoveToGarbage = { viewModel.moveToGarbage() }
                             )
                         }
                     }
