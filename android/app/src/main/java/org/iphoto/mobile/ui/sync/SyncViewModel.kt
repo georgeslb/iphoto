@@ -139,21 +139,23 @@ class SyncViewModel(
     private fun clearUploadedStatusForAssets(assets: List<LocalAsset>, explicitFolderUri: Uri? = null) {
         if (assets.isEmpty()) return
         syncRepository.removeCachedHashesForAssets(assets)
+        val entries = mutableListOf<Triple<String, String, String>>()
+        val currentFolders = _uiState.value.selectedFolders
         assets.forEach { asset ->
             val matchedFolderUri = explicitFolderUri ?: findAssetAndFolder(asset.uri)?.second?.uri
             if (matchedFolderUri != null) {
-                syncPrefs.removeUploadedAsset(matchedFolderUri.toString(), asset.relativeDir, asset.displayName)
+                entries.add(Triple(matchedFolderUri.toString(), asset.relativeDir, asset.displayName))
             } else {
-                _uiState.value.selectedFolders.forEach { folder ->
-                    syncPrefs.removeUploadedAsset(folder.uri.toString(), asset.relativeDir, asset.displayName)
+                currentFolders.forEach { folder ->
+                    entries.add(Triple(folder.uri.toString(), asset.relativeDir, asset.displayName))
                 }
             }
         }
+        syncPrefs.removeUploadedAssets(entries)
         _uiState.update { it.copy(uploadedAssetKeys = syncPrefs.getUploadedAssetKeys()) }
     }
 
     fun onAssetsTrashed(assets: List<LocalAsset>) {
-        clearUploadedStatusForAssets(assets)
         val assetUris = assets.map { it.uri }.toSet()
         _uiState.update { current ->
             val updated = current.folderContents.mapValues { (_, items) ->
@@ -166,7 +168,14 @@ class SyncViewModel(
                 selectedAssets = remainingSelected
             )
         }
-        refreshAllFolders()
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                clearUploadedStatusForAssets(assets)
+            } catch (t: Throwable) {
+                Log.w(TAG, "clearUploadedStatusForAssets failed: ${t.message}", t)
+            }
+            refreshAllFolders()
+        }
     }
 
     @Deprecated("Sync tab exclusively uses system trash authorization (MediaStore.createTrashRequest).")

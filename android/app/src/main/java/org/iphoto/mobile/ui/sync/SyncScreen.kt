@@ -88,6 +88,7 @@ import org.iphoto.mobile.sync.LocalAsset
 import org.iphoto.mobile.ui.common.PhotoThumbnail
 
 private const val TAG = "SyncScreen"
+private const val MAX_SYSTEM_TRASH_BATCH_SIZE = 50
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -137,23 +138,39 @@ fun SyncScreen(
     val trashLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
     ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val assetsToTrash = pendingTrashAssets ?: emptyList()
-            if (assetsToTrash.isNotEmpty()) {
-                viewModel.onAssetsTrashed(assetsToTrash)
+        try {
+            if (result.resultCode == Activity.RESULT_OK) {
+                val assetsToTrash = pendingTrashAssets ?: emptyList()
+                if (assetsToTrash.isNotEmpty()) {
+                    viewModel.onAssetsTrashed(assetsToTrash)
+                }
             }
+        } catch (t: Throwable) {
+            Log.e(TAG, "Error processing trashed assets callback: ${t.message}", t)
+        } finally {
+            pendingTrashAssets = null
         }
-        pendingTrashAssets = null
     }
 
     fun handleMoveToTrash(targetAssets: List<LocalAsset>? = null) {
         val selected = state.selectedAssets
-        val assets = targetAssets ?: state.folderContents.values.flatten()
+        val rawAssets = targetAssets ?: state.folderContents.values.flatten()
             .filterIsInstance<GridItem.Asset>()
             .map { it.asset }
             .filter { it.uri in selected }
 
-        if (assets.isEmpty()) return
+        if (rawAssets.isEmpty()) return
+
+        val assets = if (rawAssets.size > MAX_SYSTEM_TRASH_BATCH_SIZE) {
+            Toast.makeText(
+                context,
+                "Batch limited to $MAX_SYSTEM_TRASH_BATCH_SIZE items per confirmation to avoid system crash",
+                Toast.LENGTH_SHORT
+            ).show()
+            rawAssets.take(MAX_SYSTEM_TRASH_BATCH_SIZE)
+        } else {
+            rawAssets
+        }
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             Toast.makeText(context, "System trash authorization is only available on Android 11+", Toast.LENGTH_SHORT).show()
@@ -163,7 +180,12 @@ fun SyncScreen(
         coroutineScope.launch {
             val resolvedPairs = withContext(Dispatchers.IO) {
                 assets.mapNotNull { asset ->
-                    viewModel.getMediaStoreUri(asset)?.let { uri -> asset to uri }
+                    try {
+                        viewModel.getMediaStoreUri(asset)?.let { uri -> asset to uri }
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "Failed resolving mediaStoreUri for ${asset.uri}: ${t.message}")
+                        null
+                    }
                 }
             }
 
@@ -185,9 +207,9 @@ fun SyncScreen(
             try {
                 val pendingIntent = MediaStore.createTrashRequest(context.contentResolver, mediaUris, true)
                 trashLauncher.launch(IntentSenderRequest.Builder(pendingIntent.intentSender).build())
-            } catch (e: Exception) {
-                Log.w(TAG, "createTrashRequest failed: ${e.message}", e)
-                Toast.makeText(context, "System trash authorization failed: ${e.message}", Toast.LENGTH_SHORT).show()
+            } catch (t: Throwable) {
+                Log.w(TAG, "createTrashRequest failed: ${t.message}", t)
+                Toast.makeText(context, "System trash authorization failed: ${t.message}", Toast.LENGTH_SHORT).show()
                 pendingTrashAssets = null
             }
         }
@@ -202,7 +224,7 @@ fun SyncScreen(
         }
         val batch = allUploaded
             .sortedBy { it.lastModified }
-            .take(200)
+            .take(MAX_SYSTEM_TRASH_BATCH_SIZE)
             .filter { viewModel.isAssetUploaded(folderUri, it) }
 
         if (batch.isEmpty()) {

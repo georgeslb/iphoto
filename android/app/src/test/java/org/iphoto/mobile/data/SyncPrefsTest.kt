@@ -122,4 +122,25 @@ class SyncPrefsTest {
         assertEquals(1, keys.size)
         assertTrue(keys.contains(SyncPrefs.encodeUploadedKey("content://media/1", "DCIM", "on_server.jpg")))
     }
+
+    @Test
+    fun `removeUploadedAssets removes multiple asset keys in a single batch`() {
+        val syncPrefs = newPrefs()
+        every { Uri.decode(any()) } answers { firstArg() }
+
+        syncPrefs.recordUploadedAsset("content://media/1", "DCIM", "photo1.jpg")
+        syncPrefs.recordUploadedAsset("content://media/1", "DCIM", "photo2.jpg")
+        syncPrefs.recordUploadedAsset("content://media/1", "DCIM", "photo3.jpg")
+
+        syncPrefs.removeUploadedAssets(
+            listOf(
+                Triple("content://media/1", "DCIM", "photo1.jpg"),
+                Triple("content://media/1", "DCIM", "photo3.jpg")
+            )
+        )
+
+        val keys = syncPrefs.getUploadedAssetKeys()
+        assertEquals(1, keys.size)
+        assertTrue(keys.contains(SyncPrefs.encodeUploadedKey("content://media/1", "DCIM", "photo2.jpg")))
+    }
 }
