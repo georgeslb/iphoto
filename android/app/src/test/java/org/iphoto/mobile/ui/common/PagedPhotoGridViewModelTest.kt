@@ -238,7 +238,7 @@ class PagedPhotoGridViewModelTest {
     }
 
     @Test
-    fun `moveSelectionToGarbage calls the api with selected ids then reloads and clears selection`() = runTest {
+    fun `moveSelectionToGarbage calls the api with selected ids then removes locally in place and clears selection`() = runTest {
         val viewModel = viewModelWith(listOf(testPhoto("1"), testPhoto("2")))
         viewModel.toggleSelection("1")
         val photoApi = mockk<PhotoApi>()
@@ -248,6 +248,7 @@ class PagedPhotoGridViewModelTest {
 
         coVerify(exactly = 1) { photoApi.moveToGarbage(listOf("1")) }
         val state = viewModel.uiState.value
+        assertEquals(listOf(testPhoto("2")), state.photos)
         assertTrue(state.selectedIds.isEmpty())
         assertFalse(state.isMutating)
         assertNull(state.actionError)
@@ -301,6 +302,7 @@ class PagedPhotoGridViewModelTest {
 
         coVerify(exactly = 1) { photoApi.moveToMain(listOf("1")) }
         val state = viewModel.uiState.value
+        assertEquals(listOf(testPhoto("2")), state.photos)
         assertTrue(state.selectedIds.isEmpty())
         assertFalse(state.isMutating)
         assertNull(state.actionError)
@@ -415,6 +417,7 @@ class PagedPhotoGridViewModelTest {
 
         coVerify(exactly = 1) { albumApi.removePhotos("album-1", AlbumPhotoRequest(listOf("1"))) }
         assertEquals(1, albumsChangedCount)
+        assertEquals(listOf(testPhoto("2")), viewModel.uiState.value.photos)
         assertTrue(viewModel.uiState.value.selectedIds.isEmpty())
     }
 

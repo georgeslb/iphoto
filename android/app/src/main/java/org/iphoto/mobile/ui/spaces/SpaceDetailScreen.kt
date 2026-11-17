@@ -51,7 +51,15 @@ fun SpaceDetailScreen(spaceId: String, onPhotoClick: (String) -> Unit, onBack: (
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) viewModel.refreshQuietly()
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val removedId = org.iphoto.mobile.ui.common.PhotoBrowsingContext.lastRemovedPhotoId
+                if (removedId != null && state.photos.any { it.id == removedId }) {
+                    viewModel.removePhotoLocally(removedId)
+                    org.iphoto.mobile.ui.common.PhotoBrowsingContext.lastRemovedPhotoId = null
+                } else {
+                    viewModel.refreshQuietly()
+                }
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }

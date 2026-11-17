@@ -43,7 +43,7 @@ fun LibraryScreen(onPhotoClick: (String) -> Unit) {
                 viewModel.removePhotoLocally(removedId)
                 org.iphoto.mobile.ui.common.PhotoBrowsingContext.lastRemovedPhotoId = null
             } else {
-                viewModel.loadFirstPage()
+                viewModel.refreshQuietly()
             }
         }
     }

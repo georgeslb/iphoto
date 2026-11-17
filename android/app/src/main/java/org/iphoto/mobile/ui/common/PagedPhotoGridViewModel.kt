@@ -107,9 +107,16 @@ class PagedPhotoGridViewModel(
         isRefreshing = true
         viewModelScope.launch {
             try {
-                val (photos, last) = loadPage(0, PAGE_SIZE)
-                nextPage = 1
-                _uiState.value = _uiState.value.copy(photos = photos, endReached = last)
+                val pagesToLoad = maxOf(1, nextPage)
+                val allRefreshed = mutableListOf<Photo>()
+                var lastReached = false
+                for (p in 0 until pagesToLoad) {
+                    val (pagePhotos, last) = loadPage(p, PAGE_SIZE)
+                    allRefreshed.addAll(pagePhotos)
+                    lastReached = last
+                    if (last) break
+                }
+                _uiState.value = _uiState.value.copy(photos = allRefreshed, endReached = lastReached)
             } catch (e: Exception) {
                 // Silent by design - this is a background refresh, not a user-initiated action.
                 // Whatever the last real load/error showed stays on screen.
@@ -170,8 +177,8 @@ class PagedPhotoGridViewModel(
         }
     }
 
-    // Garbage-d photos disappear from every Main/Space view, so a full reload (rather than an
-    // optimistic local removal) is the simplest way to keep pagination/day-grouping consistent.
+    // Garbage-d photos disappear from every Main/Space view. Removes selection locally in place
+    // to preserve loaded pages and the user's scroll position without resetting to top.
     fun moveSelectionToGarbage(photoApi: PhotoApi) {
         val ids = _uiState.value.selectedIds.toList()
         if (ids.isEmpty()) return
@@ -179,7 +186,12 @@ class PagedPhotoGridViewModel(
         viewModelScope.launch {
             try {
                 photoApi.moveToGarbage(ids)
-                loadFirstPage()
+                val remaining = _uiState.value.photos.filter { it.id !in ids }
+                _uiState.value = _uiState.value.copy(
+                    photos = remaining,
+                    selectedIds = emptySet(),
+                    isMutating = false
+                )
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isMutating = false,
@@ -191,7 +203,7 @@ class PagedPhotoGridViewModel(
 
     // Moves the selection to the Main Space (Albums hold references to Main Space photos, Spaces
     // own them - this actually transfers ownership, unlike addSelectionToAlbum below). The photos
-    // leave this Space entirely, so this reloads the same way moveSelectionToGarbage does.
+    // leave this Space, so remove them in place to retain scroll position.
     fun moveSelectionToMain(photoApi: PhotoApi) {
         val ids = _uiState.value.selectedIds.toList()
         if (ids.isEmpty()) return
@@ -199,7 +211,12 @@ class PagedPhotoGridViewModel(
         viewModelScope.launch {
             try {
                 photoApi.moveToMain(ids)
-                loadFirstPage()
+                val remaining = _uiState.value.photos.filter { it.id !in ids }
+                _uiState.value = _uiState.value.copy(
+                    photos = remaining,
+                    selectedIds = emptySet(),
+                    isMutating = false
+                )
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isMutating = false,
@@ -250,8 +267,8 @@ class PagedPhotoGridViewModel(
     }
 
     // No batch date-update endpoint on the backend - PATCH /api/photos/{id}/date is one photo at
-    // a time, so a multi-selection just calls it once per selected id. A changed date can move a
-    // photo into a different day group or reorder it within one, so this reloads afterward.
+    // a time, so a multi-selection just calls it once per selected id. Updates dates in place and
+    // re-sorts descending by fullDateTime to maintain active scroll and loaded pages.
     fun updateSelectionDate(photoApi: PhotoApi, newDate: LocalDateTime) {
         val ids = _uiState.value.selectedIds.toList()
         if (ids.isEmpty()) return
@@ -260,7 +277,18 @@ class PagedPhotoGridViewModel(
             try {
                 val formatted = newDate.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
                 ids.forEach { id -> photoApi.updateDate(id, UpdatePhotoDateRequest(formatted)) }
-                loadFirstPage()
+                val updatedPhotos = _uiState.value.photos.map { photo ->
+                    if (photo.id in ids) {
+                        photo.copy(fullDateTime = formatted)
+                    } else {
+                        photo
+                    }
+                }.sortedByDescending { it.fullDateTime }
+                _uiState.value = _uiState.value.copy(
+                    photos = updatedPhotos,
+                    selectedIds = emptySet(),
+                    isMutating = false
+                )
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isMutating = false,
@@ -303,7 +331,7 @@ class PagedPhotoGridViewModel(
 
     // Only meaningful when albumId is set (AlbumDetailScreen) - removing a reference from this
     // album doesn't touch the photo's Main Space ownership, but it does disappear from *this*
-    // view, so a reload is needed the same way garbage/date-update need one.
+    // view, so remove it locally in place to maintain scroll position without resetting to top.
     fun removeSelectionFromAlbum(albumApi: AlbumApi, onAlbumsChanged: () -> Unit = {}) {
         val id = albumId ?: return
         val ids = _uiState.value.selectedIds.toList()
@@ -313,7 +341,12 @@ class PagedPhotoGridViewModel(
             try {
                 albumApi.removePhotos(id, AlbumPhotoRequest(ids))
                 onAlbumsChanged()
-                loadFirstPage()
+                val remaining = _uiState.value.photos.filter { it.id !in ids }
+                _uiState.value = _uiState.value.copy(
+                    photos = remaining,
+                    selectedIds = emptySet(),
+                    isMutating = false
+                )
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isMutating = false,

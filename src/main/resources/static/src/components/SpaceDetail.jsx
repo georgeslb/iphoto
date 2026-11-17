@@ -75,7 +75,7 @@ function SpaceDetail({
           onPhotoClick={handlePhotoClick}
           isLightboxOpen={isLightboxOpen}
       />
-      {dayIndex.loadingDays ? (
+      {dayIndex.loadingDays && dayIndex.days.length === 0 ? (
         <div style={{textAlign: 'center', padding: '50px', color: '#888'}}>{messages["loadingMorePhotos"]}</div>
       ) : dayIndex.days.length > 0 ? (
           <PhotoGrid

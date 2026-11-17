@@ -99,6 +99,7 @@ class PhotoDetailViewModel(
         viewModelScope.launch {
             try {
                 photoApi.moveToMain(listOf(currentPhotoId))
+                org.iphoto.mobile.ui.common.PhotoBrowsingContext.removePhoto(currentPhotoId)
                 _uiState.value = PhotoDetailUiState.Removed
             } catch (e: Exception) {
                 _uiState.value = loaded.copy(isMutating = false, actionError = e.message ?: "Failed to move to Main Space")
@@ -112,6 +113,7 @@ class PhotoDetailViewModel(
         viewModelScope.launch {
             try {
                 albumApi.removePhotos(id, AlbumPhotoRequest(listOf(currentPhotoId)))
+                org.iphoto.mobile.ui.common.PhotoBrowsingContext.removePhoto(currentPhotoId)
                 onAlbumsChanged()
                 _uiState.value = PhotoDetailUiState.Removed
             } catch (e: Exception) {

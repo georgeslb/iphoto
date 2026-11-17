@@ -143,7 +143,24 @@ function App() {
   /* State to hold the refreshAndMaintainScroll function */
   const [refreshAndMaintainScroll, setRefreshAndMaintainScroll] = useState(() => () => {}); /* Initialize with a no-op function */
 
-  /* Call useAlbumManagement first, passing the current (possibly no-op) refreshAndMaintainScroll */
+  // Updates whatever's already loaded in place instead of a full refetch (see usePhotoActions.js
+  // and useAlbumManagement.js). See utils/photoListUpdates.js for the actual removal logic.
+  const removePhotosLocally = useCallback((ids) => {
+    dayIndexed.setPhotosByDay(prev => removeFromPhotosByDay(prev, ids));
+    if (dayIndexed.setDays) {
+      dayIndexed.setDays(prevDays => prevDays.map(d => {
+        const photosInDay = dayIndexed.photosByDay[d.day] || [];
+        const removedInThisDay = photosInDay.filter(p => ids.includes(p.id)).length;
+        if (removedInThisDay === 0) return d;
+        return { ...d, count: Math.max(0, d.count - removedInThisDay) };
+      }).filter(d => d.count > 0));
+    }
+    window.dispatchEvent(new CustomEvent('photos-removed', { detail: { ids } }));
+    // dayIndexed itself deliberately excluded - see seekToMemoryDay's own comment above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dayIndexed.setPhotosByDay, dayIndexed.setDays, dayIndexed.photosByDay]);
+
+  /* Call useAlbumManagement, passing refreshAndMaintainScroll and removePhotosLocally */
   const {
     albums,
     showCreateAlbumModal,
@@ -169,7 +186,7 @@ function App() {
     setShowRemoveFromAlbumModal,
     albumsPhotoBelongsTo,
     setAlbumsPhotoBelongsTo,
-  } = useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, setSelectedIds, refreshAndMaintainScroll);
+  } = useAlbumManagement(effectivePath, isLightboxOpen, selectedIds, setSelectedIds, refreshAndMaintainScroll, removePhotosLocally);
 
   const {
     spaces,
@@ -223,11 +240,16 @@ function App() {
     }
 
     if (scrollPosition && mainContentRef.current) {
-      requestAnimationFrame(() => {
-        if(mainContentRef.current) {
-          mainContentRef.current.scrollTop = scrollPosition;
+      let attempts = 0;
+      const restore = () => {
+        if (!mainContentRef.current) return;
+        mainContentRef.current.scrollTop = scrollPosition;
+        if (Math.abs(mainContentRef.current.scrollTop - scrollPosition) > 10 && attempts < 15) {
+          attempts++;
+          requestAnimationFrame(restore);
         }
-      });
+      };
+      requestAnimationFrame(restore);
     }
     // dayIndexed itself deliberately excluded - see seekToMemoryDay's own comment above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -237,24 +259,6 @@ function App() {
   useEffect(() => {
     setRefreshAndMaintainScroll(() => actualRefreshAndMaintainScroll);
   }, [actualRefreshAndMaintainScroll]);
-
-  // handleMoveToGarbage updates whatever's already loaded in place instead of a full refetch (see
-  // usePhotoActions.js). See utils/photoListUpdates.js for the actual removal/duplicate-scrubbing
-  // logic.
-  const removePhotosLocally = useCallback((ids) => {
-    dayIndexed.setPhotosByDay(prev => removeFromPhotosByDay(prev, ids));
-    if (dayIndexed.setDays) {
-      dayIndexed.setDays(prevDays => prevDays.map(d => {
-        const photosInDay = dayIndexed.photosByDay[d.day] || [];
-        const removedInThisDay = photosInDay.filter(p => ids.includes(p.id)).length;
-        if (removedInThisDay === 0) return d;
-        return { ...d, count: Math.max(0, d.count - removedInThisDay) };
-      }).filter(d => d.count > 0));
-    }
-    window.dispatchEvent(new CustomEvent('photos-removed', { detail: { ids } }));
-    // dayIndexed itself deliberately excluded - see seekToMemoryDay's own comment above.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dayIndexed.setPhotosByDay, dayIndexed.setDays, dayIndexed.photosByDay]);
 
   // handleReorderPhotos updates whatever's already loaded in place instead of a full refetch (see
   // usePhotoActions.js). See utils/photoListUpdates.js for the actual in-day reordering logic.
